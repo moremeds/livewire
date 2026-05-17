@@ -3,37 +3,32 @@
 Use this file for the current task only. Replace it at the start of each non-trivial task.
 
 ## Objective
-- Add automatic FX cross flipping so unsupported local pairs can fetch the IB-supported reverse pair and store inverted rows.
+- Update README command documentation for each supported ingest/update/test workflow.
 
 ## Success Criteria
-- Known IB-supported pairs fetch directly.
-- Reverse local pairs such as `USDEUR` automatically fetch the supported source pair and invert OHLC rows.
-- Unsupported malformed or unknown pairs fail with a clear `ValueError`.
-- Focused tests and the repo coverage gate pass.
+- README has commands for historical fetches by asset class.
+- README has commands for daily updates by asset class.
+- README has commands for backfills, DuckDB rebuilds, IB connectivity checks, and tests.
+- Existing unrelated dirty worktree changes remain untouched.
 
 ## Dependency Graph
 - T1 -> T2
 - T2 -> T3
-- T3 -> T4
 
 ## Tasks
-- [x] T1 Add failing tests for direct, inverted, and unsupported FX pair resolution
+- [x] T1 Inspect current README command sections
   depends_on: []
-- [x] T2 Implement FX source-pair resolver in fetch/update scripts
+- [x] T2 Update README with complete command reference
   depends_on: [T1]
-- [x] T3 Run focused tests, coverage gate, and RuntimeWarning gate
+- [x] T3 Verify README diff and summarize
   depends_on: [T2]
-- [x] T4 Commit the auto-flip change
-  depends_on: [T3]
 
 ## Review
 - Outcome:
-  - Replaced the single hardcoded `USDEUR -> EURUSD` mapping with automatic FX pair resolution.
-  - Known IB-supported FX pairs fetch directly.
-  - Reverse local pairs fetch the supported source pair and store inverted OHLC rows.
-  - Malformed or unknown FX pairs raise `ValueError` before requesting IB data.
+  - README now documents historical fetch, backfill, daily update, scheduled runner, DuckDB rebuild, IB connectivity check, and test commands.
+  - Commands cover equities, futures, CBOE volatility, `cmdty`, and `fx` where the repo currently supports them.
+  - README notes that `cmdty` and `fx` are canonical in bronze Parquet but do not yet have DuckDB rebuild targets.
+  - README notes that the scheduled runner currently covers equities, futures, and CBOE volatility, so `cmdty` and `fx` daily updates need explicit commands.
 - Verification:
-  - `uv run --python 3.13 --with ib-async --with pyarrow --with duckdb --with rich --with pytest --with pytest-cov --with responses --with requests --with pandas --with polars --with boto3 --with httpx python -m pytest tests/test_daily_update.py::TestMakeContract tests/test_fetch_ib_historical.py::TestMakeContract -q`
-  - `uv run --python 3.13 --with ib-async --with pyarrow --with duckdb --with rich --with pytest --with pytest-cov --with responses --with requests --with pandas --with polars --with boto3 --with httpx python -m pytest tests/test_daily_update.py tests/test_fetch_ib_historical.py -q`
-  - `uv run --python 3.13 --with ib-async --with pyarrow --with duckdb --with rich --with pytest --with pytest-cov --with responses --with requests --with pandas --with polars --with boto3 --with httpx python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing`
-  - `uv run --python 3.13 --with ib-async --with pyarrow --with duckdb --with rich --with pytest --with pytest-cov --with responses --with requests --with pandas --with polars --with boto3 --with httpx python -m pytest tests -q -W error::RuntimeWarning`
+  - `git diff --check`
+  - README diff reviewed.
