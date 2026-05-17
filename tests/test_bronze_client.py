@@ -240,6 +240,60 @@ class TestBronzeClientFutures:
             BronzeClient(bronze_dir=tmp_bronze, asset_class="nope")
 
     @pytest.mark.integration
+    def test_cmdty_uses_daily_symbol_schema(self, tmp_bronze):
+        cmdty_bronze = BronzeClient(bronze_dir=tmp_bronze, asset_class="cmdty")
+        try:
+            sid = cmdty_bronze.get_symbol_id("XAUUSD")
+            assert cmdty_bronze.replace_ticker_rows(
+                "XAUUSD",
+                [
+                    {
+                        "trade_date": "2026-05-15",
+                        "symbol_id": sid,
+                        "open": 3775.0,
+                        "high": 3790.0,
+                        "low": 3760.0,
+                        "close": 3782.0,
+                        "adj_close": 3782.0,
+                        "volume": 0,
+                    }
+                ],
+            ) == 1
+
+            rows = cmdty_bronze.read_symbol_rows("XAUUSD")
+            assert rows[0]["symbol_id"] == sid
+            assert rows[0]["volume"] == 0
+        finally:
+            cmdty_bronze.close()
+
+    @pytest.mark.integration
+    def test_fx_uses_daily_symbol_schema(self, tmp_bronze):
+        fx_bronze = BronzeClient(bronze_dir=tmp_bronze, asset_class="fx")
+        try:
+            sid = fx_bronze.get_symbol_id("USDEUR")
+            assert fx_bronze.replace_ticker_rows(
+                "USDEUR",
+                [
+                    {
+                        "trade_date": "2026-05-15",
+                        "symbol_id": sid,
+                        "open": 0.861,
+                        "high": 0.865,
+                        "low": 0.859,
+                        "close": 0.862,
+                        "adj_close": 0.862,
+                        "volume": 0,
+                    }
+                ],
+            ) == 1
+
+            rows = fx_bronze.read_symbol_rows("USDEUR")
+            assert rows[0]["symbol_id"] == sid
+            assert rows[0]["volume"] == 0
+        finally:
+            fx_bronze.close()
+
+    @pytest.mark.integration
     def test_futures_replace_and_read(self, futures_bronze):
         cid = futures_bronze.get_symbol_id("ESM5")
         row = _futures_row("2025-03-10", cid, 5200.0)

@@ -1,0 +1,6 @@
+{
+  "name": "fx-pairs",
+  "description": "FX pairs fetched from IB as Forex MIDPOINT daily bars.",
+  "asset_class": "fx",
+  "tickers": ["USDEUR"]
+}

@@ -14,17 +14,19 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from ib_async import Future, Index, Stock
+from ib_async import Contract, Forex, Future, Index, Stock
 
 from clients.bronze_client import BronzeClient
 from scripts.fetch_ib_historical import (
     IB_EARLIEST_DATE,
     _cursor_path,
     _make_contract,
+    _resolve_fx_pair,
     _run_backfill,
     _run_normal,
     backfill_ticker,
     bars_to_futures_rows,
+    bars_to_midpoint_rows,
     bars_to_rows,
     clear_cursor,
     compute_date_windows,
@@ -125,6 +127,25 @@ class TestBarsToFuturesRows:
 
     def test_empty_bars(self):
         assert bars_to_futures_rows([], contract_id=1, root_symbol="ES", expiry_date="2025-06-01") == []
+
+
+class TestBarsToMidpointRows:
+    def test_midpoint_rows_force_zero_volume(self):
+        bar = _make_bar(volume=-1)
+        rows = bars_to_midpoint_rows([bar], symbol_id=42)
+        assert rows[0]["volume"] == 0
+        assert rows[0]["symbol_id"] == 42
+        assert rows[0]["adj_close"] == rows[0]["close"]
+
+    def test_midpoint_rows_can_invert_fx_pair(self):
+        bar = _make_bar(open=1.25, high=1.30, low=1.20, close=1.28, volume=-1)
+        rows = bars_to_midpoint_rows([bar], symbol_id=42, invert=True)
+        assert rows[0]["open"] == pytest.approx(0.8)
+        assert rows[0]["high"] == pytest.approx(1 / 1.20)
+        assert rows[0]["low"] == pytest.approx(1 / 1.30)
+        assert rows[0]["close"] == pytest.approx(1 / 1.28)
+        assert rows[0]["adj_close"] == rows[0]["close"]
+        assert rows[0]["volume"] == 0
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -328,6 +349,45 @@ class TestMakeContract:
         contract = _make_contract("AAPL")
         assert isinstance(contract, Stock)
 
+    def test_cmdty_xauusd_returns_cmdty_contract(self):
+        contract = _make_contract("XAUUSD", "cmdty")
+        assert isinstance(contract, Contract)
+        assert contract.secType == "CMDTY"
+        assert contract.symbol == "XAUUSD"
+        assert contract.exchange == "SMART"
+        assert contract.currency == "USD"
+
+    def test_fx_usdeur_returns_forex_contract(self):
+        contract = _make_contract("USDEUR", "fx")
+        assert isinstance(contract, Forex)
+        assert contract.symbol == "EUR"
+        assert contract.currency == "USD"
+
+    def test_fx_supported_pair_stays_direct(self):
+        contract = _make_contract("EURUSD", "fx")
+        assert isinstance(contract, Forex)
+        assert contract.symbol == "EUR"
+        assert contract.currency == "USD"
+
+    def test_fx_reverse_supported_pair_flips_source(self):
+        contract = _make_contract("USDGBP", "fx")
+        assert isinstance(contract, Forex)
+        assert contract.symbol == "GBP"
+        assert contract.currency == "USD"
+
+    def test_fx_unknown_pair_raises_clear_error(self):
+        with pytest.raises(ValueError, match="unsupported FX pair"):
+            _make_contract("AAAUSD", "fx")
+
+    def test_fx_malformed_pair_raises_clear_error(self):
+        with pytest.raises(ValueError, match="six-letter"):
+            _make_contract("EUR", "fx")
+
+    def test_resolve_fx_pair_reports_inversion(self):
+        assert _resolve_fx_pair("EURUSD") == ("EURUSD", False)
+        assert _resolve_fx_pair("USDEUR") == ("EURUSD", True)
+        assert _resolve_fx_pair("USDGBP") == ("GBPUSD", True)
+
     def test_make_contract_futures(self):
         # ES maps to CME via ROOT_EXCHANGE_MAP
         contract = _make_contract("ES_202506", "futures")
@@ -406,6 +466,40 @@ class TestFetchTickerBars:
 
         assert ticker == "AAPL"
         assert len(bars) == 1
+
+    def test_cmdty_fetch_uses_midpoint_bars(self):
+        mock_ib = MagicMock()
+        mock_ib.ib.qualifyContractsAsync = AsyncMock(
+            return_value=[Contract(secType="CMDTY", symbol="XAUUSD", exchange="SMART", currency="USD")]
+        )
+        mock_ib.get_head_timestamp_async = AsyncMock(return_value="20200102-00:00:00")
+        mock_ib.get_historical_data_async = AsyncMock(return_value=[_make_bar(volume=0)])
+
+        sem = asyncio.Semaphore(6)
+
+        with patch("scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+            mock_cdw.return_value = [("1 Y", "20250101-00:00:00")]
+            ticker, bars = asyncio.run(fetch_ticker_bars("XAUUSD", mock_ib, sem, asset_class="cmdty"))
+
+        assert ticker == "XAUUSD"
+        assert len(bars) == 1
+        assert mock_ib.get_historical_data_async.await_args.kwargs["what_to_show"] == "MIDPOINT"
+
+    def test_fx_fetch_uses_midpoint_bars(self):
+        mock_ib = MagicMock()
+        mock_ib.ib.qualifyContractsAsync = AsyncMock(return_value=[Forex("USDEUR")])
+        mock_ib.get_head_timestamp_async = AsyncMock(return_value="20200102-00:00:00")
+        mock_ib.get_historical_data_async = AsyncMock(return_value=[_make_bar(volume=0)])
+
+        sem = asyncio.Semaphore(6)
+
+        with patch("scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+            mock_cdw.return_value = [("1 Y", "20250101-00:00:00")]
+            ticker, bars = asyncio.run(fetch_ticker_bars("USDEUR", mock_ib, sem, asset_class="fx"))
+
+        assert ticker == "USDEUR"
+        assert len(bars) == 1
+        assert mock_ib.get_historical_data_async.await_args.kwargs["what_to_show"] == "MIDPOINT"
 
     def test_empty_head_timestamp_falls_back_to_ib_earliest(self):
         """IB returns '[]' for head timestamp — fall back to IB_EARLIEST_DATE and still fetch."""
@@ -640,6 +734,17 @@ class TestFetchTicker:
             inserted = fetch_ticker("ES_202506", bars, futures_bronze, asset_class="futures")
         assert inserted > 0
 
+    @pytest.mark.integration
+    def test_fetch_ticker_cmdty_uses_midpoint_rows(self, tmp_bronze):
+        bars = [_make_bar(date="2025-01-02", volume=-1)]
+
+        with BronzeClient(bronze_dir=tmp_bronze, asset_class="cmdty") as cmdty_bronze:
+            inserted = fetch_ticker("XAUUSD", bars, cmdty_bronze, asset_class="cmdty")
+            rows = cmdty_bronze.read_symbol_rows("XAUUSD")
+
+        assert inserted == 1
+        assert rows[0]["volume"] == 0
+
 
 # ══════════════════════════════════════════════════════════════════════
 # export_bronze_parquet
@@ -757,6 +862,17 @@ class TestBackfillTicker:
             bars = [_make_bar(date="2024-12-15", open=4400.0, high=4450.0, low=4380.0, close=4420.0, volume=300000)]
             inserted = backfill_ticker("ES_202506", bars, futures_bronze, asset_class="futures")
         assert inserted == 1
+
+    @pytest.mark.integration
+    def test_backfill_ticker_fx_uses_midpoint_rows(self, tmp_bronze):
+        with BronzeClient(bronze_dir=tmp_bronze, asset_class="fx") as fx_bronze:
+            bars = [_make_bar(date="2025-01-02", open=1.25, high=1.30, low=1.20, close=1.28, volume=-1)]
+            inserted = backfill_ticker("USDEUR", bars, fx_bronze, asset_class="fx")
+            rows = fx_bronze.read_symbol_rows("USDEUR")
+
+        assert inserted == 1
+        assert rows[0]["close"] == pytest.approx(1 / 1.28)
+        assert rows[0]["volume"] == 0
 
 
 # ══════════════════════════════════════════════════════════════════════

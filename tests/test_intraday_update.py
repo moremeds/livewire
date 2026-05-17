@@ -132,6 +132,13 @@ class TestClassifySessionStateAdditional:
         state = classify_session_state(latest_stored, now, "5m")
         assert state == SessionState.COMPLETE
 
+    def test_pre_market_walks_back_over_weekend(self):
+        # Monday Apr 13 2026 09:00 ET — pre-market should evaluate Friday's close
+        now = self._now("2026-04-13 09:00")
+        latest_stored = expected_last_bar_utc(date(2026, 4, 10), "5m")
+        state = classify_session_state(latest_stored, now, "5m")
+        assert state == SessionState.COMPLETE
+
 
 class TestMain:
     def test_dry_run_classifies_states_without_fetching(self, tmp_path, monkeypatch):

@@ -8,7 +8,7 @@ A **local-first financial data warehouse** for universe-scale market data.
 
 ## Overview
 
-Market Data Warehouse is designed for storing and analyzing historical **OHLCV data across equities, futures, and volatility indices**, with a clear path from **daily bars → intraday data → production analytics**.
+Market Data Warehouse is designed for storing and analyzing historical **OHLCV data across equities, futures, volatility indices, spot commodities, and FX pairs**, with a clear path from **daily bars → intraday data → production analytics**.
 
 ### Core Stack
 
@@ -23,6 +23,8 @@ Market Data Warehouse is designed for storing and analyzing historical **OHLCV d
   * **Equities (IB)**
   * **Futures (IB)**
   * **Volatility indices (CBOE API)**
+  * **Spot commodities (IB CMDTY MIDPOINT)**
+  * **FX pairs (IB Forex MIDPOINT, with reverse-pair inversion when needed)**
 * Per-ticker **bronze Parquet snapshots**
 * **Atomic writes + validation**
 * **Fallback recovery pipeline** for missing data
@@ -72,7 +74,9 @@ Raw → Bronze → Silver → Gold
 │   ├── bronze/
 │   │   ├── asset_class=equity/symbol=AAPL/1d.parquet
 │   │   ├── asset_class=volatility/symbol=VIX/1d.parquet
-│   │   └── asset_class=futures/symbol=ES_202506/1d.parquet
+│   │   ├── asset_class=futures/symbol=ES_202506/1d.parquet
+│   │   ├── asset_class=cmdty/symbol=XAUUSD/1d.parquet
+│   │   └── asset_class=fx/symbol=USDEUR/1d.parquet
 │   ├── silver/
 │   └── gold/
 ├── duckdb/
@@ -256,13 +260,34 @@ python scripts/install_ibc_secure_service.py
   * CLI flags (`--host`, `--port`)
   * Env vars (`MDW_IB_HOST`, `MDW_IB_PORT`)
 
+Activate the project environment before running Python commands:
+
+```bash
+source ~/market-warehouse/.venv/bin/activate
+```
+
+Check the IB API endpoint without fetching account/order startup data:
+
+```bash
+python - <<'PY'
+from ib_async import IB
+from ib_async.ib import StartupFetch
+
+ib = IB()
+try:
+    ib.connect("127.0.0.1", 4001, clientId=38, timeout=8, readonly=True, fetchFields=StartupFetch(0))
+    print(f"connected={ib.isConnected()} serverVersion={ib.client.serverVersion()}")
+finally:
+    if ib.isConnected():
+        ib.disconnect()
+PY
+```
+
 ---
 
 ### Fetch Historical Data
 
 ```bash
-source ~/market-warehouse/.venv/bin/activate
-
 # Default (Mag 7)
 python scripts/fetch_ib_historical.py
 
@@ -272,19 +297,63 @@ python scripts/fetch_ib_historical.py --tickers AAPL NVDA
 # Preset universe
 python scripts/fetch_ib_historical.py --preset presets/sp500.json
 
-# Futures
+# Futures by preset
 python scripts/fetch_ib_historical.py --preset presets/futures-index.json --asset-class futures
+python scripts/fetch_ib_historical.py --preset presets/futures-energy.json --asset-class futures
+python scripts/fetch_ib_historical.py --preset presets/futures-metals.json --asset-class futures
+python scripts/fetch_ib_historical.py --preset presets/futures-treasuries.json --asset-class futures
+
+# Spot commodities via IB CMDTY MIDPOINT
+python scripts/fetch_ib_historical.py --preset presets/cmdty-metals.json --asset-class cmdty
+
+# FX via IB Forex MIDPOINT
+python scripts/fetch_ib_historical.py --preset presets/fx-pairs.json --asset-class fx
 
 # Volatility (CBOE direct)
 python scripts/fetch_cboe_volatility.py
+
+# Volatility historical backfill through IB Index contracts, when needed
+python scripts/fetch_ib_historical.py --preset presets/volatility.json --asset-class volatility
 ```
+
+Run all documented historical seed groups manually:
+
+```bash
+python scripts/fetch_ib_historical.py --preset presets/sp500.json
+python scripts/fetch_ib_historical.py --preset presets/futures-index.json --asset-class futures
+python scripts/fetch_ib_historical.py --preset presets/futures-energy.json --asset-class futures
+python scripts/fetch_ib_historical.py --preset presets/futures-metals.json --asset-class futures
+python scripts/fetch_ib_historical.py --preset presets/futures-treasuries.json --asset-class futures
+python scripts/fetch_ib_historical.py --preset presets/cmdty-metals.json --asset-class cmdty
+python scripts/fetch_ib_historical.py --preset presets/fx-pairs.json --asset-class fx
+python scripts/fetch_cboe_volatility.py
+```
+
+Notes:
+
+* `cmdty` and `fx` use IB `MIDPOINT` daily bars and store volume as `0`.
+* FX pairs are six-letter local symbols. If IB supports only the reverse cross, the fetcher requests the supported pair and stores inverted OHLC rows. Example: `USDEUR` fetches `EURUSD`, then stores inverted `USDEUR`.
+* CBOE direct sync is the authoritative daily source for volatility indices.
 
 ---
 
 ### Backfill Missing Data
 
 ```bash
+# Equity backfill
 python scripts/fetch_ib_historical.py --preset presets/sp500.json --backfill
+
+# Futures backfill
+python scripts/fetch_ib_historical.py --preset presets/futures-index.json --asset-class futures --backfill
+
+# Spot commodity backfill
+python scripts/fetch_ib_historical.py --preset presets/cmdty-metals.json --asset-class cmdty --backfill
+
+# FX backfill
+python scripts/fetch_ib_historical.py --preset presets/fx-pairs.json --asset-class fx --backfill
+
+# Volatility IB historical backfill, if CBOE direct history is not enough
+python scripts/fetch_ib_historical.py --preset presets/volatility.json --asset-class volatility --backfill
 ```
 
 * Fills only missing history
@@ -296,7 +365,30 @@ python scripts/fetch_ib_historical.py --preset presets/sp500.json --backfill
 ### Daily Updates
 
 ```bash
+# Equity daily update
 python scripts/daily_update.py
+
+# Futures daily update
+python scripts/daily_update.py --asset-class futures
+
+# Spot commodity daily update
+python scripts/daily_update.py --asset-class cmdty --preset presets/cmdty-metals.json
+
+# FX daily update
+python scripts/daily_update.py --asset-class fx --preset presets/fx-pairs.json
+
+# Volatility daily update, authoritative CBOE direct source
+python scripts/fetch_cboe_volatility.py
+```
+
+Run the full manual daily cycle:
+
+```bash
+python scripts/daily_update.py --asset-class equity
+python scripts/daily_update.py --asset-class futures
+python scripts/daily_update.py --asset-class cmdty --preset presets/cmdty-metals.json
+python scripts/daily_update.py --asset-class fx --preset presets/fx-pairs.json
+python scripts/fetch_cboe_volatility.py
 ```
 
 Common flags:
@@ -306,7 +398,9 @@ Common flags:
 --force
 --target-date YYYY-MM-DD
 --preset presets/sp500.json
---asset-class {equity|volatility|futures}
+--asset-class {equity|volatility|futures|cmdty|fx}
+--host 127.0.0.1
+--port 4001
 ```
 
 #### Key Behavior
@@ -317,13 +411,38 @@ Common flags:
 * Atomic snapshot updates
 * Fallback recovery if IB fails
 
+The scheduled runner executes equities, futures, and CBOE volatility:
+
+```bash
+python scripts/run_daily_update_job.py
+```
+
+Run `cmdty` and `fx` daily updates explicitly until they are added to the scheduled runner:
+
+```bash
+python scripts/daily_update.py --asset-class cmdty --preset presets/cmdty-metals.json
+python scripts/daily_update.py --asset-class fx --preset presets/fx-pairs.json
+```
+
 ---
 
 ### Rebuild DuckDB
 
 ```bash
+# Rebuild equities, including daily/intraday tables when present
 python scripts/rebuild_duckdb_from_parquet.py
+
+# Rebuild only daily equity rows
+python scripts/rebuild_duckdb_from_parquet.py --asset-class equity --timeframe 1d
+
+# Rebuild futures daily rows
+python scripts/rebuild_duckdb_from_parquet.py --asset-class futures
+
+# Rebuild volatility daily rows
+python scripts/rebuild_duckdb_from_parquet.py --asset-class volatility
 ```
+
+DuckDB rebuild currently supports `equity`, `futures`, and `volatility`. `cmdty` and `fx` are canonical in bronze Parquet and do not yet have DuckDB rebuild targets.
 
 ---
 
@@ -373,10 +492,24 @@ python -m pytest tests/ -v
 ### Coverage
 
 ```bash
-python -m pytest tests/ -v --cov=clients --cov=scripts
+python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing
 ```
 
 * ✅ **100% coverage enforced**
+
+### RuntimeWarning Gate
+
+Run this after changes that touch async script runners or tests that mock `ib.ib.run(...)`:
+
+```bash
+python -m pytest tests -q -W error::RuntimeWarning
+```
+
+### Focused Asset-Class Tests
+
+```bash
+python -m pytest tests/test_bronze_client.py tests/test_daily_update.py tests/test_fetch_ib_historical.py -q
+```
 
 ---
 

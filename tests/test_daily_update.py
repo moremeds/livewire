@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ib_async import Future, Index, Stock
+from ib_async import Contract, Forex, Future, Index, Stock
 
 from clients.bronze_client import BronzeClient
 from scripts.daily_update import (
@@ -21,7 +21,9 @@ from scripts.daily_update import (
     _easter,
     _fallback_client,
     _make_contract,
+    _resolve_fx_pair,
     bars_to_futures_rows,
+    bars_to_midpoint_rows,
     bars_to_rows,
     classify_gaps,
     compute_ib_duration,
@@ -332,6 +334,18 @@ class TestValidateBars:
         assert len(valid) == 0
         assert "volume" in issues[0]
 
+    def test_negative_midpoint_volume_is_valid_for_fx(self):
+        bar = _make_bar(volume=-1)
+        valid, issues = validate_bars([bar], "USDEUR", asset_class="fx")
+        assert valid == [bar]
+        assert issues == []
+
+    def test_negative_midpoint_volume_is_valid_for_cmdty(self):
+        bar = _make_bar(volume=-1)
+        valid, issues = validate_bars([bar], "XAUUSD", asset_class="cmdty")
+        assert valid == [bar]
+        assert issues == []
+
     def test_zero_open(self):
         bar = _make_bar(open=0.0, low=0.0)
         valid, issues = validate_bars([bar], "AAPL")
@@ -442,6 +456,25 @@ class TestBarsToFuturesRows:
         assert row["open_interest"] == 0
 
 
+class TestBarsToMidpointRows:
+    def test_midpoint_rows_force_zero_volume(self):
+        bar = _make_bar(volume=-1)
+        rows = bars_to_midpoint_rows([bar], symbol_id=42)
+        assert rows[0]["volume"] == 0
+        assert rows[0]["symbol_id"] == 42
+        assert rows[0]["adj_close"] == rows[0]["close"]
+
+    def test_midpoint_rows_can_invert_fx_pair(self):
+        bar = _make_bar(open=1.25, high=1.30, low=1.20, close=1.28, volume=-1)
+        rows = bars_to_midpoint_rows([bar], symbol_id=42, invert=True)
+        assert rows[0]["open"] == pytest.approx(0.8)
+        assert rows[0]["high"] == pytest.approx(1 / 1.20)
+        assert rows[0]["low"] == pytest.approx(1 / 1.30)
+        assert rows[0]["close"] == pytest.approx(1 / 1.28)
+        assert rows[0]["adj_close"] == rows[0]["close"]
+        assert rows[0]["volume"] == 0
+
+
 class TestGetMissingTradingDates:
     def test_returns_missing_target_date(self):
         latest = date(2025, 1, 2)
@@ -506,6 +539,45 @@ class TestMakeContract:
         contract = _make_contract("AAPL")
         assert isinstance(contract, Stock)
 
+    def test_cmdty_xauusd_returns_cmdty_contract(self):
+        contract = _make_contract("XAUUSD", "cmdty")
+        assert isinstance(contract, Contract)
+        assert contract.secType == "CMDTY"
+        assert contract.symbol == "XAUUSD"
+        assert contract.exchange == "SMART"
+        assert contract.currency == "USD"
+
+    def test_fx_usdeur_returns_forex_contract(self):
+        contract = _make_contract("USDEUR", "fx")
+        assert isinstance(contract, Forex)
+        assert contract.symbol == "EUR"
+        assert contract.currency == "USD"
+
+    def test_fx_supported_pair_stays_direct(self):
+        contract = _make_contract("EURUSD", "fx")
+        assert isinstance(contract, Forex)
+        assert contract.symbol == "EUR"
+        assert contract.currency == "USD"
+
+    def test_fx_reverse_supported_pair_flips_source(self):
+        contract = _make_contract("USDGBP", "fx")
+        assert isinstance(contract, Forex)
+        assert contract.symbol == "GBP"
+        assert contract.currency == "USD"
+
+    def test_fx_unknown_pair_raises_clear_error(self):
+        with pytest.raises(ValueError, match="unsupported FX pair"):
+            _make_contract("AAAUSD", "fx")
+
+    def test_fx_malformed_pair_raises_clear_error(self):
+        with pytest.raises(ValueError, match="six-letter"):
+            _make_contract("EUR", "fx")
+
+    def test_resolve_fx_pair_reports_inversion(self):
+        assert _resolve_fx_pair("EURUSD") == ("EURUSD", False)
+        assert _resolve_fx_pair("USDEUR") == ("EURUSD", True)
+        assert _resolve_fx_pair("USDGBP") == ("GBPUSD", True)
+
     def test_futures_returns_future(self):
         contract = _make_contract("ES_202506", "futures")
         assert isinstance(contract, Future)
@@ -567,6 +639,34 @@ class TestFetchTickerUpdate:
         )
         assert ticker == "AAPL"
         assert len(bars) == 1
+
+    def test_cmdty_fetch_uses_midpoint_bars(self):
+        mock_ib = MagicMock()
+        mock_ib.ib.qualifyContractsAsync = AsyncMock(return_value=[])
+        mock_ib.get_historical_data_async = AsyncMock(return_value=[_make_bar(volume=0)])
+
+        sem = asyncio.Semaphore(6)
+        ticker, bars = asyncio.run(
+            fetch_ticker_update("XAUUSD", "5 D", mock_ib, sem, asset_class="cmdty")
+        )
+
+        assert ticker == "XAUUSD"
+        assert len(bars) == 1
+        assert mock_ib.get_historical_data_async.await_args.kwargs["what_to_show"] == "MIDPOINT"
+
+    def test_fx_fetch_uses_midpoint_bars(self):
+        mock_ib = MagicMock()
+        mock_ib.ib.qualifyContractsAsync = AsyncMock(return_value=[])
+        mock_ib.get_historical_data_async = AsyncMock(return_value=[_make_bar(volume=0)])
+
+        sem = asyncio.Semaphore(6)
+        ticker, bars = asyncio.run(
+            fetch_ticker_update("USDEUR", "5 D", mock_ib, sem, asset_class="fx")
+        )
+
+        assert ticker == "USDEUR"
+        assert len(bars) == 1
+        assert mock_ib.get_historical_data_async.await_args.kwargs["what_to_show"] == "MIDPOINT"
 
     def test_returns_empty_on_none(self):
         mock_ib = MagicMock()
@@ -860,6 +960,58 @@ class TestMain:
             rows = bronze.read_symbol_rows("AAPL")
         assert len(rows) == 2
         assert [row["trade_date"] for row in rows] == ["2025-01-02", "2025-01-03"]
+
+    @pytest.mark.integration
+    def test_end_to_end_fx_inverts_usdeur(self, tmp_path, monkeypatch):
+        """FX daily update fetches EURUSD and stores inverted USDEUR rows."""
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--asset-class", "fx"])
+        bronze_dir = tmp_path / "bronze"
+        with BronzeClient(bronze_dir=bronze_dir, asset_class="fx") as bronze:
+            sid = bronze.get_symbol_id("USDEUR")
+            bronze.replace_ticker_rows(
+                "USDEUR",
+                [
+                    {
+                        "trade_date": "2025-01-02",
+                        "symbol_id": sid,
+                        "open": 0.8,
+                        "high": 0.82,
+                        "low": 0.79,
+                        "close": 0.81,
+                        "adj_close": 0.81,
+                        "volume": 0,
+                    }
+                ],
+            )
+
+        today = date(2025, 1, 3)
+        mock_ib = _mock_ib_instance(
+            {"USDEUR": [_make_bar(date="2025-01-03", open=1.25, high=1.30, low=1.20, close=1.28, volume=-1)]}
+        )
+        mock_fallback = _mock_fallback_instance()
+
+        with (
+            patch("scripts.daily_update.is_trading_day", return_value=True),
+            patch("scripts.daily_update.date") as mock_date,
+            patch("scripts.daily_update.IBClient", return_value=mock_ib),
+            patch("scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "scripts.daily_update.BronzeClient",
+                lambda **kw: BronzeClient(bronze_dir=bronze_dir, asset_class=kw.get("asset_class", "fx")),
+            ),
+            patch("scripts.daily_update.BRONZE_DIR", bronze_dir),
+        ):
+            mock_date.today.return_value = today
+            mock_date.fromisoformat = date.fromisoformat
+            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+            main()
+
+        with BronzeClient(bronze_dir=bronze_dir, asset_class="fx") as bronze:
+            rows = bronze.read_symbol_rows("USDEUR")
+        assert len(rows) == 2
+        assert rows[-1]["trade_date"] == "2025-01-03"
+        assert rows[-1]["close"] == pytest.approx(1 / 1.28)
+        assert rows[-1]["volume"] == 0
 
     @pytest.mark.integration
     def test_no_new_bars_after_latest(self, tmp_path, monkeypatch):
