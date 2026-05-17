@@ -89,19 +89,36 @@ ROOT_EXCHANGE_MAP = {
     "CL": "NYMEX", "NG": "NYMEX",
     "GC": "COMEX", "SI": "COMEX",
 }
-FX_SOURCE_MAP = {
-    "USDEUR": "EURUSD",
+SUPPORTED_IB_FX_PAIRS = {
+    "EURUSD", "GBPUSD", "AUDUSD", "NZDUSD",
+    "USDJPY", "USDCHF", "USDCAD", "USDHKD", "USDSGD", "USDSEK", "USDNOK",
+    "USDDKK", "USDCNH", "USDMXN", "USDZAR",
+    "EURGBP", "EURJPY", "EURCHF", "EURCAD", "EURAUD", "EURNZD",
+    "GBPJPY", "GBPCHF", "GBPCAD", "GBPAUD", "GBPNZD",
+    "AUDJPY", "AUDCHF", "AUDCAD", "AUDNZD",
+    "NZDJPY", "NZDCHF", "NZDCAD",
+    "CADJPY", "CADCHF", "CHFJPY",
 }
 
 
-def _fx_source_ticker(ticker: str) -> str:
-    """Return the IB-supported source pair for a local FX ticker."""
-    return FX_SOURCE_MAP.get(ticker.upper(), ticker)
+def _resolve_fx_pair(ticker: str) -> tuple[str, bool]:
+    """Return ``(ib_pair, invert)`` for a local six-letter FX pair."""
+    pair = ticker.upper()
+    if len(pair) != 6 or not pair.isalpha():
+        raise ValueError(f"FX ticker must be a six-letter currency pair: {ticker!r}")
+    if pair in SUPPORTED_IB_FX_PAIRS:
+        return (pair, False)
+
+    reversed_pair = pair[3:] + pair[:3]
+    if reversed_pair in SUPPORTED_IB_FX_PAIRS:
+        return (reversed_pair, True)
+
+    raise ValueError(f"unsupported FX pair: {ticker!r}")
 
 
 def _is_inverted_fx_pair(ticker: str) -> bool:
     """Return True when local FX rows must invert the source pair."""
-    return ticker.upper() in FX_SOURCE_MAP
+    return _resolve_fx_pair(ticker)[1]
 
 
 def _make_contract(ticker: str, asset_class: str = "equity"):
@@ -113,7 +130,8 @@ def _make_contract(ticker: str, asset_class: str = "equity"):
     if asset_class == "cmdty":
         return Contract(secType="CMDTY", symbol=ticker.upper(), exchange="SMART", currency="USD")
     if asset_class == "fx":
-        return Forex(_fx_source_ticker(ticker))
+        source_pair, _ = _resolve_fx_pair(ticker)
+        return Forex(source_pair)
     if asset_class == "volatility":
         return Index(ticker, "CBOE", "USD")
     return Stock(ticker, "SMART", "USD")

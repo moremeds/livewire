@@ -21,6 +21,7 @@ from scripts.fetch_ib_historical import (
     IB_EARLIEST_DATE,
     _cursor_path,
     _make_contract,
+    _resolve_fx_pair,
     _run_backfill,
     _run_normal,
     backfill_ticker,
@@ -361,6 +362,31 @@ class TestMakeContract:
         assert isinstance(contract, Forex)
         assert contract.symbol == "EUR"
         assert contract.currency == "USD"
+
+    def test_fx_supported_pair_stays_direct(self):
+        contract = _make_contract("EURUSD", "fx")
+        assert isinstance(contract, Forex)
+        assert contract.symbol == "EUR"
+        assert contract.currency == "USD"
+
+    def test_fx_reverse_supported_pair_flips_source(self):
+        contract = _make_contract("USDGBP", "fx")
+        assert isinstance(contract, Forex)
+        assert contract.symbol == "GBP"
+        assert contract.currency == "USD"
+
+    def test_fx_unknown_pair_raises_clear_error(self):
+        with pytest.raises(ValueError, match="unsupported FX pair"):
+            _make_contract("AAAUSD", "fx")
+
+    def test_fx_malformed_pair_raises_clear_error(self):
+        with pytest.raises(ValueError, match="six-letter"):
+            _make_contract("EUR", "fx")
+
+    def test_resolve_fx_pair_reports_inversion(self):
+        assert _resolve_fx_pair("EURUSD") == ("EURUSD", False)
+        assert _resolve_fx_pair("USDEUR") == ("EURUSD", True)
+        assert _resolve_fx_pair("USDGBP") == ("GBPUSD", True)
 
     def test_make_contract_futures(self):
         # ES maps to CME via ROOT_EXCHANGE_MAP
