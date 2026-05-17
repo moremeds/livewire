@@ -3,35 +3,37 @@
 Use this file for the current task only. Replace it at the start of each non-trivial task.
 
 ## Objective
-- Update the relevant local Python instance to 3.13 without breaking the repo workflow.
+- Align spot gold with IB's `CMDTY` contract type and add `USDEUR` as a true FX pair.
 
 ## Success Criteria
-- Homebrew `python@3.13` is installed on this Mac.
-- The resulting `python3.13` executable is verified.
-- If safe, the repo venv is upgraded or a clear blocker/tradeoff is identified.
+- `XAUUSD` is fetched/stored with `asset_class=cmdty`, not `fx`.
+- `USDEUR` is fetched/stored with `asset_class=fx`.
+- Both use IB MIDPOINT daily bars and normalize midpoint volume to `0`.
+- Focused tests and the repo coverage gate pass.
 
 ## Dependency Graph
 - T1 -> T2
 - T2 -> T3
+- T3 -> T4
 
 ## Tasks
-- [x] T1 Inspect current Python installations and the repo venv wiring
+- [x] T1 Update tests to expect `cmdty` for `XAUUSD` and `fx` for `USDEUR`
   depends_on: []
-- [x] T2 Install Homebrew Python 3.13 and verify the binary
+- [x] T2 Update fetch/update scripts and bronze schema profiles
   depends_on: [T1]
-- [x] T3 Decide and apply the safest repo-local upgrade path for the venv, or stop with a precise reason
+- [x] T3 Update presets and local data paths
   depends_on: [T2]
+- [x] T4 Run verification and summarize results
+  depends_on: [T3]
 
 ## Review
 - Outcome:
-  - Installed Homebrew `python@3.13`, which provides `/opt/homebrew/bin/python3.13`.
-  - Rebuilt the repo venv on Python `3.13.12` and swapped it into place at `~/market-warehouse/.venv`.
-  - Preserved the previous venv as `~/market-warehouse/.venv-3.12-backup`.
+  - Added `cmdty` as a daily bronze asset class for IB `CMDTY` contracts.
+  - Added `fx` as a daily bronze asset class for IB `Forex` contracts.
+  - `XAUUSD` is fetched from IB `CMDTY` MIDPOINT and stored under `asset_class=cmdty`.
+  - `USDEUR` is stored under `asset_class=fx`; IB does not support direct `USDEUR`, so the fetch uses `EURUSD` and stores inverted OHLC rows.
+  - MIDPOINT volume is normalized to `0`.
 - Verification:
-  - `/opt/homebrew/bin/python3.13 -V`
-  - `~/market-warehouse/.venv/bin/python -V`
-  - `~/market-warehouse/.venv/bin/python -m pip show rich ib-async duckdb`
-  - `~/market-warehouse/.venv/bin/python -c 'import rich, ib_async, polars, pyarrow, duckdb, requests, pandas; print("imports-ok")'`
-- Residual risk:
-  - Your shell-wide `python` and `python3` defaults still point at older interpreters unless you update your PATH; only the repo venv is now on 3.13.
-  - The old frozen dependency list referenced an obsolete editable `doob` Python package path; that line was intentionally dropped because the current `doob` checkout is not a Python package.
+  - `uv run --python 3.13 --with ib-async --with pyarrow --with duckdb --with rich --with pytest --with pytest-cov --with responses --with requests --with pandas --with polars --with boto3 --with httpx python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing`
+  - `uv run --python 3.13 --with ib-async --with pyarrow --with duckdb --with rich --with pytest --with pytest-cov --with responses --with requests --with pandas --with polars --with boto3 --with httpx python -m pytest tests -q -W error::RuntimeWarning`
+  - Live script e2e commands reached IB for `cmdty/XAUUSD` and `fx/USDEUR`, but IB HMDS timed out and returned zero bars, so live publication was not proven in this run.

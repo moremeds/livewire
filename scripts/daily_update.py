@@ -38,7 +38,7 @@ import sys
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
-from ib_async import Future, Index, Stock
+from ib_async import Contract, Forex, Future, Index, Stock
 from rich.console import Console
 from rich.logging import RichHandler
 
@@ -89,6 +89,19 @@ ROOT_EXCHANGE_MAP = {
     "CL": "NYMEX", "NG": "NYMEX",
     "GC": "COMEX", "SI": "COMEX",
 }
+FX_SOURCE_MAP = {
+    "USDEUR": "EURUSD",
+}
+
+
+def _fx_source_ticker(ticker: str) -> str:
+    """Return the IB-supported source pair for a local FX ticker."""
+    return FX_SOURCE_MAP.get(ticker.upper(), ticker)
+
+
+def _is_inverted_fx_pair(ticker: str) -> bool:
+    """Return True when local FX rows must invert the source pair."""
+    return ticker.upper() in FX_SOURCE_MAP
 
 
 def _make_contract(ticker: str, asset_class: str = "equity"):
@@ -97,6 +110,10 @@ def _make_contract(ticker: str, asset_class: str = "equity"):
         root, expiry = ticker.rsplit("_", 1)
         exch = ROOT_EXCHANGE_MAP.get(root, "CME")
         return Future(root, expiry, exch, "USD")
+    if asset_class == "cmdty":
+        return Contract(secType="CMDTY", symbol=ticker.upper(), exchange="SMART", currency="USD")
+    if asset_class == "fx":
+        return Forex(_fx_source_ticker(ticker))
     if asset_class == "volatility":
         return Index(ticker, "CBOE", "USD")
     return Stock(ticker, "SMART", "USD")
@@ -326,7 +343,7 @@ def validate_bars(
     """Validate bar data quality. Returns (valid_bars, issues).
 
     Checks: non-null OHLCV, high >= low, high >= open/close,
-    low <= open/close, volume >= 0, positive open/close,
+    low <= open/close, volume >= 0 except midpoint assets, positive open/close,
     valid trading day (skipped for futures), no duplicate dates.
     """
     valid: list = []
@@ -358,7 +375,7 @@ def validate_bars(
                 problems.append(f"low ({bar.low}) > open ({bar.open})")
             if bar.low > bar.close:
                 problems.append(f"low ({bar.low}) > close ({bar.close})")
-            if bar.volume < 0:
+            if bar.volume < 0 and asset_class not in {"cmdty", "fx"}:
                 problems.append(f"negative volume ({bar.volume})")
             if bar.open <= 0:
                 problems.append(f"non-positive open ({bar.open})")
@@ -425,6 +442,24 @@ def bars_to_futures_rows(
                 "open_interest": 0,
             }
         )
+    return rows
+
+
+def bars_to_midpoint_rows(bars: list, symbol_id: int, *, invert: bool = False) -> list[dict]:
+    """Convert IB midpoint bars to daily bronze rows."""
+    rows = bars_to_rows(bars, symbol_id)
+    for row in rows:
+        if invert:
+            open_px = row["open"]
+            high_px = row["high"]
+            low_px = row["low"]
+            close_px = row["close"]
+            row["open"] = 1 / open_px
+            row["high"] = 1 / low_px
+            row["low"] = 1 / high_px
+            row["close"] = 1 / close_px
+            row["adj_close"] = row["close"]
+        row["volume"] = 0
     return rows
 
 
@@ -519,7 +554,7 @@ async def fetch_ticker_update(
             contract,
             duration=duration,
             bar_size="1 day",
-            what_to_show="TRADES",
+            what_to_show="MIDPOINT" if asset_class in {"cmdty", "fx"} else "TRADES",
         )
     return (ticker, bars if bars else [])
 
@@ -633,7 +668,7 @@ def main():
     )
     parser.add_argument(
         "--asset-class",
-        choices=["equity", "volatility", "futures"],
+        choices=["equity", "volatility", "futures", "cmdty", "fx"],
         default="equity",
         help="Asset class to update (default: equity).",
     )
@@ -791,6 +826,12 @@ def main():
                         root, expiry = ticker.rsplit("_", 1)
                         expiry_date = f"{expiry[:4]}-{expiry[4:6]}-01"
                         rows = bars_to_futures_rows(valid_bars, symbol_id, root, expiry_date)
+                    elif asset_class in {"cmdty", "fx"}:
+                        rows = bars_to_midpoint_rows(
+                            valid_bars,
+                            symbol_id,
+                            invert=asset_class == "fx" and _is_inverted_fx_pair(ticker),
+                        )
                     else:
                         rows = bars_to_rows(valid_bars, symbol_id)
                     inserted = bronze.merge_ticker_rows(ticker, rows)
