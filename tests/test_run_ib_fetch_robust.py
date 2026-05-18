@@ -328,3 +328,31 @@ def test_main_writes_summary_and_returns_fail_status(tmp_path, monkeypatch, caps
     summary_logs = list(tmp_path.glob("orch_seed_*/*_summary.log"))
     assert len(summary_logs) == 1
     assert "HOOD" in summary_logs[0].read_text()
+
+
+def test_main_returns_fail_status_for_timeout(tmp_path, monkeypatch, capsys):
+    outcomes = [
+        TickerOutcome("HOOD", OutcomeCategory.TIMEOUT, 2, 90.0, 0, 0, ""),
+    ]
+
+    def fake_run_one_ticker(**kwargs):
+        return outcomes.pop(0)
+
+    monkeypatch.setattr(
+        "scripts.run_ib_fetch_robust.run_one_ticker",
+        fake_run_one_ticker,
+    )
+
+    rc = main([
+        "--tickers",
+        "HOOD",
+        "--mode",
+        "seed",
+        "--log-dir",
+        str(tmp_path),
+        "--bronze-dir",
+        str(tmp_path / "bronze"),
+    ])
+
+    assert rc == 1
+    assert "[1/1 timeout] HOOD" in capsys.readouterr().out

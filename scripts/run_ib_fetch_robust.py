@@ -284,7 +284,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(summary, flush=True)
     with summary_log.open("a", encoding="utf-8") as fh:
         fh.write(summary + "\n")
-    return 0 if all(o.code != OutcomeCategory.FAIL for o in outcomes) else 1
+    failed_categories = {OutcomeCategory.FAIL, OutcomeCategory.TIMEOUT}
+    return 0 if all(o.code not in failed_categories for o in outcomes) else 1
 
 
 if __name__ == "__main__":  # pragma: no cover
