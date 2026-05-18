@@ -1,6 +1,6 @@
 # Livewire
 
-Livewire is a local-first market data warehouse for quantitative research. Parquet data lake as system of record, DuckDB for analytics, ClickHouse for production benchmarking. Rebranded 2026-05-17 from "market-data-warehouse"; the repo dir is now `livewire/`, the on-disk data tree remains at `~/market-warehouse/` (descriptive, not project-named).
+Livewire is a local-first market data warehouse for quantitative research. Parquet data lake as system of record, DuckDB for local analytics, optional Postgres for replayable analytical publishing, and ClickHouse for production benchmarking. Rebranded 2026-05-17 from "market-data-warehouse"; the repo dir is now `livewire/`, the on-disk data tree remains at `~/market-warehouse/` (descriptive, not project-named).
 
 ## Project Layout
 
@@ -16,6 +16,8 @@ livewire/                           # Git repo
 │   ├── historical_provider.py       # HistoricalProvider abstraction (IBProvider, contract spec helpers)
 │   ├── uw_client.py                # Unusual Whales REST API client (kept, not used for historical)
 │   └── db_client.py                # DuckDB client for md.* schema
+│   ├── postgres_client.py          # Postgres analytical publish client
+│   └── postgres_schema.py          # Postgres md.* schema definitions
 ├── presets/
 │   ├── volatility.json             # CBOE Volatility Indices (VIX, VVIX, etc.)
 │   ├── futures-index.json          # CME/CBOT Index Futures (ES, NQ, RTY, YM)
@@ -28,7 +30,7 @@ livewire/                           # Git repo
 │   ├── livewire_ingest.py          # Ingest subcommands: daily, historical, robust, CBOE, intraday, universe
 │   ├── livewire_quality.py         # Quality subcommands: health, coverage, report, weekly, watchdog
 │   ├── livewire_ops.py             # Ops subcommands: scheduled job, alerts, IBC install/start
-│   └── livewire_store.py           # Storage subcommands: DuckDB rebuild, R2 sync, parquet migration
+│   └── livewire_store.py           # Storage subcommands: DuckDB/Postgres rebuild, smoke checks, R2 sync, parquet migration
 ├── livewire_scripts/               # Importable implementations behind the script entrypoints
 ├── livewire_node/                  # Nodemailer + Cerebras alert helpers
 ├── launchd/                        # macOS launchd templates
@@ -57,6 +59,8 @@ livewire/                           # Git repo
 │   ├── silver/                     # Cleaned / adjusted
 │   └── gold/                       # Derived analytics / factor tables
 ├── duckdb/market.duckdb            # Analytical DB
+├── logs/telemetry.jsonl            # Reliability telemetry artifact
+├── logs/quality_audit.jsonl        # Central quality-flag artifact
 ├── clickhouse/                     # Optional ClickHouse data
 ├── scripts/                        # Bootstrap SQL, helper scripts
 └── logs/
@@ -67,6 +71,7 @@ livewire/                           # Git repo
 - **Parquet** is the system of record, not DuckDB
 - **Data lake tiers**: bronze (normalized Parquet) -> silver (cleaned) -> gold (derived)
 - **DuckDB** is the local query engine for research and backtesting
+- **Postgres** is an optional analytical publish target rebuilt from bronze parquet and reliability JSONL; ingestion does not write Postgres
 - **ClickHouse** is optional, for production-style benchmarking and concurrency testing
 - **Python env** lives at `~/market-warehouse/.venv/` — activate with `source ~/market-warehouse/.venv/bin/activate`
 
@@ -209,6 +214,11 @@ Reliability foundation environment variables:
 - `MDW_LOG_LEVEL` (default `INFO`): logger root level for reliability tooling.
 - `MDW_UNDELIVERED_DIR` (default `~/market-warehouse/logs/quality_alerts_undelivered/`): where failed per-flag alert HTML bodies are preserved.
 - `MDW_LOG_DIR` (default `~/market-warehouse/logs/`): where `scripts/livewire_quality.py report --email` writes `quality_summary_YYYY-MM-DD.marker`.
+
+Postgres analytical publish environment variables:
+- `MDW_POSTGRES_DSN`: Postgres DSN for `scripts/livewire_store.py rebuild-postgres` and `scripts/livewire_store.py smoke-postgres`.
+- `MDW_POSTGRES_SCHEMA` (default `md`): target analytical schema.
+- `MDW_TEST_POSTGRES_DSN`: disposable database DSN for live-gated Postgres integration tests. Tests skip cleanly when unset.
 
 Current fetch behavior:
 - Normal mode atomically replaces the per-ticker bronze snapshot
@@ -398,6 +408,23 @@ python scripts/livewire_store.py rebuild-duckdb --asset-class futures     # Rebu
 
 This repopulates `~/market-warehouse/duckdb/market.duckdb` from the canonical bronze parquet tree when you want a fresh analytical DB file. The rebuild path recreates the analytical tables from scratch on each run, so rerunning it against an existing DuckDB file is safe. The `--asset-class` flag derives the correct bronze directory and sets the `venue` in `md.symbols` (`SMART` for equity, `CBOE` for volatility). Futures use `replace_futures_from_parquet()` which populates `md.futures_daily` directly (no `md.symbols` entries).
 
+### Rebuilding Postgres
+
+```bash
+source ~/market-warehouse/.venv/bin/activate
+export MDW_POSTGRES_DSN="postgresql://user:password@localhost:5432/livewire"
+export MDW_POSTGRES_SCHEMA="md"
+
+python scripts/livewire_store.py smoke-postgres --ensure-schema
+python scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe 1d
+python scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe all
+python scripts/livewire_store.py rebuild-postgres --asset-class volatility
+python scripts/livewire_store.py rebuild-postgres --asset-class futures
+python scripts/livewire_store.py rebuild-postgres --include-reliability
+```
+
+Postgres is a replayable publish target, not canonical storage. Rollback means dropping or truncating the target schema and rerunning rebuilds from bronze parquet plus `telemetry.jsonl` / `quality_audit.jsonl`. Futures and intraday rebuilds are conditional on corresponding bronze parquet existing.
+
 ### Querying
 
 ```bash
@@ -447,7 +474,7 @@ Catches: AWS keys, API key/secret/password assignments, private key headers, Git
 
 - IB BarData provides native float/int types — no string parsing needed
 - `symbol_id` is now a stable 53-bit hash from `blake2b(symbol)` for new symbols
-- Live ingestion writes bronze parquet directly; DuckDB is rebuilt from bronze when needed
+- Live ingestion writes bronze parquet directly; DuckDB and Postgres are rebuilt from bronze when needed
 - Empty IB head timestamps now fall back to the earliest supported IB historical date instead of skipping the symbol
 - Bronze Parquet uses per-ticker Hive-partitioned layout: `data-lake/bronze/asset_class=equity/symbol=AAPL/1d.parquet` (futures: `asset_class=futures/symbol=ES_202506/1d.parquet`)
 - Bronze publication is atomic at the file level: write temp parquet, validate it, then `os.replace()` into place

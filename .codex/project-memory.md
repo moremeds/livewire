@@ -16,11 +16,14 @@ Use this file for:
 
 - This project is **Livewire** (rebranded 2026-05-17 from "market-data-warehouse"). The git repo directory is `~/projects/livewire/`. The on-disk data tree intentionally stays at `~/market-warehouse/` — that path is descriptive of the role, not the project name, so it was not renamed. Functional identifiers (`MDW_*` env vars, `mdw.*` logger names, `md.*` DuckDB schema) are unchanged.
 - Canonical storage is bronze Parquet, not DuckDB.
+- Postgres is an optional replayable analytical publish target rebuilt from bronze parquet and reliability JSONL; it is not canonical storage and live ingestion scripts do not write to it.
 - Live equity data is stored per ticker at `~/market-warehouse/data-lake/bronze/asset_class=equity/symbol=<ticker>/1d.parquet`.
 - Delisted symbols that should no longer participate in future syncs or backfills are archived outside the canonical sync path under `~/market-warehouse/data-lake/bronze-delisted/asset_class=equity/symbol=<ticker>/1d.parquet`.
 - DuckDB is rebuilt from bronze parquet when a local analytical DB file is needed.
 - `scripts/livewire_ingest.py daily` is parquet-first and does not hold the live DuckDB write path.
 - `scripts/livewire_ingest.py daily` supports `--target-date YYYY-MM-DD` for fixed-date catch-up runs and only publishes bars with `latest < trade_date <= target`.
+- `scripts/livewire_store.py rebuild-postgres` rebuilds Postgres analytical tables under `MDW_POSTGRES_SCHEMA` (default `md`) from bronze parquet and can import telemetry / quality JSONL artifacts.
+- `scripts/livewire_store.py smoke-postgres --ensure-schema` verifies Postgres connectivity, creates the schema when requested, and prints table counts.
 - Scheduled daily syncs now run through `scripts/livewire_ops.py run-daily-job`, which retries failures before sending Nodemailer-based terminal alerts.
 - A separate `scripts/livewire_quality.py watchdog` watchdog is available to alert when the scheduled daily sync never starts or never writes a completion marker.
 - Failure alerts can now generate a human-readable Markdown incident report and include a Cerebras-generated summary plus proposed remediation in the email body when the AI config is available.
@@ -30,7 +33,7 @@ Use this file for:
 - The canonical multi-ticker IB execution model is `scripts/livewire_ingest.py robust`. Use it instead of direct historical command loops for any bulk run >5 tickers.
 - Telemetry events (IB farm states, connection lifecycle) land in `~/market-warehouse/logs/telemetry.jsonl`. Schema is source-tagged JSONL with `{ts, source, event, ...}`.
 - Quality flags (range_shortfall, interior_gaps, fetch_tainted, row_count_anomaly) are emitted to three independent paths: sidecar `<parquet>.meta.json`, central `quality_audit.jsonl`, and Nodemailer email via `--mode flag-alert`.
-- `scripts/livewire_quality.py report --view summary --since 24h --email` is the daily rollup; it runs end-of-day from `run_daily_update_job.py` and writes a `quality_summary_YYYY-MM-DD.marker`.
+- `scripts/livewire_quality.py report --view summary --since 24h --email` is the daily rollup; it runs end-of-day from `scripts/livewire_ops.py run-daily-job` and writes a `quality_summary_YYYY-MM-DD.marker`.
 - Source enum is closed-set `{"ib", "uw", "massive"}` validated at every JSONL emit boundary.
 - Equities fallback scope is the repo's U.S. equity and ETF universe on the NYSE trading calendar.
 - Equities fallback provider order is:

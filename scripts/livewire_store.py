@@ -16,6 +16,8 @@ sys.path.insert(0, str(REPO_ROOT))
 
 COMMANDS = {
     "rebuild-duckdb": "livewire_scripts.rebuild_duckdb_from_parquet",
+    "rebuild-postgres": "livewire_scripts.rebuild_postgres_from_parquet",
+    "smoke-postgres": "livewire_scripts.smoke_postgres_analytical",
     "sync-r2": "livewire_scripts.sync_to_r2",
     "migrate-parquet": "livewire_scripts.migrate_parquet_filename",
 }
