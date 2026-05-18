@@ -5,9 +5,11 @@ import pytest
 
 from clients.quality_detector import (
     QualityFlag,
+    detect_all,
     detect_fetch_tainting,
     detect_interior_gaps,
     detect_range_shortfall,
+    detect_row_count_anomaly,
 )
 from clients.trading_calendar import get_nyse_holidays, previous_trading_day, trading_days_between
 
@@ -185,3 +187,95 @@ def test_fetch_tainting_codes_recorded():
         {"code": 2105, "count": 1},
     ])
     assert set(flag.detail["codes"]) == {162, 2105}
+
+
+def test_row_count_anomaly_stub_returns_none():
+    assert detect_row_count_anomaly([], reference_source=None) is None
+
+
+def test_detect_all_clean_returns_empty():
+    bars = [_Bar("2026-04-01"), _Bar("2026-04-02")]
+    flags = detect_all(
+        bars=bars,
+        metadata={
+            "expected_start": date(2026, 4, 1),
+            "ib_head_timestamp": date(2026, 4, 1),
+            "errors_during_fetch": [],
+        },
+        trading_calendar=lambda d: True,
+    )
+    assert flags == []
+
+
+def test_detect_all_returns_multiple_flags():
+    bars = [_Bar("2020-01-10"), _Bar("2020-01-11")]    # actual_start 2020-01-10
+    flags = detect_all(
+        bars=bars,
+        metadata={
+            "expected_start": date(1993, 1, 1),
+            "ib_head_timestamp": date(1993, 1, 1),
+            "errors_during_fetch": [{"code": 2105, "count": 6}],
+        },
+        trading_calendar=lambda d: True,
+    )
+    categories = {f.category for f in flags}
+    assert "range_shortfall" in categories
+    assert "fetch_tainted" in categories
+
+
+def test_detect_all_includes_interior_gap_flag():
+    bars = [_Bar("2026-04-01"), _Bar("2026-04-04")]
+    flags = detect_all(
+        bars=bars,
+        metadata={
+            "expected_start": date(2026, 4, 1),
+            "ib_head_timestamp": date(2026, 4, 1),
+            "errors_during_fetch": [],
+        },
+        trading_calendar=lambda d: True,
+    )
+    assert any(f.category == "interior_gaps" for f in flags)
+
+
+def test_detect_all_handles_missing_metadata_keys():
+    flags = detect_all(
+        bars=[_Bar("2026-04-01")],
+        metadata={},
+        trading_calendar=lambda d: True,
+    )
+    assert flags == []    # No expected_start -> can't compute range_shortfall
+
+
+def test_detect_all_isolates_detector_failures(monkeypatch):
+    from clients import quality_detector
+
+    monkeypatch.setattr(
+        quality_detector,
+        "detect_range_shortfall",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    bars = [_Bar("2020-01-10")]
+    # Should NOT raise; failed detector logs and continues
+    flags = detect_all(
+        bars=bars,
+        metadata={"expected_start": date(2020, 1, 1), "ib_head_timestamp": None, "errors_during_fetch": []},
+        trading_calendar=lambda d: True,
+    )
+    # detector_error is recorded as a flag itself
+    assert any(f.category == "detector_error" for f in flags)
+
+
+def test_detect_all_includes_row_count_anomaly_when_detector_returns_flag(monkeypatch):
+    from clients import quality_detector
+
+    monkeypatch.setattr(
+        quality_detector,
+        "detect_row_count_anomaly",
+        lambda *a, **kw: QualityFlag(category="row_count_anomaly", severity="warning"),
+    )
+    flags = detect_all(
+        bars=[_Bar("2026-04-01")],
+        metadata={"reference_source": object(), "errors_during_fetch": []},
+        trading_calendar=lambda d: True,
+    )
+    assert any(f.category == "row_count_anomaly" for f in flags)

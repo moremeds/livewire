@@ -4,6 +4,7 @@ See: docs/superpowers/specs/2026-05-17-mdw-reliability-foundation-design.md
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
@@ -15,6 +16,7 @@ except ImportError:  # pragma: no cover - exercised only before T5 helper extrac
 
 _RANGE_SHORTFALL_WARNING_DAYS = 5
 _RANGE_SHORTFALL_CRITICAL_DAYS = 30
+_logger = logging.getLogger("mdw.quality")
 
 
 def _utc_iso() -> str:
@@ -148,3 +150,67 @@ def detect_fetch_tainting(errors_during_fetch: list[dict]) -> Optional[QualityFl
         severity=severity,
         detail={"error_count": total, "codes": codes},
     )
+
+
+def detect_row_count_anomaly(
+    bars: list,
+    reference_source=None,
+) -> Optional[QualityFlag]:
+    """STUB in Sub-A. Activated in Sub-C when a second source exists."""
+    if reference_source is None:
+        return None
+    raise NotImplementedError("row-count-anomaly activation deferred to Sub-C")  # pragma: no cover
+
+
+def detect_all(
+    bars: list,
+    metadata: dict,
+    trading_calendar=None,
+) -> list[QualityFlag]:
+    flags: list[QualityFlag] = []
+
+    def _safe(name: str, fn, *args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            _logger.warning("detector %s raised: %s", name, exc)
+            flags.append(QualityFlag(
+                category="detector_error",
+                severity="warning",
+                detail={"detector": name, "error": str(exc)},
+            ))
+            return None
+
+    expected_start = metadata.get("expected_start")
+    if expected_start is not None and bars:
+        actual_start = _coerce_date(bars[0].trade_date)
+        f = _safe(
+            "range_shortfall",
+            detect_range_shortfall,
+            expected_start,
+            actual_start,
+            metadata.get("ib_head_timestamp"),
+        )
+        if f:
+            flags.append(f)
+
+    if len(bars) >= 2:
+        f = _safe("interior_gaps", detect_interior_gaps, bars, trading_calendar)
+        if f:
+            flags.append(f)
+
+    errors = metadata.get("errors_during_fetch") or []
+    f = _safe("fetch_tainted", detect_fetch_tainting, errors)
+    if f:
+        flags.append(f)
+
+    f = _safe(
+        "row_count_anomaly",
+        detect_row_count_anomaly,
+        bars,
+        metadata.get("reference_source"),
+    )
+    if f:
+        flags.append(f)
+
+    return flags
