@@ -88,3 +88,74 @@ class BaseTelemetry:
     def _do_write(self, line: str) -> None:
         with self.jsonl_path.open("a", encoding="utf-8") as fh:
             fh.write(line)
+
+
+_FARM_STATE_BY_CODE = {
+    2104: "ok",
+    2105: "broken",
+    2106: "ok",
+    2107: "inactive",
+    2158: "ok",
+}
+
+
+def _parse_farm_name(error_string: str) -> Optional[str]:
+    """Extract trailing ':farmname' suffix if present."""
+    if not error_string or ":" not in error_string:
+        return None
+    tail = error_string.rsplit(":", 1)[-1].strip()
+    if not tail or " " in tail:
+        return None
+    return tail
+
+
+class ConnectionTelemetry(BaseTelemetry):
+    """IB-specific telemetry: subscribes to ib_async error/connected/disconnected events."""
+
+    def __init__(self, *, ib, jsonl_path: Optional[Path], source: str = "ib"):
+        super().__init__(source=source, jsonl_path=jsonl_path)
+        self._ib = ib
+        self._attached = False
+
+    def start(self) -> None:
+        super().start()
+        if self._disabled or self._attached:
+            return
+        self._ib.errorEvent.connect(self._on_error)
+        self._ib.connectedEvent.connect(self._on_connected)
+        self._ib.disconnectedEvent.connect(self._on_disconnected)
+        self._attached = True
+
+    def stop(self) -> None:
+        if self._attached:
+            try:
+                self._ib.errorEvent.disconnect(self._on_error)
+                self._ib.connectedEvent.disconnect(self._on_connected)
+                self._ib.disconnectedEvent.disconnect(self._on_disconnected)
+            except Exception as exc:  # pragma: no cover - defensive
+                _logger.warning("telemetry detach failed: %s", exc)
+            self._attached = False
+        super().stop()
+
+    def _on_error(self, reqId, errorCode, errorString, contract):
+        if errorCode in _FARM_STATE_BY_CODE:
+            self._emit({
+                "event": "farm_state",
+                "code": int(errorCode),
+                "state": _FARM_STATE_BY_CODE[errorCode],
+                "farm": _parse_farm_name(errorString),
+                "message": str(errorString),
+            })
+        else:
+            self._emit({
+                "event": "ib_error",
+                "code": int(errorCode),
+                "req_id": int(reqId),
+                "message": str(errorString),
+            })
+
+    def _on_connected(self):
+        self._emit({"event": "connected"})
+
+    def _on_disconnected(self):
+        self._emit({"event": "disconnected"})
