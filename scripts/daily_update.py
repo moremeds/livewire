@@ -49,6 +49,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from clients.bronze_client import BronzeClient
 from clients.daily_bar_fallback import DailyBarFallbackClient
 from clients.ib_client import IBClient, IBError
+from clients.quality_detector import _normalize_bars_for_detection, detect_all
+from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
 from clients.trading_calendar import (
     _easter,
     get_nyse_holidays,
@@ -339,6 +341,48 @@ def bars_to_rows(bars: list, symbol_id: int) -> list[dict]:
             }
         )
     return rows
+
+
+def _run_quality_detection(
+    *,
+    ticker: str,
+    asset_class: str,
+    bars: list,
+    parquet_path: Path,
+    expected_start: date | None = None,
+    source: str = "ib",
+) -> None:
+    """Run daily quality detection and emit flags without blocking publish."""
+    if not bars:
+        return
+    normalized = _normalize_bars_for_detection(bars)
+    metadata = {
+        "asset_class": asset_class,
+        "ticker": ticker,
+        "timeframe": "1d",
+        "source": source,
+        "bars_received": len(bars),
+        "expected_start": expected_start,
+        "ib_head_timestamp": None,
+        "errors_during_fetch": [],
+    }
+    try:
+        flags = detect_all(bars=normalized, metadata=metadata, trading_calendar=None)
+    except Exception:  # pragma: no cover - detect_all wraps individual detectors
+        return
+    if not flags:
+        return
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    write_sidecar(parquet_path, flags, metadata)
+    for flag in flags:
+        append_audit(
+            flag,
+            source=source,
+            ticker=ticker,
+            timeframe="1d",
+            parquet_path=parquet_path,
+        )
+        alert_on_flag(flag, source=source, ticker=ticker)
 
 
 def bars_to_futures_rows(
@@ -754,6 +798,14 @@ def main():
                         )
                     else:
                         rows = bars_to_rows(valid_bars, symbol_id)
+                    parquet_path = bronze_dir / f"symbol={ticker}" / "1d.parquet"
+                    _run_quality_detection(
+                        ticker=ticker,
+                        asset_class=asset_class,
+                        bars=valid_bars,
+                        parquet_path=parquet_path,
+                        expected_start=latest + timedelta(days=1) if latest else None,
+                    )
                     inserted = bronze.merge_ticker_rows(ticker, rows)
                     if hasattr(bronze, "write_ticker_parquet"):
                         bronze.write_ticker_parquet(ticker, symbol_id, bronze_dir)
