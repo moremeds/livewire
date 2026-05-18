@@ -31,7 +31,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
   depends_on: [T0]
 - [x] T2 Define Postgres schema SQL
   depends_on: [T1]
-- [ ] T3 Add Postgres client lifecycle and schema creation
+- [x] T3 Add Postgres client lifecycle and schema creation
   depends_on: [T2]
 - [ ] T4 Implement daily equity and volatility replace from Parquet
   depends_on: [T3]
@@ -60,6 +60,8 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - Feature branch/worktree: `feat/postgres-analytical-layer` at `/Users/chenxi/.config/superpowers/worktrees/livewire/feat-postgres-analytical-layer`.
   - T1 added the `postgres_live` pytest marker, non-secret Postgres env placeholders, and the `psycopg[binary]` bootstrap package.
   - T2 added validated Postgres analytical DDL for symbols, daily/intraday market data, telemetry events, and quality flags.
+  - T3 added `PostgresClient` lifecycle, environment configuration, schema creation, and package export.
+  - T3 review gate: schema/client shape is sufficient to proceed to market-data loaders.
 - Verification:
   - `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 883 passed, 100% coverage.
   - `python -m pip install 'psycopg[binary]'` -> installed `psycopg-3.3.4` and `psycopg-binary-3.3.4`.
@@ -67,3 +69,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - Red: `python -m pytest tests/test_postgres_schema.py -q` -> failed with `ModuleNotFoundError: No module named 'clients.postgres_schema'`.
   - Green: `python -m pytest tests/test_postgres_schema.py -q` -> 9 passed.
   - Repo coverage gate: `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 892 passed, 100% coverage.
+  - Red: `python -m pytest tests/test_postgres_client.py -q` -> failed with `ModuleNotFoundError: No module named 'clients.postgres_client'`.
+  - Green: `python -m pytest tests/test_postgres_client.py -q` -> 7 passed.
+  - Live gate skip: `python -m pytest tests/test_postgres_client_live.py -q` -> 1 skipped because `MDW_TEST_POSTGRES_DSN` is unset.
+  - Repo coverage gate: `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 899 passed, 1 skipped, 100% coverage.
