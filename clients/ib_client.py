@@ -192,21 +192,24 @@ class IBClient:
             last_exc: Optional[Exception] = None
             while attempt < max_retries:
                 attempt += 1
+                telemetry = ConnectionTelemetry(
+                    ib=self._ib,
+                    jsonl_path=_resolve_telemetry_path(),
+                    source="ib",
+                )
+                telemetry.start()
                 try:
                     self._ib.connect(host, port, clientId=current_id, timeout=timeout)
                     self._last_client_id = current_id
-                    self._telemetry = ConnectionTelemetry(
-                        ib=self._ib,
-                        jsonl_path=_resolve_telemetry_path(),
-                        source="ib",
-                    )
-                    self._telemetry.start()
+                    self._telemetry = telemetry
+                    self._telemetry.record_connected()
                     self.logger.info(
                         "Connected to IB on %s:%s (clientId=%s)",
                         host, port, current_id,
                     )
                     return
                 except Exception as exc:
+                    telemetry.stop()
                     last_exc = exc
                     self.logger.warning(
                         "Connection attempt %d/%d failed: %s",
@@ -236,14 +239,17 @@ class IBClient:
 
     def disconnect(self) -> None:
         """Disconnect from IB. Safe to call when not connected."""
-        if self._telemetry is not None:
-            self._telemetry.stop()
-            self._telemetry = None
+        telemetry = self._telemetry
         if self._ib.isConnected():
             self._ib.disconnect()
+            if telemetry is not None:
+                telemetry.record_disconnected()
             self.logger.info("Disconnected from IB")
         else:
             self.logger.debug("disconnect() called but already disconnected")
+        if telemetry is not None:
+            telemetry.stop()
+            self._telemetry = None
 
     def reconnect(self) -> None:
         """Disconnect and reconnect using the last connection parameters."""

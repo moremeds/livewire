@@ -197,6 +197,21 @@ def test_connection_telemetry_connected_disconnected_events(tmp_path):
     assert "disconnected" in events
 
 
+def test_connection_telemetry_deduplicates_manual_connection_records(tmp_path):
+    ib = _fake_ib()
+    t = ConnectionTelemetry(ib=ib, jsonl_path=tmp_path / "t.jsonl")
+    t.start()
+    t.record_connected()
+    t.record_connected()
+    t.record_disconnected()
+    t.record_disconnected()
+    t.stop()
+    records = [json.loads(l) for l in (tmp_path / "t.jsonl").read_text().splitlines()]
+    events = [r["event"] for r in records]
+    assert events.count("connected") == 1
+    assert events.count("disconnected") == 1
+
+
 def test_uw_telemetry_stub_no_op(tmp_path, caplog):
     t = UWTelemetry(jsonl_path=tmp_path / "t.jsonl")
     t.start()

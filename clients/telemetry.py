@@ -116,6 +116,8 @@ class ConnectionTelemetry(BaseTelemetry):
         super().__init__(source=source, jsonl_path=jsonl_path)
         self._ib = ib
         self._attached = False
+        self._connected_recorded = False
+        self._disconnected_recorded = False
 
     def start(self) -> None:
         super().start()
@@ -155,10 +157,23 @@ class ConnectionTelemetry(BaseTelemetry):
             })
 
     def _on_connected(self):
-        self._emit({"event": "connected"})
+        self.record_connected()
 
     def _on_disconnected(self):
+        self.record_disconnected()
+
+    def record_connected(self) -> None:
+        if self._connected_recorded:
+            return
+        self._emit({"event": "connected"})
+        self._connected_recorded = True
+        self._disconnected_recorded = False
+
+    def record_disconnected(self) -> None:
+        if self._disconnected_recorded:
+            return
         self._emit({"event": "disconnected"})
+        self._disconnected_recorded = True
 
 
 class UWTelemetry(BaseTelemetry):
