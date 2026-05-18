@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from clients.quality_detector import QualityFlag
-from clients.quality_flags import append_audit, _resolve_audit_path, write_sidecar
+from clients.quality_flags import alert_on_flag, append_audit, _resolve_audit_path, write_sidecar
 
 
 def _flag(category="range_shortfall", severity="critical"):
@@ -87,3 +87,97 @@ def test_append_audit_oserror_returns_false(tmp_path, monkeypatch):
     monkeypatch.setattr("pathlib.Path.open", boom)
     ok = append_audit(_flag(), source="ib", ticker="SMH", timeframe="1d", parquet_path=tmp_path / "1d.parquet")
     assert ok is False
+
+
+def test_alert_below_threshold_skipped(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "critical")
+    called = []
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: called.append(a) or _ok())
+    ok = alert_on_flag(_flag(severity="warning"), source="ib", ticker="SMH")
+    assert ok is False
+    assert called == []    # below threshold -> never spawned
+
+
+def test_alert_above_threshold_spawns(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
+    called = []
+
+    def fake_run(*a, **kw):
+        called.append(a)
+        return _ok()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
+    assert ok is True
+    assert called, "subprocess.run should have been invoked"
+    cmd = called[0][0]
+    assert "send_daily_update_failure_email.mjs" in " ".join(cmd)
+    assert "flag-alert" in cmd
+
+
+def test_alert_rate_limit_dedupes_within_window(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
+    monkeypatch.setenv("MDW_ALERT_RATE_LIMIT_SECONDS", "300")
+    counts = [0]
+
+    def fake_run(*a, **kw):
+        counts[0] += 1
+        return _ok()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    from clients import quality_flags
+
+    quality_flags._RATE_LIMIT_CACHE.clear()    # ensure clean state
+    alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
+    alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")    # duplicate
+    assert counts[0] == 1
+
+
+def test_alert_smtp_failure_preserves_html(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
+    monkeypatch.setenv("MDW_UNDELIVERED_DIR", str(tmp_path / "undelivered"))
+
+    def fake_run(*a, **kw):
+        return _fail("SMTP timeout")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    from clients import quality_flags
+
+    quality_flags._RATE_LIMIT_CACHE.clear()
+    ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="HOOD")
+    assert ok is False
+    saved = list((tmp_path / "undelivered").glob("*HOOD*"))
+    assert saved, "undelivered HTML should be preserved"
+
+
+def test_alert_invalid_rate_limit_env_uses_default(monkeypatch):
+    monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
+    monkeypatch.setenv("MDW_ALERT_RATE_LIMIT_SECONDS", "bad")
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: _ok())
+    ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
+    assert ok is True
+
+
+def test_alert_spawn_exception_preserves_html(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
+    monkeypatch.setenv("MDW_UNDELIVERED_DIR", str(tmp_path / "undelivered"))
+
+    def boom(*a, **kw):
+        raise OSError("node missing")
+
+    monkeypatch.setattr("subprocess.run", boom)
+    ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="TSLA")
+    assert ok is False
+    assert list((tmp_path / "undelivered").glob("*TSLA*"))
+
+
+def _ok():
+    from subprocess import CompletedProcess
+
+    return CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
+
+
+def _fail(msg):
+    from subprocess import CompletedProcess
+
+    return CompletedProcess(args=[], returncode=1, stdout=b"", stderr=msg.encode())

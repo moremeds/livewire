@@ -9,6 +9,17 @@ from clients.bronze_client import BronzeClient
 from clients.db_client import DBClient
 
 
+@pytest.fixture(autouse=True)
+def _clear_alert_rate_limit():
+    try:
+        from clients import quality_flags
+
+        quality_flags._RATE_LIMIT_CACHE.clear()
+    except (ImportError, AttributeError):
+        pass
+    yield
+
+
 # ── DuckDB fixtures ────────────────────────────────────────────────────
 
 BOOTSTRAP_SQL = """
@@ -83,4 +94,3 @@ def bronze(tmp_bronze):
     client = BronzeClient(bronze_dir=tmp_bronze)
     yield client
     client.close()
-
