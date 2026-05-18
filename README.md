@@ -104,18 +104,51 @@ Raw → Bronze → Silver → Gold
 ### Quick Start
 
 ```bash
-chmod +x setup_market_warehouse.sh
-./setup_market_warehouse.sh
+chmod +x scripts/setup_market_warehouse.sh
+scripts/setup_market_warehouse.sh
 ```
 
 ### Full Bootstrap
 
 ```bash
-./setup_market_warehouse.sh \
+scripts/setup_market_warehouse.sh \
   --start-clickhouse \
   --init-clickhouse \
   --with-sample-data \
   --smoke-test
+```
+
+---
+
+## Operator Scripts
+
+Livewire keeps the operator-facing command surface to five files:
+
+| Script | Function | Typical usage |
+| --- | --- | --- |
+| `scripts/setup_market_warehouse.sh` | One-time local warehouse bootstrap | Create `~/market-warehouse/`, venv, directories, optional ClickHouse helpers, optional sample data |
+| `scripts/livewire_ingest.py` | Data ingestion | Historical seeds, daily updates, robust IB runs, CBOE volatility, intraday backfill, universe checks |
+| `scripts/livewire_quality.py` | Quality and health reporting | Bronze health checks, coverage reports, daily rollup, weekly summary, watchdog alerts |
+| `scripts/livewire_ops.py` | Operations | Scheduled daily job, alert sending, native IBC install/start helpers |
+| `scripts/livewire_store.py` | Storage maintenance | DuckDB rebuilds, R2 sync, parquet filename migration |
+
+Use `--help` at the top level or after a subcommand to inspect exact flags:
+
+```bash
+python scripts/livewire_ingest.py --help
+python scripts/livewire_ingest.py historical --help
+python scripts/livewire_quality.py --help
+python scripts/livewire_ops.py --help
+python scripts/livewire_store.py --help
+```
+
+Top-level subcommands:
+
+```text
+livewire_ingest.py   daily | historical | robust | cboe-vol | intraday-backfill | intraday-status | probe-intraday | universe | backfill-all
+livewire_quality.py  health | coverage | report | weekly | watchdog
+livewire_ops.py      run-daily-job | ibc-install | ibc-start | send-alert
+livewire_store.py    rebuild-duckdb | sync-r2 | migrate-parquet
 ```
 
 ---
@@ -314,7 +347,15 @@ python scripts/livewire_ingest.py cboe-vol
 python scripts/livewire_ingest.py historical --preset presets/volatility.json --asset-class volatility
 ```
 
-Run all documented historical seed groups manually:
+For bulk IB runs over more than a few tickers, prefer the robust orchestrator. It retries per ticker, records outcomes, and reports `ok`, `ok-noop`, `skip`, `fail`, or `timeout`:
+
+```bash
+python scripts/livewire_ingest.py robust --preset presets/sp500.json --mode seed
+python scripts/livewire_ingest.py robust --preset presets/sp500.json --mode backfill
+python scripts/livewire_ingest.py robust --preset presets/futures-index.json --asset-class futures --mode seed
+```
+
+Run all documented daily seed groups manually:
 
 ```bash
 python scripts/livewire_ingest.py historical --preset presets/sp500.json
@@ -332,6 +373,22 @@ Notes:
 * `cmdty` and `fx` use IB `MIDPOINT` daily bars and store volume as `0`.
 * FX pairs are six-letter local symbols. If IB supports only the reverse cross, the fetcher requests the supported pair and stores inverted OHLC rows. Example: `USDEUR` fetches `EURUSD`, then stores inverted `USDEUR`.
 * CBOE direct sync is the authoritative daily source for volatility indices.
+
+---
+
+### Equity Preset Backfill
+
+The consolidated equity preset backfill entrypoint runs `sp500`, `ndx100`, and `r2k` daily-bar normal fetches, then older-history backfills, with stall detection and cursor resume:
+
+```bash
+python scripts/livewire_ingest.py backfill-all
+```
+
+For a long local run, use `tmux` and keep logs under `~/market-warehouse/logs/`:
+
+```bash
+tmux new-session -s livewire_equity_backfill 'cd /Users/chenxi/projects/livewire && source ~/market-warehouse/.venv/bin/activate && python scripts/livewire_ingest.py backfill-all'
+```
 
 ---
 
@@ -357,6 +414,26 @@ python scripts/livewire_ingest.py historical --preset presets/volatility.json --
 * Fills only missing history
 * Preserves existing data
 * Independent cursor tracking
+
+---
+
+### Intraday Data
+
+Intraday bars are fetched through the ingest entrypoint. `historical` is daily-only; use `intraday-backfill` for 1h and 5m bars:
+
+```bash
+# Probe IB intraday timestamp behavior for the built-in AAPL fixture
+python scripts/livewire_ingest.py probe-intraday
+
+# Report intraday session state
+python scripts/livewire_ingest.py intraday-status --timeframe 5m
+
+# Backfill one symbol
+python scripts/livewire_ingest.py intraday-backfill --tickers AAPL --timeframe 5m --years 1
+
+# Backfill a preset and skip files already present
+python scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json --timeframe 1h --skip-existing
+```
 
 ---
 
@@ -411,7 +488,35 @@ Common flags:
 
 ### Reliability / Data Quality
 
-Sub-A of the Livewire reliability roadmap adds source-tagged telemetry, quality-flag sidecars, a central `quality_audit.jsonl`, a per-ticker IB orchestrator, and a daily rollup email marker. Use `python scripts/livewire_ingest.py robust --preset presets/sp500.json --mode seed` for bulk IB seed runs, `python scripts/livewire_ingest.py robust --preset presets/sp500.json --mode backfill` for older-history recovery, and `python scripts/livewire_quality.py report --view summary --since 24h` (or `--email`) for the rollup. Design details live in `docs/superpowers/specs/2026-05-17-mdw-reliability-foundation-design.md`; the execution plan is `docs/superpowers/plans/2026-05-18-reliability-foundation-plan.md`.
+Sub-A of the Livewire reliability roadmap adds source-tagged telemetry, quality-flag sidecars, a central `quality_audit.jsonl`, a per-ticker IB orchestrator, and a daily rollup email marker. Design details live in `docs/superpowers/specs/2026-05-17-mdw-reliability-foundation-design.md`; the execution plan is `docs/superpowers/plans/2026-05-18-reliability-foundation-plan.md`.
+
+Common quality commands:
+
+```bash
+# Data-lake health report
+python scripts/livewire_quality.py health
+
+# Include intraday checks
+python scripts/livewire_quality.py health --intraday --timeframe 5m
+
+# Daily coverage report with auto-recovery enabled
+python scripts/livewire_quality.py coverage
+
+# Report-only coverage check
+python scripts/livewire_quality.py coverage --no-recover
+
+# Quality rollup for the last 24 hours
+python scripts/livewire_quality.py report --view summary --since 24h
+
+# Send the quality rollup by email
+python scripts/livewire_quality.py report --view summary --since 24h --email
+
+# Weekly summary, self-skips on non-Sunday
+python scripts/livewire_quality.py weekly
+
+# Scheduled-job watchdog
+python scripts/livewire_quality.py watchdog
+```
 
 The scheduled runner executes equities, futures, and CBOE volatility:
 
@@ -445,6 +550,16 @@ python scripts/livewire_store.py rebuild-duckdb --asset-class volatility
 ```
 
 DuckDB rebuild currently supports `equity`, `futures`, and `volatility`. `cmdty` and `fx` are canonical in bronze Parquet and do not yet have DuckDB rebuild targets.
+
+Other storage commands:
+
+```bash
+# Sync lake files to R2 when R2 env vars are configured
+python scripts/livewire_store.py sync-r2
+
+# Migrate old parquet filenames to the current layout
+python scripts/livewire_store.py migrate-parquet
+```
 
 ---
 
@@ -494,7 +609,7 @@ python -m pytest tests/ -v
 ### Coverage
 
 ```bash
-python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing
+python -m pytest tests -q --cov=clients --cov=livewire_scripts --cov=scripts --cov-report=term-missing
 ```
 
 * ✅ **100% coverage enforced**
@@ -561,7 +676,10 @@ Used for:
 ## Sample Data
 
 ```bash
-python scripts/write_sample_parquet.py
+scripts/setup_market_warehouse.sh --with-sample-data
+
+# After setup, the generated helper is available under the warehouse tree:
+python ~/market-warehouse/scripts/write_sample_parquet.py
 ```
 
 ---
@@ -598,7 +716,7 @@ clickhouse-client --query "SELECT version()"
 ## Recommended Command
 
 ```bash
-./setup_market_warehouse.sh \
+scripts/setup_market_warehouse.sh \
   --start-clickhouse \
   --init-clickhouse \
   --with-sample-data \
