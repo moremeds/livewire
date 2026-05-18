@@ -203,6 +203,7 @@ pip install \
   polars \
   pandas \
   pyarrow \
+  "psycopg[binary]" \
   clickhouse-connect \
   numpy \
   scipy \

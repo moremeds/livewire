@@ -3,34 +3,63 @@
 Use this file for the current task only. Replace it at the start of each non-trivial task.
 
 ## Objective
-- Draft the Sub-B Postgres analytical layer implementation plan after the Sub-A reliability foundation merge.
+- Execute the Sub-B Postgres analytical layer implementation plan on `feat/postgres-analytical-layer`.
 
 ## Success Criteria
-- Plan defines Sub-B scope without changing the parquet-first ingestion contract.
-- Plan includes dependency graph and `depends_on: []` task annotations.
-- Plan identifies files to create/modify, testing strategy, and verification gates.
-- No runtime code is changed during planning.
+- Postgres is added as an analytical publish target rebuilt from canonical bronze Parquet and reliability JSONL artifacts.
+- Daily ingestion remains parquet-first and does not write to Postgres.
+- DuckDB remains supported during Sub-B; full DuckDB retirement stays deferred to Sub-B2.
+- Milestone commits are created after coherent checkpoints.
+- Verification evidence is recorded before completion, including the full coverage gate.
 
 ## Dependency Graph
-- T1 -> T2
-- T2 -> T3
+- T0 -> T1 -> T2 -> T3
 - T3 -> T4
+- T3 -> T5
+- T3 -> T6
+- T3 -> T7
+- T3 -> T9
+- T4, T5, T6, T7 -> T8
+- T8, T9 -> T10
+- T10 -> T11 -> T12
+- T12 -> T13
 
 ## Tasks
-- [x] T1 Inspect current Sub-A docs and DuckDB analytical rebuild path
+- [x] T0 Preflight, branch/worktree setup, and baseline gate
   depends_on: []
-- [x] T2 Define Sub-B architecture, scope boundaries, and migration approach
+- [x] T1 Add Postgres dependency and configuration surface
+  depends_on: [T0]
+- [ ] T2 Define Postgres schema SQL
   depends_on: [T1]
-- [x] T3 Write implementation plan artifact
+- [ ] T3 Add Postgres client lifecycle and schema creation
   depends_on: [T2]
-- [x] T4 Review plan for repo constraints and summarize next step
+- [ ] T4 Implement daily equity and volatility replace from Parquet
   depends_on: [T3]
+- [ ] T5 Implement futures replace from Parquet
+  depends_on: [T3]
+- [ ] T6 Implement intraday replace from Parquet
+  depends_on: [T3]
+- [ ] T7 Import reliability JSONL into Postgres
+  depends_on: [T3]
+- [ ] T8 Add Postgres rebuild CLI
+  depends_on: [T4, T5, T6, T7]
+- [ ] T9 Add optional live Postgres smoke script
+  depends_on: [T3]
+- [ ] T10 Documentation sweep
+  depends_on: [T8, T9]
+- [ ] T11 Full test and coverage gate
+  depends_on: [T10]
+- [ ] T12 Manual verification checklist
+  depends_on: [T11]
+- [ ] T13 Ship branch
+  depends_on: [T12]
 
 ## Review
 - Outcome:
-  - Drafted Sub-B as a Postgres analytical publish layer rebuilt from bronze parquet and reliability JSONL artifacts.
-  - Preserved bronze parquet as system of record; Postgres is a query/publish target, not an ingestion write path.
-  - Scoped Sub-B away from Sub-C provider work, Sub-D new timeframes, Sub-E options, and Sub-F gold tables.
-  - Explicitly deferred full DuckDB removal to follow-up phase Sub-B2: Retire DuckDB Analytical Layer.
+  - T0 baseline gate passed before implementation edits.
+  - Feature branch/worktree: `feat/postgres-analytical-layer` at `/Users/chenxi/.config/superpowers/worktrees/livewire/feat-postgres-analytical-layer`.
+  - T1 added the `postgres_live` pytest marker, non-secret Postgres env placeholders, and the `psycopg[binary]` bootstrap package.
 - Verification:
-  - Plan checked against current `clients/db_client.py`, `scripts/rebuild_duckdb_from_parquet.py`, tests, and Sub-A spec.
+  - `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 883 passed, 100% coverage.
+  - `python -m pip install 'psycopg[binary]'` -> installed `psycopg-3.3.4` and `psycopg-binary-3.3.4`.
+  - `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing` -> 883 passed, 100% coverage.
