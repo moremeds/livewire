@@ -1,6 +1,4 @@
-# Market Data Warehouse
-
-![Market Data Warehouse](https://raw.githubusercontent.com/joemccann/market-data-warehouse/main/.github/github-banner.png)
+# Livewire
 
 A **local-first financial data warehouse** for universe-scale market data.
 
@@ -8,7 +6,7 @@ A **local-first financial data warehouse** for universe-scale market data.
 
 ## Overview
 
-Market Data Warehouse is designed for storing and analyzing historical **OHLCV data across equities, futures, volatility indices, spot commodities, and FX pairs**, with a clear path from **daily bars → intraday data → production analytics**.
+Livewire is a market data warehouse designed for storing and analyzing historical **OHLCV data across equities, futures, volatility indices, spot commodities, and FX pairs**, with a clear path from **daily bars → intraday data → production analytics**.
 
 ### Core Stack
 
@@ -31,7 +29,7 @@ Market Data Warehouse is designed for storing and analyzing historical **OHLCV d
 * On-demand **DuckDB rebuilds** from Parquet
 
 > **In one sentence:**
-> A local-first, production-ready market data warehouse for serious quantitative workflows.
+> Livewire — a local-first, production-ready market data warehouse for serious quantitative workflows.
 
 ---
 
@@ -410,6 +408,10 @@ Common flags:
 * Validates OHLCV
 * Atomic snapshot updates
 * Fallback recovery if IB fails
+
+### Reliability / Data Quality
+
+Sub-A of the Livewire reliability roadmap adds source-tagged telemetry, quality-flag sidecars, a central `quality_audit.jsonl`, a per-ticker IB orchestrator, and a daily rollup email marker. Use `python scripts/run_ib_fetch_robust.py --preset presets/sp500.json --mode seed` for bulk IB seed runs, `python scripts/run_ib_fetch_robust.py --preset presets/sp500.json --mode backfill` for older-history recovery, and `python scripts/data_quality_report.py --view summary --since 24h` (or `--email`) for the rollup. Design details live in `docs/superpowers/specs/2026-05-17-mdw-reliability-foundation-design.md`; the execution plan is `docs/superpowers/plans/2026-05-18-reliability-foundation-plan.md`.
 
 The scheduled runner executes equities, futures, and CBOE volatility:
 

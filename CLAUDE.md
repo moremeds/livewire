@@ -1,13 +1,13 @@
-# Market Data Warehouse
+# Livewire
 
-Local-first financial data warehouse for quantitative research. Parquet data lake as system of record, DuckDB for analytics, ClickHouse for production benchmarking.
+Livewire is a local-first market data warehouse for quantitative research. Parquet data lake as system of record, DuckDB for analytics, ClickHouse for production benchmarking. Rebranded 2026-05-17 from "market-data-warehouse"; the repo dir is now `livewire/`, the on-disk data tree remains at `~/market-warehouse/` (descriptive, not project-named).
 
 ## Project Layout
 
 Two directory trees: this **git repo** and the **data warehouse** at `~/market-warehouse/`.
 
 ```
-market-data-warehouse/              # Git repo
+livewire/                           # Git repo
 ├── clients/
 │   ├── __init__.py                 # Exports BronzeClient, DailyBarFallbackClient, IBClient, DBClient
 │   ├── bronze_client.py            # Canonical per-ticker bronze parquet client
@@ -206,6 +206,18 @@ python scripts/fetch_ib_historical.py --host 192.168.1.50 --port 4001 --tickers 
 
 IB connection defaults to `127.0.0.1:4001`, configurable via `--host`/`--port` flags or `MDW_IB_HOST`/`MDW_IB_PORT` environment variables.
 
+Reliability foundation environment variables:
+- `MDW_TELEMETRY_PATH` (default `~/market-warehouse/logs/telemetry.jsonl`): telemetry JSONL append path; set to `none` to disable telemetry.
+- `MDW_QUALITY_AUDIT_PATH` (default `~/market-warehouse/logs/quality_audit.jsonl`): central quality-flag audit JSONL append path.
+- `MDW_ALERT_SEVERITY_THRESHOLD` (default `warning`): minimum quality-flag severity that triggers per-flag email.
+- `MDW_ALERT_RATE_LIMIT_SECONDS` (default `300`): de-dup window for identical `(source, ticker, category)` alert emails.
+- `MDW_ORCHESTRATOR_TIMEOUT_SECONDS` (default `300`): per-ticker hard timeout for `run_ib_fetch_robust.py`.
+- `MDW_ORCHESTRATOR_MAX_ATTEMPTS` (default `3`): per-ticker retry budget for `run_ib_fetch_robust.py`.
+- `MDW_ORCHESTRATOR_COOLDOWN_SECONDS` (default `60`): sleep between orchestrator retry attempts.
+- `MDW_LOG_LEVEL` (default `INFO`): logger root level for reliability tooling.
+- `MDW_UNDELIVERED_DIR` (default `~/market-warehouse/logs/quality_alerts_undelivered/`): where failed per-flag alert HTML bodies are preserved.
+- `MDW_LOG_DIR` (default `~/market-warehouse/logs/`): where `data_quality_report.py --email` writes `quality_summary_YYYY-MM-DD.marker`.
+
 Current fetch behavior:
 - Normal mode atomically replaces the per-ticker bronze snapshot
 - Backfill mode merges older bars into the same per-ticker bronze snapshot
@@ -292,6 +304,37 @@ The main sync runs at 13:05 Pacific local time daily (4:05 PM Eastern year-round
 - Terminal scheduled failures use the Nodemailer CLI at `scripts/send_daily_update_failure_email.mjs`
 - Failure alerts can write a sibling `.human.md` incident report and optionally enrich the email body with a Cerebras-generated summary plus proposed remediation
 - Failure emails can include Cerebras-generated human-readable incident summaries and write a sibling `*.human.md` incident report beside the raw log
+
+### Reliability tooling
+
+`scripts/run_ib_fetch_robust.py` is the productized per-ticker IB orchestrator for bulk daily-bar seed/backfill runs. Use it instead of a bare `fetch_ib_historical.py` loop for any IB bulk run larger than roughly five tickers:
+
+```bash
+python scripts/run_ib_fetch_robust.py --preset presets/sp500.json --mode seed
+python scripts/run_ib_fetch_robust.py --preset presets/sp500.json --mode backfill
+python scripts/run_ib_fetch_robust.py --tickers AAPL MSFT --mode seed --timeout 300 --max-attempts 3 --cooldown 60
+```
+
+Outcome categories:
+
+| Category | Meaning |
+| --- | --- |
+| `ok` | Child exited cleanly and bronze exists; row delta is included when known. |
+| `ok-noop` | Backfill exited cleanly with no row delta, treated as "no older history". |
+| `skip` | Seed skipped because bronze already exists, or backfill skipped because no seed parquet exists. |
+| `fail` | Child exited non-zero, exhausted retries, or exited zero without producing seed bronze. |
+| `timeout` | All attempts hit the hard timeout. |
+
+`scripts/data_quality_report.py` reads telemetry and quality-audit JSONL:
+
+```bash
+python scripts/data_quality_report.py --view summary --since 24h
+python scripts/data_quality_report.py --view flap --since 24h --source ib
+python scripts/data_quality_report.py --view quality --since 24h --severity critical
+python scripts/data_quality_report.py --view summary --since 24h --email
+```
+
+Views are `summary`, `flap`, and `quality`; `--source` accepts `all`, `ib`, `uw`, or `massive`. `--email` sends the daily-summary Nodemailer mode and writes `quality_summary_YYYY-MM-DD.marker` for the watchdog. Quality flags are emitted beside parquet as `<parquet>.meta.json`; the sidecar schema and central audit JSONL schema are specified in `docs/superpowers/specs/2026-05-17-mdw-reliability-foundation-design.md`.
 
 ### Intraday backfill (1h / 5m)
 
