@@ -60,15 +60,15 @@ from clients.trading_calendar import (
 )
 
 _DEFAULT_STORAGE_CLIENT = BronzeClient
-DBClient = BronzeClient
+StorageClient = BronzeClient
 
 
 def _storage_client():
-    """Return the live storage client, allowing tests to patch either name."""
+    """Return the live storage client, allowing tests to patch the seam."""
     if BronzeClient is not _DEFAULT_STORAGE_CLIENT:
         return BronzeClient
-    if DBClient is not _DEFAULT_STORAGE_CLIENT:
-        return DBClient
+    if StorageClient is not _DEFAULT_STORAGE_CLIENT:
+        return StorageClient
     return BronzeClient
 
 

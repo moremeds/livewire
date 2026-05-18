@@ -146,6 +146,18 @@ class TestBronzeClient:
         ]
 
     @pytest.mark.integration
+    def test_summary_skips_empty_snapshot(self, bronze):
+        empty_dir = bronze.bronze_dir / "symbol=EMPTY"
+        empty_dir.mkdir(parents=True, exist_ok=True)
+        pq.write_table(
+            pa.Table.from_pylist([], schema=bronze._schema),
+            empty_dir / "1d.parquet",
+            compression="snappy",
+        )
+
+        assert bronze.get_summary() == []
+
+    @pytest.mark.integration
     def test_publish_cleans_temp_file_on_replace_error(self, bronze, monkeypatch):
         def _boom(src, dst):
             raise OSError("replace failed")

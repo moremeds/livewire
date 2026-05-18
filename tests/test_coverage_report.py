@@ -149,6 +149,22 @@ class TestComputeCoverage:
             assert results[tf].present == 0
             assert results[tf].ratio == 1.0  # vacuous truth
 
+    def test_empty_parquet_snapshot_counts_as_missing(self, tmp_path):
+        root = tmp_path / "bronze"
+        sym_dir = root / "asset_class=equity" / "symbol=AAPL"
+        sym_dir.mkdir(parents=True)
+        pq.write_table(
+            pa.Table.from_pylist([], schema=_DAILY_SCHEMA),
+            sym_dir / "1d.parquet",
+            compression="snappy",
+        )
+
+        results = compute_coverage(date(2026, 4, 6), bronze_root=root)
+
+        assert results["1d"].total == 1
+        assert results["1d"].present == 0
+        assert results["1d"].missing_symbols == ["AAPL"]
+
 
 # ── format helpers ───────────────────────────────────────────────────────────
 

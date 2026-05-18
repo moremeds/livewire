@@ -142,12 +142,9 @@ def _count_rows(parquet_path: Path) -> int:
     if not parquet_path.exists():
         return 0
     try:
-        import duckdb
+        import pyarrow.parquet as pq
 
-        escaped = str(parquet_path).replace("'", "''")
-        return duckdb.connect().execute(
-            f"select count(*) from read_parquet('{escaped}')"
-        ).fetchone()[0]
+        return pq.ParquetFile(parquet_path).metadata.num_rows
     except Exception as exc:  # pragma: no cover - unknown row count is non-fatal
         _logger.warning("row count failed for %s: %s", parquet_path, exc)
         return 0
