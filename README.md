@@ -12,6 +12,7 @@ Livewire is a market data warehouse designed for storing and analyzing historica
 
 * **Parquet data lake** → canonical storage
 * **DuckDB** → local analytics, research, backtesting
+* **Postgres (optional)** → replayable analytical publish target
 * **ClickHouse (optional)** → large-scale aggregation & concurrency
 
 ### Current Capabilities
@@ -27,6 +28,7 @@ Livewire is a market data warehouse designed for storing and analyzing historica
 * **Atomic writes + validation**
 * **Fallback recovery pipeline** for missing data
 * On-demand **DuckDB rebuilds** from Parquet
+* Optional **Postgres analytical rebuilds** from Parquet and reliability JSONL
 
 > **In one sentence:**
 > Livewire — a local-first, production-ready market data warehouse for serious quantitative workflows.
@@ -59,7 +61,10 @@ Raw → Bronze → Silver → Gold
 
 * **System of record**: Parquet (`data-lake/`)
 * **Local engine**: DuckDB
+* **Analytical publish target (optional)**: Postgres
 * **Warehouse (optional)**: ClickHouse
+
+Live ingestion writes bronze Parquet only. Postgres and DuckDB are derived analytical targets and can be dropped or rebuilt from bronze Parquet plus reliability JSONL artifacts.
 
 ---
 
@@ -79,8 +84,10 @@ Raw → Bronze → Silver → Gold
 │   └── gold/
 ├── duckdb/
 │   └── market.duckdb
-├── scripts/
 ├── logs/
+│   ├── telemetry.jsonl
+│   └── quality_audit.jsonl
+├── scripts/
 └── .venv/
 ```
 
@@ -445,6 +452,43 @@ python scripts/rebuild_duckdb_from_parquet.py --asset-class volatility
 ```
 
 DuckDB rebuild currently supports `equity`, `futures`, and `volatility`. `cmdty` and `fx` are canonical in bronze Parquet and do not yet have DuckDB rebuild targets.
+
+---
+
+### Rebuild Postgres
+
+Postgres is optional and replayable. It is not the ingestion source of truth, and live ingestion scripts do not write to it.
+
+```bash
+export MDW_POSTGRES_DSN="postgresql://user:password@localhost:5432/livewire"
+export MDW_POSTGRES_SCHEMA="md"
+
+# Connectivity and table-count smoke check
+python scripts/smoke_postgres_analytical.py --ensure-schema
+
+# Rebuild equity daily rows
+python scripts/rebuild_postgres_from_parquet.py --asset-class equity --timeframe 1d
+
+# Rebuild all available equity timeframes; missing optional 1h/5m data is skipped
+python scripts/rebuild_postgres_from_parquet.py --asset-class equity --timeframe all
+
+# Rebuild futures and volatility when their bronze parquet exists
+python scripts/rebuild_postgres_from_parquet.py --asset-class futures
+python scripts/rebuild_postgres_from_parquet.py --asset-class volatility
+
+# Import reliability telemetry and quality flags
+python scripts/rebuild_postgres_from_parquet.py --include-reliability
+```
+
+The Postgres schema contains `md.symbols`, `md.equities_daily`, `md.futures_daily`, `md.equities_1h`, `md.equities_5m`, `md.telemetry_events`, and `md.quality_flags`. The rebuild command streams local parquet/JSONL through Python and `psycopg`; it does not require server-side parquet extensions or database access to the local filesystem.
+
+Rollback is to drop or truncate the target schema and replay from canonical bronze Parquet and JSONL artifacts:
+
+```sql
+DROP SCHEMA IF EXISTS md CASCADE;
+```
+
+Then rerun the smoke and rebuild commands above. Futures and intraday commands are conditional on corresponding bronze parquet existing under `~/market-warehouse/data-lake/bronze/asset_class=futures` or `asset_class=equity/symbol=*/{1h,5m}.parquet`.
 
 ---
 

@@ -45,7 +45,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
   depends_on: [T4, T5, T6, T7]
 - [x] T9 Add optional live Postgres smoke script
   depends_on: [T3]
-- [ ] T10 Documentation sweep
+- [x] T10 Documentation sweep
   depends_on: [T8, T9]
 - [ ] T11 Full test and coverage gate
   depends_on: [T10]
@@ -64,6 +64,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - T3 review gate: schema/client shape is sufficient to proceed to market-data loaders.
   - T4-T7 added PyArrow batch loaders for daily equity/volatility, futures, intraday `1h`/`5m`, and reliability JSONL imports.
   - T8-T9 added the Postgres rebuild CLI and optional analytical smoke script.
+  - T10 updated operator and agent docs with Postgres role, env vars, rebuild examples, and rollback guidance.
 - Verification:
   - `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 883 passed, 100% coverage.
   - `python -m pip install 'psycopg[binary]'` -> installed `psycopg-3.3.4` and `psycopg-binary-3.3.4`.
@@ -80,4 +81,6 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - Repo coverage gate: `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 913 passed, 1 skipped, 100% coverage.
   - Red: `python -m pytest tests/test_rebuild_postgres_from_parquet.py tests/test_smoke_postgres_analytical.py -q` -> failed on missing script modules.
   - Green: `python -m pytest tests/test_rebuild_postgres_from_parquet.py tests/test_smoke_postgres_analytical.py -q` -> 11 passed.
+  - Repo coverage gate: `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 924 passed, 1 skipped, 100% coverage.
+  - Docs sweep: `git diff --check` -> passed.
   - Repo coverage gate: `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 924 passed, 1 skipped, 100% coverage.
