@@ -9,8 +9,9 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -202,3 +203,77 @@ def render_summary_text(summary: dict) -> str:
     for ticker in summary["top_tickers"]:
         lines.append(f"  {ticker['ticker']}: {ticker['flag_count']} flag(s)")
     return "\n".join(lines)
+
+
+def render_flap_view(telemetry: list[dict]) -> str:
+    farm_events: dict[str, list[dict]] = defaultdict(list)
+    for row in telemetry:
+        if row.get("event") != "farm_state":
+            continue
+        farm_events[row.get("farm") or "(unknown)"].append(row)
+
+    lines = ["=== Flap windows (chronological) ==="]
+    for farm in sorted(farm_events):
+        events = sorted(farm_events[farm], key=lambda x: x["_ts"])
+        lines.append(f"\n[{farm}] {len(events)} transitions")
+        for event in events:
+            lines.append(
+                f"  {event['_ts'].strftime('%Y-%m-%dT%H:%M:%SZ')} "
+                f"state={event.get('state')} code={event.get('code')}"
+            )
+    return "\n".join(lines)
+
+
+def render_quality_view(
+    audit: list[dict],
+    *,
+    severity_filter: Optional[str] = None,
+) -> str:
+    rows = sorted(audit, key=lambda x: x["_ts"])
+    if severity_filter:
+        order = {"info": 0, "warning": 1, "critical": 2}
+        rows = [
+            row
+            for row in rows
+            if order.get(row.get("severity"), 0) >= order.get(severity_filter, 0)
+        ]
+
+    lines = ["=== Quality flags ==="]
+    for row in rows:
+        lines.append(
+            f"{row['_ts'].strftime('%Y-%m-%dT%H:%M:%SZ')} "
+            f"[{row.get('severity', '?'):>8}] "
+            f"{row.get('source')}/{row.get('ticker')}/"
+            f"{row.get('timeframe', '1d')} {row.get('category')}"
+        )
+    return "\n".join(lines)
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = parse_args(argv)
+    now = datetime.now(timezone.utc)
+    window_start = now - args.since
+    telemetry = load_telemetry(args.telemetry_path, since=window_start)
+    audit = load_audit(args.audit_path, since=window_start)
+
+    if args.source != "all":
+        telemetry = [row for row in telemetry if row.get("source") == args.source]
+        audit = [row for row in audit if row.get("source") == args.source]
+
+    if args.view == "summary":
+        summary = compute_summary(
+            telemetry,
+            audit,
+            window_start=window_start,
+            window_end=now,
+        )
+        print(render_summary_text(summary))
+    elif args.view == "flap":
+        print(render_flap_view(telemetry))
+    elif args.view == "quality":
+        print(render_quality_view(audit, severity_filter=args.severity))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

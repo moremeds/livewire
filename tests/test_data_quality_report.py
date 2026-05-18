@@ -216,3 +216,160 @@ def test_render_summary_text_includes_uptime():
     text = render_summary_text(summary)
     assert "97.2" in text
     assert "SMH" in text
+
+
+def test_render_flap_view_chronological():
+    from scripts.data_quality_report import render_flap_view
+
+    rows = [
+        {
+            "_ts": _utc("2026-05-17T00:00:30Z"),
+            "source": "ib",
+            "event": "connected",
+        },
+    ] + [
+        {
+            "_ts": _utc(f"2026-05-17T00:0{i}:00Z"),
+            "source": "ib",
+            "event": "farm_state",
+            "state": "ok" if i % 2 == 0 else "broken",
+            "farm": "ushmds",
+            "code": 2106,
+        }
+        for i in range(6)
+    ]
+    text = render_flap_view(list(reversed(rows)))
+    assert "ushmds" in text
+    assert text.count("00:") >= 1
+    assert text.index("00:00") < text.index("00:05")
+
+
+def test_render_quality_view_severity_filter():
+    from scripts.data_quality_report import render_quality_view
+
+    audit = [
+        {
+            "_ts": _utc("2026-05-17T00:00:00Z"),
+            "source": "ib",
+            "ticker": "SMH",
+            "category": "range_shortfall",
+            "severity": "critical",
+            "detail": {},
+        },
+        {
+            "_ts": _utc("2026-05-17T00:01:00Z"),
+            "source": "ib",
+            "ticker": "NVDA",
+            "category": "interior_gaps",
+            "severity": "warning",
+            "detail": {},
+        },
+    ]
+    text = render_quality_view(audit, severity_filter="critical")
+    assert "SMH" in text
+    assert "NVDA" not in text
+
+
+def test_render_quality_view_defaults_timeframe():
+    from scripts.data_quality_report import render_quality_view
+
+    audit = [{
+        "_ts": _utc("2026-05-17T00:00:00Z"),
+        "source": "ib",
+        "ticker": "SMH",
+        "category": "range_shortfall",
+        "severity": "critical",
+    }]
+    assert "ib/SMH/1d" in render_quality_view(audit)
+
+
+def test_main_dispatch_summary(tmp_path, capsys):
+    from scripts.data_quality_report import main
+
+    t = tmp_path / "telemetry.jsonl"
+    t.write_text(json.dumps({
+        "ts": "2026-05-17T00:00:00Z",
+        "source": "ib",
+        "event": "connected",
+    }) + "\n")
+    a = tmp_path / "audit.jsonl"
+    a.write_text("")
+    rc = main([
+        "--view",
+        "summary",
+        "--since",
+        "30d",
+        "--telemetry-path",
+        str(t),
+        "--audit-path",
+        str(a),
+    ])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Livewire Data Quality Summary" in captured.out
+
+
+def test_main_dispatch_flap_with_source_filter(tmp_path, capsys):
+    from scripts.data_quality_report import main
+
+    t = tmp_path / "telemetry.jsonl"
+    t.write_text(
+        json.dumps({
+            "ts": "2026-05-17T00:00:00Z",
+            "source": "ib",
+            "event": "farm_state",
+            "state": "ok",
+            "farm": "ushmds",
+        }) + "\n" +
+        json.dumps({
+            "ts": "2026-05-17T00:00:00Z",
+            "source": "uw",
+            "event": "farm_state",
+            "state": "broken",
+            "farm": "uw-api",
+        }) + "\n"
+    )
+    rc = main([
+        "--view",
+        "flap",
+        "--since",
+        "30d",
+        "--source",
+        "ib",
+        "--telemetry-path",
+        str(t),
+        "--audit-path",
+        str(tmp_path / "missing-audit.jsonl"),
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "ushmds" in out
+    assert "uw-api" not in out
+
+
+def test_main_dispatch_quality_with_filter(tmp_path, capsys):
+    from scripts.data_quality_report import main
+
+    a = tmp_path / "audit.jsonl"
+    a.write_text(json.dumps({
+        "ts": "2026-05-17T00:00:00Z",
+        "source": "ib",
+        "ticker": "SMH",
+        "severity": "critical",
+        "category": "range_shortfall",
+    }) + "\n")
+    rc = main([
+        "--view",
+        "quality",
+        "--since",
+        "30d",
+        "--severity",
+        "critical",
+        "--telemetry-path",
+        str(tmp_path / "missing-telemetry.jsonl"),
+        "--audit-path",
+        str(a),
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "SMH" in out
