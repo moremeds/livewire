@@ -28,6 +28,8 @@ from typing import Any, List, Optional, Sequence
 
 from ib_async import IB, FlexReport, Option
 
+from clients.telemetry import ConnectionTelemetry, _resolve_default_path as _resolve_telemetry_path
+
 # ---------------------------------------------------------------------------
 # Exception hierarchy
 # ---------------------------------------------------------------------------
@@ -129,6 +131,7 @@ class IBClient:
         self._last_client_id: int = 0
         self._last_timeout: int = 10
         self._last_error: Optional[tuple] = None
+        self._telemetry: ConnectionTelemetry | None = None
 
         # Wire up error callback
         self._ib.errorEvent += self._on_error
@@ -192,6 +195,12 @@ class IBClient:
                 try:
                     self._ib.connect(host, port, clientId=current_id, timeout=timeout)
                     self._last_client_id = current_id
+                    self._telemetry = ConnectionTelemetry(
+                        ib=self._ib,
+                        jsonl_path=_resolve_telemetry_path(),
+                        source="ib",
+                    )
+                    self._telemetry.start()
                     self.logger.info(
                         "Connected to IB on %s:%s (clientId=%s)",
                         host, port, current_id,
@@ -227,6 +236,9 @@ class IBClient:
 
     def disconnect(self) -> None:
         """Disconnect from IB. Safe to call when not connected."""
+        if self._telemetry is not None:
+            self._telemetry.stop()
+            self._telemetry = None
         if self._ib.isConnected():
             self._ib.disconnect()
             self.logger.info("Disconnected from IB")
