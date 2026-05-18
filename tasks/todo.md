@@ -28,7 +28,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
   depends_on: [T3]
 - [x] T5 Run targeted and full verification, then commit implementation milestone
   depends_on: [T4]
-- [ ] T6 Perform rigid self-review and adversarial review, patch any findings, and commit review/docs milestone
+- [x] T6 Perform rigid self-review and adversarial review, patch any findings, and commit review/docs milestone
   depends_on: [T5]
 
 ## Review
@@ -41,3 +41,9 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - `python -m pytest tests/test_bronze_client.py tests/test_coverage_report.py -q` -> 44 passed.
 - Full verification:
   - `python -m pytest tests -q --cov=clients --cov=scripts --cov=livewire_scripts --cov-report=term-missing -W error::RuntimeWarning` -> 839 passed, 1 skipped, 100% coverage.
+- Self-review/adversarial review:
+  - `rg -n "DuckDB|duckdb|DBClient|db_client|tmp_duckdb|rebuild-duckdb|rebuild_duckdb|market\\.duckdb" README.md CLAUDE.md AGENTS.md .codex/project-memory.md clients livewire_scripts scripts pyproject.toml tests --glob '!tests/test_duckdb_retirement.py'` -> no active runtime/operator-doc references.
+  - Full-repo `rg` still finds historical references under archived `docs/superpowers/*` plans/specs and `docs/observability_defensive_blueprint.md`; those are preserved as historical design artifacts, not active commands or dependencies.
+  - `source ~/market-warehouse/.venv/bin/activate && python scripts/livewire_store.py --help` -> storage commands are `rebuild-postgres`, `smoke-postgres`, `sync-r2`, `migrate-parquet`.
+  - `bash -n scripts/setup_market_warehouse.sh && scripts/setup_market_warehouse.sh --help` -> setup script parses and help renders without DuckDB.
+  - `git diff --check origin/main...HEAD` -> passed.
