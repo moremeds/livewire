@@ -10,14 +10,10 @@ RAW_DIR="${DATA_LAKE_DIR}/raw"
 BRONZE_DIR="${DATA_LAKE_DIR}/bronze"
 SILVER_DIR="${DATA_LAKE_DIR}/silver"
 GOLD_DIR="${DATA_LAKE_DIR}/gold"
-DUCKDB_DIR="${ROOT_DIR}/duckdb"
 CLICKHOUSE_DIR="${ROOT_DIR}/clickhouse"
 PY_ENV_DIR="${ROOT_DIR}/.venv"
 SCRIPTS_DIR="${ROOT_DIR}/scripts"
 LOG_DIR="${ROOT_DIR}/logs"
-TMP_DUCKDB_DIR="${ROOT_DIR}/tmp_duckdb"
-
-DUCKDB_FILE="${DUCKDB_DIR}/market.duckdb"
 
 INIT_CLICKHOUSE=0
 START_CLICKHOUSE=0
@@ -131,7 +127,6 @@ brew update
 ########################################
 green "Installing base packages..."
 brew install \
-  duckdb \
   clickhouse \
   python@3.13 \
   uv \
@@ -177,11 +172,9 @@ mkdir -p \
   "${GOLD_DIR}/asset_class=equity" \
   "${GOLD_DIR}/asset_class=option" \
   "${GOLD_DIR}/asset_class=future" \
-  "${DUCKDB_DIR}" \
   "${CLICKHOUSE_DIR}" \
   "${SCRIPTS_DIR}" \
-  "${LOG_DIR}" \
-  "${TMP_DUCKDB_DIR}"
+  "${LOG_DIR}"
 
 ########################################
 # Python environment
@@ -202,7 +195,6 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 uv pip install --python "${PY_ENV_DIR}/bin/python" \
-  duckdb \
   polars \
   pandas \
   pyarrow \
@@ -216,78 +208,6 @@ uv pip install --python "${PY_ENV_DIR}/bin/python" \
   httpx \
   ipython \
   jupyterlab
-
-########################################
-# Create DuckDB bootstrap SQL
-########################################
-cat > "${SCRIPTS_DIR}/bootstrap_duckdb.sql" <<'SQL'
-PRAGMA threads=8;
-PRAGMA enable_progress_bar;
-PRAGMA temp_directory='./tmp_duckdb';
-
-CREATE SCHEMA IF NOT EXISTS md;
-
-CREATE TABLE IF NOT EXISTS md.symbols (
-    symbol_id BIGINT PRIMARY KEY,
-    symbol VARCHAR,
-    asset_class VARCHAR,
-    venue VARCHAR
-);
-
-CREATE TABLE IF NOT EXISTS md.equities_daily (
-    trade_date DATE,
-    symbol_id BIGINT,
-    open DOUBLE,
-    high DOUBLE,
-    low DOUBLE,
-    close DOUBLE,
-    adj_close DOUBLE,
-    volume BIGINT
-);
-
-CREATE TABLE IF NOT EXISTS md.futures_daily (
-    trade_date DATE,
-    contract_id BIGINT,
-    root_symbol VARCHAR,
-    expiry_date DATE,
-    open DOUBLE,
-    high DOUBLE,
-    low DOUBLE,
-    close DOUBLE,
-    settlement DOUBLE,
-    volume BIGINT,
-    open_interest BIGINT
-);
-
-CREATE TABLE IF NOT EXISTS md.options_daily (
-    trade_date DATE,
-    contract_id BIGINT,
-    underlier_id BIGINT,
-    expiry_date DATE,
-    strike DOUBLE,
-    option_right VARCHAR,
-    open DOUBLE,
-    high DOUBLE,
-    low DOUBLE,
-    close DOUBLE,
-    volume BIGINT,
-    open_interest BIGINT,
-    implied_vol DOUBLE
-);
-SQL
-
-green "Bootstrapping DuckDB..."
-rm -f "${DUCKDB_FILE}"
-
-if ! (
-  cd "${ROOT_DIR}"
-  duckdb "${DUCKDB_FILE}" < "${SCRIPTS_DIR}/bootstrap_duckdb.sql"
-); then
-  red "DuckDB bootstrap failed."
-  red "Run this manually for more detail:"
-  echo "  cd \"${ROOT_DIR}\" && duckdb \"${DUCKDB_FILE}\" < \"${SCRIPTS_DIR}/bootstrap_duckdb.sql\""
-  exit 1
-fi
 
 ########################################
 # Create ClickHouse bootstrap SQL
@@ -445,28 +365,14 @@ print(f"Wrote {out}")
 PY
 
 ########################################
-# DuckDB query demo
-########################################
-cat > "${SCRIPTS_DIR}/query_parquet_duckdb.sql" <<'SQL'
-SELECT
-  symbol_id,
-  avg(close) AS avg_close,
-  sum(volume) AS total_volume
-FROM read_parquet('~/market-warehouse/data-lake/bronze/asset_class=equity/year=*/month=*/*.parquet')
-GROUP BY symbol_id
-ORDER BY symbol_id;
-SQL
-
-########################################
 # README
 ########################################
 cat > "${ROOT_DIR}/README.md" <<'MD'
 # Market Warehouse Setup
 
 ## What this installs
-- DuckDB for local analytics
 - ClickHouse for production-like local benchmarking
-- Python environment with Polars, Pandas, PyArrow, DuckDB, ClickHouse Connect
+- Python environment with Polars, Pandas, PyArrow, psycopg, ClickHouse Connect
 - Canonical Parquet-based data lake layout
 
 ## Flags
@@ -524,22 +430,20 @@ fi
 if [[ "${SMOKE_TEST}" -eq 1 ]]; then
   green "Running smoke tests..."
 
-  # DuckDB: verify tables exist
-  DUCKDB_TABLES=$(duckdb -csv -noheader "${DUCKDB_FILE}" <<< "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'md';")
-  if [[ "${DUCKDB_TABLES}" -eq 0 ]]; then
-    red "FAIL: DuckDB has no tables in schema 'md'."
-    exit 1
-  fi
-  green "  DuckDB schema OK (tables found in md)."
-
-  # DuckDB: if sample data was generated, query it
   if [[ "${WITH_SAMPLE_DATA}" -eq 1 ]]; then
-    PARQUET_COUNT=$(duckdb -csv -noheader "${DUCKDB_FILE}" <<< "SELECT count(*) FROM read_parquet('${DATA_LAKE_DIR}/bronze/asset_class=equity/year=*/month=*/*.parquet');")
+    PARQUET_COUNT=$(python - <<PY
+from pathlib import Path
+import pyarrow.parquet as pq
+
+root = Path("${DATA_LAKE_DIR}/bronze/asset_class=equity")
+print(sum(pq.ParquetFile(path).metadata.num_rows for path in root.glob("year=*/month=*/*.parquet")))
+PY
+)
     if [[ "${PARQUET_COUNT}" -eq 0 ]]; then
       red "FAIL: Sample Parquet data returned 0 rows."
       exit 1
     fi
-    green "  DuckDB Parquet query OK (${PARQUET_COUNT} rows)."
+    green "  Parquet sample data OK (${PARQUET_COUNT} rows)."
   fi
 
   # ClickHouse: if started, verify schema

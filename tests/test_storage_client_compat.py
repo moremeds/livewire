@@ -53,9 +53,9 @@ class TestFetchScriptCompat:
     def test_storage_client_defaults_to_bronze(self):
         assert fetch_script._storage_client() is fetch_script.BronzeClient
 
-    def test_storage_client_can_switch_to_db_alias(self, monkeypatch):
+    def test_storage_client_can_switch_to_storage_alias(self, monkeypatch):
         sentinel = object()
-        monkeypatch.setattr(fetch_script, "DBClient", sentinel)
+        monkeypatch.setattr(fetch_script, "StorageClient", sentinel)
         assert fetch_script._storage_client() is sentinel
 
     @pytest.mark.integration
@@ -78,9 +78,9 @@ class TestDailyScriptCompat:
     def test_storage_client_defaults_to_bronze(self):
         assert daily_script._storage_client() is daily_script.BronzeClient
 
-    def test_storage_client_can_switch_to_db_alias(self, monkeypatch):
+    def test_storage_client_can_switch_to_storage_alias(self, monkeypatch):
         sentinel = object()
-        monkeypatch.setattr(daily_script, "DBClient", sentinel)
+        monkeypatch.setattr(daily_script, "StorageClient", sentinel)
         assert daily_script._storage_client() is sentinel
 
     @pytest.mark.integration
@@ -92,7 +92,7 @@ class TestDailyScriptCompat:
         mock_ib.ib.run.side_effect = lambda awaitable: (awaitable.close(), {"AAPL": [_bar()]})[1]
 
         monkeypatch.setattr("sys.argv", ["daily_update.py"])
-        monkeypatch.setattr(daily_script, "DBClient", lambda **kwargs: storage)
+        monkeypatch.setattr(daily_script, "StorageClient", lambda **kwargs: storage)
         monkeypatch.setattr(daily_script, "is_trading_day", lambda d: True)
         monkeypatch.setattr(daily_script, "IBClient", lambda: mock_ib)
         monkeypatch.setattr(daily_script, "DATA_LAKE", tmp_path)

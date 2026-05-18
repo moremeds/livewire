@@ -7,7 +7,6 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -94,10 +93,9 @@ class BronzeClient:
         self._bronze_dir = Path(bronze_dir or _DEFAULT_BRONZE_DIR)
         self._asset_class = asset_class
         self._columns, self._schema, self._id_column = _SCHEMA_PROFILES[asset_class]
-        self._conn = duckdb.connect(":memory:")
 
     def close(self) -> None:
-        self._conn.close()
+        return None
 
     def __enter__(self) -> "BronzeClient":
         return self
@@ -124,15 +122,17 @@ class BronzeClient:
     def get_latest_dates(self) -> dict[str, str]:
         """Return ``{symbol: latest_trade_date}`` from the bronze layer."""
         return {
-            row["symbol"]: row["latest"]
-            for row in self._query_symbol_aggregates("MAX(trade_date)", "latest")
+            symbol: max(dates).isoformat()
+            for symbol, dates in self.get_trade_dates_by_symbol().items()
+            if dates
         }
 
     def get_oldest_dates(self) -> dict[str, str]:
         """Return ``{symbol: oldest_trade_date}`` from the bronze layer."""
         return {
-            row["symbol"]: row["oldest"]
-            for row in self._query_symbol_aggregates("MIN(trade_date)", "oldest")
+            symbol: min(dates).isoformat()
+            for symbol, dates in self.get_trade_dates_by_symbol().items()
+            if dates
         }
 
     def get_summary(self) -> list[dict[str, Any]]:
@@ -140,17 +140,21 @@ class BronzeClient:
         if not self.get_existing_symbols():
             return []
 
-        sql = f"""
-            SELECT
-                symbol,
-                count(*) AS rows,
-                CAST(min(trade_date) AS VARCHAR) AS earliest,
-                CAST(max(trade_date) AS VARCHAR) AS latest
-            FROM read_parquet('{self._escaped_glob()}', hive_partitioning=true)
-            GROUP BY symbol
-            ORDER BY symbol
-        """
-        return self._query(sql)
+        summary: list[dict[str, Any]] = []
+        for path in self._symbol_paths():
+            symbol = self._symbol_from_path(path)
+            dates = self._read_trade_dates(path)
+            if not dates:
+                continue
+            summary.append(
+                {
+                    "symbol": symbol,
+                    "rows": len(dates),
+                    "earliest": min(dates).isoformat(),
+                    "latest": max(dates).isoformat(),
+                }
+            )
+        return summary
 
     def get_symbol_id(self, symbol: str) -> int:
         """Return an existing ID from bronze, or derive a stable one.
@@ -182,6 +186,13 @@ class BronzeClient:
                 row["expiry_date"] = row["expiry_date"].isoformat()
         return rows
 
+    def get_trade_dates_by_symbol(self) -> dict[str, list[date]]:
+        """Return sorted daily trade dates by symbol from bronze parquet snapshots."""
+        result: dict[str, list[date]] = {}
+        for path in self._symbol_paths():
+            result[self._symbol_from_path(path)] = self._read_trade_dates(path)
+        return result
+
     def replace_ticker_rows(self, symbol: str, rows: list[dict[str, Any]]) -> int:
         """Atomically replace a symbol snapshot with *rows*."""
         normalized = self._normalize_rows(rows, symbol)
@@ -212,28 +223,20 @@ class BronzeClient:
         self._publish_symbol_rows(symbol, ordered)
         return inserted
 
-    def _query_symbol_aggregates(self, aggregate_sql: str, alias: str) -> list[dict[str, Any]]:
-        if not self.get_existing_symbols():
-            return []
-
-        sql = f"""
-            SELECT symbol, CAST({aggregate_sql} AS VARCHAR) AS {alias}
-            FROM read_parquet('{self._escaped_glob()}', hive_partitioning=true)
-            GROUP BY symbol
-            ORDER BY symbol
-        """
-        return self._query(sql)
-
-    def _query(self, sql: str, params: Optional[list[Any]] = None) -> list[dict[str, Any]]:
-        result = self._conn.execute(sql, params or [])
-        columns = [desc[0] for desc in result.description]
-        return [dict(zip(columns, row)) for row in result.fetchall()]
-
     def _symbol_path(self, symbol: str) -> Path:
         return self._bronze_dir / f"symbol={symbol}" / PARQUET_FILENAME
 
-    def _escaped_glob(self) -> str:
-        return str(self._bronze_dir / f"symbol=*/{PARQUET_FILENAME}").replace("'", "''")
+    def _symbol_paths(self) -> list[Path]:
+        if not self._bronze_dir.exists():
+            return []
+        return sorted(self._bronze_dir.glob(f"symbol=*/{PARQUET_FILENAME}"))
+
+    def _symbol_from_path(self, path: Path) -> str:
+        return path.parent.name.split("=", 1)[1]
+
+    def _read_trade_dates(self, path: Path) -> list[date]:
+        table = pq.read_table(path, columns=["trade_date"])
+        return sorted(self._normalize_trade_date(value) for value in table.column("trade_date").to_pylist())
 
     def _normalize_rows(self, rows: list[dict[str, Any]], symbol: str) -> list[dict[str, Any]]:
         if self._asset_class == "futures":

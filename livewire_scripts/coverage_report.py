@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import duckdb
+import pyarrow.parquet as pq
 from rich.console import Console
 
 from clients.intraday_bronze_client import INTRADAY_PARQUET_FILENAME
@@ -73,11 +73,6 @@ def _filename_for(tf: str) -> str:
     return "1d.parquet" if tf == "1d" else INTRADAY_PARQUET_FILENAME[tf]
 
 
-def _glob_for(tf: str, bronze_root: Path) -> str:
-    pattern = bronze_root / "asset_class=equity" / "symbol=*" / _filename_for(tf)
-    return str(pattern).replace("'", "''")
-
-
 def _list_symbols(tf: str, bronze_root: Path) -> set[str]:
     bronze_dir = bronze_root / "asset_class=equity"
     if not bronze_dir.exists():
@@ -87,6 +82,22 @@ def _list_symbols(tf: str, bronze_root: Path) -> set[str]:
         p.parent.name.split("=", 1)[1]
         for p in bronze_dir.glob(f"symbol=*/{fname}")
     }
+
+
+def _symbol_from_parquet_path(path: Path) -> str:
+    return path.parent.name.split("=", 1)[1]
+
+
+def _latest_date_in_parquet(path: Path, column_name: str) -> date | None:
+    table = pq.read_table(path, columns=[column_name])
+    values = table.column(column_name).to_pylist()
+    if not values:
+        return None
+    dates = [
+        value if isinstance(value, date) and not hasattr(value, "date") else value.date()
+        for value in values
+    ]
+    return max(dates)
 
 
 def compute_coverage(
@@ -104,36 +115,35 @@ def compute_coverage(
         universe |= _list_symbols(tf, bronze_root)
     universe_size = len(universe)
 
-    con = duckdb.connect(":memory:")
-    try:
-        for tf in TIMEFRAMES:
-            symbols_at_tf = _list_symbols(tf, bronze_root)
-            if not symbols_at_tf:
-                results[tf] = CoverageResult(
-                    timeframe=tf,
-                    total=universe_size,
-                    present=0,
-                    missing_symbols=sorted(universe),
-                )
-                continue
-
-            ts_col = "trade_date" if tf == "1d" else "CAST(bar_timestamp AS DATE)"
-            sql = f"""
-                SELECT symbol, MAX({ts_col}) AS latest
-                FROM read_parquet('{_glob_for(tf, bronze_root)}', hive_partitioning=true)
-                GROUP BY symbol
-            """
-            rows = con.execute(sql).fetchall()
-            present_symbols = {sym for sym, latest in rows if latest >= target_date}
-            missing = sorted(universe - present_symbols)
+    for tf in TIMEFRAMES:
+        parquet_paths = sorted(
+            (bronze_root / "asset_class=equity").glob(f"symbol=*/{_filename_for(tf)}")
+        )
+        if not parquet_paths:
             results[tf] = CoverageResult(
                 timeframe=tf,
                 total=universe_size,
-                present=len(present_symbols),
-                missing_symbols=missing,
+                present=0,
+                missing_symbols=sorted(universe),
             )
-    finally:
-        con.close()
+            continue
+
+        column_name = "trade_date" if tf == "1d" else "bar_timestamp"
+        latest_by_symbol = {
+            _symbol_from_parquet_path(path): latest
+            for path in parquet_paths
+            if (latest := _latest_date_in_parquet(path, column_name)) is not None
+        }
+        present_symbols = {
+            symbol for symbol, latest in latest_by_symbol.items() if latest >= target_date
+        }
+        missing = sorted(universe - present_symbols)
+        results[tf] = CoverageResult(
+            timeframe=tf,
+            total=universe_size,
+            present=len(present_symbols),
+            missing_symbols=missing,
+        )
 
     return results
 

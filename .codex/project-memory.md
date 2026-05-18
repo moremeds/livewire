@@ -14,13 +14,12 @@ Use this file for:
 
 ## Durable Facts
 
-- This project is **Livewire** (rebranded 2026-05-17 from "market-data-warehouse"). The git repo directory is `~/projects/livewire/`. The on-disk data tree intentionally stays at `~/market-warehouse/` — that path is descriptive of the role, not the project name, so it was not renamed. Functional identifiers (`MDW_*` env vars, `mdw.*` logger names, `md.*` DuckDB schema) are unchanged.
-- Canonical storage is bronze Parquet, not DuckDB.
+- This project is **Livewire** (rebranded 2026-05-17 from "market-data-warehouse"). The git repo directory is `~/projects/livewire/`. The on-disk data tree intentionally stays at `~/market-warehouse/` — that path is descriptive of the role, not the project name, so it was not renamed. Functional identifiers (`MDW_*` env vars, `mdw.*` logger names, `md.*` analytical schema) are unchanged.
+- Canonical storage is bronze Parquet.
 - Postgres is an optional replayable analytical publish target rebuilt from bronze parquet and reliability JSONL; it is not canonical storage and live ingestion scripts do not write to it.
 - Live equity data is stored per ticker at `~/market-warehouse/data-lake/bronze/asset_class=equity/symbol=<ticker>/1d.parquet`.
 - Delisted symbols that should no longer participate in future syncs or backfills are archived outside the canonical sync path under `~/market-warehouse/data-lake/bronze-delisted/asset_class=equity/symbol=<ticker>/1d.parquet`.
-- DuckDB is rebuilt from bronze parquet when a local analytical DB file is needed.
-- `scripts/livewire_ingest.py daily` is parquet-first and does not hold the live DuckDB write path.
+- `scripts/livewire_ingest.py daily` is parquet-first and does not write to analytical databases.
 - `scripts/livewire_ingest.py daily` supports `--target-date YYYY-MM-DD` for fixed-date catch-up runs and only publishes bars with `latest < trade_date <= target`.
 - `scripts/livewire_store.py rebuild-postgres` rebuilds Postgres analytical tables under `MDW_POSTGRES_SCHEMA` (default `md`) from bronze parquet and can import telemetry / quality JSONL artifacts.
 - `scripts/livewire_store.py smoke-postgres --ensure-schema` verifies Postgres connectivity, creates the schema when requested, and prints table counts.
@@ -41,7 +40,7 @@ Use this file for:
   - Nasdaq historical quote API with `assetclass=etf`
   - Stooq U.S. daily CSV
 - `IBClient.connect()` already retries successive `clientId` values after IB error `326`.
-- `DBClient.replace_equities_from_parquet()` recreates the analytical tables from scratch on each rebuild so repeat DuckDB rebuilds are safe against an existing DB file.
+- `PostgresClient.replace_equities_from_parquet()` recreates the selected analytical tables from scratch on rebuild so repeat Postgres rebuilds are replayable from bronze.
 - Preferred IBC startup on macOS is the machine-local secure service installed by `scripts/livewire_ops.py ibc-install`, which writes wrappers under `~/ibc/bin`, a LaunchAgent under `~/Library/LaunchAgents/local.ibc-gateway.plist`, and renders a temporary runtime config from `~/ibc/config.secure.ini` plus Keychain secrets instead of storing IB credentials in plaintext config.
 - For this repo, the secure IBC service is a required machine-local dependency for IB-backed workflows, but the service itself is global to the user's Mac rather than scoped to this repo.
 - `symbol_id` for new symbols is a stable 53-bit `blake2b(symbol)`-derived value.

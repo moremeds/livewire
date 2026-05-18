@@ -11,8 +11,7 @@ Livewire is a market data warehouse designed for storing and analyzing historica
 ### Core Stack
 
 * **Parquet data lake** → canonical storage
-* **DuckDB** → local analytics, research, backtesting
-* **Postgres (optional)** → replayable analytical publish target
+* **Postgres (optional)** → replayable analytical publish target for SQL queries
 * **ClickHouse (optional)** → large-scale aggregation & concurrency
 
 ### Current Capabilities
@@ -27,7 +26,6 @@ Livewire is a market data warehouse designed for storing and analyzing historica
 * Per-ticker **bronze Parquet snapshots**
 * **Atomic writes + validation**
 * **Fallback recovery pipeline** for missing data
-* On-demand **DuckDB rebuilds** from Parquet
 * Optional **Postgres analytical rebuilds** from Parquet and reliability JSONL
 
 > **In one sentence:**
@@ -60,11 +58,10 @@ Raw → Bronze → Silver → Gold
 ### Storage Strategy
 
 * **System of record**: Parquet (`data-lake/`)
-* **Local engine**: DuckDB
 * **Analytical publish target (optional)**: Postgres
 * **Warehouse (optional)**: ClickHouse
 
-Live ingestion writes bronze Parquet only. Postgres and DuckDB are derived analytical targets and can be dropped or rebuilt from bronze Parquet plus reliability JSONL artifacts.
+Live ingestion writes bronze Parquet only. Postgres is the replayable analytical target and can be dropped or rebuilt from bronze Parquet plus reliability JSONL artifacts.
 
 ---
 
@@ -82,8 +79,6 @@ Live ingestion writes bronze Parquet only. Postgres and DuckDB are derived analy
 │   │   └── asset_class=fx/symbol=USDEUR/1d.parquet
 │   ├── silver/
 │   └── gold/
-├── duckdb/
-│   └── market.duckdb
 ├── logs/
 │   ├── telemetry.jsonl
 │   └── quality_audit.jsonl
@@ -101,7 +96,6 @@ Live ingestion writes bronze Parquet only. Postgres and DuckDB are derived analy
 * Homebrew
 * Python 3.13+
 * Node.js 22+
-* DuckDB
 * [Interactive Brokers](https://ibkr.com/referral/joseph5632) account
 * ClickHouse (optional)
 
@@ -136,7 +130,7 @@ Livewire keeps the operator-facing command surface to five files:
 | `scripts/livewire_ingest.py` | Data ingestion | Historical seeds, daily updates, robust IB runs, CBOE volatility, intraday backfill, universe checks |
 | `scripts/livewire_quality.py` | Quality and health reporting | Bronze health checks, coverage reports, daily rollup, weekly summary, watchdog alerts |
 | `scripts/livewire_ops.py` | Operations | Scheduled daily job, alert sending |
-| `scripts/livewire_store.py` | Storage maintenance | DuckDB/Postgres rebuilds, Postgres smoke checks, R2 sync, parquet filename migration |
+| `scripts/livewire_store.py` | Storage maintenance | Postgres rebuilds, Postgres smoke checks, R2 sync, parquet filename migration |
 
 Use `--help` at the top level or after a subcommand to inspect exact flags:
 
@@ -154,7 +148,7 @@ Top-level subcommands:
 livewire_ingest.py   daily | historical | robust | cboe-vol | intraday-backfill | intraday-status | probe-intraday | universe | backfill-all
 livewire_quality.py  health | coverage | report | weekly | watchdog
 livewire_ops.py      run-daily-job | ibc-install | ibc-start | send-alert
-livewire_store.py    rebuild-duckdb | rebuild-postgres | smoke-postgres | sync-r2 | migrate-parquet
+livewire_store.py    rebuild-postgres | smoke-postgres | sync-r2 | migrate-parquet
 ```
 
 ---
@@ -434,25 +428,7 @@ python scripts/livewire_ingest.py daily --asset-class fx --preset presets/fx-pai
 
 ---
 
-### Rebuild DuckDB
-
-```bash
-# Rebuild equities, including daily/intraday tables when present
-python scripts/livewire_store.py rebuild-duckdb
-
-# Rebuild only daily equity rows
-python scripts/livewire_store.py rebuild-duckdb --asset-class equity --timeframe 1d
-
-# Rebuild futures daily rows
-python scripts/livewire_store.py rebuild-duckdb --asset-class futures
-
-# Rebuild volatility daily rows
-python scripts/livewire_store.py rebuild-duckdb --asset-class volatility
-```
-
-DuckDB rebuild currently supports `equity`, `futures`, and `volatility`. `cmdty` and `fx` are canonical in bronze Parquet and do not yet have DuckDB rebuild targets.
-
-Other storage commands:
+### Other storage commands
 
 ```bash
 # Sync lake files to R2 when R2 env vars are configured
@@ -625,10 +601,7 @@ python ~/market-warehouse/scripts/write_sample_parquet.py
 ## Recommended Workflow
 
 1. Store all data in **Parquet (bronze)**
-2. Use **DuckDB** for:
-
-   * research
-   * backtesting
+2. Use **Postgres** for replayable local SQL queries when needed
 3. Use **ClickHouse** for:
 
    * large-scale queries
@@ -637,11 +610,6 @@ python ~/market-warehouse/scripts/write_sample_parquet.py
 ---
 
 ## Troubleshooting
-
-### DuckDB Errors
-
-* Use inline `PRIMARY KEY`
-* Avoid reserved keywords (`right` → `option_right`)
 
 ### ClickHouse Issues
 

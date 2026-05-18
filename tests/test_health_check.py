@@ -261,26 +261,20 @@ class TestGetAllTradeDates:
             client.close()
 
     @pytest.mark.integration
-    def test_string_trade_date_is_handled(self, tmp_path):
-        """Cover the defensive str-conversion branch when DuckDB returns strings."""
+    def test_reads_dates_through_bronze_parquet_reader(self, tmp_path):
         bronze_dir = tmp_path / "bronze"
         bronze_dir.mkdir()
         _write_parquet(bronze_dir, "TSLA", [date(2026, 1, 5)])
 
         client = BronzeClient(bronze_dir=bronze_dir)
         try:
-            # Patch _query to return trade_date as a string rather than a date object
-            original_query = client._query
-
-            def _patched_query(sql, params=None):
-                rows = original_query(sql, params)
-                return [
-                    {**row, "trade_date": str(row["trade_date"])}
-                    for row in rows
-                ]
-
-            with patch.object(client, "_query", side_effect=_patched_query):
+            with patch.object(
+                client,
+                "get_trade_dates_by_symbol",
+                wraps=client.get_trade_dates_by_symbol,
+            ) as reader:
                 result = get_all_trade_dates(client)
+            reader.assert_called_once_with()
             assert result["TSLA"] == [date(2026, 1, 5)]
         finally:
             client.close()

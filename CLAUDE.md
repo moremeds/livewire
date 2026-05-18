@@ -1,6 +1,6 @@
 # Livewire
 
-Livewire is a local-first market data warehouse for quantitative research. Parquet data lake as system of record, DuckDB for local analytics, optional Postgres for replayable analytical publishing, and ClickHouse for production benchmarking. Rebranded 2026-05-17 from "market-data-warehouse"; the repo dir is now `livewire/`, the on-disk data tree remains at `~/market-warehouse/` (descriptive, not project-named).
+Livewire is a local-first market data warehouse for quantitative research. Parquet data lake as system of record, optional Postgres for replayable analytical publishing, and ClickHouse for production benchmarking. Rebranded 2026-05-17 from "market-data-warehouse"; the repo dir is now `livewire/`, the on-disk data tree remains at `~/market-warehouse/` (descriptive, not project-named).
 
 ## Project Layout
 
@@ -9,13 +9,12 @@ Two directory trees: this **git repo** and the **data warehouse** at `~/market-w
 ```
 livewire/                           # Git repo
 ├── clients/
-│   ├── __init__.py                 # Exports BronzeClient, DailyBarFallbackClient, IBClient, DBClient
+│   ├── __init__.py                 # Exports BronzeClient, DailyBarFallbackClient, IBClient, PostgresClient
 │   ├── bronze_client.py            # Canonical per-ticker bronze parquet client
 │   ├── daily_bar_fallback.py       # Public daily-bar fallback chain for U.S. equities/ETFs
 │   ├── ib_client.py                # Interactive Brokers API client (ib_async)
 │   ├── historical_provider.py       # HistoricalProvider abstraction (IBProvider, contract spec helpers)
 │   ├── uw_client.py                # Unusual Whales REST API client (kept, not used for historical)
-│   └── db_client.py                # DuckDB client for md.* schema
 │   ├── postgres_client.py          # Postgres analytical publish client
 │   └── postgres_schema.py          # Postgres md.* schema definitions
 ├── presets/
@@ -30,16 +29,15 @@ livewire/                           # Git repo
 │   ├── livewire_ingest.py          # Ingest subcommands: daily, historical, robust, CBOE, intraday, universe
 │   ├── livewire_quality.py         # Quality subcommands: health, coverage, report, weekly, watchdog
 │   ├── livewire_ops.py             # Ops subcommands: scheduled job, alerts
-│   └── livewire_store.py           # Storage subcommands: DuckDB/Postgres rebuild, smoke checks, R2 sync, parquet migration
+│   └── livewire_store.py           # Storage subcommands: Postgres rebuild, smoke checks, R2 sync, parquet migration
 ├── livewire_scripts/               # Importable implementations behind the script entrypoints
 ├── livewire_node/                  # Nodemailer + Cerebras alert helpers
 ├── launchd/                        # macOS launchd templates
 ├── tools/                          # Developer hooks and helper shell tools
 ├── tests/
-│   ├── conftest.py                 # Shared fixtures: tmp_duckdb, db
+│   ├── conftest.py                 # Shared fixtures
 │   ├── test_daily_bar_fallback.py  # Unit tests for fallback providers
 │   ├── test_uw_client.py           # Unit tests — HTTP mocked via `responses`
-│   ├── test_db_client.py           # Integration tests — temp DuckDB per test
 │   ├── test_fetch_ib_historical.py # Tests for IB fetch script
 │   ├── test_daily_update.py        # Tests for daily update script
 │   ├── test_ib_client.py           # Focused tests for IB client connect fallback
@@ -56,7 +54,6 @@ livewire/                           # Git repo
 │   ├── bronze-delisted/asset_class=equity/  # Archived delisted symbols excluded from future sync/backfill runs
 │   ├── silver/                     # Cleaned / adjusted
 │   └── gold/                       # Derived analytics / factor tables
-├── duckdb/market.duckdb            # Analytical DB
 ├── logs/telemetry.jsonl            # Reliability telemetry artifact
 ├── logs/quality_audit.jsonl        # Central quality-flag artifact
 ├── clickhouse/                     # Optional ClickHouse data
@@ -66,9 +63,8 @@ livewire/                           # Git repo
 
 ## Architecture
 
-- **Parquet** is the system of record, not DuckDB
+- **Parquet** is the system of record
 - **Data lake tiers**: bronze (normalized Parquet) -> silver (cleaned) -> gold (derived)
-- **DuckDB** is the local query engine for research and backtesting
 - **Postgres** is an optional analytical publish target rebuilt from bronze parquet and reliability JSONL; ingestion does not write Postgres
 - **ClickHouse** is optional, for production-style benchmarking and concurrency testing
 - **Python env** lives at `~/market-warehouse/.venv/` — activate with `source ~/market-warehouse/.venv/bin/activate`
@@ -79,16 +75,9 @@ The native macOS client has been extracted to the standalone **Sift** app at `~/
 
 See the [Sift CLAUDE.md](~/dev/apps/util/sift/CLAUDE.md) for module layout, build instructions, and testing.
 
-## DuckDB Schema
+## Analytical Targets
 
-Schema `md` with four tables:
-
-- `md.symbols` — `symbol_id BIGINT PK`, `symbol`, `asset_class`, `venue`
-- `md.equities_daily` — `trade_date DATE`, `symbol_id BIGINT`, OHLCV + `adj_close`; unique index on `(trade_date, symbol_id)` for dedup
-- `md.futures_daily` — trade_date, contract_id, root_symbol, expiry_date, OHLCV + settlement + open_interest; unique index on `(trade_date, contract_id)` for dedup; no `md.symbols` entries — self-contained with embedded `root_symbol`
-- `md.options_daily` — trade_date, contract_id, underlier_id, expiry, strike, `option_right` (not `right` — reserved keyword), OHLCV + OI + implied_vol
-
-ClickHouse mirrors the same schema with MergeTree engines partitioned by `toYYYYMM(trade_date)`.
+Postgres publishes replayable `md.*` analytical tables from canonical bronze parquet. ClickHouse mirrors the same daily schema with MergeTree engines partitioned by `toYYYYMM(trade_date)` when production-style benchmarking is needed.
 
 ## IB Gateway / IBC
 
@@ -117,7 +106,6 @@ Data source: **Interactive Brokers** via `ib_async`. Requires IB Gateway at `127
 - `IBClient.get_historical_data()` fetches daily bars via `reqHistoricalData`
 - `BronzeClient` is the live service storage client: it discovers symbols from parquet, merges or replaces per-ticker snapshots, and publishes with `temp -> validate -> os.replace()`
 - `DailyBarFallbackClient` is a narrow recovery client for unresolved target-day gaps in the current U.S. equity universe. Provider order: Nasdaq `assetclass=stocks`, Nasdaq `assetclass=etf`, then Stooq U.S. daily CSV.
-- `DBClient` is now the offline analytical-file client: it can still manage/query `md.*`, and it rebuilds DuckDB from bronze parquet with set-based `INSERT INTO ... SELECT`
 - `adj_close` is set to `close` (IB TRADES data doesn't provide adjusted prices)
 - **CBOE volatility indices** are fetched directly from CBOE's public API (`cdn.cboe.com/api/global/delayed_quotes/charts/historical/`) via `scripts/livewire_ingest.py cboe-vol`, not IB. This is the authoritative source for VIX, VVIX, VXHYG, VXSMH, and all other CBOE volatility indices. The writer normalizes stale parquet schemas on merge (drops extra columns from older schema versions) and rewrites files to fix schema drift even when no new data is available.
 
@@ -188,7 +176,7 @@ Postgres analytical publish environment variables:
 Current fetch behavior:
 - Normal mode atomically replaces the per-ticker bronze snapshot
 - Backfill mode merges older bars into the same per-ticker bronze snapshot
-- The live service path does not open `market.duckdb`
+- The live service path writes bronze parquet only
 - If IB returns an empty head timestamp, the fetcher falls back to `IB_EARLIEST_DATE` instead of skipping the symbol
 - `--asset-class volatility` uses `Index('SYMBOL', 'CBOE')` contracts instead of `Stock('SYMBOL', 'SMART')` and writes to `data-lake/bronze/asset_class=volatility/`
 - `--asset-class futures` uses `Future(root, expiry, exchange)` contracts with composite tickers (`ES_202506`), writes to `data-lake/bronze/asset_class=futures/`, and uses the futures parquet schema (contract_id, root_symbol, expiry_date, settlement, open_interest)
@@ -208,7 +196,7 @@ Current fetch behavior:
 bash scripts/livewire_ingest.py backfill-all   # Runs all presets with stall detection + auto-restart
 ```
 
-Output: per-ticker bronze Parquet at `data-lake/bronze/asset_class=equity/symbol=<ticker>/1d.parquet` (or `asset_class=futures/symbol=ES_202506/1d.parquet` for futures). DuckDB is rebuilt separately when needed.
+Output: per-ticker bronze Parquet at `data-lake/bronze/asset_class=equity/symbol=<ticker>/1d.parquet` (or `asset_class=futures/symbol=ES_202506/1d.parquet` for futures). Postgres is rebuilt separately when SQL access is needed.
 
 ### Futures preset format
 
@@ -259,7 +247,7 @@ The main sync runs at 13:05 Pacific local time daily (4:05 PM Eastern year-round
 **Key design:**
 - Discovers tickers from parquet via `BronzeClient.get_latest_dates()` — no hardcoded lists
 - `--target-date YYYY-MM-DD` lets operators run a fixed-date catch-up and prevents bars later than the requested target from being published
-- Live service writes avoid DuckDB file-lock contention
+- Live service writes avoid analytical database file-lock contention
 - Bar validation: checks OHLCV relationships, positive prices, valid trading days, duplicate dates
 - Atomically rewrites a per-ticker bronze snapshot after each successful merge
 - The active sync universe is the canonical bronze tree only; archive delisted symbols outside that tree if they should stop participating in future syncs/backfills
@@ -362,17 +350,6 @@ python scripts/livewire_quality.py health --intraday --timeframe 5m --symbol AAP
 python scripts/livewire_quality.py health --intraday --timeframe 5m --symbol AAPL --since 2026-04-01  # Repair window
 ```
 
-### Rebuilding DuckDB
-
-```bash
-source ~/market-warehouse/.venv/bin/activate
-python scripts/livewire_store.py rebuild-duckdb                           # Rebuild equity data (default)
-python scripts/livewire_store.py rebuild-duckdb --asset-class volatility  # Rebuild volatility data
-python scripts/livewire_store.py rebuild-duckdb --asset-class futures     # Rebuild futures data
-```
-
-This repopulates `~/market-warehouse/duckdb/market.duckdb` from the canonical bronze parquet tree when you want a fresh analytical DB file. The rebuild path recreates the analytical tables from scratch on each run, so rerunning it against an existing DuckDB file is safe. The `--asset-class` flag derives the correct bronze directory and sets the `venue` in `md.symbols` (`SMART` for equity, `CBOE` for volatility). Futures use `replace_futures_from_parquet()` which populates `md.futures_daily` directly (no `md.symbols` entries).
-
 ### Rebuilding Postgres
 
 ```bash
@@ -389,13 +366,6 @@ python scripts/livewire_store.py rebuild-postgres --include-reliability
 ```
 
 Postgres is a replayable publish target, not canonical storage. Rollback means dropping or truncating the target schema and rerunning rebuilds from bronze parquet plus `telemetry.jsonl` / `quality_audit.jsonl`. Futures and intraday rebuilds are conditional on corresponding bronze parquet existing.
-
-### Querying
-
-```bash
-duckdb ~/market-warehouse/duckdb/market.duckdb \
-  "SELECT s.symbol, count(*) FROM md.symbols s JOIN md.equities_daily e ON s.symbol_id = e.symbol_id GROUP BY s.symbol"
-```
 
 ## Testing
 
@@ -414,7 +384,7 @@ python -m pytest tests/ -v -W error::RuntimeWarning                             
 
 1. Add tests in `tests/test_<module>.py`
 2. Mock all external I/O (IB connections via `MagicMock`, file paths via `patch`)
-3. Use `tmp_duckdb` / `db` fixtures from `conftest.py` for DB tests
+3. Use temp parquet roots or disposable Postgres DSNs for storage tests
 4. Mark DB tests with `@pytest.mark.integration`
 5. Run coverage and confirm 100% before committing
 6. Run `-W error::RuntimeWarning` at least once before committing when script tests mock async runners such as `ib.ib.run(...)`
@@ -439,7 +409,7 @@ Catches: AWS keys, API key/secret/password assignments, private key headers, Git
 
 - IB BarData provides native float/int types — no string parsing needed
 - `symbol_id` is now a stable 53-bit hash from `blake2b(symbol)` for new symbols
-- Live ingestion writes bronze parquet directly; DuckDB and Postgres are rebuilt from bronze when needed
+- Live ingestion writes bronze parquet directly; Postgres is rebuilt from bronze when SQL access is needed
 - Empty IB head timestamps now fall back to the earliest supported IB historical date instead of skipping the symbol
 - Bronze Parquet uses per-ticker Hive-partitioned layout: `data-lake/bronze/asset_class=equity/symbol=AAPL/1d.parquet` (futures: `asset_class=futures/symbol=ES_202506/1d.parquet`)
 - Bronze publication is atomic at the file level: write temp parquet, validate it, then `os.replace()` into place
@@ -451,7 +421,6 @@ Catches: AWS keys, API key/secret/password assignments, private key headers, Git
 Common traps that derail debugging sessions — check these before investigating further:
 
 - **IB Gateway availability**: Run `~/trading-stack/scripts/ibc_gateway_status.sh` and `nc -z 127.0.0.1 4001` before assuming IB is reachable. If down: `tail -30 /opt/ibc/logs/ibc-watchdog.log`; if still stuck, full bounce via `~/trading-stack/scripts/bounce_ibc_xenon.sh` (touches Xenon too — coordinate). Do NOT auto-retry restarts: failures usually mean 2FA, IBKR maintenance, or session conflict, not transient.
-- **DuckDB file locks**: Never open `market.duckdb` from the live service path. The daily update intentionally avoids DuckDB writes — this is by design, not a bug.
 - **Empty IB head timestamps**: IB returns empty head timestamps for some symbols. The fallback to `IB_EARLIEST_DATE` is intentional — don't treat it as an error.
 - **IB error 326 (client ID in use)**: Handled by auto-retry in `IBClient.connect()`. Don't manually reassign client IDs.
 - **Weekend/holiday runs**: IB returns no data on non-trading days. These are harmless no-ops — don't debug "no data returned" on weekends or holidays.
