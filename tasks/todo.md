@@ -33,13 +33,13 @@ Use this file for the current task only. Replace it at the start of each non-tri
   depends_on: [T1]
 - [x] T3 Add Postgres client lifecycle and schema creation
   depends_on: [T2]
-- [ ] T4 Implement daily equity and volatility replace from Parquet
+- [x] T4 Implement daily equity and volatility replace from Parquet
   depends_on: [T3]
-- [ ] T5 Implement futures replace from Parquet
+- [x] T5 Implement futures replace from Parquet
   depends_on: [T3]
-- [ ] T6 Implement intraday replace from Parquet
+- [x] T6 Implement intraday replace from Parquet
   depends_on: [T3]
-- [ ] T7 Import reliability JSONL into Postgres
+- [x] T7 Import reliability JSONL into Postgres
   depends_on: [T3]
 - [ ] T8 Add Postgres rebuild CLI
   depends_on: [T4, T5, T6, T7]
@@ -62,6 +62,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - T2 added validated Postgres analytical DDL for symbols, daily/intraday market data, telemetry events, and quality flags.
   - T3 added `PostgresClient` lifecycle, environment configuration, schema creation, and package export.
   - T3 review gate: schema/client shape is sufficient to proceed to market-data loaders.
+  - T4-T7 added PyArrow batch loaders for daily equity/volatility, futures, intraday `1h`/`5m`, and reliability JSONL imports.
 - Verification:
   - `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 883 passed, 100% coverage.
   - `python -m pip install 'psycopg[binary]'` -> installed `psycopg-3.3.4` and `psycopg-binary-3.3.4`.
@@ -73,3 +74,6 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - Green: `python -m pytest tests/test_postgres_client.py -q` -> 7 passed.
   - Live gate skip: `python -m pytest tests/test_postgres_client_live.py -q` -> 1 skipped because `MDW_TEST_POSTGRES_DSN` is unset.
   - Repo coverage gate: `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 899 passed, 1 skipped, 100% coverage.
+  - Red: `python -m pytest tests/test_postgres_client.py -q` -> 10 failed on missing loader/import methods.
+  - Green: `python -m pytest tests/test_postgres_client.py -q` -> 21 passed.
+  - Repo coverage gate: `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 913 passed, 1 skipped, 100% coverage.
