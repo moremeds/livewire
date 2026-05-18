@@ -29,7 +29,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
   depends_on: []
 - [x] T1 Add Postgres dependency and configuration surface
   depends_on: [T0]
-- [ ] T2 Define Postgres schema SQL
+- [x] T2 Define Postgres schema SQL
   depends_on: [T1]
 - [ ] T3 Add Postgres client lifecycle and schema creation
   depends_on: [T2]
@@ -59,7 +59,11 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - T0 baseline gate passed before implementation edits.
   - Feature branch/worktree: `feat/postgres-analytical-layer` at `/Users/chenxi/.config/superpowers/worktrees/livewire/feat-postgres-analytical-layer`.
   - T1 added the `postgres_live` pytest marker, non-secret Postgres env placeholders, and the `psycopg[binary]` bootstrap package.
+  - T2 added validated Postgres analytical DDL for symbols, daily/intraday market data, telemetry events, and quality flags.
 - Verification:
   - `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 883 passed, 100% coverage.
   - `python -m pip install 'psycopg[binary]'` -> installed `psycopg-3.3.4` and `psycopg-binary-3.3.4`.
   - `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing` -> 883 passed, 100% coverage.
+  - Red: `python -m pytest tests/test_postgres_schema.py -q` -> failed with `ModuleNotFoundError: No module named 'clients.postgres_schema'`.
+  - Green: `python -m pytest tests/test_postgres_schema.py -q` -> 9 passed.
+  - Repo coverage gate: `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 892 passed, 100% coverage.
