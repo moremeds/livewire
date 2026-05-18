@@ -88,7 +88,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - `main` and `feat/sub-c-massive-daily-validation` both point at `87dfc72`.
   - Worktree was clean before this plan update.
 
-- [ ] T1 Write Sub-C design spec
+- [x] T1 Write Sub-C design spec
   depends_on: [T0]
   - Create `docs/superpowers/specs/2026-05-18-sub-c-massive-daily-validation-design.md`.
   - Lock the product boundary:
@@ -100,7 +100,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
     - Option B: explicit `daily --source massive` plus narrow recent-gap fallback after IB misses target-day bars.
   - Recommended decision: Option B, but the fallback must be narrow, recent, equity/ETF-only, logged, and source-counted.
 
-- [ ] T2 Verify Massive provider contract
+- [x] T2 Verify Massive provider contract
   depends_on: [T1]
   - Use the user-provided dashboard reference: `https://massive.com/dashboard/rest`.
   - Docs-confirmed candidate endpoints:
@@ -126,13 +126,13 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - Define and test volume normalization because live `v` can be non-integer.
   - Record exact endpoint choices in the design spec before implementation.
 
-- [ ] T3 Verify UW Sub-C role
+- [x] T3 Verify UW Sub-C role
   depends_on: [T1]
   - Inspect `docs/unusual_whales_api_spec.yaml` and `clients/uw_client.py`.
   - Add request telemetry to `UWClient` regardless.
   - Decide whether UW daily OHLC is in validation scope. If semantics are not clean enough, explicitly mark UW as telemetry-only for Sub-C.
 
-- [ ] T4 Write implementation plan
+- [x] T4 Write implementation plan
   depends_on: [T2, T3]
   - Create `docs/superpowers/plans/2026-05-18-sub-c-massive-daily-validation-plan.md`.
   - Include exact file-level tasks and tests for:
