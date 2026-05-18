@@ -43,7 +43,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from ib_async import Contract, Forex, Future, Index, Stock
@@ -57,6 +57,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients.bronze_client import BronzeClient
 from clients.ib_client import IBClient, IBError
+from clients.quality_detector import _normalize_bars_for_detection, detect_all
+from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
 
 _DEFAULT_STORAGE_CLIENT = BronzeClient
 DBClient = BronzeClient
@@ -85,6 +87,7 @@ MAG7 = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
 IB_EARLIEST_DATE = datetime(1993, 1, 29)
 
 console = Console()
+_QUALITY_ENABLED = True
 
 
 ROOT_EXCHANGE_MAP = {
@@ -508,16 +511,85 @@ async def fetch_all_tickers(
 # ── Per-ticker bronze ops ─────────────────────────────────────────────
 
 
+def _bronze_parquet_path(ticker: str, bronze: BronzeClient) -> Path:
+    base = getattr(bronze, "bronze_dir", BRONZE_DIR)
+    if not isinstance(base, (str, Path)):
+        base = BRONZE_DIR
+    return Path(base) / f"symbol={ticker}" / "1d.parquet"
+
+
+def _run_quality_detection(
+    *,
+    ticker: str,
+    timeframe: str,
+    asset_class: str,
+    bars: list,
+    parquet_path: Path,
+    expected_start: date | None = None,
+    ib_head_timestamp: date | None = None,
+    source: str = "ib",
+) -> None:
+    """Run post-fetch quality detection and emit flags without blocking publish."""
+    if not _QUALITY_ENABLED or not bars:
+        return
+
+    normalized = _normalize_bars_for_detection(bars)
+    metadata = {
+        "asset_class": asset_class,
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "source": source,
+        "bars_received": len(bars),
+        "errors_during_fetch": [],
+        "expected_start": expected_start,
+        "ib_head_timestamp": ib_head_timestamp,
+    }
+    try:
+        flags = detect_all(bars=normalized, metadata=metadata, trading_calendar=None)
+    except Exception as exc:  # pragma: no cover - detect_all wraps individual detectors
+        console.print(f"  [yellow]quality detection raised: {exc}[/yellow]")
+        return
+
+    if not flags:
+        return
+
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    write_sidecar(parquet_path, flags, metadata)
+    for flag in flags:
+        append_audit(
+            flag,
+            source=source,
+            ticker=ticker,
+            timeframe=timeframe,
+            parquet_path=parquet_path,
+        )
+        alert_on_flag(flag, source=source, ticker=ticker)
+
+
 def fetch_ticker(
     ticker: str,
     bars: list,
     bronze: BronzeClient,
     asset_class: str = "equity",
+    *,
+    expected_start: date | None = None,
+    ib_head_timestamp: date | None = None,
 ) -> int:
     """Persist pre-fetched bars for *ticker* into bronze parquet."""
     if not bars:
         console.print(f"  [yellow]No bar data for {ticker}[/yellow]")
         return 0
+
+    parquet_path = _bronze_parquet_path(ticker, bronze)
+    _run_quality_detection(
+        ticker=ticker,
+        timeframe="1d",
+        asset_class=asset_class,
+        bars=bars,
+        parquet_path=parquet_path,
+        expected_start=expected_start,
+        ib_head_timestamp=ib_head_timestamp,
+    )
 
     symbol_id = bronze.get_symbol_id(ticker)
     if asset_class == "futures":
@@ -547,11 +619,32 @@ def get_oldest_dates(bronze: BronzeClient) -> dict[str, str]:
     return bronze.get_oldest_dates()
 
 
-def backfill_ticker(ticker: str, bars: list, bronze: BronzeClient, asset_class: str = "equity") -> int:
+def backfill_ticker(
+    ticker: str,
+    bars: list,
+    bronze: BronzeClient,
+    asset_class: str = "equity",
+    *,
+    expected_start: date | None = None,
+    ib_head_timestamp: date | None = None,
+) -> int:
     """Insert backfill bars for *ticker* without deleting existing data."""
     if not bars:
         console.print(f"  [yellow]No backfill data for {ticker}[/yellow]")
         return 0
+
+    if expected_start is None:
+        expected_start = IB_EARLIEST_DATE.date()
+    parquet_path = _bronze_parquet_path(ticker, bronze)
+    _run_quality_detection(
+        ticker=ticker,
+        timeframe="1d",
+        asset_class=asset_class,
+        bars=bars,
+        parquet_path=parquet_path,
+        expected_start=expected_start,
+        ib_head_timestamp=ib_head_timestamp,
+    )
 
     symbol_id = bronze.get_symbol_id(ticker)
     if asset_class == "futures":
@@ -637,7 +730,14 @@ def main():
         default="equity",
         help="Asset class to fetch (default: equity).",
     )
+    parser.add_argument(
+        "--no-quality",
+        action="store_true",
+        help="Disable the post-fetch quality detection hook (debug only).",
+    )
     args = parser.parse_args()
+    global _QUALITY_ENABLED
+    _QUALITY_ENABLED = not args.no_quality
 
     logging.basicConfig(
         level=logging.INFO,

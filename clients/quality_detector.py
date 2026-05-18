@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any, Optional
 
 try:
@@ -73,6 +74,23 @@ def _coerce_date(value) -> date:
     if isinstance(value, date) and not isinstance(value, datetime):
         return value
     return date.fromisoformat(str(value)[:10])
+
+
+def _normalize_bars_for_detection(bars: list) -> list:
+    """Produce objects exposing ``.trade_date`` as an ISO date string."""
+    out = []
+    for b in bars:
+        if hasattr(b, "trade_date"):
+            out.append(b)
+        elif hasattr(b, "date"):
+            d = b.date
+            out.append(SimpleNamespace(trade_date=str(d)[:10]))
+        elif isinstance(b, dict):
+            ts = b.get("trade_date") or b.get("bar_timestamp")
+            out.append(SimpleNamespace(trade_date=str(ts)[:10]))
+        else:  # pragma: no cover - defensive
+            continue
+    return out
 
 
 def detect_interior_gaps(

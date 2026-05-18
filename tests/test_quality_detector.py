@@ -1,10 +1,11 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from clients.quality_detector import (
     QualityFlag,
+    _normalize_bars_for_detection,
     detect_all,
     detect_fetch_tainting,
     detect_interior_gaps,
@@ -159,6 +160,22 @@ def test_extracted_trading_calendar_sunday_observed_and_ranges():
     assert date(2023, 1, 2) in get_nyse_holidays(2023)
     assert previous_trading_day(date(2025, 1, 6)) == date(2025, 1, 3)
     assert trading_days_between(date(2025, 1, 3), date(2025, 1, 6)) == 1
+
+
+def test_normalize_bars_for_detection_accepts_common_shapes():
+    rows = _normalize_bars_for_detection([
+        SimpleNamespace(trade_date="2026-04-01"),
+        SimpleNamespace(date=date(2026, 4, 2)),
+        {"bar_timestamp": datetime(2026, 4, 3, tzinfo=timezone.utc)},
+        {"trade_date": "2026-04-06"},
+        object(),
+    ])
+    assert [r.trade_date for r in rows] == [
+        "2026-04-01",
+        "2026-04-02",
+        "2026-04-03",
+        "2026-04-06",
+    ]
 
 
 def test_fetch_tainting_no_errors_returns_none():
