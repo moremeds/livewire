@@ -66,8 +66,8 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - T8-T9 added the Postgres rebuild CLI and optional analytical smoke script.
   - T10 updated operator and agent docs with Postgres role, env vars, rebuild examples, and rollback guidance.
   - Self-review tightened parquet loaders so market-data rows stream into COPY instead of being accumulated as full Python lists.
-  - T12 live Postgres rebuild/smoke was not run because `MDW_POSTGRES_DSN` and `MDW_TEST_POSTGRES_DSN` are unset in this environment.
-  - T12 detected equity daily, volatility daily, equity `1h`, and equity `5m` bronze inputs; futures bronze input is absent.
+  - T12 started a disposable local Postgres 15 database, ran live schema/smoke/rebuild/import checks, and verified source parquet/JSONL counts match Postgres counts.
+  - T12 detected and loaded equity daily, volatility daily, equity `1h`, and equity `5m` bronze inputs; futures bronze input is absent.
   - T13 pushed `feat/postgres-analytical-layer` and opened PR #3.
 - Verification:
   - `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 883 passed, 100% coverage.
@@ -89,10 +89,19 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - Docs sweep: `git diff --check` -> passed.
   - Repo coverage gate: `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 924 passed, 1 skipped, 100% coverage.
   - Final coverage gate: `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 924 passed, 1 skipped, 100% coverage.
-  - Live-gated Postgres test: `python -m pytest tests/test_postgres_client_live.py -q` -> 1 skipped because `MDW_TEST_POSTGRES_DSN` is unset.
-  - Smoke DSN guard: `python scripts/smoke_postgres_analytical.py` -> exited 2 with `MDW_POSTGRES_DSN is required unless --dsn is supplied`.
+  - Live-gated Postgres test before DSN setup: `python -m pytest tests/test_postgres_client_live.py -q` -> 1 skipped because `MDW_TEST_POSTGRES_DSN` was unset.
+  - Smoke DSN guard before DSN setup: `python scripts/smoke_postgres_analytical.py` -> exited 2 with `MDW_POSTGRES_DSN is required unless --dsn is supplied`.
   - CLI help: `python scripts/rebuild_postgres_from_parquet.py --help` and `python scripts/smoke_postgres_analytical.py --help` -> exited 0.
   - Self-review fix gate: `python -m pytest tests/test_postgres_client.py -q` -> 22 passed.
   - Final coverage gate after self-review fix: `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 925 passed, 1 skipped, 100% coverage.
+  - Disposable Postgres smoke: `python scripts/smoke_postgres_analytical.py --ensure-schema` -> table counts all zero after schema creation.
+  - Disposable live test: `python -m pytest tests/test_postgres_client_live.py -q` -> 1 passed.
+  - Disposable rebuilds:
+    - `python scripts/rebuild_postgres_from_parquet.py --asset-class equity --timeframe 1d` -> 439 symbols, 937,229 rows.
+    - `python scripts/rebuild_postgres_from_parquet.py --asset-class volatility` -> 14 symbols, 65,872 rows.
+    - `python scripts/rebuild_postgres_from_parquet.py --asset-class equity --timeframe 1h` -> 10,731 rows.
+    - `python scripts/rebuild_postgres_from_parquet.py --asset-class equity --timeframe 5m` -> 58,989 rows.
+    - `python scripts/rebuild_postgres_from_parquet.py --include-reliability` -> telemetry=69, quality=3, skipped=0.
+  - Source-to-Postgres count comparison -> `source_to_postgres_counts_match=yes` for equity daily, volatility daily, intraday `1h`/`5m`, telemetry, and quality flags.
   - `git push -u origin feat/postgres-analytical-layer` -> pushed branch and set upstream.
   - `gh pr create --title "Sub-B: Postgres Analytical Layer" --body-file /tmp/livewire-postgres-sub-b-pr.md` -> https://github.com/moremeds/livewire/pull/3.
