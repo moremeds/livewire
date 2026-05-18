@@ -480,6 +480,48 @@ export function buildFlagAlertMessage(payload) {
   return { subject, html, text };
 }
 
+export function buildDailySummaryMessage(payload) {
+  const sourceRows = (payload.sources || [])
+    .map(
+      (row) => `<tr>
+        <td>${escapeHtml(row.source)}</td>
+        <td>${escapeHtml(row.connection_events ?? 0)}</td>
+        <td>${escapeHtml(row.uptime_pct ?? "")}</td>
+        <td>${escapeHtml(row.flap_count ?? 0)}</td>
+      </tr>`,
+    )
+    .join("");
+  const flagRows = Object.entries(payload.flag_counts_by_category || {})
+    .map(
+      ([category, count]) => `<tr>
+        <td>${escapeHtml(category)}</td>
+        <td>${escapeHtml(count)}</td>
+      </tr>`,
+    )
+    .join("");
+  const tickerRows = (payload.top_tickers || [])
+    .map(
+      (row) => `<tr>
+        <td>${escapeHtml(row.ticker)}</td>
+        <td>${escapeHtml(row.flag_count)}</td>
+      </tr>`,
+    )
+    .join("");
+  const subject = `${DEFAULT_SUBJECT_PREFIX.replace("Market Data Warehouse", "Livewire")} daily summary ${payload.window || ""}`.trim();
+  const html = `<html><body>
+    <h2>[Livewire] daily summary</h2>
+    <p><b>Window:</b> ${escapeHtml(payload.window || "")}</p>
+    <h3>Sources</h3>
+    <table><thead><tr><th>Source</th><th>Events</th><th>Uptime %</th><th>Flaps</th></tr></thead><tbody>${sourceRows}</tbody></table>
+    <h3>Flags by category</h3>
+    <table><thead><tr><th>Category</th><th>Count</th></tr></thead><tbody>${flagRows}</tbody></table>
+    <h3>Top tickers</h3>
+    <table><thead><tr><th>Ticker</th><th>Flags</th></tr></thead><tbody>${tickerRows}</tbody></table>
+  </body></html>`;
+  const text = `[Livewire] daily summary ${payload.window || ""}\n${JSON.stringify(payload, null, 2)}`;
+  return { subject, html, text };
+}
+
 export async function sendFailureAlert({ transportOptions, message }) {
   const { default: nodemailer } = await import("nodemailer");
   const transport = nodemailer.createTransport(transportOptions);
@@ -507,6 +549,27 @@ async function runFlagAlert(options, env = process.env, deps = {}) {
   };
 }
 
+async function runDailySummary(options, env = process.env, deps = {}) {
+  const alertConfig = resolveAlertConfig(env);
+  const message = {
+    from: alertConfig.from,
+    to: alertConfig.to,
+    cc: alertConfig.cc,
+    bcc: alertConfig.bcc,
+    replyTo: alertConfig.replyTo,
+    ...buildDailySummaryMessage(options.payload),
+  };
+  const info = await (deps.sendFailureAlert || sendFailureAlert)({
+    transportOptions: alertConfig.transportOptions,
+    message,
+  });
+  return {
+    mode: "daily-summary",
+    info,
+    message,
+  };
+}
+
 export async function runFailureAlert(argv, env = process.env, deps = {}) {
   const options = parseArgs(argv);
   if (options.help) {
@@ -514,6 +577,9 @@ export async function runFailureAlert(argv, env = process.env, deps = {}) {
   }
   if (options.mode === "flag-alert") {
     return runFlagAlert(options, env, deps);
+  }
+  if (options.mode === "daily-summary") {
+    return runDailySummary(options, env, deps);
   }
 
   const alertConfig = resolveAlertConfig(env);
@@ -602,6 +668,10 @@ export async function main(argv = process.argv.slice(2), env = process.env, deps
 
   if (result.mode === "flag-alert") {
     console.log(`Sent quality flag alert: ${result.message.subject}`);
+    return result;
+  }
+  if (result.mode === "daily-summary") {
+    console.log(`Sent daily quality summary: ${result.message.subject}`);
     return result;
   }
 

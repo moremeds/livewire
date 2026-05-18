@@ -408,3 +408,20 @@ test("flag-alert mode rejects missing payload", async () => {
   assert.throws(() => parseArgs(["--mode", "flag-alert"]),
     /payload.*required/i);
 });
+
+test("daily-summary mode renders rollup HTML", async () => {
+  const { parseArgs, buildDailySummaryMessage } = await import("./send_daily_update_failure_email.mjs");
+  const payload = {
+    window: "24h",
+    sources: [
+      { source: "ib", connection_events: 142, uptime_pct: 97.2, flap_count: 3 },
+    ],
+    flag_counts_by_category: { range_shortfall: 1, fetch_tainted: 2 },
+    top_tickers: [{ ticker: "SMH", flag_count: 2 }],
+  };
+  const args = parseArgs(["--mode", "daily-summary", "--payload", JSON.stringify(payload)]);
+  const msg = buildDailySummaryMessage(args.payload);
+  assert.match(msg.subject, /\[Livewire\].*daily summary/i);
+  assert.match(msg.html, /97\.2/);
+  assert.match(msg.html, /SMH/);
+});
