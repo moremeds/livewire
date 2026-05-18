@@ -196,6 +196,56 @@ class TestBackfillTicker:
         assert outcome.bars_inserted == 0
 
 
+class TestQualityHookIntegration:
+    def test_quality_hook_fires_with_outcome_errors(self, tmp_path):
+        from clients.quality_detector import QualityFlag
+        from scripts.backfill_intraday import _run_quality_detection
+
+        bars = [_make_ib_bar(datetime(2026, 4, 6, 9, 30))]
+        outcome = TickerOutcome(ticker="AAPL", errors=["2026-04-06: error 162"])
+        parquet_path = tmp_path / "5m.parquet"
+        parquet_path.write_bytes(b"")
+        fake_flag = QualityFlag(
+            category="fetch_tainted",
+            severity="critical",
+            detail={},
+            ts="2026-05-17T00:00:00Z",
+        )
+
+        with patch("scripts.backfill_intraday.detect_all", return_value=[fake_flag]) as m_detect, \
+             patch("scripts.backfill_intraday.write_sidecar", return_value=True) as m_sidecar, \
+             patch("scripts.backfill_intraday.append_audit", return_value=True) as m_audit, \
+             patch("scripts.backfill_intraday.alert_on_flag", return_value=True) as m_alert:
+            _run_quality_detection(
+                ticker="AAPL",
+                timeframe="5m",
+                bars=bars,
+                parquet_path=parquet_path,
+                outcome=outcome,
+            )
+
+        kwargs = m_detect.call_args.kwargs
+        assert kwargs["metadata"]["errors_during_fetch"]
+        assert m_sidecar.call_count == 1
+        assert m_audit.call_count == 1
+        assert m_alert.call_count == 1
+
+    def test_quality_hook_skips_empty_bars(self, tmp_path):
+        from scripts.backfill_intraday import _run_quality_detection
+
+        outcome = TickerOutcome(ticker="AAPL")
+        with patch("scripts.backfill_intraday.detect_all") as m_detect:
+            _run_quality_detection(
+                ticker="AAPL",
+                timeframe="5m",
+                bars=[],
+                parquet_path=tmp_path / "x.parquet",
+                outcome=outcome,
+            )
+
+        m_detect.assert_not_called()
+
+
 # ── plan_chunks ──────────────────────────────────────────────────────────────
 
 
