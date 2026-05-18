@@ -13,6 +13,11 @@ import argparse
 import json
 import logging
 import os
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
@@ -89,3 +94,120 @@ def _is_already_done(parquet_path: Path, mode: str) -> bool:
     if mode == "backfill":
         return not parquet_path.exists()
     return False  # pragma: no cover - argparse choices prevent other values
+
+
+class OutcomeCategory(str, Enum):
+    OK = "ok"
+    OK_NOOP = "ok-noop"
+    SKIP = "skip"
+    FAIL = "fail"
+    TIMEOUT = "timeout"
+
+
+@dataclass
+class TickerOutcome:
+    ticker: str
+    code: OutcomeCategory
+    attempts_used: int
+    elapsed_seconds: float
+    rows_before: int
+    rows_after: int
+    note: str = ""
+
+
+def _build_worker_cmd(ticker: str, mode: str, asset_class: str) -> list[str]:
+    """Construct the subprocess args for fetch_ib_historical."""
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "scripts" / "fetch_ib_historical.py"),
+        "--tickers",
+        ticker,
+        "--asset-class",
+        asset_class,
+        "--batch-size",
+        "1",
+        "--max-concurrent",
+        "1",
+    ]
+    if mode == "seed":
+        cmd += ["--years", "0"]
+    elif mode == "backfill":
+        cmd += ["--backfill"]
+    return cmd
+
+
+def _count_rows(parquet_path: Path) -> int:
+    if not parquet_path.exists():
+        return 0
+    try:
+        import duckdb
+
+        escaped = str(parquet_path).replace("'", "''")
+        return duckdb.connect().execute(
+            f"select count(*) from read_parquet('{escaped}')"
+        ).fetchone()[0]
+    except Exception as exc:  # pragma: no cover - unknown row count is non-fatal
+        _logger.warning("row count failed for %s: %s", parquet_path, exc)
+        return 0
+
+
+def run_one_ticker(
+    *,
+    ticker: str,
+    mode: str,
+    asset_class: str,
+    bronze_dir: Path,
+    timeout: int,
+    max_attempts: int,
+    cooldown: int,
+) -> TickerOutcome:
+    parquet = _bronze_path_for(bronze_dir, asset_class, ticker)
+    if _is_already_done(parquet, mode):
+        return TickerOutcome(ticker, OutcomeCategory.SKIP, 0, 0.0, 0, 0)
+
+    cmd = _build_worker_cmd(ticker, mode, asset_class)
+    rows_before = _count_rows(parquet)
+    start = time.monotonic()
+
+    attempts = 0
+    last_was_timeout = False
+    while attempts < max_attempts:
+        attempts += 1
+        try:
+            result = subprocess.run(cmd, timeout=timeout, capture_output=True)
+            last_was_timeout = False
+        except subprocess.TimeoutExpired:
+            last_was_timeout = True
+            _logger.warning("[%s] attempt %d timeout after %ss", ticker, attempts, timeout)
+            if attempts < max_attempts:
+                time.sleep(cooldown)
+            continue
+
+        if result.returncode == 0:
+            rows_after = _count_rows(parquet)
+            elapsed = time.monotonic() - start
+            if parquet.exists() and rows_after > rows_before:
+                return TickerOutcome(
+                    ticker,
+                    OutcomeCategory.OK,
+                    attempts,
+                    elapsed,
+                    rows_before,
+                    rows_after,
+                    note=f"rows +{rows_after - rows_before}",
+                )
+            return TickerOutcome(
+                ticker,
+                OutcomeCategory.OK,
+                attempts,
+                elapsed,
+                rows_before,
+                rows_after,
+            )
+        _logger.warning("[%s] attempt %d exit=%d", ticker, attempts, result.returncode)
+        if attempts < max_attempts:
+            time.sleep(cooldown)
+
+    elapsed = time.monotonic() - start
+    code = OutcomeCategory.TIMEOUT if last_was_timeout else OutcomeCategory.FAIL
+    return TickerOutcome(ticker, code, attempts, elapsed, rows_before, rows_before)

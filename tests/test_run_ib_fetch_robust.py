@@ -1,10 +1,16 @@
 import json
+import subprocess
+from unittest.mock import MagicMock
 
 from scripts.run_ib_fetch_robust import (
     _bronze_path_for,
+    _build_worker_cmd,
+    _count_rows,
     _is_already_done,
+    OutcomeCategory,
     load_tickers,
     parse_args,
+    run_one_ticker,
 )
 
 
@@ -65,3 +71,162 @@ def test_is_already_done_backfill_missing(tmp_path):
     p = tmp_path / "asset_class=equity" / "symbol=GHOST" / "1d.parquet"
     assert _is_already_done(p, mode="seed") is False
     assert _is_already_done(p, mode="backfill") is True
+
+
+def test_build_worker_cmd_backfill():
+    cmd = _build_worker_cmd("AAPL", "backfill", "equity")
+    assert "--backfill" in cmd
+    assert "--years" not in cmd
+
+
+def test_count_rows_reads_parquet(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    parquet = tmp_path / "rows.parquet"
+    pq.write_table(pa.table({"x": [1, 2, 3]}), parquet)
+    assert _count_rows(parquet) == 3
+
+
+def test_run_one_ticker_skips_completed_seed(tmp_path, monkeypatch):
+    parquet = tmp_path / "asset_class=equity" / "symbol=AAPL" / "1d.parquet"
+    parquet.parent.mkdir(parents=True)
+    parquet.write_bytes(b"data")
+
+    def fake_run(*a, **kw):
+        raise AssertionError("subprocess should not run for skipped ticker")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    outcome = run_one_ticker(
+        ticker="AAPL",
+        mode="seed",
+        asset_class="equity",
+        bronze_dir=tmp_path,
+        timeout=10,
+        max_attempts=3,
+        cooldown=0,
+    )
+    assert outcome.code == OutcomeCategory.SKIP
+    assert outcome.attempts_used == 0
+
+
+def test_success_first_attempt(tmp_path, monkeypatch):
+    parquet = tmp_path / "asset_class=equity" / "symbol=AAPL" / "1d.parquet"
+    parquet.parent.mkdir(parents=True)
+    counts = [0, 2]
+
+    def fake_run(*a, **kw):
+        parquet.write_bytes(b"data")
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "scripts.run_ib_fetch_robust._count_rows",
+        lambda p: counts.pop(0),
+    )
+    outcome = run_one_ticker(
+        ticker="AAPL",
+        mode="seed",
+        asset_class="equity",
+        bronze_dir=tmp_path,
+        timeout=10,
+        max_attempts=3,
+        cooldown=0,
+    )
+    assert outcome.code == OutcomeCategory.OK
+    assert outcome.attempts_used == 1
+    assert outcome.note == "rows +2"
+
+
+def test_timeout_then_success(tmp_path, monkeypatch):
+    parquet = tmp_path / "asset_class=equity" / "symbol=MSFT" / "1d.parquet"
+    parquet.parent.mkdir(parents=True)
+    calls = [0]
+
+    def fake_run(*a, **kw):
+        calls[0] += 1
+        if calls[0] == 1:
+            raise subprocess.TimeoutExpired(cmd=a[0], timeout=kw.get("timeout", 10))
+        parquet.write_bytes(b"data")
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    outcome = run_one_ticker(
+        ticker="MSFT",
+        mode="seed",
+        asset_class="equity",
+        bronze_dir=tmp_path,
+        timeout=10,
+        max_attempts=3,
+        cooldown=0,
+    )
+    assert outcome.code == OutcomeCategory.OK
+    assert outcome.attempts_used == 2
+
+
+def test_all_attempts_timeout_is_fail(tmp_path, monkeypatch):
+    def fake_run(*a, **kw):
+        raise subprocess.TimeoutExpired(cmd=a[0], timeout=kw.get("timeout", 10))
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    outcome = run_one_ticker(
+        ticker="HOOD",
+        mode="seed",
+        asset_class="equity",
+        bronze_dir=tmp_path,
+        timeout=1,
+        max_attempts=2,
+        cooldown=0,
+    )
+    assert outcome.code == OutcomeCategory.TIMEOUT
+    assert outcome.attempts_used == 2
+
+
+def test_non_zero_exit_retried(tmp_path, monkeypatch):
+    parquet = tmp_path / "asset_class=equity" / "symbol=X" / "1d.parquet"
+    parquet.parent.mkdir(parents=True)
+    calls = [0]
+
+    def fake_run(*a, **kw):
+        calls[0] += 1
+        if calls[0] < 3:
+            return MagicMock(returncode=1)
+        parquet.write_bytes(b"data")
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    outcome = run_one_ticker(
+        ticker="X",
+        mode="seed",
+        asset_class="equity",
+        bronze_dir=tmp_path,
+        timeout=10,
+        max_attempts=3,
+        cooldown=0,
+    )
+    assert outcome.code == OutcomeCategory.OK
+
+
+def test_cooldown_sleeps_between_attempts(tmp_path, monkeypatch):
+    sleeps = []
+
+    def fake_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr("time.sleep", fake_sleep)
+
+    def fake_run(*a, **kw):
+        return MagicMock(returncode=1)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    run_one_ticker(
+        ticker="X",
+        mode="seed",
+        asset_class="equity",
+        bronze_dir=tmp_path,
+        timeout=10,
+        max_attempts=3,
+        cooldown=30,
+    )
+    assert sleeps == [30, 30]
