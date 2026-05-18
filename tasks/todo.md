@@ -27,17 +27,17 @@ Use this file for the current task only. Replace it at the start of each non-tri
 - T6 -> T7
 
 ## Tasks
-- [ ] T1 Baseline and red tests
+- [x] T1 Baseline and red tests
   depends_on: []
-- [ ] T2 Move implementation modules out of `scripts/`
+- [x] T2 Move implementation modules out of `scripts/`
   depends_on: [T1]
-- [ ] T3 Add five operator entrypoints
+- [x] T3 Add five operator entrypoints
   depends_on: [T2]
-- [ ] T4 Update internal subprocess references
+- [x] T4 Update internal subprocess references
   depends_on: [T3]
-- [ ] T5 Update tests and docs
+- [x] T5 Update tests and docs
   depends_on: [T4]
-- [ ] T6 Remove redundant scripts and verify count
+- [x] T6 Remove redundant scripts and verify count
   depends_on: [T5]
-- [ ] T7 Full verification and milestone commit
+- [x] T7 Full verification and milestone commit
   depends_on: [T6]

@@ -13,7 +13,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from scripts.coverage_report import (
+from livewire_scripts.coverage_report import (
     CoverageResult,
     DEFAULT_THRESHOLD,
     RecoveryOutcome,
@@ -179,7 +179,7 @@ class TestFormatters:
 
 class TestWriteCoverageLog:
     def test_appends_when_called_twice(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.coverage_report._LOG_DIR", tmp_path)
+        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path)
         path = write_coverage_log(date(2026, 4, 6), "first line", ["  detail"])
         write_coverage_log(date(2026, 4, 6), "second line", [])
         content = path.read_text()
@@ -200,7 +200,7 @@ class TestAutoRecover:
 
     def test_safety_cap_aborts_without_subprocess(self):
         missing = [f"SYM{i}" for i in range(150)]
-        with patch("scripts.coverage_report.subprocess.run") as mock_run:
+        with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
             outcome = auto_recover("5m", missing, safety_cap=100)
         assert outcome.aborted is True
         assert "safety_cap" in outcome.reason
@@ -217,7 +217,7 @@ class TestAutoRecover:
             _write_intraday(seeded_bronze, "AAPL", "5m", [target])
             return SimpleNamespace(returncode=0)
 
-        with patch("scripts.coverage_report.subprocess.run", side_effect=fake_run):
+        with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run):
             outcome = auto_recover(
                 "5m", ["AAPL"], bronze_root=seeded_bronze, target_date=target
             )
@@ -225,7 +225,7 @@ class TestAutoRecover:
         assert outcome.still_missing == []
 
     def test_daily_recovery_uses_fetch_ib_historical(self, seeded_bronze):
-        # 1d branch shells out to fetch_ib_historical.py, not backfill_intraday.py
+        # 1d branch shells out to livewire_ingest.py, not livewire_ingest.py
         target = date(2026, 4, 6)
         (seeded_bronze / "asset_class=equity" / "symbol=AAPL" / "1d.parquet").unlink()
 
@@ -233,13 +233,13 @@ class TestAutoRecover:
             _write_daily(seeded_bronze, "AAPL", [target])
             return SimpleNamespace(returncode=0)
 
-        with patch("scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
+        with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
             outcome = auto_recover(
                 "1d", ["AAPL"], bronze_root=seeded_bronze, target_date=target
             )
         assert outcome.recovered == 1
         cmd = mock_run.call_args[0][0]
-        assert "fetch_ib_historical.py" in cmd[1]
+        assert "livewire_ingest.py" in cmd[1]
         assert "--timeframe" not in cmd  # daily fetch doesn't pass --timeframe
 
     def test_partial_recovery_path(self, seeded_bronze):
@@ -252,7 +252,7 @@ class TestAutoRecover:
             _write_intraday(seeded_bronze, "AAPL", "5m", [target])
             return SimpleNamespace(returncode=0)
 
-        with patch("scripts.coverage_report.subprocess.run", side_effect=fake_run):
+        with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run):
             outcome = auto_recover(
                 "5m", ["AAPL", "MSFT"], bronze_root=seeded_bronze, target_date=target
             )
@@ -271,11 +271,12 @@ class TestSendAlert:
             RecoveryOutcome("5m", ["AAPL"], 0, ["AAPL"]),
             RecoveryOutcome("1h", ["MSFT"], 1, []),
         ]
-        with patch("scripts.coverage_report.subprocess.run") as mock_run:
+        with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
             _send_alert(date(2026, 4, 6), outcomes, log_path)
         cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "node"
-        assert "send_daily_update_failure_email.mjs" in cmd[1]
+        assert cmd[0] == sys.executable
+        assert "livewire_ops.py" in cmd[1]
+        assert cmd[2] == "send-alert"
         assert "--job-name" in cmd
         idx = cmd.index("--error-summary")
         assert "5m" in cmd[idx + 1] and "1h" in cmd[idx + 1]
@@ -284,7 +285,7 @@ class TestSendAlert:
         log_path = tmp_path / "x.log"
         log_path.write_text("")
         outcomes = [RecoveryOutcome("5m", ["A"], 0, ["A"], aborted=True, reason="safety_cap")]
-        with patch("scripts.coverage_report.subprocess.run") as mock_run:
+        with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
             _send_alert(date(2026, 4, 6), outcomes, log_path)
         cmd = mock_run.call_args[0][0]
         idx = cmd.index("--error-summary")
@@ -299,24 +300,24 @@ class TestResolveTargetDate:
         assert _resolve_target_date(force=False, override=date(2026, 4, 6)) == date(2026, 4, 6)
 
     def test_trading_day_today(self):
-        with patch("scripts.coverage_report.date") as mock_date:
+        with patch("livewire_scripts.coverage_report.date") as mock_date:
             mock_date.today.return_value = date(2026, 4, 6)  # Monday
             mock_date.fromisoformat = date.fromisoformat
-            with patch("scripts.coverage_report.is_trading_day", return_value=True):
+            with patch("livewire_scripts.coverage_report.is_trading_day", return_value=True):
                 assert _resolve_target_date(False, None) == date(2026, 4, 6)
 
     def test_non_trading_day_without_force(self):
-        with patch("scripts.coverage_report.date") as mock_date:
+        with patch("livewire_scripts.coverage_report.date") as mock_date:
             mock_date.today.return_value = date(2026, 4, 5)  # Sunday
-            with patch("scripts.coverage_report.is_trading_day", return_value=False):
+            with patch("livewire_scripts.coverage_report.is_trading_day", return_value=False):
                 assert _resolve_target_date(False, None) is None
 
     def test_non_trading_day_with_force_falls_back(self):
-        with patch("scripts.coverage_report.date") as mock_date:
+        with patch("livewire_scripts.coverage_report.date") as mock_date:
             mock_date.today.return_value = date(2026, 4, 5)
-            with patch("scripts.coverage_report.is_trading_day", return_value=False):
+            with patch("livewire_scripts.coverage_report.is_trading_day", return_value=False):
                 with patch(
-                    "scripts.coverage_report.previous_trading_day",
+                    "livewire_scripts.coverage_report.previous_trading_day",
                     return_value=date(2026, 4, 3),
                 ):
                     assert _resolve_target_date(True, None) == date(2026, 4, 3)
@@ -327,18 +328,18 @@ class TestResolveTargetDate:
 
 class TestMain:
     def test_no_target_aborts_quietly(self):
-        with patch("scripts.coverage_report._resolve_target_date", return_value=None):
+        with patch("livewire_scripts.coverage_report._resolve_target_date", return_value=None):
             with patch.object(sys, "argv", ["coverage_report.py"]):
                 main()  # No exception
 
     def test_no_recover_skips_subprocess(self, seeded_bronze, monkeypatch, tmp_path):
-        monkeypatch.setattr("scripts.coverage_report._DATA_LAKE", seeded_bronze.parent)
-        monkeypatch.setattr("scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", seeded_bronze.parent)
+        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
         with patch(
-            "scripts.coverage_report.compute_coverage",
+            "livewire_scripts.coverage_report.compute_coverage",
             wraps=lambda d, bronze_root=None: compute_coverage(d, bronze_root=seeded_bronze),
         ):
-            with patch("scripts.coverage_report.subprocess.run") as mock_run:
+            with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
                 with patch.object(
                     sys, "argv",
                     ["coverage_report.py", "--target-date", "2026-04-06", "--no-recover"],
@@ -347,12 +348,12 @@ class TestMain:
         assert mock_run.call_count == 0
 
     def test_above_threshold_no_recovery(self, seeded_bronze, monkeypatch, tmp_path):
-        monkeypatch.setattr("scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
         with patch(
-            "scripts.coverage_report.compute_coverage",
+            "livewire_scripts.coverage_report.compute_coverage",
             wraps=lambda d, bronze_root=None: compute_coverage(d, bronze_root=seeded_bronze),
         ):
-            with patch("scripts.coverage_report.subprocess.run") as mock_run:
+            with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
                 with patch.object(
                     sys, "argv",
                     ["coverage_report.py", "--target-date", "2026-04-06"],
@@ -367,18 +368,18 @@ class TestMain:
         _write_daily(root, "AAPL", [target])
         _write_intraday(root, "AAPL", "1h", [target])
         # 5m intentionally absent
-        monkeypatch.setattr("scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
 
         def fake_run(cmd, **kwargs):
-            if "backfill_intraday.py" in str(cmd):
+            if "livewire_ingest.py" in str(cmd):
                 _write_intraday(root, "AAPL", "5m", [target])
             return SimpleNamespace(returncode=0)
 
         with patch(
-            "scripts.coverage_report.compute_coverage",
+            "livewire_scripts.coverage_report.compute_coverage",
             side_effect=lambda d, bronze_root=None: compute_coverage(d, bronze_root=root),
         ):
-            with patch("scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
+            with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
                 with patch.object(
                     sys, "argv",
                     ["coverage_report.py", "--target-date", "2026-04-06", "--threshold", "0.99"],
@@ -396,25 +397,25 @@ class TestMain:
         _write_intraday(root, "AAPL", "1h", [target])
         _write_intraday(root, "MSFT", "1h", [target])
         # Both missing 5m
-        monkeypatch.setattr("scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
 
         def fake_run(cmd, **kwargs):
-            if "backfill_intraday.py" in str(cmd):
+            if "livewire_ingest.py" in str(cmd):
                 _write_intraday(root, "AAPL", "5m", [target])  # only AAPL recovered
             return SimpleNamespace(returncode=0)
 
         with patch(
-            "scripts.coverage_report.compute_coverage",
+            "livewire_scripts.coverage_report.compute_coverage",
             side_effect=lambda d, bronze_root=None: compute_coverage(d, bronze_root=root),
         ):
-            with patch("scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
+            with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
                 with patch.object(
                     sys, "argv",
                     ["coverage_report.py", "--target-date", "2026-04-06", "--threshold", "0.99"],
                 ):
                     main()
-        node_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "node"]
-        assert len(node_calls) == 1  # email sent for partial recovery
+        alert_calls = [c for c in mock_run.call_args_list if "livewire_ops.py" in str(c[0][0])]
+        assert len(alert_calls) == 1  # email sent for partial recovery
 
     def test_safety_cap_path_in_main(self, tmp_path, monkeypatch):
         root = tmp_path / "bronze"
@@ -424,20 +425,20 @@ class TestMain:
             sym = f"S{i:03d}"
             _write_daily(root, sym, [target])
             _write_intraday(root, sym, "1h", [target])
-        monkeypatch.setattr("scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
 
         with patch(
-            "scripts.coverage_report.compute_coverage",
+            "livewire_scripts.coverage_report.compute_coverage",
             side_effect=lambda d, bronze_root=None: compute_coverage(d, bronze_root=root),
         ):
-            with patch("scripts.coverage_report.subprocess.run") as mock_run:
+            with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
                 with patch.object(
                     sys, "argv",
                     ["coverage_report.py", "--target-date", "2026-04-06"],
                 ):
                     main()
         # No fetch subprocess (safety cap), but email IS sent
-        fetch_calls = [c for c in mock_run.call_args_list if "backfill_intraday.py" in str(c[0][0])]
-        node_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "node"]
+        fetch_calls = [c for c in mock_run.call_args_list if "livewire_ingest.py" in str(c[0][0])]
+        alert_calls = [c for c in mock_run.call_args_list if "livewire_ops.py" in str(c[0][0])]
         assert fetch_calls == []
-        assert len(node_calls) == 1
+        assert len(alert_calls) == 1

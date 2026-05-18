@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from scripts.intraday_update import (
+from livewire_scripts.intraday_update import (
     SessionState,
     classify_session_state,
     expected_last_bar_utc,
@@ -157,19 +157,19 @@ class TestMain:
         ])
         client.close()
 
-        monkeypatch.setattr("scripts.intraday_update._DATA_LAKE", tmp_path / "data-lake")
+        monkeypatch.setattr("livewire_scripts.intraday_update._DATA_LAKE", tmp_path / "data-lake")
 
         with patch("sys.argv", ["intraday_update.py", "--dry-run", "--force", "--timeframe", "5m"]):
-            from scripts.intraday_update import main
+            from livewire_scripts.intraday_update import main
             main()
         # No exceptions = pass
 
     def test_not_trading_day_exits_without_force(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.intraday_update._DATA_LAKE", tmp_path / "data-lake")
+        monkeypatch.setattr("livewire_scripts.intraday_update._DATA_LAKE", tmp_path / "data-lake")
         # Patch is_trading_day to return False
-        with patch("scripts.intraday_update.is_trading_day", return_value=False):
+        with patch("livewire_scripts.intraday_update.is_trading_day", return_value=False):
             with patch("sys.argv", ["intraday_update.py"]):
-                from scripts.intraday_update import main
+                from livewire_scripts.intraday_update import main
                 main()
         # No exceptions, just early return
 
@@ -189,10 +189,10 @@ class TestMain:
         ])
         client.close()
 
-        monkeypatch.setattr("scripts.intraday_update._DATA_LAKE", tmp_path / "data-lake")
+        monkeypatch.setattr("livewire_scripts.intraday_update._DATA_LAKE", tmp_path / "data-lake")
 
         with patch("sys.argv", ["intraday_update.py", "--force", "--timeframe", "5m"]):
-            from scripts.intraday_update import main
+            from livewire_scripts.intraday_update import main
             main()
         # No exceptions = pass
 
@@ -213,12 +213,12 @@ class TestMain:
         ])
         client.close()
 
-        monkeypatch.setattr("scripts.intraday_update._DATA_LAKE", tmp_path / "data-lake")
+        monkeypatch.setattr("livewire_scripts.intraday_update._DATA_LAKE", tmp_path / "data-lake")
 
         # Patch get_latest_timestamps to return empty dict (symbol in existing but not in ts map)
         with patch.object(IntradayBronzeClient, "get_latest_timestamps", return_value={}):
             with patch("sys.argv", ["intraday_update.py", "--dry-run", "--force", "--timeframe", "5m"]):
-                from scripts.intraday_update import main
+                from livewire_scripts.intraday_update import main
                 main()
 
     def test_main_naive_timestamp_gets_utc(self, tmp_path, monkeypatch):
@@ -237,11 +237,11 @@ class TestMain:
         ])
         client.close()
 
-        monkeypatch.setattr("scripts.intraday_update._DATA_LAKE", tmp_path / "data-lake")
+        monkeypatch.setattr("livewire_scripts.intraday_update._DATA_LAKE", tmp_path / "data-lake")
 
         # Return a naive datetime for AAPL
         naive_ts = datetime(2026, 4, 6, 19, 55)  # naive UTC equivalent
         with patch.object(IntradayBronzeClient, "get_latest_timestamps", return_value={"AAPL": naive_ts}):
             with patch("sys.argv", ["intraday_update.py", "--dry-run", "--force", "--timeframe", "5m"]):
-                from scripts.intraday_update import main
+                from livewire_scripts.intraday_update import main
                 main()

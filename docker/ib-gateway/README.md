@@ -307,7 +307,7 @@ print('Server time:', ib.reqCurrentTime())
 ib.disconnect()
 "
 
-python scripts/fetch_ib_historical.py --host ib-gateway --tickers AAPL
+python scripts/livewire_ingest.py historical --host ib-gateway --tickers AAPL
 ```
 
 Negative test from a machine not on Tailscale: `nc -z <PUBLIC_IP> 4001` should fail.
@@ -357,8 +357,8 @@ ib.disconnect()
 "
 
 # 3. Test daily update
-MDW_IB_HOST=ib-gateway python scripts/daily_update.py --dry-run
-MDW_IB_HOST=ib-gateway python scripts/daily_update.py
+MDW_IB_HOST=ib-gateway python scripts/livewire_ingest.py daily --dry-run
+MDW_IB_HOST=ib-gateway python scripts/livewire_ingest.py daily
 
 # 4. Make permanent: set MDW_IB_HOST=ib-gateway in ~/market-warehouse/.env
 ```

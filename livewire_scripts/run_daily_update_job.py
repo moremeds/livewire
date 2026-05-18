@@ -16,6 +16,10 @@ from typing import Sequence
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+INGEST_SCRIPT = REPO_ROOT / "scripts" / "livewire_ingest.py"
+OPS_SCRIPT = REPO_ROOT / "scripts" / "livewire_ops.py"
+QUALITY_SCRIPT = REPO_ROOT / "scripts" / "livewire_quality.py"
 
 ASSET_CLASSES = ["equity", "futures"]  # Volatility now synced via CBOE directly
 
@@ -70,12 +74,12 @@ def build_config() -> RunnerConfig:
         warehouse_dir=warehouse_dir,
         log_dir=log_dir,
         daily_update_script=Path(
-            os.getenv("MDW_DAILY_UPDATE_SCRIPT", str(SCRIPT_DIR / "daily_update.py"))
+            os.getenv("MDW_DAILY_UPDATE_SCRIPT", str(INGEST_SCRIPT))
         ).expanduser(),
         alert_script=Path(
             os.getenv(
                 "MDW_DAILY_UPDATE_ALERT_SCRIPT",
-                str(SCRIPT_DIR / "send_daily_update_failure_email.mjs"),
+                str(OPS_SCRIPT),
             )
         ).expanduser(),
         python_bin=os.getenv("MDW_DAILY_UPDATE_PYTHON_BIN", sys.executable),
@@ -103,19 +107,19 @@ def append_log(log_file: Path, message: str) -> None:
 def build_daily_update_command(
     config: RunnerConfig, daily_update_args: Sequence[str]
 ) -> list[str]:
-    return [config.python_bin, str(config.daily_update_script), *daily_update_args]
+    return [config.python_bin, str(config.daily_update_script), "daily", *daily_update_args]
 
 
 def build_cboe_volatility_command(config: RunnerConfig) -> list[str]:
     """Build command for CBOE volatility sync (uses preset by default)."""
-    cboe_script = SCRIPT_DIR / "fetch_cboe_volatility.py"
-    return [config.python_bin, str(cboe_script)]
+    return [config.python_bin, str(INGEST_SCRIPT), "cboe-vol"]
 
 
 def build_alert_command(config: RunnerConfig, request: AlertRequest) -> list[str]:
     command = [
-        config.node_bin,
+        config.python_bin,
         str(config.alert_script),
+        "send-alert",
         "--run-date",
         request.run_date,
         "--log-file",
@@ -259,7 +263,8 @@ def run_with_retries(
                 report_result = runner(
                     [
                         sys.executable,
-                        str(SCRIPT_DIR / "data_quality_report.py"),
+                        str(QUALITY_SCRIPT),
+                        "report",
                         "--view",
                         "summary",
                         "--since",
@@ -313,7 +318,7 @@ def run_with_retries(
         attempts=config.max_attempts,
         exit_code=final_exit_code,
         error_summary=extract_error_summary(log_file),
-        repo_root=SCRIPT_DIR.parent,
+        repo_root=REPO_ROOT,
     )
     alert_result = send_failure_alert(
         config,

@@ -40,7 +40,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients import BronzeClient
 from clients.ib_client import IBClient
-from scripts.daily_update import is_trading_day
+from livewire_scripts.daily_update import is_trading_day
 
 # ── Constants ───────────────────────────────────────────────────────────────
 
@@ -54,6 +54,8 @@ _WAREHOUSE_DIR = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-w
 _DATA_LAKE = _WAREHOUSE_DIR / "data-lake"
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
+_INGEST_SCRIPT = PROJECT_ROOT / "scripts" / "livewire_ingest.py"
+_OPS_SCRIPT = PROJECT_ROOT / "scripts" / "livewire_ops.py"
 _PRESET_PATH = PROJECT_ROOT / "presets" / "screened-universe.json"
 _CORE_ETFS_PATH = PROJECT_ROOT / "presets" / "core-etfs.json"
 _STATE_PATH = _WAREHOUSE_DIR / "logs" / "screener_state.json"
@@ -242,14 +244,14 @@ def _send_screener_alert(
     removals: set[str],
 ) -> None:
     """Send an email alert via the existing Nodemailer CLI."""
-    alert_script = _SCRIPT_DIR / "send_daily_update_failure_email.mjs"
     error_summary = (
         f"universe_screener: {len(additions)} additions, {len(removals)} removals "
         f"on {run_date.isoformat()}."
     )
     cmd = [
-        "node",
-        str(alert_script),
+        sys.executable,
+        str(_OPS_SCRIPT),
+        "send-alert",
         "--run-date", run_date.isoformat(),
         "--error-summary", error_summary,
         "--repo-root", str(PROJECT_ROOT),
@@ -398,11 +400,11 @@ def main(argv: list[str] | None = None) -> None:
 
     # ── Trigger backfill for new additions ─────────────────────────────
     if additions:
-        fetch_script = _SCRIPT_DIR / "fetch_ib_historical.py"
         python_bin = sys.executable
         cmd = [
             python_bin,
-            str(fetch_script),
+            str(_INGEST_SCRIPT),
+            "historical",
             "--tickers",
             *sorted(additions),
             "--years", "0",

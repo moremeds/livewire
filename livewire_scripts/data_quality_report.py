@@ -20,7 +20,7 @@ from typing import Iterable, Optional
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TELEMETRY = Path.home() / "market-warehouse" / "logs" / "telemetry.jsonl"
 DEFAULT_AUDIT = Path.home() / "market-warehouse" / "logs" / "quality_audit.jsonl"
-_EMAIL_SCRIPT = REPO_ROOT / "scripts" / "send_daily_update_failure_email.mjs"
+_EMAIL_SCRIPT = REPO_ROOT / "scripts" / "livewire_ops.py"
 
 _SINCE_RE = re.compile(r"^(\d+)\s*([smhd])$")
 
@@ -264,8 +264,9 @@ def _resolve_log_dir() -> Path:
 def _send_email(summary: dict) -> bool:
     payload = json.dumps(summary, default=str)
     cmd = [
-        "node",
+        sys.executable,
         str(_EMAIL_SCRIPT),
+        "send-alert",
         "--mode",
         "daily-summary",
         "--payload",

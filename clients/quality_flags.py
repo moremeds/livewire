@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import asdict
@@ -102,7 +103,7 @@ _SEVERITY_ORDER = {"info": 0, "warning": 1, "critical": 2}
 _RATE_LIMIT_CACHE: dict[tuple[str, str, str], float] = {}
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_EMAIL_SCRIPT = _REPO_ROOT / "scripts" / "send_daily_update_failure_email.mjs"
+_EMAIL_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ops.py"
 
 
 def _resolve_threshold() -> str:
@@ -168,8 +169,9 @@ def alert_on_flag(
         "ts": flag.ts,
     }
     cmd = [
-        "node",
+        sys.executable,
         str(_EMAIL_SCRIPT),
+        "send-alert",
         "--mode",
         "flag-alert",
         "--payload",

@@ -13,7 +13,7 @@ const MODES = new Set(["failure", "flag-alert", "daily-summary"]);
 
 function usage() {
   return [
-    "Usage: node scripts/send_daily_update_failure_email.mjs [options]",
+    "Usage: node livewire_node/send_daily_update_failure_email.mjs [options]",
     "",
     "Options:",
     "  --run-date YYYY-MM-DD",
