@@ -3,7 +3,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from clients.quality_detector import QualityFlag, detect_interior_gaps, detect_range_shortfall
+from clients.quality_detector import (
+    QualityFlag,
+    detect_fetch_tainting,
+    detect_interior_gaps,
+    detect_range_shortfall,
+)
 from clients.trading_calendar import get_nyse_holidays, previous_trading_day, trading_days_between
 
 
@@ -152,3 +157,31 @@ def test_extracted_trading_calendar_sunday_observed_and_ranges():
     assert date(2023, 1, 2) in get_nyse_holidays(2023)
     assert previous_trading_day(date(2025, 1, 6)) == date(2025, 1, 3)
     assert trading_days_between(date(2025, 1, 3), date(2025, 1, 6)) == 1
+
+
+def test_fetch_tainting_no_errors_returns_none():
+    assert detect_fetch_tainting([]) is None
+
+
+def test_fetch_tainting_one_error_warning():
+    flag = detect_fetch_tainting([{"code": 162, "count": 1, "message": "no data"}])
+    assert flag is not None
+    assert flag.severity == "warning"
+    assert flag.category == "fetch_tainted"
+
+
+def test_fetch_tainting_aggregated_count_critical():
+    flag = detect_fetch_tainting([
+        {"code": 162, "count": 4},
+        {"code": 2105, "count": 2},
+    ])
+    assert flag.severity == "critical"
+    assert flag.detail["error_count"] == 6
+
+
+def test_fetch_tainting_codes_recorded():
+    flag = detect_fetch_tainting([
+        {"code": 162, "count": 2},
+        {"code": 2105, "count": 1},
+    ])
+    assert set(flag.detail["codes"]) == {162, 2105}

@@ -126,3 +126,25 @@ def detect_interior_gaps(
             "last_missing": missing[-1].isoformat(),
         },
     )
+
+
+_FETCH_TAINT_WARNING_COUNT = 1
+_FETCH_TAINT_CRITICAL_COUNT = 5
+
+
+def detect_fetch_tainting(errors_during_fetch: list[dict]) -> Optional[QualityFlag]:
+    if not errors_during_fetch:
+        return None
+    total = sum(int(e.get("count", 1)) for e in errors_during_fetch)
+    codes = sorted({int(e["code"]) for e in errors_during_fetch if "code" in e})
+    if total >= _FETCH_TAINT_CRITICAL_COUNT:
+        severity = "critical"
+    elif total >= _FETCH_TAINT_WARNING_COUNT:
+        severity = "warning"
+    else:  # pragma: no cover - unreachable given total >=1 entry
+        return None
+    return QualityFlag(
+        category="fetch_tainted",
+        severity=severity,
+        detail={"error_count": total, "codes": codes},
+    )
