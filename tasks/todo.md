@@ -67,6 +67,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - T10 updated operator and agent docs with Postgres role, env vars, rebuild examples, and rollback guidance.
   - Self-review tightened parquet loaders so market-data rows stream into COPY instead of being accumulated as full Python lists.
   - T12 started a disposable local Postgres 15 database, ran live schema/smoke/rebuild/import checks, and verified source parquet/JSONL counts match Postgres counts.
+  - Follow-up live check used the already-running local Postgres 17 database on `127.0.0.1:5432/postgres` with temporary schema `md_liveverify_1779085461`, then dropped the schema after verification.
   - T12 detected and loaded equity daily, volatility daily, equity `1h`, and equity `5m` bronze inputs; futures bronze input is absent.
   - T13 pushed `feat/postgres-analytical-layer` and opened PR #3.
 - Verification:
@@ -103,5 +104,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
     - `python scripts/rebuild_postgres_from_parquet.py --asset-class equity --timeframe 5m` -> 58,989 rows.
     - `python scripts/rebuild_postgres_from_parquet.py --include-reliability` -> telemetry=69, quality=3, skipped=0.
   - Source-to-Postgres count comparison -> `source_to_postgres_counts_match=yes` for equity daily, volatility daily, intraday `1h`/`5m`, telemetry, and quality flags.
+  - Running local Postgres verification: `python scripts/smoke_postgres_analytical.py --ensure-schema`, `python -m pytest tests/test_postgres_client_live.py -q`, all rebuild/import scripts, and independent count comparison passed against `md_liveverify_1779085461`; result `source_to_local_postgres_counts_match=yes`.
+  - Local DB cleanup: `DROP SCHEMA IF EXISTS "md_liveverify_1779085461" CASCADE` -> dropped seven verification tables.
   - `git push -u origin feat/postgres-analytical-layer` -> pushed branch and set upstream.
   - `gh pr create --title "Sub-B: Postgres Analytical Layer" --body-file /tmp/livewire-postgres-sub-b-pr.md` -> https://github.com/moremeds/livewire/pull/3.
