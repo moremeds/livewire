@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from clients.quality_detector import QualityFlag
-from clients.quality_flags import write_sidecar
+from clients.quality_flags import append_audit, _resolve_audit_path, write_sidecar
 
 
 def _flag(category="range_shortfall", severity="critical"):
@@ -55,4 +55,35 @@ def test_write_sidecar_oserror_returns_false(tmp_path, monkeypatch, caplog):
 
     monkeypatch.setattr("os.replace", boom)
     ok = write_sidecar(parquet, [_flag()], {"ticker": "X", "timeframe": "1d", "source": "ib"})
+    assert ok is False
+
+
+def test_append_audit_writes_one_jsonl_line(tmp_path, monkeypatch):
+    audit = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("MDW_QUALITY_AUDIT_PATH", str(audit))
+    ok = append_audit(_flag(), source="ib", ticker="SMH", timeframe="1d", parquet_path=tmp_path / "1d.parquet")
+    assert ok is True
+    lines = audit.read_text().splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["source"] == "ib"
+    assert record["ticker"] == "SMH"
+    assert record["category"] == "range_shortfall"
+
+
+def test_append_audit_rejects_invalid_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_QUALITY_AUDIT_PATH", str(tmp_path / "audit.jsonl"))
+    with pytest.raises(ValueError, match="source must be one of"):
+        append_audit(_flag(), source="bogus", ticker="SMH", timeframe="1d", parquet_path=tmp_path / "1d.parquet")
+
+
+def test_append_audit_oserror_returns_false(tmp_path, monkeypatch):
+    audit = tmp_path / "nope" / "audit.jsonl"
+    monkeypatch.setenv("MDW_QUALITY_AUDIT_PATH", str(audit))
+
+    def boom(*a, **kw):
+        raise OSError("readonly fs")
+
+    monkeypatch.setattr("pathlib.Path.open", boom)
+    ok = append_audit(_flag(), source="ib", ticker="SMH", timeframe="1d", parquet_path=tmp_path / "1d.parquet")
     assert ok is False

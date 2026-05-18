@@ -46,3 +46,50 @@ def write_sidecar(parquet_path: Path, flags: list[QualityFlag], metadata: dict) 
         _logger.warning("sidecar write failed for %s: %s", parquet_path, exc)
         return False
     return True
+
+
+def _utc_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _resolve_audit_path() -> Path:
+    raw = os.environ.get(
+        "MDW_QUALITY_AUDIT_PATH",
+        str(Path.home() / "market-warehouse" / "logs" / "quality_audit.jsonl"),
+    )
+    return Path(raw).expanduser()
+
+
+def append_audit(
+    flag: QualityFlag,
+    *,
+    source: str,
+    ticker: str,
+    timeframe: str,
+    parquet_path: Path,
+) -> bool:
+    """Append one JSON line to the central audit JSONL. Raises on invalid source."""
+    if source not in _VALID_SOURCES:
+        raise ValueError(f"source must be one of {_VALID_SOURCES}, got {source!r}")
+    record = {
+        "ts": _utc_iso(),
+        "source": source,
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "parquet_path": str(parquet_path),
+        "category": flag.category,
+        "severity": flag.severity,
+        "detail": flag.detail,
+    }
+    line = json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n"
+    audit = _resolve_audit_path()
+    try:
+        audit.parent.mkdir(parents=True, exist_ok=True)
+        with audit.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+    except OSError as exc:
+        _logger.warning("audit append failed: %s", exc)
+        return False
+    return True
