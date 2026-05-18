@@ -65,6 +65,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - T4-T7 added PyArrow batch loaders for daily equity/volatility, futures, intraday `1h`/`5m`, and reliability JSONL imports.
   - T8-T9 added the Postgres rebuild CLI and optional analytical smoke script.
   - T10 updated operator and agent docs with Postgres role, env vars, rebuild examples, and rollback guidance.
+  - Self-review tightened parquet loaders so market-data rows stream into COPY instead of being accumulated as full Python lists.
   - T12 live Postgres rebuild/smoke was not run because `MDW_POSTGRES_DSN` and `MDW_TEST_POSTGRES_DSN` are unset in this environment.
   - T12 detected equity daily, volatility daily, equity `1h`, and equity `5m` bronze inputs; futures bronze input is absent.
 - Verification:
@@ -90,3 +91,5 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - Live-gated Postgres test: `python -m pytest tests/test_postgres_client_live.py -q` -> 1 skipped because `MDW_TEST_POSTGRES_DSN` is unset.
   - Smoke DSN guard: `python scripts/smoke_postgres_analytical.py` -> exited 2 with `MDW_POSTGRES_DSN is required unless --dsn is supplied`.
   - CLI help: `python scripts/rebuild_postgres_from_parquet.py --help` and `python scripts/smoke_postgres_analytical.py --help` -> exited 0.
+  - Self-review fix gate: `python -m pytest tests/test_postgres_client.py -q` -> 22 passed.
+  - Final coverage gate after self-review fix: `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 925 passed, 1 skipped, 100% coverage.

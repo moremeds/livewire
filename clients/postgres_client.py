@@ -99,14 +99,9 @@ class PostgresClient:
             return {"symbols": 0, "rows": 0}
 
         symbol_rows: list[tuple[str, int, str, str]] = []
-        daily_rows: list[tuple] = []
         for path in parquet_files:
             symbol = _symbol_from_path(path)
-            first_symbol_id: int | None = None
-            for row in _iter_parquet_dicts(path, _DAILY_COLUMNS, _copy_batch_size()):
-                symbol_id = int(row["symbol_id"])
-                first_symbol_id = first_symbol_id or symbol_id
-                daily_rows.append(_daily_row(row))
+            first_symbol_id = _first_parquet_int(path, "symbol_id")
             if first_symbol_id is not None:
                 symbol_rows.append((symbol, first_symbol_id, asset_class, venue))
 
@@ -142,7 +137,7 @@ class PostgresClient:
                     ["symbol", "symbol_id", "asset_class", "venue"],
                     symbol_rows,
                 )
-                copied_rows = _copy_rows(cur, "_lw_equities_daily_stage", _DAILY_COLUMNS, daily_rows)
+                copied_rows = _copy_rows(cur, "_lw_equities_daily_stage", _DAILY_COLUMNS, _daily_rows(parquet_files))
                 cur.execute(
                     f"""
                     INSERT INTO {self.schema}.symbols (symbol_id, symbol, asset_class, venue)
@@ -178,11 +173,6 @@ class PostgresClient:
         if not parquet_files:
             return {"rows": 0}
 
-        futures_rows = [
-            _futures_row(row)
-            for path in parquet_files
-            for row in _iter_parquet_dicts(path, _FUTURES_COLUMNS, _copy_batch_size())
-        ]
         with self._conn.transaction():
             with self._conn.cursor() as cur:
                 cur.execute(
@@ -202,7 +192,7 @@ class PostgresClient:
                     ) ON COMMIT DROP
                     """
                 )
-                copied_rows = _copy_rows(cur, "_lw_futures_daily_stage", _FUTURES_COLUMNS, futures_rows)
+                copied_rows = _copy_rows(cur, "_lw_futures_daily_stage", _FUTURES_COLUMNS, _futures_rows(parquet_files))
                 cur.execute(f"DELETE FROM {self.schema}.futures_daily")
                 cur.execute(
                     f"""
@@ -230,14 +220,9 @@ class PostgresClient:
             return {"symbols": 0, "rows": 0}
 
         symbol_rows: list[tuple[str, int, str, str]] = []
-        intraday_rows: list[tuple] = []
         for path in parquet_files:
             symbol = _symbol_from_path(path)
-            first_symbol_id: int | None = None
-            for row in _iter_parquet_dicts(path, _INTRADAY_COLUMNS, _copy_batch_size()):
-                symbol_id = int(row["symbol_id"])
-                first_symbol_id = first_symbol_id or symbol_id
-                intraday_rows.append(_intraday_row(row))
+            first_symbol_id = _first_parquet_int(path, "symbol_id")
             if first_symbol_id is not None:
                 symbol_rows.append((symbol, first_symbol_id, "equity", "SMART"))
 
@@ -272,7 +257,7 @@ class PostgresClient:
                     ["symbol", "symbol_id", "asset_class", "venue"],
                     symbol_rows,
                 )
-                copied_rows = _copy_rows(cur, "_lw_intraday_stage", _INTRADAY_COLUMNS, intraday_rows)
+                copied_rows = _copy_rows(cur, "_lw_intraday_stage", _INTRADAY_COLUMNS, _intraday_rows(parquet_files))
                 cur.execute(
                     f"""
                     INSERT INTO {self.schema}.symbols (symbol_id, symbol, asset_class, venue)
@@ -408,6 +393,33 @@ def _iter_parquet_dicts(path: Path, columns: list[str], batch_size: int):
     pf = pq.ParquetFile(path)
     for batch in pf.iter_batches(batch_size=batch_size, columns=columns):
         yield from batch.to_pylist()
+
+
+def _first_parquet_int(path: Path, column: str) -> int | None:
+    pf = pq.ParquetFile(path)
+    for batch in pf.iter_batches(batch_size=1, columns=[column]):
+        rows = batch.to_pylist()
+        if rows:
+            return int(rows[0][column])
+    return None
+
+
+def _daily_rows(paths: list[Path]):
+    for path in paths:
+        for row in _iter_parquet_dicts(path, _DAILY_COLUMNS, _copy_batch_size()):
+            yield _daily_row(row)
+
+
+def _futures_rows(paths: list[Path]):
+    for path in paths:
+        for row in _iter_parquet_dicts(path, _FUTURES_COLUMNS, _copy_batch_size()):
+            yield _futures_row(row)
+
+
+def _intraday_rows(paths: list[Path]):
+    for path in paths:
+        for row in _iter_parquet_dicts(path, _INTRADAY_COLUMNS, _copy_batch_size()):
+            yield _intraday_row(row)
 
 
 def _copy_rows(cur, table: str, columns: list[str], rows) -> int:

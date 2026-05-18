@@ -435,6 +435,13 @@ def test_date_timestamp_and_json_normalization_helpers() -> None:
     assert payload.obj == {"ts": "2026-01-02T00:00:00+00:00", "path": "/tmp/a.parquet"}
 
 
+def test_first_parquet_int_returns_none_for_empty_file(tmp_path: Path) -> None:
+    path = tmp_path / "empty.parquet"
+    pq.write_table(pa.Table.from_pylist([], schema=pa.schema([("symbol_id", pa.int64())])), path)
+
+    assert postgres_client_module._first_parquet_int(path, "symbol_id") is None
+
+
 def test_telemetry_jsonl_import_maps_payload(tmp_path: Path) -> None:
     path = tmp_path / "telemetry.jsonl"
     path.write_text(
