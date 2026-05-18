@@ -8,15 +8,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import subprocess
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TELEMETRY = Path.home() / "market-warehouse" / "logs" / "telemetry.jsonl"
 DEFAULT_AUDIT = Path.home() / "market-warehouse" / "logs" / "quality_audit.jsonl"
+_EMAIL_SCRIPT = REPO_ROOT / "scripts" / "send_daily_update_failure_email.mjs"
 
 _SINCE_RE = re.compile(r"^(\d+)\s*([smhd])$")
 
@@ -249,6 +253,46 @@ def render_quality_view(
     return "\n".join(lines)
 
 
+def _resolve_log_dir() -> Path:
+    raw = os.environ.get(
+        "MDW_LOG_DIR",
+        str(Path.home() / "market-warehouse" / "logs"),
+    )
+    return Path(raw).expanduser()
+
+
+def _send_email(summary: dict) -> bool:
+    payload = json.dumps(summary, default=str)
+    cmd = [
+        "node",
+        str(_EMAIL_SCRIPT),
+        "--mode",
+        "daily-summary",
+        "--payload",
+        payload,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=60)
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"daily-summary email spawn failed: {exc}", file=sys.stderr)
+        return False
+    if result.returncode != 0:
+        print(
+            f"daily-summary email returned {result.returncode}: {result.stderr!r}",
+            file=sys.stderr,
+        )
+        return False
+
+    log_dir = _resolve_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    (log_dir / f"quality_summary_{date_str}.marker").write_text(
+        "ok\n",
+        encoding="utf-8",
+    )
+    return True
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
     now = datetime.now(timezone.utc)
@@ -268,6 +312,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             window_end=now,
         )
         print(render_summary_text(summary))
+        if args.email:
+            _send_email(summary)
     elif args.view == "flap":
         print(render_flap_view(telemetry))
     elif args.view == "quality":
