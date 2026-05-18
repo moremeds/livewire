@@ -10,7 +10,7 @@
         <string>/bin/bash</string>
         <string>-c</string>
         <!-- Replace /path/to/repo with your actual repo path -->
-        <string>cd /path/to/repo && /Users/chenxi/market-warehouse/.venv/bin/python scripts/livewire_ops.py run-daily-job</string>
+        <string>cd /path/to/repo &amp;&amp; /Users/chenxi/market-warehouse/.venv/bin/python scripts/livewire_ops.py run-daily-job</string>
     </array>
 
     <key>StartCalendarInterval</key>
