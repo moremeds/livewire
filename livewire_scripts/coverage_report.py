@@ -29,7 +29,7 @@ import duckdb
 from rich.console import Console
 
 from clients.intraday_bronze_client import INTRADAY_PARQUET_FILENAME
-from scripts.daily_update import is_trading_day, previous_trading_day
+from livewire_scripts.daily_update import is_trading_day, previous_trading_day
 
 log = logging.getLogger(__name__)
 console = Console()
@@ -38,6 +38,9 @@ _WAREHOUSE_DIR = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-w
 _DATA_LAKE = _WAREHOUSE_DIR / "data-lake"
 _LOG_DIR = _WAREHOUSE_DIR / "logs"
 _SCRIPT_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPT_DIR.parent
+_INGEST_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ingest.py"
+_OPS_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ops.py"
 
 TIMEFRAMES: tuple[str, ...] = ("1d", "1h", "5m")
 DEFAULT_THRESHOLD = float(os.getenv("MDW_COVERAGE_ALERT_THRESHOLD", "0.95"))
@@ -193,13 +196,15 @@ def auto_recover(
     if timeframe == "1d":
         cmd = [
             sys.executable,
-            str(_SCRIPT_DIR / "fetch_ib_historical.py"),
+            str(_INGEST_SCRIPT),
+            "historical",
             "--tickers", *missing_symbols,
         ]
     else:
         cmd = [
             sys.executable,
-            str(_SCRIPT_DIR / "backfill_intraday.py"),
+            str(_INGEST_SCRIPT),
+            "intraday-backfill",
             "--timeframe", timeframe,
             "--tickers", *missing_symbols,
         ]
@@ -227,7 +232,6 @@ def _send_alert(
     log_path: Path,
 ) -> None:
     """Send the coverage email via the existing failure-email script."""
-    alert_script = _SCRIPT_DIR / "send_daily_update_failure_email.mjs"
     summary_lines = []
     for o in outcomes:
         if o.aborted:
@@ -241,12 +245,13 @@ def _send_alert(
             )
     error_summary = "coverage_report: " + "; ".join(summary_lines)
     cmd = [
-        "node",
-        str(alert_script),
+        sys.executable,
+        str(_OPS_SCRIPT),
+        "send-alert",
         "--run-date", target_date.isoformat(),
         "--log-file", str(log_path),
         "--error-summary", error_summary,
-        "--repo-root", str(_SCRIPT_DIR.parent),
+        "--repo-root", str(_REPO_ROOT),
         "--job-name", "coverage_report",
     ]
     subprocess.run(cmd, check=False)

@@ -15,8 +15,8 @@ import pyarrow.parquet as pq
 import pytest
 
 from clients.intraday_bronze_client import IntradayBronzeClient
-from scripts import backfill_intraday
-from scripts.backfill_intraday import (
+from livewire_scripts import backfill_intraday
+from livewire_scripts.backfill_intraday import (
     TickerOutcome,
     _BarRow,
     _resolve_tickers,
@@ -141,7 +141,7 @@ class TestBackfillTicker:
         ib = MagicMock()
         ib.get_historical_data.return_value = bars
 
-        with patch("scripts.backfill_intraday.compute_intraday_chunks",
+        with patch("livewire_scripts.backfill_intraday.compute_intraday_chunks",
                    return_value=[("1 W", "20260406-15:00:00")]):
             outcome = backfill_ticker("AAPL", "5m", years=1, ib=ib, bronze=bronze)
         assert outcome.bars_inserted == 2
@@ -154,7 +154,7 @@ class TestBackfillTicker:
         bars = [_make_ib_bar(datetime(2026, 4, 6, 4, 0))]
         ib = MagicMock()
         ib.get_historical_data.return_value = bars
-        with patch("scripts.backfill_intraday.compute_intraday_chunks",
+        with patch("livewire_scripts.backfill_intraday.compute_intraday_chunks",
                    return_value=[("1 W", "20260406-15:00:00")]):
             outcome = backfill_ticker("AAPL", "5m", years=1, ib=ib, bronze=bronze)
         assert outcome.bars_inserted == 0
@@ -166,7 +166,7 @@ class TestBackfillTicker:
         err = Exception("HMDS no data")
         err.code = 162
         ib.get_historical_data.side_effect = err
-        with patch("scripts.backfill_intraday.compute_intraday_chunks",
+        with patch("livewire_scripts.backfill_intraday.compute_intraday_chunks",
                    return_value=[("1 W", "20260406-15:00:00")]):
             outcome = backfill_ticker("AAPL", "5m", years=1, ib=ib, bronze=bronze)
         assert outcome.skipped_reason == "IB error 162"
@@ -179,7 +179,7 @@ class TestBackfillTicker:
             RuntimeError("transient blip"),
             [_make_ib_bar(datetime(2026, 4, 6, 10, 0))],
         ]
-        with patch("scripts.backfill_intraday.compute_intraday_chunks",
+        with patch("livewire_scripts.backfill_intraday.compute_intraday_chunks",
                    return_value=[("1 W", "a"), ("1 W", "b")]):
             outcome = backfill_ticker("AAPL", "5m", years=1, ib=ib, bronze=bronze)
         assert outcome.bars_inserted == 1
@@ -189,7 +189,7 @@ class TestBackfillTicker:
         bronze = IntradayBronzeClient(bronze_dir=tmp_path / "bronze", timeframe="5m")
         ib = MagicMock()
         ib.get_historical_data.return_value = []
-        with patch("scripts.backfill_intraday.compute_intraday_chunks",
+        with patch("livewire_scripts.backfill_intraday.compute_intraday_chunks",
                    return_value=[("1 W", "x")]):
             outcome = backfill_ticker("AAPL", "5m", years=1, ib=ib, bronze=bronze)
         assert outcome.chunks_fetched == 1
@@ -199,7 +199,7 @@ class TestBackfillTicker:
 class TestQualityHookIntegration:
     def test_quality_hook_fires_with_outcome_errors(self, tmp_path):
         from clients.quality_detector import QualityFlag
-        from scripts.backfill_intraday import _run_quality_detection
+        from livewire_scripts.backfill_intraday import _run_quality_detection
 
         bars = [_make_ib_bar(datetime(2026, 4, 6, 9, 30))]
         outcome = TickerOutcome(ticker="AAPL", errors=["2026-04-06: error 162"])
@@ -212,10 +212,10 @@ class TestQualityHookIntegration:
             ts="2026-05-17T00:00:00Z",
         )
 
-        with patch("scripts.backfill_intraday.detect_all", return_value=[fake_flag]) as m_detect, \
-             patch("scripts.backfill_intraday.write_sidecar", return_value=True) as m_sidecar, \
-             patch("scripts.backfill_intraday.append_audit", return_value=True) as m_audit, \
-             patch("scripts.backfill_intraday.alert_on_flag", return_value=True) as m_alert:
+        with patch("livewire_scripts.backfill_intraday.detect_all", return_value=[fake_flag]) as m_detect, \
+             patch("livewire_scripts.backfill_intraday.write_sidecar", return_value=True) as m_sidecar, \
+             patch("livewire_scripts.backfill_intraday.append_audit", return_value=True) as m_audit, \
+             patch("livewire_scripts.backfill_intraday.alert_on_flag", return_value=True) as m_alert:
             _run_quality_detection(
                 ticker="AAPL",
                 timeframe="5m",
@@ -231,10 +231,10 @@ class TestQualityHookIntegration:
         assert m_alert.call_count == 1
 
     def test_quality_hook_skips_empty_bars(self, tmp_path):
-        from scripts.backfill_intraday import _run_quality_detection
+        from livewire_scripts.backfill_intraday import _run_quality_detection
 
         outcome = TickerOutcome(ticker="AAPL")
-        with patch("scripts.backfill_intraday.detect_all") as m_detect:
+        with patch("livewire_scripts.backfill_intraday.detect_all") as m_detect:
             _run_quality_detection(
                 ticker="AAPL",
                 timeframe="5m",
@@ -251,7 +251,7 @@ class TestQualityHookIntegration:
 
 class TestPlanChunks:
     def test_one_line_per_ticker(self):
-        with patch("scripts.backfill_intraday.compute_intraday_chunks",
+        with patch("livewire_scripts.backfill_intraday.compute_intraday_chunks",
                    return_value=[("1 W", "x"), ("1 W", "y")]):
             lines = plan_chunks("5m", years=1, tickers=["AAPL", "MSFT"])
         assert len(lines) == 2
@@ -271,7 +271,7 @@ class TestResolveTickers:
     def test_preset_path(self):
         args = SimpleNamespace(preset="some.json", tickers=None)
         with patch(
-            "scripts.backfill_intraday.load_preset",
+            "livewire_scripts.backfill_intraday.load_preset",
             return_value=("sp500", ["AAPL", "MSFT"], {}),
         ):
             name, tickers = _resolve_tickers(args)
@@ -373,7 +373,7 @@ class TestMain:
 
         with patch("clients.ib_client.IBClient", return_value=fake_ib):
             with patch(
-                "scripts.backfill_intraday.compute_intraday_chunks",
+                "livewire_scripts.backfill_intraday.compute_intraday_chunks",
                 return_value=[("1 W", "x")],
             ):
                 with patch.object(
@@ -397,11 +397,11 @@ class TestMain:
 
         with patch("clients.ib_client.IBClient", return_value=fake_ib):
             with patch(
-                "scripts.backfill_intraday.load_preset",
+                "livewire_scripts.backfill_intraday.load_preset",
                 return_value=("sp500", ["AAPL"], {}),
             ):
                 with patch(
-                    "scripts.backfill_intraday.compute_intraday_chunks",
+                    "livewire_scripts.backfill_intraday.compute_intraday_chunks",
                     return_value=[("1 W", "x")],
                 ):
                     with patch.object(
@@ -425,11 +425,11 @@ class TestMain:
 
         with patch("clients.ib_client.IBClient", return_value=fake_ib):
             with patch(
-                "scripts.backfill_intraday.load_preset",
+                "livewire_scripts.backfill_intraday.load_preset",
                 return_value=("sp500", ["BAD"], {}),
             ):
                 with patch(
-                    "scripts.backfill_intraday.compute_intraday_chunks",
+                    "livewire_scripts.backfill_intraday.compute_intraday_chunks",
                     return_value=[("1 W", "x")],
                 ):
                     with patch.object(
@@ -458,7 +458,7 @@ class TestMain:
 
         with patch("clients.ib_client.IBClient", return_value=fake_ib):
             with patch(
-                "scripts.backfill_intraday.load_preset",
+                "livewire_scripts.backfill_intraday.load_preset",
                 return_value=("sp500", ["AAPL"], {}),
             ):
                 with patch.object(
@@ -484,7 +484,7 @@ class TestMain:
 
         with patch("clients.ib_client.IBClient", return_value=fake_ib):
             with patch(
-                "scripts.backfill_intraday.load_preset",
+                "livewire_scripts.backfill_intraday.load_preset",
                 return_value=("sp500", ["AAPL"], {}),
             ):
                 with patch.object(
@@ -508,7 +508,7 @@ class TestMain:
 
         with patch("clients.ib_client.IBClient", return_value=fake_ib):
             with patch(
-                "scripts.backfill_intraday.compute_intraday_chunks",
+                "livewire_scripts.backfill_intraday.compute_intraday_chunks",
                 return_value=[("1 W", "20260406-15:00:00")],
             ):
                 with patch.object(
@@ -538,7 +538,7 @@ class TestMain:
 
         with patch("clients.ib_client.IBClient", return_value=fake_ib):
             with patch(
-                "scripts.backfill_intraday.compute_intraday_chunks",
+                "livewire_scripts.backfill_intraday.compute_intraday_chunks",
                 return_value=[("1 W", "x")],
             ):
                 with patch.object(

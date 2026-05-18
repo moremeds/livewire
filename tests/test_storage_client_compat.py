@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import scripts.daily_update as daily_script
-import scripts.fetch_ib_historical as fetch_script
+import livewire_scripts.daily_update as daily_script
+import livewire_scripts.fetch_ib_historical as fetch_script
 
 
 def _bar(trade_date="2025-01-03", close=156.0):

@@ -10,7 +10,7 @@ from unittest.mock import call, patch
 
 import pytest
 
-from scripts.install_ibc_secure_service import (
+from livewire_scripts.install_ibc_secure_service import (
     DEFAULT_SCHEDULE,
     agent_labels_for_lookup,
     backup_legacy_plist,
@@ -37,7 +37,7 @@ from scripts.install_ibc_secure_service import (
 
 class TestParseArgs:
     def test_defaults(self):
-        with patch("scripts.install_ibc_secure_service.Path.home", return_value=Path("/tmp/home")):
+        with patch("livewire_scripts.install_ibc_secure_service.Path.home", return_value=Path("/tmp/home")):
             args = parse_args([])
 
         assert args.home == Path("/tmp/home")
@@ -272,16 +272,16 @@ class TestCredentialHelpers:
 
     def test_read_keychain_secret_found(self):
         completed = SimpleNamespace(returncode=0, stdout="secret\n", stderr="")
-        with patch("scripts.install_ibc_secure_service.subprocess.run", return_value=completed):
+        with patch("livewire_scripts.install_ibc_secure_service.subprocess.run", return_value=completed):
             assert read_keychain_secret("svc", "acct") == "secret"
 
     def test_read_keychain_secret_missing(self):
         completed = SimpleNamespace(returncode=44, stdout="", stderr="missing")
-        with patch("scripts.install_ibc_secure_service.subprocess.run", return_value=completed):
+        with patch("livewire_scripts.install_ibc_secure_service.subprocess.run", return_value=completed):
             assert read_keychain_secret("svc", "acct") is None
 
     def test_store_keychain_secret(self):
-        with patch("scripts.install_ibc_secure_service.subprocess.run") as run_mock:
+        with patch("livewire_scripts.install_ibc_secure_service.subprocess.run") as run_mock:
             store_keychain_secret("svc", "acct", "secret")
 
         run_mock.assert_called_once_with(
@@ -308,10 +308,10 @@ class TestCredentialHelpers:
         config.write_text("IbLoginId=user\nIbPassword=pass\nTradingMode=live\n", encoding="utf-8")
 
         with patch(
-            "scripts.install_ibc_secure_service.read_keychain_secret",
+            "livewire_scripts.install_ibc_secure_service.read_keychain_secret",
             side_effect=[None, None],
         ):
-            with patch("scripts.install_ibc_secure_service.store_keychain_secret") as store_mock:
+            with patch("livewire_scripts.install_ibc_secure_service.store_keychain_secret") as store_mock:
                 status = ensure_keychain_and_sanitize_config(config, "acct", "svc.user", "svc.pass")
 
         assert status == "migrated credentials from config.secure.ini into Keychain"
@@ -325,10 +325,10 @@ class TestCredentialHelpers:
         config.write_text("TradingMode=live\n", encoding="utf-8")
 
         with patch(
-            "scripts.install_ibc_secure_service.read_keychain_secret",
+            "livewire_scripts.install_ibc_secure_service.read_keychain_secret",
             side_effect=["user", "pass"],
         ):
-            with patch("scripts.install_ibc_secure_service.store_keychain_secret") as store_mock:
+            with patch("livewire_scripts.install_ibc_secure_service.store_keychain_secret") as store_mock:
                 status = ensure_keychain_and_sanitize_config(config, "acct", "svc.user", "svc.pass")
 
         assert status == "refreshed Keychain trusted-app access for existing credentials"
@@ -341,10 +341,10 @@ class TestCredentialHelpers:
         config.write_text("TradingMode=live\nIbLoginId=file-user\nIbPassword=file-pass\n", encoding="utf-8")
 
         with patch(
-            "scripts.install_ibc_secure_service.read_keychain_secret",
+            "livewire_scripts.install_ibc_secure_service.read_keychain_secret",
             side_effect=["key-user", "key-pass"],
         ):
-            with patch("scripts.install_ibc_secure_service.store_keychain_secret"):
+            with patch("livewire_scripts.install_ibc_secure_service.store_keychain_secret"):
                 status = ensure_keychain_and_sanitize_config(config, "acct", "svc.user", "svc.pass")
 
         assert (
@@ -358,7 +358,7 @@ class TestCredentialHelpers:
         config.write_text("TradingMode=live\n", encoding="utf-8")
 
         with patch(
-            "scripts.install_ibc_secure_service.read_keychain_secret",
+            "livewire_scripts.install_ibc_secure_service.read_keychain_secret",
             side_effect=[None, None],
         ):
             with pytest.raises(RuntimeError, match="IB credentials were not found in Keychain"):
@@ -449,7 +449,7 @@ class TestFileAndLaunchctlHelpers:
         assert backup_legacy_plist(tmp_path / "missing.plist") is None
 
     def test_launchctl_bootout(self, tmp_path):
-        with patch("scripts.install_ibc_secure_service.subprocess.run") as run_mock:
+        with patch("livewire_scripts.install_ibc_secure_service.subprocess.run") as run_mock:
             launchctl_bootout("com.example.ibc", tmp_path / "agent.plist")
 
         assert run_mock.call_count == 2
@@ -458,7 +458,7 @@ class TestFileAndLaunchctlHelpers:
         assert second.args[0] == ["launchctl", "bootout", "gui/501/com.example.ibc"]
 
     def test_launchctl_bootstrap(self, tmp_path):
-        with patch("scripts.install_ibc_secure_service.subprocess.run") as run_mock:
+        with patch("livewire_scripts.install_ibc_secure_service.subprocess.run") as run_mock:
             launchctl_bootstrap(tmp_path / "agent.plist")
 
         run_mock.assert_called_once_with(
@@ -509,11 +509,11 @@ class TestInstall:
         )
 
         with patch(
-            "scripts.install_ibc_secure_service.ensure_keychain_and_sanitize_config",
+            "livewire_scripts.install_ibc_secure_service.ensure_keychain_and_sanitize_config",
             return_value="sanitized config",
         ) as sanitize_mock:
-            with patch("scripts.install_ibc_secure_service.launchctl_bootout") as bootout_mock:
-                with patch("scripts.install_ibc_secure_service.launchctl_bootstrap") as bootstrap_mock:
+            with patch("livewire_scripts.install_ibc_secure_service.launchctl_bootout") as bootout_mock:
+                with patch("livewire_scripts.install_ibc_secure_service.launchctl_bootstrap") as bootstrap_mock:
                     notes = install(args)
 
         sanitize_mock.assert_called_once_with(
@@ -565,11 +565,11 @@ class TestInstall:
         )
 
         with patch(
-            "scripts.install_ibc_secure_service.ensure_keychain_and_sanitize_config",
+            "livewire_scripts.install_ibc_secure_service.ensure_keychain_and_sanitize_config",
             return_value="sanitized config",
         ):
-            with patch("scripts.install_ibc_secure_service.launchctl_bootout") as bootout_mock:
-                with patch("scripts.install_ibc_secure_service.launchctl_bootstrap") as bootstrap_mock:
+            with patch("livewire_scripts.install_ibc_secure_service.launchctl_bootout") as bootout_mock:
+                with patch("livewire_scripts.install_ibc_secure_service.launchctl_bootstrap") as bootstrap_mock:
                     notes = install(args)
 
         bootout_mock.assert_called_once()
@@ -579,9 +579,9 @@ class TestInstall:
 
 class TestMain:
     def test_main_success(self):
-        with patch("scripts.install_ibc_secure_service.install", return_value=["a", "b"]):
+        with patch("livewire_scripts.install_ibc_secure_service.install", return_value=["a", "b"]):
             assert main([]) == 0
 
     def test_main_failure(self):
-        with patch("scripts.install_ibc_secure_service.install", side_effect=RuntimeError("boom")):
+        with patch("livewire_scripts.install_ibc_secure_service.install", side_effect=RuntimeError("boom")):
             assert main([]) == 1

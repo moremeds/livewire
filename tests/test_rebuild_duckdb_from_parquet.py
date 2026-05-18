@@ -9,7 +9,7 @@ import pytest
 
 from clients.bronze_client import BronzeClient
 from clients.db_client import DBClient
-from scripts.rebuild_duckdb_from_parquet import main
+from livewire_scripts.rebuild_duckdb_from_parquet import main
 
 
 def _row(trade_date: str, symbol_id: int, close: float) -> dict:
@@ -159,7 +159,7 @@ class TestRebuildDuckDBFromParquet:
             ],
         )
 
-        with patch("scripts.rebuild_duckdb_from_parquet.DATA_LAKE", data_lake):
+        with patch("livewire_scripts.rebuild_duckdb_from_parquet.DATA_LAKE", data_lake):
             main()
 
         with DBClient(db_path=db_path) as db:
@@ -187,7 +187,7 @@ class TestRebuildDuckDBFromParquet:
             ],
         )
 
-        with patch("scripts.rebuild_duckdb_from_parquet.DATA_LAKE", data_lake):
+        with patch("livewire_scripts.rebuild_duckdb_from_parquet.DATA_LAKE", data_lake):
             main()
 
         with DBClient(db_path=db_path) as db:
@@ -225,7 +225,7 @@ class TestRebuildDuckDBFromParquet:
             ],
         )
 
-        with patch("scripts.rebuild_duckdb_from_parquet.DATA_LAKE", data_lake):
+        with patch("livewire_scripts.rebuild_duckdb_from_parquet.DATA_LAKE", data_lake):
             main()
 
         with DBClient(db_path=db_path) as db:
@@ -254,7 +254,7 @@ class TestRebuildTimeframe1d:
             ],
         )
 
-        with patch("scripts.rebuild_duckdb_from_parquet.DATA_LAKE", data_lake):
+        with patch("livewire_scripts.rebuild_duckdb_from_parquet.DATA_LAKE", data_lake):
             main()
 
         with DBClient(db_path=db_path) as db:
@@ -288,7 +288,7 @@ class TestRebuildIntraday:
             ],
         )
 
-        with patch("scripts.rebuild_duckdb_from_parquet.DATA_LAKE", data_lake):
+        with patch("livewire_scripts.rebuild_duckdb_from_parquet.DATA_LAKE", data_lake):
             main()
 
         with DBClient(db_path=db_path) as db:
@@ -321,7 +321,7 @@ class TestRebuildIntraday:
             ],
         )
 
-        with patch("scripts.rebuild_duckdb_from_parquet.DATA_LAKE", data_lake):
+        with patch("livewire_scripts.rebuild_duckdb_from_parquet.DATA_LAKE", data_lake):
             main()
 
         with DBClient(db_path=db_path) as db:

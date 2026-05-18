@@ -16,7 +16,7 @@ REPO_ROOT = SCRIPT_DIR.parent
 if str(REPO_ROOT) not in sys.path:  # pragma: no cover - direct script bootstrap only
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.run_daily_update_job import (
+from livewire_scripts.run_daily_update_job import (
     AlertRequest,
     RunnerConfig,
     append_log,

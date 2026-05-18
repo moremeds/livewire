@@ -11,7 +11,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from scripts.fetch_cboe_volatility import (
+from livewire_scripts.fetch_cboe_volatility import (
     _symbol_id,
     bars_to_table,
     fetch_cboe_historical,
@@ -60,7 +60,7 @@ class TestFetchCboeHistorical:
         }
         mock_response.raise_for_status = MagicMock()
 
-        with patch("scripts.fetch_cboe_volatility.httpx.get", return_value=mock_response):
+        with patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=mock_response):
             bars = fetch_cboe_historical("VXHYG")
 
         assert len(bars) == 1
@@ -72,7 +72,7 @@ class TestFetchCboeHistorical:
         mock_response.json.return_value = {"data": []}
         mock_response.raise_for_status = MagicMock()
 
-        with patch("scripts.fetch_cboe_volatility.httpx.get", return_value=mock_response):
+        with patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=mock_response):
             bars = fetch_cboe_historical("UNKNOWN")
 
         assert bars == []
@@ -275,7 +275,7 @@ class TestMain:
         """--symbols fetches specified symbols."""
         with (
             patch("sys.argv", ["prog", "--symbols", "VIX", "--warehouse", str(tmp_path)]),
-            patch("scripts.fetch_cboe_volatility.httpx.get", return_value=self._mock_fetch(self._SAMPLE_BARS)),
+            patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=self._mock_fetch(self._SAMPLE_BARS)),
         ):
             main()
 
@@ -289,7 +289,7 @@ class TestMain:
 
         with (
             patch("sys.argv", ["prog", "--preset", str(preset), "--warehouse", str(tmp_path)]),
-            patch("scripts.fetch_cboe_volatility.httpx.get", return_value=self._mock_fetch(self._SAMPLE_BARS)),
+            patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=self._mock_fetch(self._SAMPLE_BARS)),
         ):
             main()
 
@@ -300,8 +300,8 @@ class TestMain:
         """Falls back to default preset when it exists."""
         with (
             patch("sys.argv", ["prog", "--warehouse", str(tmp_path)]),
-            patch("scripts.fetch_cboe_volatility.DEFAULT_PRESET", tmp_path / "vol.json"),
-            patch("scripts.fetch_cboe_volatility.httpx.get", return_value=self._mock_fetch(self._SAMPLE_BARS)),
+            patch("livewire_scripts.fetch_cboe_volatility.DEFAULT_PRESET", tmp_path / "vol.json"),
+            patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=self._mock_fetch(self._SAMPLE_BARS)),
         ):
             (tmp_path / "vol.json").write_text('{"tickers": ["VVIX"]}')
             main()
@@ -313,8 +313,8 @@ class TestMain:
         """Falls back to VIX, VVIX when no preset exists."""
         with (
             patch("sys.argv", ["prog", "--warehouse", str(tmp_path)]),
-            patch("scripts.fetch_cboe_volatility.DEFAULT_PRESET", tmp_path / "nonexistent.json"),
-            patch("scripts.fetch_cboe_volatility.httpx.get", return_value=self._mock_fetch(self._SAMPLE_BARS)),
+            patch("livewire_scripts.fetch_cboe_volatility.DEFAULT_PRESET", tmp_path / "nonexistent.json"),
+            patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=self._mock_fetch(self._SAMPLE_BARS)),
         ):
             main()
 
@@ -329,7 +329,7 @@ class TestMain:
 
         with (
             patch("sys.argv", ["prog", "--symbols", "MISSING", "--warehouse", str(tmp_path)]),
-            patch("scripts.fetch_cboe_volatility.httpx.get", return_value=empty_resp),
+            patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=empty_resp),
         ):
             main()
 
@@ -340,6 +340,6 @@ class TestMain:
         """Fetch exceptions are caught and logged, not raised."""
         with (
             patch("sys.argv", ["prog", "--symbols", "BAD", "--warehouse", str(tmp_path)]),
-            patch("scripts.fetch_cboe_volatility.httpx.get", side_effect=Exception("network error")),
+            patch("livewire_scripts.fetch_cboe_volatility.httpx.get", side_effect=Exception("network error")),
         ):
             main()  # Should not raise

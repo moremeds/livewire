@@ -199,7 +199,7 @@ MDW_IB_HOST=ib-gateway    # Tailscale MagicDNS hostname
 MDW_IB_PORT=4001
 ```
 
-All scripts (`fetch_ib_historical.py`, `daily_update.py`, etc.) read `MDW_IB_HOST`/`MDW_IB_PORT` automatically.
+The ingest commands under `scripts/livewire_ingest.py` read `MDW_IB_HOST`/`MDW_IB_PORT` automatically.
 
 #### Phone Access
 
@@ -233,7 +233,7 @@ IBC provides:
 #### Install
 
 ```bash
-python scripts/install_ibc_secure_service.py
+python scripts/livewire_ops.py ibc-install
 ```
 
 #### Commands
@@ -287,44 +287,44 @@ PY
 
 ```bash
 # Default (Mag 7)
-python scripts/fetch_ib_historical.py
+python scripts/livewire_ingest.py historical
 
 # Specific tickers
-python scripts/fetch_ib_historical.py --tickers AAPL NVDA
+python scripts/livewire_ingest.py historical --tickers AAPL NVDA
 
 # Preset universe
-python scripts/fetch_ib_historical.py --preset presets/sp500.json
+python scripts/livewire_ingest.py historical --preset presets/sp500.json
 
 # Futures by preset
-python scripts/fetch_ib_historical.py --preset presets/futures-index.json --asset-class futures
-python scripts/fetch_ib_historical.py --preset presets/futures-energy.json --asset-class futures
-python scripts/fetch_ib_historical.py --preset presets/futures-metals.json --asset-class futures
-python scripts/fetch_ib_historical.py --preset presets/futures-treasuries.json --asset-class futures
+python scripts/livewire_ingest.py historical --preset presets/futures-index.json --asset-class futures
+python scripts/livewire_ingest.py historical --preset presets/futures-energy.json --asset-class futures
+python scripts/livewire_ingest.py historical --preset presets/futures-metals.json --asset-class futures
+python scripts/livewire_ingest.py historical --preset presets/futures-treasuries.json --asset-class futures
 
 # Spot commodities via IB CMDTY MIDPOINT
-python scripts/fetch_ib_historical.py --preset presets/cmdty-metals.json --asset-class cmdty
+python scripts/livewire_ingest.py historical --preset presets/cmdty-metals.json --asset-class cmdty
 
 # FX via IB Forex MIDPOINT
-python scripts/fetch_ib_historical.py --preset presets/fx-pairs.json --asset-class fx
+python scripts/livewire_ingest.py historical --preset presets/fx-pairs.json --asset-class fx
 
 # Volatility (CBOE direct)
-python scripts/fetch_cboe_volatility.py
+python scripts/livewire_ingest.py cboe-vol
 
 # Volatility historical backfill through IB Index contracts, when needed
-python scripts/fetch_ib_historical.py --preset presets/volatility.json --asset-class volatility
+python scripts/livewire_ingest.py historical --preset presets/volatility.json --asset-class volatility
 ```
 
 Run all documented historical seed groups manually:
 
 ```bash
-python scripts/fetch_ib_historical.py --preset presets/sp500.json
-python scripts/fetch_ib_historical.py --preset presets/futures-index.json --asset-class futures
-python scripts/fetch_ib_historical.py --preset presets/futures-energy.json --asset-class futures
-python scripts/fetch_ib_historical.py --preset presets/futures-metals.json --asset-class futures
-python scripts/fetch_ib_historical.py --preset presets/futures-treasuries.json --asset-class futures
-python scripts/fetch_ib_historical.py --preset presets/cmdty-metals.json --asset-class cmdty
-python scripts/fetch_ib_historical.py --preset presets/fx-pairs.json --asset-class fx
-python scripts/fetch_cboe_volatility.py
+python scripts/livewire_ingest.py historical --preset presets/sp500.json
+python scripts/livewire_ingest.py historical --preset presets/futures-index.json --asset-class futures
+python scripts/livewire_ingest.py historical --preset presets/futures-energy.json --asset-class futures
+python scripts/livewire_ingest.py historical --preset presets/futures-metals.json --asset-class futures
+python scripts/livewire_ingest.py historical --preset presets/futures-treasuries.json --asset-class futures
+python scripts/livewire_ingest.py historical --preset presets/cmdty-metals.json --asset-class cmdty
+python scripts/livewire_ingest.py historical --preset presets/fx-pairs.json --asset-class fx
+python scripts/livewire_ingest.py cboe-vol
 ```
 
 Notes:
@@ -339,19 +339,19 @@ Notes:
 
 ```bash
 # Equity backfill
-python scripts/fetch_ib_historical.py --preset presets/sp500.json --backfill
+python scripts/livewire_ingest.py historical --preset presets/sp500.json --backfill
 
 # Futures backfill
-python scripts/fetch_ib_historical.py --preset presets/futures-index.json --asset-class futures --backfill
+python scripts/livewire_ingest.py historical --preset presets/futures-index.json --asset-class futures --backfill
 
 # Spot commodity backfill
-python scripts/fetch_ib_historical.py --preset presets/cmdty-metals.json --asset-class cmdty --backfill
+python scripts/livewire_ingest.py historical --preset presets/cmdty-metals.json --asset-class cmdty --backfill
 
 # FX backfill
-python scripts/fetch_ib_historical.py --preset presets/fx-pairs.json --asset-class fx --backfill
+python scripts/livewire_ingest.py historical --preset presets/fx-pairs.json --asset-class fx --backfill
 
 # Volatility IB historical backfill, if CBOE direct history is not enough
-python scripts/fetch_ib_historical.py --preset presets/volatility.json --asset-class volatility --backfill
+python scripts/livewire_ingest.py historical --preset presets/volatility.json --asset-class volatility --backfill
 ```
 
 * Fills only missing history
@@ -364,29 +364,29 @@ python scripts/fetch_ib_historical.py --preset presets/volatility.json --asset-c
 
 ```bash
 # Equity daily update
-python scripts/daily_update.py
+python scripts/livewire_ingest.py daily
 
 # Futures daily update
-python scripts/daily_update.py --asset-class futures
+python scripts/livewire_ingest.py daily --asset-class futures
 
 # Spot commodity daily update
-python scripts/daily_update.py --asset-class cmdty --preset presets/cmdty-metals.json
+python scripts/livewire_ingest.py daily --asset-class cmdty --preset presets/cmdty-metals.json
 
 # FX daily update
-python scripts/daily_update.py --asset-class fx --preset presets/fx-pairs.json
+python scripts/livewire_ingest.py daily --asset-class fx --preset presets/fx-pairs.json
 
 # Volatility daily update, authoritative CBOE direct source
-python scripts/fetch_cboe_volatility.py
+python scripts/livewire_ingest.py cboe-vol
 ```
 
 Run the full manual daily cycle:
 
 ```bash
-python scripts/daily_update.py --asset-class equity
-python scripts/daily_update.py --asset-class futures
-python scripts/daily_update.py --asset-class cmdty --preset presets/cmdty-metals.json
-python scripts/daily_update.py --asset-class fx --preset presets/fx-pairs.json
-python scripts/fetch_cboe_volatility.py
+python scripts/livewire_ingest.py daily --asset-class equity
+python scripts/livewire_ingest.py daily --asset-class futures
+python scripts/livewire_ingest.py daily --asset-class cmdty --preset presets/cmdty-metals.json
+python scripts/livewire_ingest.py daily --asset-class fx --preset presets/fx-pairs.json
+python scripts/livewire_ingest.py cboe-vol
 ```
 
 Common flags:
@@ -411,19 +411,19 @@ Common flags:
 
 ### Reliability / Data Quality
 
-Sub-A of the Livewire reliability roadmap adds source-tagged telemetry, quality-flag sidecars, a central `quality_audit.jsonl`, a per-ticker IB orchestrator, and a daily rollup email marker. Use `python scripts/run_ib_fetch_robust.py --preset presets/sp500.json --mode seed` for bulk IB seed runs, `python scripts/run_ib_fetch_robust.py --preset presets/sp500.json --mode backfill` for older-history recovery, and `python scripts/data_quality_report.py --view summary --since 24h` (or `--email`) for the rollup. Design details live in `docs/superpowers/specs/2026-05-17-mdw-reliability-foundation-design.md`; the execution plan is `docs/superpowers/plans/2026-05-18-reliability-foundation-plan.md`.
+Sub-A of the Livewire reliability roadmap adds source-tagged telemetry, quality-flag sidecars, a central `quality_audit.jsonl`, a per-ticker IB orchestrator, and a daily rollup email marker. Use `python scripts/livewire_ingest.py robust --preset presets/sp500.json --mode seed` for bulk IB seed runs, `python scripts/livewire_ingest.py robust --preset presets/sp500.json --mode backfill` for older-history recovery, and `python scripts/livewire_quality.py report --view summary --since 24h` (or `--email`) for the rollup. Design details live in `docs/superpowers/specs/2026-05-17-mdw-reliability-foundation-design.md`; the execution plan is `docs/superpowers/plans/2026-05-18-reliability-foundation-plan.md`.
 
 The scheduled runner executes equities, futures, and CBOE volatility:
 
 ```bash
-python scripts/run_daily_update_job.py
+python scripts/livewire_ops.py run-daily-job
 ```
 
 Run `cmdty` and `fx` daily updates explicitly until they are added to the scheduled runner:
 
 ```bash
-python scripts/daily_update.py --asset-class cmdty --preset presets/cmdty-metals.json
-python scripts/daily_update.py --asset-class fx --preset presets/fx-pairs.json
+python scripts/livewire_ingest.py daily --asset-class cmdty --preset presets/cmdty-metals.json
+python scripts/livewire_ingest.py daily --asset-class fx --preset presets/fx-pairs.json
 ```
 
 ---
@@ -432,16 +432,16 @@ python scripts/daily_update.py --asset-class fx --preset presets/fx-pairs.json
 
 ```bash
 # Rebuild equities, including daily/intraday tables when present
-python scripts/rebuild_duckdb_from_parquet.py
+python scripts/livewire_store.py rebuild-duckdb
 
 # Rebuild only daily equity rows
-python scripts/rebuild_duckdb_from_parquet.py --asset-class equity --timeframe 1d
+python scripts/livewire_store.py rebuild-duckdb --asset-class equity --timeframe 1d
 
 # Rebuild futures daily rows
-python scripts/rebuild_duckdb_from_parquet.py --asset-class futures
+python scripts/livewire_store.py rebuild-duckdb --asset-class futures
 
 # Rebuild volatility daily rows
-python scripts/rebuild_duckdb_from_parquet.py --asset-class volatility
+python scripts/livewire_store.py rebuild-duckdb --asset-class volatility
 ```
 
 DuckDB rebuild currently supports `equity`, `futures`, and `volatility`. `cmdty` and `fx` are canonical in bronze Parquet and do not yet have DuckDB rebuild targets.
@@ -520,7 +520,7 @@ python -m pytest tests/test_bronze_client.py tests/test_daily_update.py tests/te
 ### Pre-commit Hook
 
 ```bash
-ln -sf ../../scripts/pre-commit-secrets-scan.sh .git/hooks/pre-commit
+ln -sf ../../tools/pre-commit-secrets-scan.sh .git/hooks/pre-commit
 ```
 
 Detects:

@@ -8,7 +8,7 @@ from subprocess import CompletedProcess
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from scripts.check_daily_update_watchdog import (
+from livewire_scripts.check_daily_update_watchdog import (
     WATCHDOG_ALERT_FAILED_EXIT_CODE,
     WATCHDOG_ALERT_SENT_EXIT_CODE,
     build_daily_log_file,
@@ -20,7 +20,7 @@ from scripts.check_daily_update_watchdog import (
     record_alert_marker,
     run_watchdog,
 )
-from scripts.run_daily_update_job import RunnerConfig
+from livewire_scripts.run_daily_update_job import RunnerConfig
 
 
 def _config(tmp_path: Path, *, node_bin: str = "/opt/homebrew/bin/node") -> RunnerConfig:
@@ -30,7 +30,7 @@ def _config(tmp_path: Path, *, node_bin: str = "/opt/homebrew/bin/node") -> Runn
         warehouse_dir=tmp_path / "warehouse",
         log_dir=tmp_path / "warehouse" / "logs",
         daily_update_script=script_dir / "daily_update.py",
-        alert_script=script_dir / "send_daily_update_failure_email.mjs",
+        alert_script=script_dir / "livewire_ops.py",
         python_bin="/usr/bin/python3",
         node_bin=node_bin,
         max_attempts=3,
@@ -113,7 +113,7 @@ class TestRunWatchdog:
             return SimpleNamespace(returncode=0, stdout="sent")
 
         with patch(
-            "scripts.check_daily_update_watchdog.send_failure_alert",
+            "livewire_scripts.check_daily_update_watchdog.send_failure_alert",
             side_effect=_send_failure_alert,
         ):
             rc = run_watchdog(config, run_date="2026-03-11", env={"A": "1"})
@@ -134,7 +134,7 @@ class TestRunWatchdog:
     def test_returns_failed_exit_code_when_alert_cannot_be_sent(self, tmp_path):
         config = _config(tmp_path)
 
-        with patch("scripts.check_daily_update_watchdog.send_failure_alert", return_value=None):
+        with patch("livewire_scripts.check_daily_update_watchdog.send_failure_alert", return_value=None):
             rc = run_watchdog(config, run_date="2026-03-11", env={})
 
         assert rc == WATCHDOG_ALERT_FAILED_EXIT_CODE
@@ -147,7 +147,7 @@ class TestRunWatchdog:
         config = _config(tmp_path)
 
         with patch(
-            "scripts.check_daily_update_watchdog.send_failure_alert",
+            "livewire_scripts.check_daily_update_watchdog.send_failure_alert",
             return_value=SimpleNamespace(returncode=2, stdout="smtp down"),
         ):
             rc = run_watchdog(config, run_date="2026-03-11", env={})
@@ -184,7 +184,7 @@ class TestQualitySummaryMarker:
             calls.append(list(cmd))
             return CompletedProcess(args=cmd, returncode=0, stdout="sent", stderr="")
 
-        with patch("scripts.run_daily_update_job.node_binary_exists", return_value=True):
+        with patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=True):
             rc = run_watchdog(config, run_date="2026-05-18", runner=fake_runner)
 
         assert rc == WATCHDOG_ALERT_SENT_EXIT_CODE
@@ -195,8 +195,8 @@ class TestMain:
     def test_main_uses_build_config_and_run_watchdog(self, tmp_path):
         config = _config(tmp_path)
 
-        with patch("scripts.check_daily_update_watchdog.build_config", return_value=config):
-            with patch("scripts.check_daily_update_watchdog.run_watchdog", return_value=1) as run_mock:
+        with patch("livewire_scripts.check_daily_update_watchdog.build_config", return_value=config):
+            with patch("livewire_scripts.check_daily_update_watchdog.run_watchdog", return_value=1) as run_mock:
                 assert main(["--run-date", "2026-03-11"]) == 1
 
         run_mock.assert_called_once_with(

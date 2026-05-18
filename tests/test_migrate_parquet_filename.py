@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from scripts.migrate_parquet_filename import main, migrate_parquet_files
+from livewire_scripts.migrate_parquet_filename import main, migrate_parquet_files
 
 
 class TestMigrateParquetFilename:

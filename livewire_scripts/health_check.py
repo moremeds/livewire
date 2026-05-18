@@ -23,7 +23,7 @@ from clients.intraday_bronze_client import (
     INTRADAY_TIMEFRAMES,
     IntradayBronzeClient,
 )
-from scripts.daily_update import (
+from livewire_scripts.daily_update import (
     _make_contract,
     bars_to_futures_rows,
     bars_to_rows,
@@ -42,6 +42,9 @@ _WAREHOUSE_DIR = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-w
 _DATA_LAKE = _WAREHOUSE_DIR / "data-lake"
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPT_DIR.parent
+_INGEST_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ingest.py"
+_OPS_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ops.py"
 
 
 def _resolve_bronze_dir(asset_class: str) -> Path:
@@ -324,7 +327,8 @@ def repair_intraday_window(
     years = max(1, (days + 364) // 365)
     cmd = [
         sys.executable,
-        str(_SCRIPT_DIR / "backfill_intraday.py"),
+        str(_INGEST_SCRIPT),
+        "intraday-backfill",
         "--tickers", symbol,
         "--timeframe", timeframe,
         "--years", str(years),
@@ -344,18 +348,18 @@ def _send_alert(
     log_path: Path,
 ) -> None:
     """Send an email alert via the Node.js alert script."""
-    alert_script = _SCRIPT_DIR / "send_daily_update_failure_email.mjs"
     error_summary = (
         f"health_check ({asset_class}): {total_gaps} interior gaps detected, "
         f"{repaired} repaired."
     )
     cmd = [
-        "node",
-        str(alert_script),
+        sys.executable,
+        str(_OPS_SCRIPT),
+        "send-alert",
         "--run-date", run_date,
         "--log-file", str(log_path),
         "--error-summary", error_summary,
-        "--repo-root", str(_SCRIPT_DIR.parent),
+        "--repo-root", str(_REPO_ROOT),
         "--job-name", "health_check",
     ]
     subprocess.run(cmd, check=False)
@@ -509,7 +513,7 @@ def main() -> None:
 
         # Lazy import — only needed when actually connecting to IB
         from clients.ib_client import IBClient  # noqa: PLC0415
-        from scripts.daily_update import fetch_fallback_bars  # noqa: PLC0415
+        from livewire_scripts.daily_update import fetch_fallback_bars  # noqa: PLC0415
 
         log_dir = _WAREHOUSE_DIR / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)

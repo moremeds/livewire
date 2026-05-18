@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from scripts.start_ibc_gateway_keychain import (
+from livewire_scripts.start_ibc_gateway_keychain import (
     KeychainLookupError,
     build_ibc_command,
     main,
@@ -59,7 +59,7 @@ class TestParseArgs:
 class TestReadKeychainSecret:
     def test_returns_secret(self):
         completed = SimpleNamespace(returncode=0, stdout="secret\n", stderr="")
-        with patch("scripts.start_ibc_gateway_keychain.subprocess.run", return_value=completed) as run_mock:
+        with patch("livewire_scripts.start_ibc_gateway_keychain.subprocess.run", return_value=completed) as run_mock:
             secret = read_keychain_secret("svc", "acct")
 
         assert secret == "secret"
@@ -68,13 +68,13 @@ class TestReadKeychainSecret:
 
     def test_raises_on_lookup_failure(self):
         completed = SimpleNamespace(returncode=44, stdout="", stderr="item not found")
-        with patch("scripts.start_ibc_gateway_keychain.subprocess.run", return_value=completed):
+        with patch("livewire_scripts.start_ibc_gateway_keychain.subprocess.run", return_value=completed):
             with pytest.raises(KeychainLookupError, match="svc: item not found"):
                 read_keychain_secret("svc", "acct")
 
     def test_raises_on_empty_secret(self):
         completed = SimpleNamespace(returncode=0, stdout="\n", stderr="")
-        with patch("scripts.start_ibc_gateway_keychain.subprocess.run", return_value=completed):
+        with patch("livewire_scripts.start_ibc_gateway_keychain.subprocess.run", return_value=completed):
             with pytest.raises(KeychainLookupError, match="svc: empty secret"):
                 read_keychain_secret("svc", "acct")
 
@@ -156,14 +156,14 @@ class TestBuildIbcCommand:
 
 class TestMain:
     def test_returns_error_off_macos(self):
-        with patch("scripts.start_ibc_gateway_keychain.sys.platform", "linux"):
+        with patch("livewire_scripts.start_ibc_gateway_keychain.sys.platform", "linux"):
             assert main(["--tws-major-version", "10.44"]) == 1
 
     def test_returns_error_when_ibcstart_missing(self, tmp_path):
         template = tmp_path / "config.secure.ini"
         template.write_text("TradingMode=live\n", encoding="utf-8")
 
-        with patch("scripts.start_ibc_gateway_keychain.sys.platform", "darwin"):
+        with patch("livewire_scripts.start_ibc_gateway_keychain.sys.platform", "darwin"):
             result = main(
                 [
                     "--tws-major-version",
@@ -182,7 +182,7 @@ class TestMain:
         ibcstart.mkdir(parents=True)
         (ibcstart / "ibcstart.sh").write_text("#!/bin/sh\n", encoding="utf-8")
 
-        with patch("scripts.start_ibc_gateway_keychain.sys.platform", "darwin"):
+        with patch("livewire_scripts.start_ibc_gateway_keychain.sys.platform", "darwin"):
             result = main(
                 [
                     "--tws-major-version",
@@ -203,9 +203,9 @@ class TestMain:
         template = tmp_path / "config.secure.ini"
         template.write_text("TradingMode=live\n", encoding="utf-8")
 
-        with patch("scripts.start_ibc_gateway_keychain.sys.platform", "darwin"):
+        with patch("livewire_scripts.start_ibc_gateway_keychain.sys.platform", "darwin"):
             with patch(
-                "scripts.start_ibc_gateway_keychain.read_keychain_secret",
+                "livewire_scripts.start_ibc_gateway_keychain.read_keychain_secret",
                 side_effect=KeychainLookupError("missing"),
             ):
                 result = main(
@@ -238,8 +238,8 @@ class TestMain:
             launched_config["contents"] = launched_config["path"].read_text(encoding="utf-8")
             return SimpleNamespace(returncode=0)
 
-        with patch("scripts.start_ibc_gateway_keychain.sys.platform", "darwin"):
-            with patch("scripts.start_ibc_gateway_keychain.subprocess.run", side_effect=fake_run):
+        with patch("livewire_scripts.start_ibc_gateway_keychain.sys.platform", "darwin"):
+            with patch("livewire_scripts.start_ibc_gateway_keychain.subprocess.run", side_effect=fake_run):
                 result = main(
                     [
                         "--tws-major-version",
@@ -268,8 +268,8 @@ class TestMain:
             SimpleNamespace(returncode=7),
         ])
 
-        with patch("scripts.start_ibc_gateway_keychain.sys.platform", "darwin"):
-            with patch("scripts.start_ibc_gateway_keychain.subprocess.run", child):
+        with patch("livewire_scripts.start_ibc_gateway_keychain.sys.platform", "darwin"):
+            with patch("livewire_scripts.start_ibc_gateway_keychain.subprocess.run", child):
                 result = main(
                     [
                         "--tws-major-version",

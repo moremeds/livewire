@@ -3,32 +3,41 @@
 Use this file for the current task only. Replace it at the start of each non-trivial task.
 
 ## Objective
-- Update README command documentation for each supported ingest/update/test workflow.
+- Consolidate the operator-facing script surface to five files while preserving current behavior and tests.
 
 ## Success Criteria
-- README has commands for historical fetches by asset class.
-- README has commands for daily updates by asset class.
-- README has commands for backfills, DuckDB rebuilds, IB connectivity checks, and tests.
-- Existing unrelated dirty worktree changes remain untouched.
+- `scripts/` contains exactly five files:
+  - `livewire_ingest.py`
+  - `livewire_quality.py`
+  - `livewire_ops.py`
+  - `livewire_store.py`
+  - `setup_market_warehouse.sh`
+- Removed script implementations are available as importable modules outside `scripts/`.
+- Existing functionality remains reachable through subcommands.
+- Internal subprocess references use the new entrypoints.
+- README, CLAUDE, project memory, launchd templates, and hook docs point to the new commands.
+- Python and Node tests pass with coverage gate evidence.
 
 ## Dependency Graph
 - T1 -> T2
 - T2 -> T3
+- T3 -> T4
+- T4 -> T5
+- T5 -> T6
+- T6 -> T7
 
 ## Tasks
-- [x] T1 Inspect current README command sections
+- [x] T1 Baseline and red tests
   depends_on: []
-- [x] T2 Update README with complete command reference
+- [x] T2 Move implementation modules out of `scripts/`
   depends_on: [T1]
-- [x] T3 Verify README diff and summarize
+- [x] T3 Add five operator entrypoints
   depends_on: [T2]
-
-## Review
-- Outcome:
-  - README now documents historical fetch, backfill, daily update, scheduled runner, DuckDB rebuild, IB connectivity check, and test commands.
-  - Commands cover equities, futures, CBOE volatility, `cmdty`, and `fx` where the repo currently supports them.
-  - README notes that `cmdty` and `fx` are canonical in bronze Parquet but do not yet have DuckDB rebuild targets.
-  - README notes that the scheduled runner currently covers equities, futures, and CBOE volatility, so `cmdty` and `fx` daily updates need explicit commands.
-- Verification:
-  - `git diff --check`
-  - README diff reviewed.
+- [x] T4 Update internal subprocess references
+  depends_on: [T3]
+- [x] T5 Update tests and docs
+  depends_on: [T4]
+- [x] T6 Remove redundant scripts and verify count
+  depends_on: [T5]
+- [x] T7 Full verification and milestone commit
+  depends_on: [T6]

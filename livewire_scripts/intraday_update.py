@@ -29,7 +29,7 @@ from clients.intraday_bronze_client import (
     INTRADAY_TIMEFRAMES,
     IntradayBronzeClient,
 )
-from scripts.daily_update import is_trading_day, session_close_time
+from livewire_scripts.daily_update import is_trading_day, session_close_time
 
 log = logging.getLogger("intraday_update")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

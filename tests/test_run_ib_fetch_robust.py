@@ -2,7 +2,7 @@ import json
 import subprocess
 from unittest.mock import MagicMock
 
-from scripts.run_ib_fetch_robust import (
+from livewire_scripts.run_ib_fetch_robust import (
     _bronze_path_for,
     _build_worker_cmd,
     _count_rows,
@@ -124,7 +124,7 @@ def test_success_first_attempt(tmp_path, monkeypatch):
 
     monkeypatch.setattr("subprocess.run", fake_run)
     monkeypatch.setattr(
-        "scripts.run_ib_fetch_robust._count_rows",
+        "livewire_scripts.run_ib_fetch_robust._count_rows",
         lambda p: counts.pop(0),
     )
     outcome = run_one_ticker(
@@ -245,7 +245,7 @@ def test_backfill_ok_noop_when_no_rows_added(tmp_path, monkeypatch):
 
     monkeypatch.setattr("subprocess.run", fake_run)
     monkeypatch.setattr(
-        "scripts.run_ib_fetch_robust._count_rows",
+        "livewire_scripts.run_ib_fetch_robust._count_rows",
         lambda p: 100,
     )
     outcome = run_one_ticker(
@@ -306,7 +306,7 @@ def test_main_writes_summary_and_returns_fail_status(tmp_path, monkeypatch, caps
         return outcomes.pop(0)
 
     monkeypatch.setattr(
-        "scripts.run_ib_fetch_robust.run_one_ticker",
+        "livewire_scripts.run_ib_fetch_robust.run_one_ticker",
         fake_run_one_ticker,
     )
     rc = main([
@@ -339,7 +339,7 @@ def test_main_returns_fail_status_for_timeout(tmp_path, monkeypatch, capsys):
         return outcomes.pop(0)
 
     monkeypatch.setattr(
-        "scripts.run_ib_fetch_robust.run_one_ticker",
+        "livewire_scripts.run_ib_fetch_robust.run_one_ticker",
         fake_run_one_ticker,
     )
 

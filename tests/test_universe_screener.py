@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from scripts.universe_screener import (
+from livewire_scripts.universe_screener import (
     _send_screener_alert,
     compare_universes,
     get_removals_after_grace,
@@ -213,7 +213,7 @@ class TestLogChanges:
 
 class TestRunScannerSweeps:
     def test_returns_union_of_scanner_results(self, monkeypatch):
-        monkeypatch.setattr("scripts.universe_screener._SCANNER_THROTTLE_SECONDS", 0)
+        monkeypatch.setattr("livewire_scripts.universe_screener._SCANNER_THROTTLE_SECONDS", 0)
         ib = MagicMock()
         # Return different symbols for different calls
         call_count = 0
@@ -235,7 +235,7 @@ class TestRunScannerSweeps:
         assert "MSFT" in result
 
     def test_deduplicates_results(self, monkeypatch):
-        monkeypatch.setattr("scripts.universe_screener._SCANNER_THROTTLE_SECONDS", 0)
+        monkeypatch.setattr("livewire_scripts.universe_screener._SCANNER_THROTTLE_SECONDS", 0)
         ib = MagicMock()
 
         async def fake_req_scanner(sub):
@@ -251,7 +251,7 @@ class TestRunScannerSweeps:
 
     def test_failed_scanner_request_caught_and_logged(self, monkeypatch, caplog):
         """An exception in reqScannerDataAsync should be caught and logged, not raised."""
-        monkeypatch.setattr("scripts.universe_screener._SCANNER_THROTTLE_SECONDS", 0)
+        monkeypatch.setattr("livewire_scripts.universe_screener._SCANNER_THROTTLE_SECONDS", 0)
         ib = MagicMock()
 
         async def failing_req_scanner(sub):
@@ -340,13 +340,13 @@ class TestMain:
     @pytest.fixture(autouse=True)
     def _no_scanner_throttle(self, monkeypatch):
         """Disable scanner throttle in all TestMain tests."""
-        monkeypatch.setattr("scripts.universe_screener._SCANNER_THROTTLE_SECONDS", 0)
+        monkeypatch.setattr("livewire_scripts.universe_screener._SCANNER_THROTTLE_SECONDS", 0)
 
     def test_not_trading_day_exits(self, tmp_path, monkeypatch):
         """Script exits 0 on non-trading day without --force."""
-        monkeypatch.setattr("scripts.universe_screener._DATA_LAKE", tmp_path / "data-lake")
+        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", tmp_path / "data-lake")
 
-        with patch("scripts.universe_screener.is_trading_day", return_value=False):
+        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=False):
             with pytest.raises(SystemExit) as exc_info:
                 main(["--dry-run"])
             assert exc_info.value.code == 0
@@ -356,7 +356,7 @@ class TestMain:
         data_lake = tmp_path / "data-lake"
         bronze_dir = data_lake / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
-        monkeypatch.setattr("scripts.universe_screener._DATA_LAKE", data_lake)
+        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
 
         preset_path = tmp_path / "preset.json"
         state_path = tmp_path / "state.json"
@@ -365,11 +365,11 @@ class TestMain:
 
         mock_ib_client = _make_mock_ib_client(["AAPL", "MSFT"])
 
-        with patch("scripts.universe_screener.is_trading_day", return_value=True), \
-             patch("scripts.universe_screener.IBClient", return_value=mock_ib_client), \
-             patch("scripts.universe_screener._PRESET_PATH", preset_path), \
-             patch("scripts.universe_screener._STATE_PATH", state_path), \
-             patch("scripts.universe_screener._LOG_DIR", log_dir):
+        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=True), \
+             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client), \
+             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path), \
+             patch("livewire_scripts.universe_screener._STATE_PATH", state_path), \
+             patch("livewire_scripts.universe_screener._LOG_DIR", log_dir):
             main(["--dry-run", "--force"])
 
         # dry run should not write preset or state
@@ -398,7 +398,7 @@ class TestMain:
         }], schema=schema)
         pq.write_table(table, existing_sym_dir / "1d.parquet")
 
-        monkeypatch.setattr("scripts.universe_screener._DATA_LAKE", data_lake)
+        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
 
         preset_path = tmp_path / "preset.json"
         state_path = tmp_path / "state.json"  # does not exist — bootstrap mode
@@ -413,11 +413,11 @@ class TestMain:
         def fake_archive(src, dst):
             archived.append(src)
 
-        with patch("scripts.universe_screener.is_trading_day", return_value=True), \
-             patch("scripts.universe_screener.IBClient", return_value=mock_ib_client), \
-             patch("scripts.universe_screener._PRESET_PATH", preset_path), \
-             patch("scripts.universe_screener._STATE_PATH", state_path), \
-             patch("scripts.universe_screener._LOG_DIR", log_dir), \
+        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=True), \
+             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client), \
+             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path), \
+             patch("livewire_scripts.universe_screener._STATE_PATH", state_path), \
+             patch("livewire_scripts.universe_screener._LOG_DIR", log_dir), \
              patch("shutil.move", fake_archive), \
              patch("subprocess.run"):
             main(["--force"])
@@ -430,7 +430,7 @@ class TestMain:
         data_lake = tmp_path / "data-lake"
         bronze_dir = data_lake / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
-        monkeypatch.setattr("scripts.universe_screener._DATA_LAKE", data_lake)
+        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
 
         import pyarrow as pa
         import pyarrow.parquet as pq
@@ -476,11 +476,11 @@ class TestMain:
         def fake_move(src, dst):
             archived.append(src)
 
-        with patch("scripts.universe_screener.is_trading_day", return_value=True), \
-             patch("scripts.universe_screener.IBClient", return_value=mock_ib_client), \
-             patch("scripts.universe_screener._PRESET_PATH", preset_path), \
-             patch("scripts.universe_screener._STATE_PATH", state_path), \
-             patch("scripts.universe_screener._LOG_DIR", log_dir), \
+        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=True), \
+             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client), \
+             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path), \
+             patch("livewire_scripts.universe_screener._STATE_PATH", state_path), \
+             patch("livewire_scripts.universe_screener._LOG_DIR", log_dir), \
              patch("shutil.move", fake_move), \
              patch("subprocess.run"):
             main(["--force"])
@@ -493,7 +493,7 @@ class TestMain:
         data_lake = tmp_path / "data-lake"
         bronze_dir = data_lake / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
-        monkeypatch.setattr("scripts.universe_screener._DATA_LAKE", data_lake)
+        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
 
         today = date.today().isoformat()
         state = {"run_date": today, "universe": [], "absent_counts": {}}
@@ -506,11 +506,11 @@ class TestMain:
 
         mock_ib_client = _make_mock_ib_client(["AAPL", "MSFT"])
 
-        with patch("scripts.universe_screener.is_trading_day", return_value=True), \
-             patch("scripts.universe_screener.IBClient", return_value=mock_ib_client), \
-             patch("scripts.universe_screener._PRESET_PATH", preset_path), \
-             patch("scripts.universe_screener._STATE_PATH", state_path), \
-             patch("scripts.universe_screener._LOG_DIR", log_dir), \
+        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=True), \
+             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client), \
+             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path), \
+             patch("livewire_scripts.universe_screener._STATE_PATH", state_path), \
+             patch("livewire_scripts.universe_screener._LOG_DIR", log_dir), \
              patch("subprocess.run"):
             # Should not raise SystemExit — --force bypasses idempotency
             main(["--force"])
@@ -540,7 +540,7 @@ class TestMain:
         }], schema=schema)
         pq.write_table(table, old_sym_dir / "1d.parquet")
 
-        monkeypatch.setattr("scripts.universe_screener._DATA_LAKE", data_lake)
+        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
 
         # State with OLDTICKER absent for >= GRACE_DAYS
         state = {
@@ -563,11 +563,11 @@ class TestMain:
         def fake_move(src, dst):
             moves.append((src, dst))
 
-        with patch("scripts.universe_screener.is_trading_day", return_value=True), \
-             patch("scripts.universe_screener.IBClient", return_value=mock_ib_client), \
-             patch("scripts.universe_screener._PRESET_PATH", preset_path), \
-             patch("scripts.universe_screener._STATE_PATH", state_path), \
-             patch("scripts.universe_screener._LOG_DIR", log_dir), \
+        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=True), \
+             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client), \
+             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path), \
+             patch("livewire_scripts.universe_screener._STATE_PATH", state_path), \
+             patch("livewire_scripts.universe_screener._LOG_DIR", log_dir), \
              patch("shutil.move", fake_move), \
              patch("subprocess.run"):
             main(["--force"])
@@ -582,7 +582,7 @@ class TestMain:
         data_lake = tmp_path / "data-lake"
         bronze_dir = data_lake / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
-        monkeypatch.setattr("scripts.universe_screener._DATA_LAKE", data_lake)
+        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
 
         today = date.today().isoformat()
         state = {"run_date": today, "universe": [], "absent_counts": {}}
@@ -593,9 +593,9 @@ class TestMain:
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
 
-        with patch("scripts.universe_screener.is_trading_day", return_value=True), \
-             patch("scripts.universe_screener._STATE_PATH", state_path), \
-             patch("scripts.universe_screener._LOG_DIR", log_dir):
+        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=True), \
+             patch("livewire_scripts.universe_screener._STATE_PATH", state_path), \
+             patch("livewire_scripts.universe_screener._LOG_DIR", log_dir):
             with pytest.raises(SystemExit) as exc_info:
                 main([])
             assert exc_info.value.code == 0
@@ -605,7 +605,7 @@ class TestMain:
         data_lake = tmp_path / "data-lake"
         bronze_dir = data_lake / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
-        monkeypatch.setattr("scripts.universe_screener._DATA_LAKE", data_lake)
+        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
 
         preset_path = tmp_path / "preset.json"
         state_path = tmp_path / "state.json"
@@ -621,25 +621,25 @@ class TestMain:
             subprocess_calls.append(cmd)
             return MagicMock(returncode=0)
 
-        with patch("scripts.universe_screener.is_trading_day", return_value=True), \
-             patch("scripts.universe_screener.IBClient", return_value=mock_ib_client), \
-             patch("scripts.universe_screener._PRESET_PATH", preset_path), \
-             patch("scripts.universe_screener._STATE_PATH", state_path), \
-             patch("scripts.universe_screener._LOG_DIR", log_dir), \
+        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=True), \
+             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client), \
+             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path), \
+             patch("livewire_scripts.universe_screener._STATE_PATH", state_path), \
+             patch("livewire_scripts.universe_screener._LOG_DIR", log_dir), \
              patch("subprocess.run", fake_run):
             main(["--force"])
 
-        # At least one subprocess call should include fetch_ib_historical.py for backfill
-        backfill_calls = [c for c in subprocess_calls if "fetch_ib_historical" in " ".join(c)]
+        # At least one subprocess call should include livewire_ingest.py for backfill
+        backfill_calls = [c for c in subprocess_calls if "livewire_ingest.py" in " ".join(c)]
         assert len(backfill_calls) > 0
 
     def test_sends_alert_for_large_changes(self, tmp_path, monkeypatch):
         """Email alert sent when additions + removals exceed EMAIL_THRESHOLD."""
-        from scripts.universe_screener import EMAIL_THRESHOLD
+        from livewire_scripts.universe_screener import EMAIL_THRESHOLD
         data_lake = tmp_path / "data-lake"
         bronze_dir = data_lake / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
-        monkeypatch.setattr("scripts.universe_screener._DATA_LAKE", data_lake)
+        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
 
         preset_path = tmp_path / "preset.json"
         state_path = tmp_path / "state.json"
@@ -651,12 +651,12 @@ class TestMain:
         new_tickers = [f"NEW{i:03d}" for i in range(n)]
         mock_ib_client = _make_mock_ib_client(new_tickers)
 
-        with patch("scripts.universe_screener.is_trading_day", return_value=True), \
-             patch("scripts.universe_screener.IBClient", return_value=mock_ib_client), \
-             patch("scripts.universe_screener._PRESET_PATH", preset_path), \
-             patch("scripts.universe_screener._STATE_PATH", state_path), \
-             patch("scripts.universe_screener._LOG_DIR", log_dir), \
-             patch("scripts.universe_screener._send_screener_alert") as mock_alert, \
+        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=True), \
+             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client), \
+             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path), \
+             patch("livewire_scripts.universe_screener._STATE_PATH", state_path), \
+             patch("livewire_scripts.universe_screener._LOG_DIR", log_dir), \
+             patch("livewire_scripts.universe_screener._send_screener_alert") as mock_alert, \
              patch("subprocess.run"):
             main(["--force"])
 
@@ -672,12 +672,12 @@ class TestLoadCoreEtfs:
     def test_load_core_etfs_returns_set(self, tmp_path, monkeypatch):
         path = tmp_path / "core-etfs.json"
         path.write_text(json.dumps({"name": "core-etfs", "tickers": ["SPY", "QQQ", "GLD"]}))
-        monkeypatch.setattr("scripts.universe_screener._CORE_ETFS_PATH", path)
+        monkeypatch.setattr("livewire_scripts.universe_screener._CORE_ETFS_PATH", path)
         result = load_core_etfs()
         assert result == {"SPY", "QQQ", "GLD"}
 
     def test_load_core_etfs_missing_returns_empty(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.universe_screener._CORE_ETFS_PATH", tmp_path / "nonexistent.json")
+        monkeypatch.setattr("livewire_scripts.universe_screener._CORE_ETFS_PATH", tmp_path / "nonexistent.json")
         assert load_core_etfs() == set()
 
 
@@ -689,15 +689,15 @@ class TestLoadCoreEtfs:
 class TestCoreEtfIntegration:
     @pytest.fixture(autouse=True)
     def _no_scanner_throttle(self, monkeypatch):
-        monkeypatch.setattr("scripts.universe_screener._SCANNER_THROTTLE_SECONDS", 0)
+        monkeypatch.setattr("livewire_scripts.universe_screener._SCANNER_THROTTLE_SECONDS", 0)
 
     def test_core_etf_added_when_missing(self, tmp_path, monkeypatch):
         """A core ETF not in bronze should be added even if not scanned."""
-        monkeypatch.setattr("scripts.universe_screener._DATA_LAKE", tmp_path / "data-lake")
-        monkeypatch.setattr("scripts.universe_screener._STATE_PATH", tmp_path / "state.json")
-        monkeypatch.setattr("scripts.universe_screener._LOG_DIR", tmp_path / "logs")
-        monkeypatch.setattr("scripts.universe_screener._PRESET_PATH", tmp_path / "preset.json")
-        monkeypatch.setattr("scripts.universe_screener._CORE_ETFS_PATH", tmp_path / "core.json")
+        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", tmp_path / "data-lake")
+        monkeypatch.setattr("livewire_scripts.universe_screener._STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("livewire_scripts.universe_screener._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr("livewire_scripts.universe_screener._PRESET_PATH", tmp_path / "preset.json")
+        monkeypatch.setattr("livewire_scripts.universe_screener._CORE_ETFS_PATH", tmp_path / "core.json")
 
         # Write a core ETF preset
         (tmp_path / "core.json").write_text(json.dumps({"name": "core-etfs", "tickers": ["SPY", "QQQ"]}))
@@ -706,7 +706,7 @@ class TestCoreEtfIntegration:
         # Scanner returns nothing
         mock_ib_client = _make_mock_ib_client([])
 
-        with patch("scripts.universe_screener.IBClient", return_value=mock_ib_client):
+        with patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client):
             with patch("subprocess.run") as mock_subproc:
                 with patch("sys.argv", ["universe_screener.py", "--force"]):
                     main()
@@ -719,11 +719,11 @@ class TestCoreEtfIntegration:
 
     def test_core_etf_never_in_removals(self, tmp_path, monkeypatch):
         """A core ETF in bronze but not scanned should NEVER be archived."""
-        monkeypatch.setattr("scripts.universe_screener._DATA_LAKE", tmp_path / "data-lake")
-        monkeypatch.setattr("scripts.universe_screener._STATE_PATH", tmp_path / "state.json")
-        monkeypatch.setattr("scripts.universe_screener._LOG_DIR", tmp_path / "logs")
-        monkeypatch.setattr("scripts.universe_screener._PRESET_PATH", tmp_path / "preset.json")
-        monkeypatch.setattr("scripts.universe_screener._CORE_ETFS_PATH", tmp_path / "core.json")
+        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", tmp_path / "data-lake")
+        monkeypatch.setattr("livewire_scripts.universe_screener._STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("livewire_scripts.universe_screener._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr("livewire_scripts.universe_screener._PRESET_PATH", tmp_path / "preset.json")
+        monkeypatch.setattr("livewire_scripts.universe_screener._CORE_ETFS_PATH", tmp_path / "core.json")
 
         (tmp_path / "core.json").write_text(json.dumps({"name": "core-etfs", "tickers": ["SPY"]}))
 
@@ -743,7 +743,7 @@ class TestCoreEtfIntegration:
         # Scanner returns AAPL but not SPY
         mock_ib_client = _make_mock_ib_client(["AAPL"])
 
-        with patch("scripts.universe_screener.IBClient", return_value=mock_ib_client):
+        with patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client):
             with patch("subprocess.run"):
                 with patch("sys.argv", ["universe_screener.py", "--force"]):
                     main()
@@ -758,11 +758,11 @@ class TestCoreEtfIntegration:
 
     def test_existing_absent_count_for_core_etf_is_dropped(self, tmp_path, monkeypatch):
         """Defensive: if a previous buggy run added a core ETF to absent_counts, drop it."""
-        monkeypatch.setattr("scripts.universe_screener._DATA_LAKE", tmp_path / "data-lake")
-        monkeypatch.setattr("scripts.universe_screener._STATE_PATH", tmp_path / "state.json")
-        monkeypatch.setattr("scripts.universe_screener._LOG_DIR", tmp_path / "logs")
-        monkeypatch.setattr("scripts.universe_screener._PRESET_PATH", tmp_path / "preset.json")
-        monkeypatch.setattr("scripts.universe_screener._CORE_ETFS_PATH", tmp_path / "core.json")
+        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", tmp_path / "data-lake")
+        monkeypatch.setattr("livewire_scripts.universe_screener._STATE_PATH", tmp_path / "state.json")
+        monkeypatch.setattr("livewire_scripts.universe_screener._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr("livewire_scripts.universe_screener._PRESET_PATH", tmp_path / "preset.json")
+        monkeypatch.setattr("livewire_scripts.universe_screener._CORE_ETFS_PATH", tmp_path / "core.json")
 
         (tmp_path / "core.json").write_text(json.dumps({"name": "core-etfs", "tickers": ["SPY"]}))
 
@@ -780,7 +780,7 @@ class TestCoreEtfIntegration:
 
         mock_ib_client = _make_mock_ib_client(["AAPL"])
 
-        with patch("scripts.universe_screener.IBClient", return_value=mock_ib_client):
+        with patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client):
             with patch("subprocess.run"):
                 with patch("sys.argv", ["universe_screener.py", "--force"]):
                     main()
