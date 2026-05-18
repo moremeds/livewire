@@ -367,7 +367,7 @@ def _send_alert(
 
 def main() -> None:
     """CLI entry point for the warehouse health check."""
-    parser = argparse.ArgumentParser(description="Market data warehouse health check")
+    parser = argparse.ArgumentParser(description="Livewire health check")
     parser.add_argument("--dry-run", action="store_true", help="Report gaps without backfilling")
     parser.add_argument("--force", action="store_true", help="Run even if not a trading day")
     parser.add_argument(

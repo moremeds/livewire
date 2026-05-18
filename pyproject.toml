@@ -1,5 +1,5 @@
 [project]
-name = "market-data-warehouse"
+name = "livewire"
 version = "0.2.0"
 requires-python = ">=3.13"
 

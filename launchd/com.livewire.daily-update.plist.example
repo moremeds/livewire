@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.market-warehouse.daily-update</string>
+    <string>com.livewire.daily-update</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -23,10 +23,10 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/tmp/com.market-warehouse.daily-update.stdout.log</string>
+    <string>/tmp/com.livewire.daily-update.stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/com.market-warehouse.daily-update.stderr.log</string>
+    <string>/tmp/com.livewire.daily-update.stderr.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

@@ -26,6 +26,18 @@ COMMANDS = {
     "universe": "livewire_scripts.universe_screener",
 }
 
+# Commands that talk to IB Gateway. cboe-vol uses CBOE's public API.
+IB_COMMANDS = {
+    "daily",
+    "historical",
+    "robust",
+    "intraday-backfill",
+    "intraday-status",
+    "probe-intraday",
+    "universe",
+    "backfill-all",
+}
+
 
 def _dispatch_module(module_name: str, argv: Sequence[str], display_name: str) -> int:
     module = importlib.import_module(module_name)
@@ -58,6 +70,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     args = parser.parse_args(argv[:1])
     rest = argv[1:]
+
+    if args.command in IB_COMMANDS and not {"-h", "--help"}.intersection(rest):
+        from clients.ib_gateway_preflight import assert_gateway_up
+
+        assert_gateway_up()
 
     if args.command == "backfill-all":
         return _dispatch_backfill_all(rest)

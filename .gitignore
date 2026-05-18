@@ -18,7 +18,7 @@ node_modules/
 .vscode/
 
 # User-specific launchd plist (contains absolute paths)
-scripts/com.market-warehouse.daily-update.plist
+scripts/com.livewire.daily-update.plist
 
 # Local macOS launcher artifacts
 macos/.build/

@@ -40,7 +40,7 @@ def _nasdaq_payload(symbol: str, row: dict | None, *, asset_class: str = "stocks
 class TestLifecycle:
     def test_session_headers(self):
         client = _make_client()
-        assert client._session.headers["User-Agent"] == "market-data-warehouse/1.0"
+        assert client._session.headers["User-Agent"] == "livewire/1.0"
         assert "application/json" in client._session.headers["Accept"]
         client.close()
 

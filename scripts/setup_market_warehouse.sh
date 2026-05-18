@@ -196,9 +196,12 @@ fi
 # shellcheck disable=SC1091
 source "${PY_ENV_DIR}/bin/activate"
 
-green "Installing Python packages..."
-python -m pip install --upgrade pip wheel setuptools
-pip install \
+green "Installing Python packages via uv..."
+if ! command -v uv >/dev/null 2>&1; then
+  echo "uv not found. Install with: brew install uv  (or https://docs.astral.sh/uv/)"
+  exit 1
+fi
+uv pip install --python "${PY_ENV_DIR}/bin/python" \
   duckdb \
   polars \
   pandas \

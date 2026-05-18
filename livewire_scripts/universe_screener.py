@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""IB Scanner-based universe builder for the market data warehouse.
+"""IB Scanner-based universe builder for Livewire.
 
 Runs multiple IB scanner sweeps to discover ~1000 U.S. equities by market cap,
 volume, and turnover. Compares against current bronze parquet, handles a grace

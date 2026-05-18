@@ -17,7 +17,7 @@ from typing import Optional
 
 from clients.quality_detector import QualityFlag
 
-_logger = logging.getLogger("mdw.quality")
+_logger = logging.getLogger("livewire.quality")
 
 _VALID_SOURCES = {"ib", "uw", "massive"}
 
