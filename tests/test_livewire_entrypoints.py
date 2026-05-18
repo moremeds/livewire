@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from clients import ib_gateway_preflight
 from scripts import livewire_ingest, livewire_ops, livewire_quality, livewire_store
 
 
@@ -22,14 +23,99 @@ def _fake_module(calls: list[tuple[str, list[str]]], name: str, *, accepts_argv:
 
 def test_ingest_dispatches_module_commands(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
+    preflight_calls: list[bool] = []
     monkeypatch.setattr(
         livewire_ingest.importlib,
         "import_module",
         lambda name: _fake_module(calls, name, accepts_argv=False),
     )
+    monkeypatch.setattr(
+        ib_gateway_preflight,
+        "assert_gateway_up",
+        lambda: preflight_calls.append(True),
+    )
 
     assert livewire_ingest.main(["daily", "--force"]) == 0
     assert calls == [("livewire_scripts.daily_update", [])]
+    assert preflight_calls == [True]
+
+
+def test_ingest_daily_massive_bypasses_ib_preflight(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_ingest.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=False),
+    )
+    monkeypatch.setattr(
+        ib_gateway_preflight,
+        "assert_gateway_up",
+        lambda: (_ for _ in ()).throw(AssertionError("preflight should not run")),
+    )
+
+    assert livewire_ingest.main(["daily", "--source", "massive"]) == 0
+    assert calls == [("livewire_scripts.daily_update", [])]
+
+
+def test_ingest_daily_massive_equals_bypasses_ib_preflight(monkeypatch) -> None:
+    monkeypatch.setattr(
+        ib_gateway_preflight,
+        "assert_gateway_up",
+        lambda: (_ for _ in ()).throw(AssertionError("preflight should not run")),
+    )
+    monkeypatch.setattr(
+        livewire_ingest.importlib,
+        "import_module",
+        lambda name: _fake_module([], name, accepts_argv=False),
+    )
+
+    assert livewire_ingest.main(["daily", "--source=massive"]) == 0
+
+
+def test_ingest_preserves_nonzero_system_exit(monkeypatch) -> None:
+    def fake_module(name):
+        def main():
+            raise SystemExit(3)
+        return SimpleNamespace(main=main)
+
+    monkeypatch.setattr(livewire_ingest.importlib, "import_module", fake_module)
+    monkeypatch.setattr(ib_gateway_preflight, "assert_gateway_up", lambda: None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        livewire_ingest.main(["daily"])
+    assert exc_info.value.code == 3
+
+
+@pytest.mark.parametrize("argv", [
+    ["daily"],
+    ["daily", "--source", "ib"],
+    ["backfill-all"],
+])
+def test_ingest_ib_commands_keep_preflight(monkeypatch, argv) -> None:
+    preflight_calls: list[bool] = []
+    monkeypatch.setattr(
+        ib_gateway_preflight,
+        "assert_gateway_up",
+        lambda: preflight_calls.append(True),
+    )
+    monkeypatch.setattr(
+        livewire_ingest.importlib,
+        "import_module",
+        lambda name: _fake_module([], name, accepts_argv=False),
+    )
+    monkeypatch.setattr(livewire_ingest.subprocess, "call", lambda cmd: 0)
+
+    assert livewire_ingest.main(argv) == 0
+    assert preflight_calls == [True]
+
+
+def test_ingest_daily_help_does_not_preflight(monkeypatch) -> None:
+    monkeypatch.setattr(
+        ib_gateway_preflight,
+        "assert_gateway_up",
+        lambda: (_ for _ in ()).throw(AssertionError("preflight should not run")),
+    )
+    assert livewire_ingest.main(["daily", "--help"]) == 0
 
 
 def test_entrypoints_render_top_level_help(capsys) -> None:
@@ -51,6 +137,7 @@ def test_ingest_backfill_all_shells_to_tool(monkeypatch) -> None:
         seen["cmd"] = cmd
         return 0
     monkeypatch.setattr(livewire_ingest.subprocess, "call", fake_call)
+    monkeypatch.setattr(ib_gateway_preflight, "assert_gateway_up", lambda: None)
 
     assert livewire_ingest.main(["backfill-all"]) == 0
     assert seen["cmd"][0] == "bash"

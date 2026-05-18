@@ -110,13 +110,14 @@ Authoritative runbook: `~/runbooks/trading-stack/ib-gateway-ibc.md`. Read it bef
 
 ## Data Ingestion
 
-Data source: **Interactive Brokers** via `ib_async`. Requires IB Gateway at `127.0.0.1:4001` — managed by trading-stack (see "IB Gateway / IBC" section above). The ingest commands run a preflight check before connecting; if the Gateway is down they print the trading-stack status and exit cleanly rather than burning a 4-min IB timeout.
+Primary data source: **Interactive Brokers** via `ib_async`. Requires IB Gateway at `127.0.0.1:4001` — managed by trading-stack (see "IB Gateway / IBC" section above). IB-backed ingest commands run a preflight check before connecting; if the Gateway is down they print the trading-stack status and exit cleanly rather than burning a 4-min IB timeout. `daily --source massive` is the explicit non-IB daily equity path and bypasses IB preflight.
 
 - `IBClient` wraps `ib_async.IB` with connection management, historical data, and contract qualification
 - `IBClient.connect()` defaults to `clientId=0` and automatically retries successive `clientId` values if IB reports error `326` (`client id already in use`)
 - `IBClient.get_historical_data()` fetches daily bars via `reqHistoricalData`
 - `BronzeClient` is the live service storage client: it discovers symbols from parquet, merges or replaces per-ticker snapshots, and publishes with `temp -> validate -> os.replace()`
 - `DailyBarFallbackClient` is a narrow recovery client for unresolved target-day gaps in the current U.S. equity universe. Provider order: Nasdaq `assetclass=stocks`, Nasdaq `assetclass=etf`, then Stooq U.S. daily CSV.
+- `MassiveClient` is the near-term daily U.S. equity accelerator and validation reference. It uses `MASSIVE_API_KEY`, stores `adjusted=false` bars with `adj_close = close`, and is not used for long historical backfills or broker-specific asset classes.
 - `DBClient` is now the offline analytical-file client: it can still manage/query `md.*`, and it rebuilds DuckDB from bronze parquet with set-based `INSERT INTO ... SELECT`
 - `adj_close` is set to `close` (IB TRADES data doesn't provide adjusted prices)
 - **CBOE volatility indices** are fetched directly from CBOE's public API (`cdn.cboe.com/api/global/delayed_quotes/charts/historical/`) via `scripts/livewire_ingest.py cboe-vol`, not IB. This is the authoritative source for VIX, VVIX, VXHYG, VXSMH, and all other CBOE volatility indices. The writer normalizes stale parquet schemas on merge (drops extra columns from older schema versions) and rewrites files to fix schema drift even when no new data is available.
@@ -238,6 +239,7 @@ python scripts/livewire_ingest.py daily --dry-run                        # Repor
 python scripts/livewire_ingest.py daily --force                          # Run on non-trading day
 python scripts/livewire_ingest.py daily --target-date 2026-03-11        # Recover through a fixed trading date
 python scripts/livewire_ingest.py daily --preset presets/sp500.json      # Limit to preset tickers
+python scripts/livewire_ingest.py daily --asset-class equity --source massive  # Explicit Massive equity daily path
 python scripts/livewire_ingest.py daily --host 127.0.0.1 --port 7497 --max-concurrent 4   # Custom IB config
 python scripts/livewire_ingest.py daily --batch-size 25                  # Custom batch size
 python scripts/livewire_ingest.py daily --asset-class volatility          # Daily update for volatility indices
@@ -263,9 +265,9 @@ The main sync runs at 13:05 Pacific local time daily (4:05 PM Eastern year-round
 - Bar validation: checks OHLCV relationships, positive prices, valid trading days, duplicate dates
 - Atomically rewrites a per-ticker bronze snapshot after each successful merge
 - The active sync universe is the canonical bronze tree only; archive delisted symbols outside that tree if they should stop participating in future syncs/backfills
-- Recovery path for unresolved target-day gaps (equity only): Nasdaq historical quote API (`stocks`, then `etf`) and then Stooq `symbol.us`; fallback is skipped for non-equity asset classes (volatility, futures)
+- Recovery path for unresolved target-day gaps (equity only): IB first, Massive second when `MASSIVE_API_KEY` is configured, then Nasdaq historical quote API (`stocks`, then `etf`) and Stooq `symbol.us`; fallback is skipped for non-equity asset classes (volatility, futures, CMDTY, FX)
 - Fallback bars use the same validation and bronze merge path as IB bars
-- Run summary exposes `Fallback attempts`, `Fallback successes`, and `Fallback symbols`
+- Run summary exposes `Fallback attempts`, `Fallback successes`, `Fallback symbols`, and per-source counts
 - Pure-Python NYSE trading calendar — no new dependencies
 - Logs to `~/market-warehouse/logs/daily_update_YYYY-MM-DD.log`
 - Terminal scheduled failures use the Nodemailer CLI at `scripts/livewire_ops.py send-alert`

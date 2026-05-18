@@ -174,10 +174,47 @@ def detect_row_count_anomaly(
     bars: list,
     reference_source=None,
 ) -> Optional[QualityFlag]:
-    """STUB in Sub-A. Activated in Sub-C when a second source exists."""
+    """Flag material count differences against a supplied second-source reference."""
     if reference_source is None:
         return None
-    raise NotImplementedError("row-count-anomaly activation deferred to Sub-C")  # pragma: no cover
+    expected_count = int(reference_source.get("expected_count"))
+    if expected_count <= 0:
+        raise ValueError("reference_source.expected_count must be positive")
+
+    actual_count = reference_source.get("actual_count")
+    if actual_count is None:
+        actual_count = len(bars)
+    actual_count = int(actual_count)
+
+    pct_delta = abs(expected_count - actual_count) / expected_count * 100.0
+    if pct_delta > 5.0:
+        severity = "critical"
+    elif pct_delta > 1.0:
+        severity = "warning"
+    else:
+        return None
+
+    expected_dates = reference_source.get("expected_dates") or []
+    actual_dates = reference_source.get("actual_dates")
+    if actual_dates is None:
+        actual_dates = [str(b.trade_date)[:10] for b in _normalize_bars_for_detection(bars)]
+    missing_dates = sorted(set(expected_dates) - set(actual_dates))
+    extra_dates = sorted(set(actual_dates) - set(expected_dates)) if expected_dates else []
+
+    return QualityFlag(
+        category="row_count_anomaly",
+        severity=severity,
+        detail={
+            "reference_source": reference_source.get("source"),
+            "expected_count": expected_count,
+            "actual_count": actual_count,
+            "percent_delta": round(pct_delta, 4),
+            "warning_threshold_pct": 1.0,
+            "critical_threshold_pct": 5.0,
+            "missing_dates": missing_dates,
+            "extra_dates": extra_dates,
+        },
+    )
 
 
 def detect_all(

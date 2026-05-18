@@ -145,6 +145,22 @@ class TestGetSuccess:
         assert telemetry.requests[0][1] == 200
         assert telemetry.rate_limits == [(8, 1778875200)]
 
+    @responses.activate
+    def test_telemetry_ignores_missing_or_invalid_rate_limit_headers(self):
+        telemetry = _Telemetry()
+        responses.add(responses.GET, _url("missing"), json={"ok": True}, status=200)
+        responses.add(
+            responses.GET,
+            _url("invalid"),
+            json={"ok": True},
+            status=200,
+            headers={"X-RateLimit-Remaining": "bad", "X-RateLimit-Reset": "1778875200"},
+        )
+        with _make_client(telemetry=telemetry) as client:
+            client._get("missing")
+            client._get("invalid")
+        assert telemetry.rate_limits == []
+
 
 class TestGetErrorMapping:
     @responses.activate

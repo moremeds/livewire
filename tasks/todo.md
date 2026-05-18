@@ -158,7 +158,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
     - request/rate-limit telemetry.
   - Keep the client focused on stock daily bars needed by Sub-C.
 
-- [ ] T6 Add daily bar normalization boundary
+- [x] T6 Add daily bar normalization boundary
   depends_on: [T5]
   - Convert Massive daily OHLCV payloads into the same row shape used by `BronzeClient` daily equity writes.
   - Preserve current storage semantics:
@@ -173,7 +173,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
     - grouped daily timestamps at market close ET.
   - Reject malformed bars before publish.
 
-- [ ] T7 Fix ingest preflight routing for non-IB daily source
+- [x] T7 Fix ingest preflight routing for non-IB daily source
   depends_on: [T6]
   - Update `scripts/livewire_ingest.py` so `daily --source massive` does not call `assert_gateway_up()`.
   - Preserve current IB preflight behavior for:
@@ -185,7 +185,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
     - universe commands.
   - Add tests proving Massive daily help/dry-run paths do not require IB Gateway.
 
-- [ ] T8 Wire explicit Massive daily path
+- [x] T8 Wire explicit Massive daily path
   depends_on: [T7]
   - Add the selected explicit operator surface, likely:
     - `python scripts/livewire_ingest.py daily --asset-class equity --source massive`
@@ -194,7 +194,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - Print counters: requested, fetched, published, skipped, failed, source.
   - Emit provider telemetry and quality audit context.
 
-- [ ] T9 Wire narrow Massive recent-gap recovery
+- [x] T9 Wire narrow Massive recent-gap recovery
   depends_on: [T8]
   - Product decision: use Option B.
   - Fallback order for unresolved recent target-day equity/ETF gaps:
@@ -210,7 +210,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
     - no silent source substitution,
     - source/outcome counters printed and logged.
 
-- [ ] T10 Activate row-count anomaly and reference-source wiring
+- [x] T10 Activate row-count anomaly and reference-source wiring
   depends_on: [T6, T8]
   - Replace the Sub-A stub in `clients/quality_detector.py`.
   - Define a small `SourceComparison` shape or plain dict contract with:
@@ -226,7 +226,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - Include missing-date detail when available.
   - Keep `None` return when no reference source is supplied.
 
-- [ ] T11 Verification and PR prep
+- [x] T11 Verification and PR prep
   depends_on: [T9, T10]
   - Focused tests as each slice lands.
   - Full gate before PR:

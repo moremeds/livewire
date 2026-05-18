@@ -192,6 +192,25 @@ def test_429_retries_with_retry_after(monkeypatch):
 
 
 @responses.activate
+def test_invalid_retry_after_falls_back_to_exponential_sleep(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("clients.massive_client.time.sleep", sleeps.append)
+    responses.add(
+        responses.GET,
+        _url("/x"),
+        json={"message": "slow"},
+        status=429,
+        headers={"Retry-After": "bad"},
+    )
+    responses.add(responses.GET, _url("/x"), json={"ok": True}, status=200)
+
+    with _make_client(max_retries=1, backoff_factor=3) as client:
+        assert client._get("/x") == {"ok": True}
+
+    assert sleeps == [3]
+
+
+@responses.activate
 def test_429_exhausts_retries():
     responses.add(responses.GET, _url("/x"), json={"message": "slow"}, status=429)
     with _make_client(max_retries=0) as client:
@@ -225,14 +244,52 @@ def test_connection_errors_retry_then_raise():
             client._get("/x")
 
 
+def test_negative_retries_hits_guard():
+    with _make_client(max_retries=-2) as client:
+        with pytest.raises(TypeError):
+            client._get("/x")
+
+
+def test_safe_json_returns_empty_for_invalid_or_non_dict():
+    import requests
+
+    invalid = requests.models.Response()
+    invalid._content = b"not json"
+    invalid.encoding = "utf-8"
+    assert MassiveClient._safe_json(invalid) == {}
+
+    array_payload = requests.models.Response()
+    array_payload._content = b"[1, 2]"
+    array_payload.encoding = "utf-8"
+    assert MassiveClient._safe_json(array_payload) == {}
+
+
+def test_record_rate_limit_ignores_missing_or_invalid_headers():
+    telemetry = _Telemetry()
+    client = _make_client(telemetry=telemetry)
+    import requests
+
+    no_headers = requests.models.Response()
+    client._record_rate_limit(no_headers)
+    invalid_headers = requests.models.Response()
+    invalid_headers.headers["X-RateLimit-Remaining"] = "bad"
+    invalid_headers.headers["X-RateLimit-Reset"] = "1778875200"
+    client._record_rate_limit(invalid_headers)
+    assert telemetry.rate_limits == []
+    client.close()
+
+
 @pytest.mark.parametrize(
     "bad_bar, message",
     [
         ({"t": _ms(datetime(2026, 5, 11)), "o": 1, "h": 1, "l": 1, "c": 1}, "v"),
         (_bar(o=0), "positive"),
         (_bar(h=1, l=2), "high"),
+        (_bar(h=1000, l=999), "low"),
         (_bar(v=-1), "volume"),
         (_bar(t="not-int"), "timestamp"),
+        (_bar(v="bad"), "numeric"),
+        (_bar(v=float("inf")), "finite"),
     ],
 )
 def test_normalize_rejects_malformed_bars(bad_bar, message):
