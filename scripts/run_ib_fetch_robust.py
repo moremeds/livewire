@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -186,7 +187,17 @@ def run_one_ticker(
         if result.returncode == 0:
             rows_after = _count_rows(parquet)
             elapsed = time.monotonic() - start
-            if parquet.exists() and rows_after > rows_before:
+            if mode == "backfill" and parquet.exists() and rows_after == rows_before:
+                return TickerOutcome(
+                    ticker,
+                    OutcomeCategory.OK_NOOP,
+                    attempts,
+                    elapsed,
+                    rows_before,
+                    rows_after,
+                    note="no older history",
+                )
+            if parquet.exists() and (rows_after > rows_before or mode == "seed"):
                 return TickerOutcome(
                     ticker,
                     OutcomeCategory.OK,
@@ -198,11 +209,12 @@ def run_one_ticker(
                 )
             return TickerOutcome(
                 ticker,
-                OutcomeCategory.OK,
+                OutcomeCategory.FAIL,
                 attempts,
                 elapsed,
                 rows_before,
                 rows_after,
+                note="exit 0 but no bronze written",
             )
         _logger.warning("[%s] attempt %d exit=%d", ticker, attempts, result.returncode)
         if attempts < max_attempts:
@@ -211,3 +223,69 @@ def run_one_ticker(
     elapsed = time.monotonic() - start
     code = OutcomeCategory.TIMEOUT if last_was_timeout else OutcomeCategory.FAIL
     return TickerOutcome(ticker, code, attempts, elapsed, rows_before, rows_before)
+
+
+def format_summary(
+    outcomes: list[TickerOutcome],
+    *,
+    mode: str,
+    elapsed_minutes: int,
+) -> str:
+    counts = {category: 0 for category in OutcomeCategory}
+    for outcome in outcomes:
+        counts[outcome.code] += 1
+    return (
+        f"=== orch done mode={mode} "
+        f"ok={counts[OutcomeCategory.OK]} "
+        f"ok-noop={counts[OutcomeCategory.OK_NOOP]} "
+        f"skip={counts[OutcomeCategory.SKIP]} "
+        f"fail={counts[OutcomeCategory.FAIL]} "
+        f"timeout={counts[OutcomeCategory.TIMEOUT]} "
+        f"elapsed={elapsed_minutes}m ==="
+    )
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = parse_args(argv)
+    tickers = load_tickers(preset_path=args.preset, explicit=args.tickers)
+    if not tickers:
+        _logger.error("no tickers to process")
+        return 2
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%SZ")
+    log_dir = args.log_dir / f"orch_{args.mode}_{stamp}"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    summary_log = log_dir / "_summary.log"
+
+    overall_start = time.monotonic()
+    outcomes: list[TickerOutcome] = []
+    for i, ticker in enumerate(tickers, 1):
+        outcome = run_one_ticker(
+            ticker=ticker,
+            mode=args.mode,
+            asset_class=args.asset_class,
+            bronze_dir=args.bronze_dir,
+            timeout=args.timeout,
+            max_attempts=args.max_attempts,
+            cooldown=args.cooldown,
+        )
+        outcomes.append(outcome)
+        line = (
+            f"[{i}/{len(tickers)} {outcome.code.value}] {ticker} "
+            f"attempts={outcome.attempts_used} "
+            f"dt={outcome.elapsed_seconds:.0f}s {outcome.note}"
+        )
+        print(line, flush=True)
+        with summary_log.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+
+    elapsed_min = int((time.monotonic() - overall_start) / 60)
+    summary = format_summary(outcomes, mode=args.mode, elapsed_minutes=elapsed_min)
+    print(summary, flush=True)
+    with summary_log.open("a", encoding="utf-8") as fh:
+        fh.write(summary + "\n")
+    return 0 if all(o.code != OutcomeCategory.FAIL for o in outcomes) else 1
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

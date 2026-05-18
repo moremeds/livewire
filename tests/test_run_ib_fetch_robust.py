@@ -8,7 +8,10 @@ from scripts.run_ib_fetch_robust import (
     _count_rows,
     _is_already_done,
     OutcomeCategory,
+    TickerOutcome,
+    format_summary,
     load_tickers,
+    main,
     parse_args,
     run_one_ticker,
 )
@@ -230,3 +233,98 @@ def test_cooldown_sleeps_between_attempts(tmp_path, monkeypatch):
         cooldown=30,
     )
     assert sleeps == [30, 30]
+
+
+def test_backfill_ok_noop_when_no_rows_added(tmp_path, monkeypatch):
+    parquet = tmp_path / "asset_class=equity" / "symbol=COIN" / "1d.parquet"
+    parquet.parent.mkdir(parents=True)
+    parquet.write_bytes(b"existing")
+
+    def fake_run(*a, **kw):
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "scripts.run_ib_fetch_robust._count_rows",
+        lambda p: 100,
+    )
+    outcome = run_one_ticker(
+        ticker="COIN",
+        mode="backfill",
+        asset_class="equity",
+        bronze_dir=tmp_path,
+        timeout=10,
+        max_attempts=3,
+        cooldown=0,
+    )
+    assert outcome.code == OutcomeCategory.OK_NOOP
+    assert outcome.attempts_used == 1
+
+
+def test_seed_exit_zero_without_bronze_is_fail(tmp_path, monkeypatch):
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: MagicMock(returncode=0))
+    outcome = run_one_ticker(
+        ticker="MISSING",
+        mode="seed",
+        asset_class="equity",
+        bronze_dir=tmp_path,
+        timeout=10,
+        max_attempts=1,
+        cooldown=0,
+    )
+    assert outcome.code == OutcomeCategory.FAIL
+    assert outcome.note == "exit 0 but no bronze written"
+
+
+def test_summary_line_format():
+    outcomes = [
+        TickerOutcome("AAPL", OutcomeCategory.OK, 1, 12.0, 0, 6000),
+        TickerOutcome("HOOD", OutcomeCategory.FAIL, 3, 900.0, 0, 0),
+        TickerOutcome("COIN", OutcomeCategory.OK_NOOP, 1, 8.0, 100, 100),
+    ]
+    line = format_summary(outcomes, mode="seed", elapsed_minutes=15)
+    assert "ok=1" in line
+    assert "ok-noop=1" in line
+    assert "fail=1" in line
+    assert "elapsed=15m" in line
+
+
+def test_main_returns_2_when_preset_has_no_tickers(tmp_path):
+    preset = tmp_path / "empty.json"
+    preset.write_text(json.dumps({"tickers": []}))
+    rc = main(["--preset", str(preset), "--mode", "seed", "--log-dir", str(tmp_path)])
+    assert rc == 2
+
+
+def test_main_writes_summary_and_returns_fail_status(tmp_path, monkeypatch, capsys):
+    outcomes = [
+        TickerOutcome("AAPL", OutcomeCategory.OK, 1, 12.0, 0, 2, "rows +2"),
+        TickerOutcome("HOOD", OutcomeCategory.FAIL, 3, 90.0, 0, 0, "boom"),
+    ]
+
+    def fake_run_one_ticker(**kwargs):
+        return outcomes.pop(0)
+
+    monkeypatch.setattr(
+        "scripts.run_ib_fetch_robust.run_one_ticker",
+        fake_run_one_ticker,
+    )
+    rc = main([
+        "--tickers",
+        "AAPL",
+        "HOOD",
+        "--mode",
+        "seed",
+        "--log-dir",
+        str(tmp_path),
+        "--bronze-dir",
+        str(tmp_path / "bronze"),
+    ])
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "[1/2 ok] AAPL" in out
+    assert "=== orch done mode=seed ok=1" in out
+    summary_logs = list(tmp_path.glob("orch_seed_*/*_summary.log"))
+    assert len(summary_logs) == 1
+    assert "HOOD" in summary_logs[0].read_text()
