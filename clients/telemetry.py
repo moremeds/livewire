@@ -221,3 +221,10 @@ class MassiveTelemetry(BaseTelemetry):
             "status": int(status),
             "dt_ms": int(dt_ms),
         })
+
+    def record_rate_limit(self, remaining: int, reset_at: int) -> None:
+        self._emit({
+            "event": "massive_rate_limit",
+            "remaining": int(remaining),
+            "reset_at": int(reset_at),
+        })

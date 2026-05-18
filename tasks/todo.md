@@ -147,7 +147,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
     - README / CLAUDE / `.env.example`
   - Include exact verification commands and expected outcomes.
 
-- [ ] T5 Add Massive client and telemetry
+- [x] T5 Add Massive client and telemetry
   depends_on: [T4]
   - Implement a small requests-based `MassiveClient` matching `UWClient` style:
     - env-backed token,

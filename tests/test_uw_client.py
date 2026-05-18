@@ -37,6 +37,24 @@ def _url(endpoint: str) -> str:
     return f"{_DEFAULT_BASE_URL}/{endpoint}"
 
 
+class _Telemetry:
+    def __init__(self):
+        self.requests = []
+        self.rate_limits = []
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+    def record_request(self, endpoint, status, dt_ms):
+        self.requests.append((endpoint, status, dt_ms))
+
+    def record_rate_limit(self, remaining, reset_at):
+        self.rate_limits.append((remaining, reset_at))
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Construction / lifecycle
 # ══════════════════════════════════════════════════════════════════════
@@ -85,6 +103,13 @@ class TestLifecycle:
             assert isinstance(client, UWClient)
         # client.close() was called by __exit__
 
+    def test_context_manager_starts_and_stops_telemetry(self):
+        telemetry = _Telemetry()
+        with _make_client(telemetry=telemetry) as client:
+            assert isinstance(client, UWClient)
+        assert telemetry.started is True
+        assert telemetry.stopped is True
+
 
 # ══════════════════════════════════════════════════════════════════════
 # _get — success & error mapping
@@ -103,6 +128,22 @@ class TestGetSuccess:
         responses.add(responses.GET, _url("test"), json={"ok": True}, status=200)
         with _make_client() as client:
             assert client._get("/test") == {"ok": True}
+
+    @responses.activate
+    def test_telemetry_records_request_and_rate_limit_headers(self):
+        telemetry = _Telemetry()
+        responses.add(
+            responses.GET,
+            _url("test"),
+            json={"ok": True},
+            status=200,
+            headers={"X-RateLimit-Remaining": "8", "X-RateLimit-Reset": "1778875200"},
+        )
+        with _make_client(telemetry=telemetry) as client:
+            assert client._get("test") == {"ok": True}
+        assert telemetry.requests[0][0] == "test"
+        assert telemetry.requests[0][1] == 200
+        assert telemetry.rate_limits == [(8, 1778875200)]
 
 
 class TestGetErrorMapping:
