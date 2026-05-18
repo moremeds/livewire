@@ -382,3 +382,29 @@ test("main prints help and success output", async () => {
   assert.match(logs[1], /Sent daily update failure alert: \[Market Data Warehouse\] daily_update failed on 2026-03-11/);
   assert.match(logs[1], /report: \/tmp\/daily\.human\.md/);
 });
+
+test("flag-alert mode renders HTML body with ticker and category", async () => {
+  const { parseArgs, buildFlagAlertMessage } = await import("./send_daily_update_failure_email.mjs");
+  const args = parseArgs([
+    "--mode", "flag-alert",
+    "--payload", JSON.stringify({
+      source: "ib",
+      ticker: "SMH",
+      category: "range_shortfall",
+      severity: "critical",
+      detail: { shortfall_days: 9601 },
+      ts: "2026-05-17T19:43:33Z",
+    }),
+  ]);
+  assert.equal(args.mode, "flag-alert");
+  const message = buildFlagAlertMessage(args.payload);
+  assert.match(message.subject, /\[Livewire\].*SMH.*range_shortfall/);
+  assert.match(message.html, /shortfall_days/);
+  assert.match(message.html, /critical/i);
+});
+
+test("flag-alert mode rejects missing payload", async () => {
+  const { parseArgs } = await import("./send_daily_update_failure_email.mjs");
+  assert.throws(() => parseArgs(["--mode", "flag-alert"]),
+    /payload.*required/i);
+});

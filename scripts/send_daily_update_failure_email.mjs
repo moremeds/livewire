@@ -9,6 +9,7 @@ import { generateHumanReadableIncidentReport } from "./cerebras_client.mjs";
 const DEFAULT_TAIL_LINES = 40;
 const DEFAULT_JOB_NAME = "daily_update";
 const DEFAULT_SUBJECT_PREFIX = "[Market Data Warehouse]";
+const MODES = new Set(["failure", "flag-alert", "daily-summary"]);
 
 function usage() {
   return [
@@ -23,6 +24,8 @@ function usage() {
     "  --repo-root /absolute/path/to/repo",
     "  --job-name NAME",
     "  --tail-lines N",
+    "  --mode failure|flag-alert|daily-summary",
+    "  --payload JSON",
   ].join("\n");
 }
 
@@ -106,9 +109,26 @@ export function parseArgs(argv) {
       case "tail-lines":
         options.tailLines = parseInteger("--tail-lines", value);
         break;
+      case "mode":
+        if (!MODES.has(value)) {
+          throw new Error(`Invalid mode: ${value}`);
+        }
+        options.mode = value;
+        break;
+      case "payload":
+        options.payloadRaw = value;
+        break;
       default:
         throw new Error(`Unknown option: --${key}`);
     }
+  }
+
+  if (options.mode === "flag-alert" || options.mode === "daily-summary") {
+    if (!options.payloadRaw) {
+      throw new Error(`--payload is required for mode ${options.mode}`);
+    }
+    options.payload = JSON.parse(options.payloadRaw);
+    delete options.payloadRaw;
   }
 
   return options;
@@ -445,16 +465,55 @@ export function buildFailureMessage({
   };
 }
 
+export function buildFlagAlertMessage(payload) {
+  const { source, ticker, category, severity, detail, ts } = payload;
+  const subject = `${DEFAULT_SUBJECT_PREFIX.replace("Market Data Warehouse", "Livewire")} ${severity.toUpperCase()} ${ticker} ${category}`;
+  const detailHtml = `<pre>${escapeHtml(JSON.stringify(detail, null, 2))}</pre>`;
+  const html = `<html><body>
+    <h2>[Livewire] ${escapeHtml(severity)} quality flag</h2>
+    <p><b>Source:</b> ${escapeHtml(source)} &nbsp; <b>Ticker:</b> ${escapeHtml(ticker)}</p>
+    <p><b>Category:</b> ${escapeHtml(category)}</p>
+    <p><b>Detected at:</b> ${escapeHtml(ts || "")}</p>
+    ${detailHtml}
+  </body></html>`;
+  const text = `[Livewire] ${severity.toUpperCase()} ${ticker} ${category}\n${JSON.stringify(detail, null, 2)}`;
+  return { subject, html, text };
+}
+
 export async function sendFailureAlert({ transportOptions, message }) {
   const { default: nodemailer } = await import("nodemailer");
   const transport = nodemailer.createTransport(transportOptions);
   return transport.sendMail(message);
 }
 
+async function runFlagAlert(options, env = process.env, deps = {}) {
+  const alertConfig = resolveAlertConfig(env);
+  const message = {
+    from: alertConfig.from,
+    to: alertConfig.to,
+    cc: alertConfig.cc,
+    bcc: alertConfig.bcc,
+    replyTo: alertConfig.replyTo,
+    ...buildFlagAlertMessage(options.payload),
+  };
+  const info = await (deps.sendFailureAlert || sendFailureAlert)({
+    transportOptions: alertConfig.transportOptions,
+    message,
+  });
+  return {
+    mode: "flag-alert",
+    info,
+    message,
+  };
+}
+
 export async function runFailureAlert(argv, env = process.env, deps = {}) {
   const options = parseArgs(argv);
   if (options.help) {
     return { help: usage() };
+  }
+  if (options.mode === "flag-alert") {
+    return runFlagAlert(options, env, deps);
   }
 
   const alertConfig = resolveAlertConfig(env);
@@ -538,6 +597,11 @@ export async function main(argv = process.argv.slice(2), env = process.env, deps
   const result = await runFailureAlert(argv, env, deps);
   if (result.help) {
     console.log(result.help);
+    return result;
+  }
+
+  if (result.mode === "flag-alert") {
+    console.log(`Sent quality flag alert: ${result.message.subject}`);
     return result;
   }
 
