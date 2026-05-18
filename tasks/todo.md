@@ -51,7 +51,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
   depends_on: [T10]
 - [x] T12 Manual verification checklist
   depends_on: [T11]
-- [ ] T13 Ship branch
+- [x] T13 Ship branch
   depends_on: [T12]
 
 ## Review
@@ -68,6 +68,7 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - Self-review tightened parquet loaders so market-data rows stream into COPY instead of being accumulated as full Python lists.
   - T12 live Postgres rebuild/smoke was not run because `MDW_POSTGRES_DSN` and `MDW_TEST_POSTGRES_DSN` are unset in this environment.
   - T12 detected equity daily, volatility daily, equity `1h`, and equity `5m` bronze inputs; futures bronze input is absent.
+  - T13 pushed `feat/postgres-analytical-layer` and opened PR #3.
 - Verification:
   - `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 883 passed, 100% coverage.
   - `python -m pip install 'psycopg[binary]'` -> installed `psycopg-3.3.4` and `psycopg-binary-3.3.4`.
@@ -93,3 +94,5 @@ Use this file for the current task only. Replace it at the start of each non-tri
   - CLI help: `python scripts/rebuild_postgres_from_parquet.py --help` and `python scripts/smoke_postgres_analytical.py --help` -> exited 0.
   - Self-review fix gate: `python -m pytest tests/test_postgres_client.py -q` -> 22 passed.
   - Final coverage gate after self-review fix: `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning` -> 925 passed, 1 skipped, 100% coverage.
+  - `git push -u origin feat/postgres-analytical-layer` -> pushed branch and set upstream.
+  - `gh pr create --title "Sub-B: Postgres Analytical Layer" --body-file /tmp/livewire-postgres-sub-b-pr.md` -> https://github.com/moremeds/livewire/pull/3.
