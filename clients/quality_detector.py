@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover - exercised only before T5 helper extrac
 
 _RANGE_SHORTFALL_WARNING_DAYS = 5
 _RANGE_SHORTFALL_CRITICAL_DAYS = 30
-_logger = logging.getLogger("mdw.quality")
+_logger = logging.getLogger("livewire.quality")
 
 
 def _utc_iso() -> str:

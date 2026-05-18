@@ -181,7 +181,7 @@ test("buildFailureMessage includes rich text and html content", () => {
   assert.equal(message.subject, "[MDW] daily_update failed on 2026-03-11");
   assert.match(message.text, /Human-readable report: \/tmp\/daily\.human\.md/);
   assert.match(message.text, /Probable cause:/);
-  assert.match(message.html, /Market Data Warehouse Alert/);
+  assert.match(message.html, /Livewire Alert/);
   assert.match(message.html, /Timed out &lt;boom&gt;/);
   assert.match(message.html, /ops@example\.com/);
 });
@@ -379,7 +379,7 @@ test("main prints help and success output", async () => {
   }
 
   assert.match(logs[0], /Usage: node livewire_node\/send_daily_update_failure_email\.mjs/);
-  assert.match(logs[1], /Sent daily update failure alert: \[Market Data Warehouse\] daily_update failed on 2026-03-11/);
+  assert.match(logs[1], /Sent daily update failure alert: \[Livewire\] daily_update failed on 2026-03-11/);
   assert.match(logs[1], /report: \/tmp\/daily\.human\.md/);
 });
 

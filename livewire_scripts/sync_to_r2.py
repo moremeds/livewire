@@ -21,7 +21,7 @@ if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
 
 PARQUET_FILES_TO_SYNC = ("1d.parquet", "1h.parquet", "5m.parquet")
 
-logger = logging.getLogger("mdw.sync_to_r2")
+logger = logging.getLogger("livewire.sync_to_r2")
 
 
 def _get_s3_client():

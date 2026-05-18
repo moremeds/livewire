@@ -1,4 +1,4 @@
-"""Daily coverage report + auto-recovery for the market data warehouse.
+"""Daily coverage report + auto-recovery for Livewire.
 
 For each of the three timeframes (1d, 1h, 5m), counts how many symbols have
 bars current as-of the target trading day. If coverage drops below the

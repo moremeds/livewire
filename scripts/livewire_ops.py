@@ -19,8 +19,6 @@ sys.path.insert(0, str(REPO_ROOT))
 
 COMMANDS = {
     "run-daily-job": "livewire_scripts.run_daily_update_job",
-    "ibc-install": "livewire_scripts.install_ibc_secure_service",
-    "ibc-start": "livewire_scripts.start_ibc_gateway_keychain",
 }
 
 

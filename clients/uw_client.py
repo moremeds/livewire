@@ -104,7 +104,7 @@ class UWClient:
             {
                 "Authorization": f"Bearer {self._token}",
                 "Accept": "application/json",
-                "User-Agent": "market-data-warehouse/1.0",
+                "User-Agent": "livewire/1.0",
             }
         )
 

@@ -6,7 +6,7 @@ Developer reference for the Interactive Brokers TWS API as used via the `ib_asyn
 
 ## Connection
 
-For this repo, IB Gateway runs either as a **Docker container** (`docker/ib-gateway/`, recommended) or via the native macOS **IBC service** (`local.ibc-gateway` under `~/ibc` and `~/Library/LaunchAgents`). Both expose the same API on `127.0.0.1:4001` by default. All scripts accept `--host`/`--port` flags and read `MDW_IB_HOST`/`MDW_IB_PORT` environment variables.
+For this repo, IB Gateway runs via the native macOS **IBC service** (`local.ibc-gateway` under `~/ibc` and `~/Library/LaunchAgents`), exposing the API on `127.0.0.1:4001` by default. All scripts accept `--host`/`--port` flags and read `MDW_IB_HOST`/`MDW_IB_PORT` environment variables.
 
 ### Ports
 | Mode | IB Gateway | TWS |

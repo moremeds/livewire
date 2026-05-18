@@ -66,9 +66,8 @@ Current live shape:
 ## Operational Facts
 
 - IB Gateway is expected on `127.0.0.1:4001` by default, configurable via `MDW_IB_HOST`/`MDW_IB_PORT` env vars or `--host`/`--port` CLI flags.
-- Gateway can run via **Docker** (`docker/ib-gateway/`, recommended) or the native **macOS IBC service** (`~/ibc`, `~/ibc-install`, `~/Library/LaunchAgents/local.ibc-gateway.plist`).
-- The Docker setup uses `gnzsnz/ib-gateway-docker` with file-based secrets and SOCAT port relay (host 4001 → container 4003 → Gateway 4001).
-- The native IBC service is not scoped to this repo and should be treated as shared machine-local infrastructure.
+- Gateway is owned by the separate **trading-stack** project at `~/trading-stack/`. IBC installed at `/opt/ibc/`, watchdog LaunchAgent `local.ibc-watchdog` runs `~/trading-stack/scripts/ibc_watchdog_launchd.sh` every 5 min. Status via `~/trading-stack/scripts/ibc_gateway_status.sh`; combined bounce via `~/trading-stack/scripts/bounce_ibc_xenon.sh`. Authoritative runbook: `~/runbooks/trading-stack/ib-gateway-ibc.md`.
+- IB Gateway is pinned to **10.45** (10.46 is incompatible). 2FA is approved manually in IBKR Mobile on every fresh login. Do not read `/opt/ibc/config.ini`, write order workflows, or auto-restart Gateway on failure.
 - `IBClient.connect()` already retries successive `clientId` values after IB error `326`.
 - `scripts/livewire_ingest.py daily` is the scheduled parquet-first daily sync and supports `--target-date YYYY-MM-DD` for fixed-date catch-up runs without publishing later bars.
 - `scripts/livewire_ingest.py cboe-vol` fetches all CBOE volatility indices directly from CBOE's public API. This is the authoritative daily sync source for VIX, VVIX, VXHYG, VXSMH, and all other volatility indices in `presets/volatility.json`.
@@ -92,8 +91,7 @@ Current live shape:
 
 Common traps — check these before investigating further:
 
-- **IB Gateway availability**: Check `docker compose ps` (Docker) or `~/ibc/logs/ibc-gateway-service.log` (native) and port 4001 before assuming IB is reachable.
-- **Docker vs native Gateway port conflict**: Both bind to `127.0.0.1:4001` by default. Do not run both simultaneously.
+- **IB Gateway availability**: Check `~/ibc/logs/ibc-gateway-service.log` and port 4001 before assuming IB is reachable.
 - **DuckDB file locks**: Never open `market.duckdb` from the live service path. The daily update intentionally avoids DuckDB writes — this is by design, not a bug.
 - **Empty IB head timestamps**: IB returns empty head timestamps for some symbols. The fallback to `IB_EARLIEST_DATE` is intentional — do not treat it as an error.
 - **IB error 326 (client ID in use)**: Handled by auto-retry in `IBClient.connect()`. Do not manually reassign client IDs.

@@ -14,7 +14,7 @@ from typing import Optional
 
 _VALID_SOURCES = {"ib", "uw", "massive"}
 
-_logger = logging.getLogger("mdw.telemetry")
+_logger = logging.getLogger("livewire.telemetry")
 
 
 def _utc_iso() -> str:

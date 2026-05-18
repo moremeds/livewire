@@ -40,7 +40,7 @@ def test_operator_entrypoints_render_subcommand_help() -> None:
     expected_commands = {
         "livewire_ingest.py": ["daily", "historical", "robust", "cboe-vol", "intraday-backfill"],
         "livewire_quality.py": ["health", "coverage", "report", "weekly", "watchdog"],
-        "livewire_ops.py": ["run-daily-job", "send-alert", "ibc-install", "ibc-start"],
+        "livewire_ops.py": ["run-daily-job", "send-alert"],
         "livewire_store.py": ["rebuild-duckdb", "rebuild-postgres", "smoke-postgres", "sync-r2", "migrate-parquet"],
     }
 
@@ -60,7 +60,6 @@ def test_operator_entrypoints_forward_subcommand_help() -> None:
     examples = {
         "livewire_ingest.py": ("daily", "Daily market data update"),
         "livewire_quality.py": ("report", "Livewire data quality report"),
-        "livewire_ops.py": ("ibc-install", "Install or update"),
         "livewire_store.py": ("rebuild-duckdb", "Rebuild market.duckdb"),
     }
 

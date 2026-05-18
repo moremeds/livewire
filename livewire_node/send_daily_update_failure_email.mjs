@@ -8,7 +8,7 @@ import { generateHumanReadableIncidentReport } from "./cerebras_client.mjs";
 
 const DEFAULT_TAIL_LINES = 40;
 const DEFAULT_JOB_NAME = "daily_update";
-const DEFAULT_SUBJECT_PREFIX = "[Market Data Warehouse]";
+const DEFAULT_SUBJECT_PREFIX = "[Livewire]";
 const MODES = new Set(["failure", "flag-alert", "daily-summary"]);
 
 function usage() {
@@ -373,7 +373,7 @@ function buildFailureHtml({
   <body style="margin:0;padding:24px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#0f172a;">
     <div style="max-width:760px;margin:0 auto;background:#ffffff;border:1px solid #dbe4ee;border-radius:18px;overflow:hidden;">
       <div style="padding:24px 28px;background:linear-gradient(135deg,#7f1d1d 0%,#991b1b 100%);color:#ffffff;">
-        <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;opacity:0.78;">Market Data Warehouse Alert</div>
+        <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;opacity:0.78;">Livewire Alert</div>
         <h1 style="margin:8px 0 0;font-size:28px;line-height:1.2;">${escapeHtml(options.jobName)} failed</h1>
         <p style="margin:10px 0 0;font-size:15px;line-height:1.5;opacity:0.92;">${escapeHtml(
           incidentReport.summary,
@@ -467,7 +467,7 @@ export function buildFailureMessage({
 
 export function buildFlagAlertMessage(payload) {
   const { source, ticker, category, severity, detail, ts } = payload;
-  const subject = `${DEFAULT_SUBJECT_PREFIX.replace("Market Data Warehouse", "Livewire")} ${severity.toUpperCase()} ${ticker} ${category}`;
+  const subject = `${DEFAULT_SUBJECT_PREFIX} ${severity.toUpperCase()} ${ticker} ${category}`;
   const detailHtml = `<pre>${escapeHtml(JSON.stringify(detail, null, 2))}</pre>`;
   const html = `<html><body>
     <h2>[Livewire] ${escapeHtml(severity)} quality flag</h2>
@@ -507,7 +507,7 @@ export function buildDailySummaryMessage(payload) {
       </tr>`,
     )
     .join("");
-  const subject = `${DEFAULT_SUBJECT_PREFIX.replace("Market Data Warehouse", "Livewire")} daily summary ${payload.window || ""}`.trim();
+  const subject = `${DEFAULT_SUBJECT_PREFIX} daily summary ${payload.window || ""}`.trim();
   const html = `<html><body>
     <h2>[Livewire] daily summary</h2>
     <p><b>Window:</b> ${escapeHtml(payload.window || "")}</p>

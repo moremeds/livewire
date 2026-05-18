@@ -1,4 +1,4 @@
-"""DuckDB client for the market data warehouse.
+"""DuckDB client for Livewire.
 
 Wraps DuckDB with schema-aware methods for md.symbols and md.equities_daily.
 Handles upserts, dedup, and Parquet export.
@@ -28,7 +28,7 @@ _DEFAULT_DB_PATH = Path.home() / "market-warehouse" / "duckdb" / "market.duckdb"
 
 
 class DBClient:
-    """Lean DuckDB client for the market data warehouse."""
+    """Lean DuckDB client for Livewire."""
 
     def __init__(self, db_path: Optional[str | Path] = None):
         self._db_path = str(db_path or _DEFAULT_DB_PATH)

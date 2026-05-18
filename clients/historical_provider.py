@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import List, Optional
 
-logger = logging.getLogger("mdw.historical_provider")
+logger = logging.getLogger("livewire.historical_provider")
 
 
 # ---------------------------------------------------------------------------

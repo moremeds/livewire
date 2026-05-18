@@ -29,14 +29,12 @@ livewire/                           # Git repo
 │   ├── setup_market_warehouse.sh   # One-time system bootstrap
 │   ├── livewire_ingest.py          # Ingest subcommands: daily, historical, robust, CBOE, intraday, universe
 │   ├── livewire_quality.py         # Quality subcommands: health, coverage, report, weekly, watchdog
-│   ├── livewire_ops.py             # Ops subcommands: scheduled job, alerts, IBC install/start
+│   ├── livewire_ops.py             # Ops subcommands: scheduled job, alerts
 │   └── livewire_store.py           # Storage subcommands: DuckDB/Postgres rebuild, smoke checks, R2 sync, parquet migration
 ├── livewire_scripts/               # Importable implementations behind the script entrypoints
 ├── livewire_node/                  # Nodemailer + Cerebras alert helpers
 ├── launchd/                        # macOS launchd templates
 ├── tools/                          # Developer hooks and helper shell tools
-├── docker/
-│   └── ib-gateway/                 # Docker Compose setup for IB Gateway (alternative to native IBC)
 ├── tests/
 │   ├── conftest.py                 # Shared fixtures: tmp_duckdb, db
 │   ├── test_daily_bar_fallback.py  # Unit tests for fallback providers
@@ -94,58 +92,25 @@ ClickHouse mirrors the same schema with MergeTree engines partitioned by `toYYYY
 
 ## IB Gateway / IBC
 
-IB Gateway is managed by **IBC** (IB Controller) for automated login, reconnection, and daily restarts. For Docker-based Gateway, see the **IB Gateway — Docker** section below.
+IB Gateway runs only on this machine. It is managed by **IBC** (IB Controller) and operated by the separate **trading-stack** project at `~/trading-stack/` — livewire is a consumer of that infrastructure, not its owner.
 
-For macOS workstations, IBC is the native machine-local dependency for IB-backed workflows. The secure service is installed globally under the user's home directory and is not scoped to this repo.
+Authoritative runbook: `~/runbooks/trading-stack/ib-gateway-ibc.md`. Read it before changing anything IBC-related.
 
-- **IBC install**: `~/ibc-install/` (IBC.jar + scripts)
-- **IBC secure config**: `~/ibc/config.secure.ini` (settings only; no credentials)
-- **IBC secure service installer**: `python scripts/livewire_ops.py ibc-install`
-- **IBC machine-local wrappers**: `~/ibc/bin/start-secure-ibc-service.sh`, `stop-secure-ibc-service.sh`, `restart-secure-ibc-service.sh`, `status-secure-ibc-service.sh`
-- **IBC LaunchAgent**: `~/Library/LaunchAgents/local.ibc-gateway.plist`
-- **IBC logs**: `~/ibc/logs/ibc-gateway-service.log` for the secure LaunchAgent, or `~/ibc/logs/` for the stock wrapper
-- **Start Gateway**: installed machine-local secure service (preferred and project-required for IB workflows), repo Keychain launcher for low-level troubleshooting, or `~/ibc-install/gatewaystartmacos.sh` for legacy plaintext config
-- **Stop Gateway**: `~/ibc-install/stop.sh`
-- **Reconnect data**: `~/ibc-install/reconnectdata.sh`
-- **Command server**: port 7462
-- **Gateway API port**: 4001
-- **Auto-restart**: 11:58 PM daily, cold restart Sundays 07:05
-
-## IB Gateway — Docker (Alternative)
-
-IB Gateway can also run as a Docker container via [gnzsnz/ib-gateway-docker](https://github.com/gnzsnz/ib-gateway-docker). Configuration lives at `docker/ib-gateway/`.
-
-- **Setup**: `cd docker/ib-gateway && cp .env.example .env`, set `TWS_USERID`, create `secrets/ib_password.txt`
-- **Start**: `docker compose up -d`
-- **2FA**: Via VNC client at `localhost:5900` (opt-in, requires `VNC_SERVER_PASSWORD`) or IBKR mobile app
-- **Health check**: `docker compose ps` — shows healthy after ~2 min
-- **Ports**: host 4001 → container 4003 (live SOCAT relay), host 4002 → container 4004 (paper), host 5900 → VNC
-- **Trading mode**: `TRADING_MODE=paper` (default) or `live` in `.env`
-- **Read-only API**: `READ_ONLY_API=yes` (default, recommended for data warehouse)
-- **Secrets**: `TWS_USERID` is a plain env var; password uses Docker `secrets:` directive via `TWS_PASSWORD_FILE`
-- **Settings**: Persisted in a Docker volume across container restarts
-- **Logs**: `docker compose logs -f`
-- **Stop**: `docker compose down`
-
-Scripts connect to `127.0.0.1:4001` by default — same endpoint whether Gateway runs natively via IBC or in Docker. Override with `MDW_IB_HOST` / `MDW_IB_PORT` env vars or `--host` / `--port` CLI flags.
-
-## IB Gateway — Cloud (Hetzner VPS + Tailscale)
-
-IB Gateway runs on a Hetzner CPX11 VPS (~$4-6/mo) in Ashburn, VA with Tailscale for secure, WireGuard-encrypted remote access. The existing `docker-compose.yml` works unmodified on the VPS.
-
-- **Canonical endpoint**: `ib-gateway:4001` (Tailscale MagicDNS hostname, survives IP changes)
-- **Client config**: `MDW_IB_HOST=ib-gateway` in `.env` or as env var — all scripts use this automatically
-- **Security**: All ports blocked on public interface via ufw; IB API, VNC, and SSH accessible only via Tailscale mesh; identity-based ACLs control per-device access
-- **TCP proxy**: A socat systemd service bridges Tailscale IP traffic to Docker's localhost-bound ports (`tailscale serve --tcp` adds TLS, which is incompatible with IB's raw TCP protocol)
-- **Read-only**: `READ_ONLY_API=no` (current config — supports both read and write operations)
-- **Cutover**: Cold cutover required — IB allows only one active session per login; running two gateways causes session displacement
-- **Break-glass**: Hetzner web console provides browser-based VNC if Tailscale is unreachable
-- **Phone access**: SSH from iOS/Android via Termius to `ib-gateway` for `docker compose stop/start`
-- **Full setup**: See `docker/ib-gateway/README.md` for provisioning, hardening, Tailscale ACLs, client enrollment, rollback, and 2FA reauth runbook
+- **IBC install**: `/opt/ibc/` (system-wide; not in `~`)
+- **IBC config**: `/opt/ibc/config.ini` (contains stored credentials; do not read or modify from livewire)
+- **IBC logs**: `/opt/ibc/logs/` (rotating daily files; watchdog log at `/opt/ibc/logs/ibc-watchdog.log`)
+- **Gateway app**: `~/Applications/IB Gateway 10.45/` — pinned to **10.45** (10.46 is incompatible; 10.46 installs are renamed `*.disabled`)
+- **Watchdog LaunchAgent**: `~/Library/LaunchAgents/local.ibc-watchdog.plist` → runs `~/trading-stack/scripts/ibc_watchdog_launchd.sh` every 5 min
+- **Gateway API port**: `127.0.0.1:4001` (live)
+- **Trading mode**: live
+- **2FA**: user manually approves in **IBKR Mobile** on every fresh login; livewire cannot bypass this
+- **Status check**: `~/trading-stack/scripts/ibc_gateway_status.sh` (key=value diagnostics, also called by livewire's preflight)
+- **Combined bounce (Gateway + Xenon)**: `~/trading-stack/scripts/bounce_ibc_xenon.sh` — stops watchdog, kills IBC/Gateway, restarts via Terminal launcher, waits for port 4001, then restarts Xenon containers
+- **Do NOT**: read `/opt/ibc/config.ini`, write order-management workflows, or repeatedly restart Gateway on failure (failures usually mean 2FA, IBKR maintenance, session conflict, or market-data permission — not something livewire should auto-recover)
 
 ## Data Ingestion
 
-Data source: **Interactive Brokers** via `ib_async`. Requires IB Gateway running on a reachable endpoint (default `127.0.0.1:4001`), either natively via the macOS IBC service or via Docker.
+Data source: **Interactive Brokers** via `ib_async`. Requires IB Gateway at `127.0.0.1:4001` — managed by trading-stack (see "IB Gateway / IBC" section above). The ingest commands run a preflight check before connecting; if the Gateway is down they print the trading-stack status and exit cleanly rather than burning a 4-min IB timeout.
 
 - `IBClient` wraps `ib_async.IB` with connection management, historical data, and contract qualification
 - `IBClient.connect()` defaults to `clientId=0` and automatically retries successive `clientId` values if IB reports error `326` (`client id already in use`)
@@ -282,10 +247,10 @@ python scripts/livewire_ingest.py daily --asset-class futures             # Dail
 **Scheduling with launchd** (macOS):
 ```bash
 # Copy examples, replace /path/to/repo with your actual repo path
-sed "s|/path/to/repo|$(pwd)|g" launchd/com.market-warehouse.daily-update.plist.example > ~/Library/LaunchAgents/com.market-warehouse.daily-update.plist
-sed "s|/path/to/repo|$(pwd)|g" launchd/com.market-warehouse.daily-update-watchdog.plist.example > ~/Library/LaunchAgents/com.market-warehouse.daily-update-watchdog.plist
-launchctl load ~/Library/LaunchAgents/com.market-warehouse.daily-update.plist
-launchctl load ~/Library/LaunchAgents/com.market-warehouse.daily-update-watchdog.plist
+sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.daily-update.plist.example > ~/Library/LaunchAgents/com.livewire.daily-update.plist
+sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.daily-update-watchdog.plist.example > ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
+launchctl load ~/Library/LaunchAgents/com.livewire.daily-update.plist
+launchctl load ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
 ```
 `scripts/livewire_ops.py run-daily-job` loads `~/.secrets`, repo `.env`, and `~/market-warehouse/.env` before invoking the retrying scheduled runner. This preserves the old launchd wrapper behavior for API keys like `CEREBRAS_API_KEY`. The runner automatically syncs equities and futures via IB, then all volatility indices via CBOE's public API in a single invocation; pass `--asset-class <name>` to run only one IB asset class (skips CBOE volatility sync).
 
@@ -485,17 +450,12 @@ Catches: AWS keys, API key/secret/password assignments, private key headers, Git
 
 Common traps that derail debugging sessions — check these before investigating further:
 
-- **IB Gateway availability**: Always check `~/ibc/logs/ibc-gateway-service.log` and port 4001 before assuming IB is reachable. The secure LaunchAgent may not be running.
+- **IB Gateway availability**: Run `~/trading-stack/scripts/ibc_gateway_status.sh` and `nc -z 127.0.0.1 4001` before assuming IB is reachable. If down: `tail -30 /opt/ibc/logs/ibc-watchdog.log`; if still stuck, full bounce via `~/trading-stack/scripts/bounce_ibc_xenon.sh` (touches Xenon too — coordinate). Do NOT auto-retry restarts: failures usually mean 2FA, IBKR maintenance, or session conflict, not transient.
 - **DuckDB file locks**: Never open `market.duckdb` from the live service path. The daily update intentionally avoids DuckDB writes — this is by design, not a bug.
 - **Empty IB head timestamps**: IB returns empty head timestamps for some symbols. The fallback to `IB_EARLIEST_DATE` is intentional — don't treat it as an error.
 - **IB error 326 (client ID in use)**: Handled by auto-retry in `IBClient.connect()`. Don't manually reassign client IDs.
 - **Weekend/holiday runs**: IB returns no data on non-trading days. These are harmless no-ops — don't debug "no data returned" on weekends or holidays.
 - **CBOE volatility fetch**: Volatility indices use CBOE's public API, not IB. If VIX data looks stale, check `scripts/livewire_ingest.py cboe-vol`, not IB connectivity.
-- **Docker vs native Gateway**: Both bind to `127.0.0.1:4001` by default. Don't run both simultaneously — they'll conflict on the port. Set `MDW_IB_HOST`/`MDW_IB_PORT` only when connecting to a remote Docker host.
-- **Cloud gateway + local gateway**: IB allows only one active session per login. Running both causes `EXISTING_SESSION_DETECTED` displacement. Cold cutover only — stop one before starting the other.
-- **Cloud gateway connectivity**: If `ib-gateway:4001` is unreachable, check in order: (1) Tailscale connected locally (`tailscale status`), (2) VPS Tailscale online (`ssh ib-gateway`), (3) socat proxy running (`sudo systemctl status ib-gateway-proxy`), (4) Docker container healthy. Break-glass: Hetzner web console.
-- **Cloud gateway health check**: The `nc` binary is not available inside the IB Gateway container image (`ghcr.io/gnzsnz/ib-gateway`), so Docker health checks using `nc -z` always fail. The container will show `(unhealthy)` even when IB Gateway is running normally. Check connectivity from the host with `nc -z 127.0.0.1 4001`.
-- **tailscale serve vs socat**: `tailscale serve --tcp` adds TLS which breaks IB's raw TCP protocol. The cloud gateway uses socat systemd services to bridge Tailscale IP traffic to Docker's localhost-bound ports instead.
 
 ## Provider Interface
 

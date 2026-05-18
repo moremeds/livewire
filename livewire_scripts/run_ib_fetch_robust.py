@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BRONZE_DIR = Path.home() / "market-warehouse" / "data-lake" / "bronze"
 DEFAULT_LOG_DIR = Path.home() / "market-warehouse" / "logs"
 
-_logger = logging.getLogger("mdw.orchestrator")
+_logger = logging.getLogger("livewire.orchestrator")
 
 
 def _env_int(name: str, default: int) -> int:

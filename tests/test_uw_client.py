@@ -68,7 +68,7 @@ class TestInit:
         client = _make_client()
         h = client._session.headers
         assert h["Authorization"] == "Bearer test-token"
-        assert h["User-Agent"] == "market-data-warehouse/1.0"
+        assert h["User-Agent"] == "livewire/1.0"
         assert h["Accept"] == "application/json"
         client.close()
 

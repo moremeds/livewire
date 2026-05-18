@@ -22,7 +22,7 @@ _DEFAULT_BACKOFF_FACTOR = 1.0
 _DEFAULT_MIN_INTERVAL_SECONDS = 0.2
 _NASDAQ_BASE_URL = "https://api.nasdaq.com/api/quote"
 _STOOQ_DAILY_URL = "https://stooq.com/q/d/l/"
-_USER_AGENT = "market-data-warehouse/1.0"
+_USER_AGENT = "livewire/1.0"
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
