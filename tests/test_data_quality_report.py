@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from scripts.data_quality_report import (
+from livewire_scripts.data_quality_report import (
     compute_summary,
     load_audit,
     load_telemetry,
@@ -219,7 +219,7 @@ def test_render_summary_text_includes_uptime():
 
 
 def test_render_flap_view_chronological():
-    from scripts.data_quality_report import render_flap_view
+    from livewire_scripts.data_quality_report import render_flap_view
 
     rows = [
         {
@@ -245,7 +245,7 @@ def test_render_flap_view_chronological():
 
 
 def test_render_quality_view_severity_filter():
-    from scripts.data_quality_report import render_quality_view
+    from livewire_scripts.data_quality_report import render_quality_view
 
     audit = [
         {
@@ -271,7 +271,7 @@ def test_render_quality_view_severity_filter():
 
 
 def test_render_quality_view_defaults_timeframe():
-    from scripts.data_quality_report import render_quality_view
+    from livewire_scripts.data_quality_report import render_quality_view
 
     audit = [{
         "_ts": _utc("2026-05-17T00:00:00Z"),
@@ -284,7 +284,7 @@ def test_render_quality_view_defaults_timeframe():
 
 
 def test_main_dispatch_summary(tmp_path, capsys):
-    from scripts.data_quality_report import main
+    from livewire_scripts.data_quality_report import main
 
     t = tmp_path / "telemetry.jsonl"
     t.write_text(json.dumps({
@@ -310,7 +310,7 @@ def test_main_dispatch_summary(tmp_path, capsys):
 
 
 def test_main_dispatch_flap_with_source_filter(tmp_path, capsys):
-    from scripts.data_quality_report import main
+    from livewire_scripts.data_quality_report import main
 
     t = tmp_path / "telemetry.jsonl"
     t.write_text(
@@ -348,7 +348,7 @@ def test_main_dispatch_flap_with_source_filter(tmp_path, capsys):
 
 
 def test_main_dispatch_quality_with_filter(tmp_path, capsys):
-    from scripts.data_quality_report import main
+    from livewire_scripts.data_quality_report import main
 
     a = tmp_path / "audit.jsonl"
     a.write_text(json.dumps({
@@ -376,7 +376,7 @@ def test_main_dispatch_quality_with_filter(tmp_path, capsys):
 
 
 def test_email_mode_spawns_nodemailer_and_writes_marker(tmp_path, monkeypatch):
-    from scripts.data_quality_report import main
+    from livewire_scripts.data_quality_report import main
 
     t = tmp_path / "t.jsonl"
     t.write_text("")
@@ -415,7 +415,7 @@ def test_email_mode_spawns_nodemailer_and_writes_marker(tmp_path, monkeypatch):
 
 
 def test_send_email_failure_returns_false(monkeypatch, capsys):
-    from scripts.data_quality_report import _send_email
+    from livewire_scripts.data_quality_report import _send_email
 
     def fake_run(*args, **kwargs):
         raise OSError("node missing")
@@ -426,7 +426,7 @@ def test_send_email_failure_returns_false(monkeypatch, capsys):
 
 
 def test_send_email_nonzero_returns_false(monkeypatch, capsys):
-    from scripts.data_quality_report import _send_email
+    from livewire_scripts.data_quality_report import _send_email
     from subprocess import CompletedProcess
 
     monkeypatch.setattr(
@@ -438,7 +438,7 @@ def test_send_email_nonzero_returns_false(monkeypatch, capsys):
 
 
 def test_resolve_log_dir_default(monkeypatch):
-    from scripts.data_quality_report import _resolve_log_dir
+    from livewire_scripts.data_quality_report import _resolve_log_dir
 
     monkeypatch.delenv("MDW_LOG_DIR", raising=False)
     assert _resolve_log_dir().as_posix().endswith("/market-warehouse/logs")

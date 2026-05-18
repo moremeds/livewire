@@ -6,12 +6,12 @@
 #
 # Usage:
 #   source ~/market-warehouse/.venv/bin/activate
-#   bash scripts/run_backfill_all.sh
+#   bash tools/run_backfill_all.sh
 
 set -euo pipefail
 
 VENV="$HOME/market-warehouse/.venv/bin/activate"
-SCRIPT="scripts/fetch_ib_historical.py"
+SCRIPT="scripts/livewire_ingest.py"
 LOG_DIR="$HOME/market-warehouse/logs"
 STALL_TIMEOUT=600    # seconds of no cursor update before killing (10 min)
 COOLDOWN=300         # seconds to wait after stall/failure (5 min IB cooldown)
@@ -179,7 +179,7 @@ for preset in "${PRESETS[@]}"; do
 
     log "── PHASE 1: Normal fetch $name ($total tickers) ──"
     run_until_done "normal_${name}" "$cursor_file" "$total" \
-        python "$SCRIPT" --preset "$preset" --years 0 --skip-existing \
+        python "$SCRIPT" historical --preset "$preset" --years 0 --skip-existing \
         --batch-size "$BATCH_SIZE" --max-concurrent "$MAX_CONCURRENT"
 done
 
@@ -195,7 +195,7 @@ for preset in "${PRESETS[@]}"; do
 
     log "── PHASE 2: Backfill $name ($total tickers) ──"
     run_until_done "backfill_${name}" "$cursor_file" "$total" \
-        python "$SCRIPT" --preset "$preset" --backfill \
+        python "$SCRIPT" historical --preset "$preset" --backfill \
         --batch-size "$BATCH_SIZE" --max-concurrent "$MAX_CONCURRENT"
 done
 

@@ -3,30 +3,30 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.market-warehouse.daily-update-watchdog</string>
+    <string>com.market-warehouse.daily-update</string>
 
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
         <!-- Replace /path/to/repo with your actual repo path -->
-        <string>/path/to/repo/scripts/run_daily_update_watchdog.sh</string>
+        <string>cd /path/to/repo && /Users/chenxi/market-warehouse/.venv/bin/python scripts/livewire_ops.py run-daily-job</string>
     </array>
 
     <key>StartCalendarInterval</key>
     <dict>
-        <!-- 18:30 PT leaves room for the 13:05 PT sync, retries, and a long-running close-of-day ingest -->
+        <!-- 13:05 PT = 4:05 PM ET year-round (PT and ET always 3h apart) — always after market close -->
         <key>Hour</key>
-        <integer>18</integer>
+        <integer>13</integer>
         <key>Minute</key>
-        <integer>30</integer>
+        <integer>5</integer>
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/tmp/com.market-warehouse.daily-update-watchdog.stdout.log</string>
+    <string>/tmp/com.market-warehouse.daily-update.stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/com.market-warehouse.daily-update-watchdog.stderr.log</string>
+    <string>/tmp/com.market-warehouse.daily-update.stderr.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

@@ -15,7 +15,7 @@
 Sub-B includes:
 - Postgres schema for analytical tables under schema `md`.
 - A `PostgresClient` that creates schema, replaces analytical tables from bronze parquet, and imports reliability JSONL artifacts.
-- A CLI equivalent to `scripts/rebuild_duckdb_from_parquet.py`: `scripts/rebuild_postgres_from_parquet.py`.
+- A CLI equivalent to `scripts/livewire_store.py rebuild-duckdb`: `scripts/livewire_store.py rebuild-postgres`.
 - Documentation for local/operator usage, configuration, and verification.
 
 Sub-B explicitly excludes:
@@ -424,12 +424,12 @@ depends_on: [T3]
 ### Task 8: Add Postgres Rebuild CLI
 
 **Files:**
-- Create: `scripts/rebuild_postgres_from_parquet.py`
+- Create: `livewire_scripts/rebuild_postgres_from_parquet.py`, exposed through `scripts/livewire_store.py rebuild-postgres`
 - Test: `tests/test_rebuild_postgres_from_parquet.py`
 
 **CLI:**
 ```bash
-python scripts/rebuild_postgres_from_parquet.py \
+python scripts/livewire_store.py rebuild-postgres \
   --asset-class equity \
   --timeframe all \
   --bronze-dir ~/market-warehouse/data-lake/bronze/asset_class=equity
@@ -460,7 +460,7 @@ depends_on: [T4, T5, T6, T7]
 ### Task 9: Add Optional Live Postgres Smoke Script
 
 **Files:**
-- Create: `scripts/smoke_postgres_analytical.py`
+- Create: `livewire_scripts/smoke_postgres_analytical.py`, exposed through `scripts/livewire_store.py smoke-postgres`
 - Test: `tests/test_smoke_postgres_analytical.py`
 
 **Behavior:**
@@ -514,18 +514,18 @@ depends_on: [T10]
 **Operator commands:**
 ```bash
 export MDW_POSTGRES_DSN='postgresql://...'
-python scripts/smoke_postgres_analytical.py --ensure-schema
-python scripts/rebuild_postgres_from_parquet.py --asset-class equity --timeframe 1d
-python scripts/rebuild_postgres_from_parquet.py --asset-class volatility
-python scripts/rebuild_postgres_from_parquet.py --include-reliability
+python scripts/livewire_store.py smoke-postgres --ensure-schema
+python scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe 1d
+python scripts/livewire_store.py rebuild-postgres --asset-class volatility
+python scripts/livewire_store.py rebuild-postgres --include-reliability
 
 # Conditional: run only when corresponding bronze parquet exists.
 test -n "$(find ~/market-warehouse/data-lake/bronze/asset_class=futures -path '*/1d.parquet' -print -quit 2>/dev/null)" && \
-  python scripts/rebuild_postgres_from_parquet.py --asset-class futures
+  python scripts/livewire_store.py rebuild-postgres --asset-class futures
 test -n "$(find ~/market-warehouse/data-lake/bronze/asset_class=equity -path '*/1h.parquet' -print -quit 2>/dev/null)" && \
-  python scripts/rebuild_postgres_from_parquet.py --asset-class equity --timeframe 1h
+  python scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe 1h
 test -n "$(find ~/market-warehouse/data-lake/bronze/asset_class=equity -path '*/5m.parquet' -print -quit 2>/dev/null)" && \
-  python scripts/rebuild_postgres_from_parquet.py --asset-class equity --timeframe 5m
+  python scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe 5m
 ```
 
 **Expected checks:**

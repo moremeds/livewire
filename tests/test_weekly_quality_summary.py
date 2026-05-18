@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from scripts.weekly_quality_summary import (
+from livewire_scripts.weekly_quality_summary import (
     CoverageEntry,
     _iso_week_start,
     detect_churn,
@@ -82,7 +82,7 @@ class TestParseCoverageLog:
 
 class TestLoadWeek:
     def test_loads_seven_consecutive_days(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.weekly_quality_summary._LOG_DIR", tmp_path)
+        monkeypatch.setattr("livewire_scripts.weekly_quality_summary._LOG_DIR", tmp_path)
         start = date(2026, 3, 30)  # Monday
         for i in range(7):
             d = start + __import__("datetime").timedelta(days=i)
@@ -91,7 +91,7 @@ class TestLoadWeek:
         assert len(entries) == 7
 
     def test_skips_missing_days(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.weekly_quality_summary._LOG_DIR", tmp_path)
+        monkeypatch.setattr("livewire_scripts.weekly_quality_summary._LOG_DIR", tmp_path)
         start = date(2026, 3, 30)
         for offset in (0, 2, 4):  # only 3 of 7 days have logs
             d = start + __import__("datetime").timedelta(days=offset)
@@ -218,7 +218,7 @@ class TestRenderMarkdown:
 
 class TestWriteSummary:
     def test_writes_to_correct_path(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.weekly_quality_summary._LOG_DIR", tmp_path)
+        monkeypatch.setattr("livewire_scripts.weekly_quality_summary._LOG_DIR", tmp_path)
         path = write_summary("# hello", (2026, 14))
         assert path.name == "quality_weekly_2026-14.md"
         assert path.read_text() == "# hello"
@@ -237,8 +237,8 @@ def test_iso_week_start_monday():
 
 class TestMain:
     def test_skips_non_sunday_without_force(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.weekly_quality_summary._LOG_DIR", tmp_path)
-        with patch("scripts.weekly_quality_summary.date") as mock_date:
+        monkeypatch.setattr("livewire_scripts.weekly_quality_summary._LOG_DIR", tmp_path)
+        with patch("livewire_scripts.weekly_quality_summary.date") as mock_date:
             # Wednesday 2026-04-08
             mock_date.today.return_value = date(2026, 4, 8)
             mock_date.fromisocalendar = date.fromisocalendar
@@ -249,10 +249,10 @@ class TestMain:
         assert list(tmp_path.glob("quality_weekly_*.md")) == []
 
     def test_force_runs_any_day(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.weekly_quality_summary._LOG_DIR", tmp_path)
+        monkeypatch.setattr("livewire_scripts.weekly_quality_summary._LOG_DIR", tmp_path)
         # Seed one log so the report has content
         _write_log(tmp_path, date(2026, 3, 30), _spec_header(date(2026, 3, 30)))
-        with patch("scripts.weekly_quality_summary.date") as mock_date:
+        with patch("livewire_scripts.weekly_quality_summary.date") as mock_date:
             mock_date.today.return_value = date(2026, 4, 8)  # Wed
             mock_date.fromisocalendar = date.fromisocalendar
             mock_date.fromisoformat = date.fromisoformat
@@ -262,9 +262,9 @@ class TestMain:
         assert len(files) == 1
 
     def test_explicit_week_argument(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.weekly_quality_summary._LOG_DIR", tmp_path)
+        monkeypatch.setattr("livewire_scripts.weekly_quality_summary._LOG_DIR", tmp_path)
         _write_log(tmp_path, date(2026, 3, 30), _spec_header(date(2026, 3, 30)))
-        with patch("scripts.weekly_quality_summary.date") as mock_date:
+        with patch("livewire_scripts.weekly_quality_summary.date") as mock_date:
             mock_date.today.return_value = date(2026, 4, 5)  # Sunday
             mock_date.fromisocalendar = date.fromisocalendar
             mock_date.fromisoformat = date.fromisoformat
@@ -278,8 +278,8 @@ class TestMain:
         assert "Week 14 of 2026" in path.read_text()
 
     def test_sunday_default_runs(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.weekly_quality_summary._LOG_DIR", tmp_path)
-        with patch("scripts.weekly_quality_summary.date") as mock_date:
+        monkeypatch.setattr("livewire_scripts.weekly_quality_summary._LOG_DIR", tmp_path)
+        with patch("livewire_scripts.weekly_quality_summary.date") as mock_date:
             mock_date.today.return_value = date(2026, 4, 5)  # Sunday
             mock_date.fromisocalendar = date.fromisocalendar
             mock_date.fromisoformat = date.fromisoformat

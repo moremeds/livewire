@@ -17,7 +17,7 @@ import {
   runFailureAlert,
   sendFailureAlert,
   writeHumanReadableReport,
-} from "./send_daily_update_failure_email.mjs";
+} from "../../livewire_node/send_daily_update_failure_email.mjs";
 
 const baseAlertConfig = {
   from: "from@example.com",
@@ -341,7 +341,7 @@ test("main prints help and success output", async () => {
 
   try {
     const helpResult = await main(["--help"], {}, {});
-    assert.match(helpResult.help, /Usage: node scripts\/send_daily_update_failure_email\.mjs/);
+    assert.match(helpResult.help, /Usage: node livewire_node\/send_daily_update_failure_email\.mjs/);
 
     const successResult = await main(
       [
@@ -378,13 +378,13 @@ test("main prints help and success output", async () => {
     console.log = originalLog;
   }
 
-  assert.match(logs[0], /Usage: node scripts\/send_daily_update_failure_email\.mjs/);
+  assert.match(logs[0], /Usage: node livewire_node\/send_daily_update_failure_email\.mjs/);
   assert.match(logs[1], /Sent daily update failure alert: \[Market Data Warehouse\] daily_update failed on 2026-03-11/);
   assert.match(logs[1], /report: \/tmp\/daily\.human\.md/);
 });
 
 test("flag-alert mode renders HTML body with ticker and category", async () => {
-  const { parseArgs, buildFlagAlertMessage } = await import("./send_daily_update_failure_email.mjs");
+  const { parseArgs, buildFlagAlertMessage } = await import("../../livewire_node/send_daily_update_failure_email.mjs");
   const args = parseArgs([
     "--mode", "flag-alert",
     "--payload", JSON.stringify({
@@ -404,13 +404,13 @@ test("flag-alert mode renders HTML body with ticker and category", async () => {
 });
 
 test("flag-alert mode rejects missing payload", async () => {
-  const { parseArgs } = await import("./send_daily_update_failure_email.mjs");
+  const { parseArgs } = await import("../../livewire_node/send_daily_update_failure_email.mjs");
   assert.throws(() => parseArgs(["--mode", "flag-alert"]),
     /payload.*required/i);
 });
 
 test("daily-summary mode renders rollup HTML", async () => {
-  const { parseArgs, buildDailySummaryMessage } = await import("./send_daily_update_failure_email.mjs");
+  const { parseArgs, buildDailySummaryMessage } = await import("../../livewire_node/send_daily_update_failure_email.mjs");
   const payload = {
     window: "24h",
     sources: [

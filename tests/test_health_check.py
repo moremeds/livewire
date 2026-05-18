@@ -13,7 +13,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from clients.bronze_client import BronzeClient
-from scripts.health_check import (
+from livewire_scripts.health_check import (
     _resolve_bronze_dir,
     _send_alert,
     compute_range_duration,
@@ -311,12 +311,13 @@ class TestSendAlert:
         log_path = tmp_path / "health_check_2026-04-05.log"
         log_path.touch()
 
-        with patch("scripts.health_check.subprocess.run") as mock_run:
+        with patch("livewire_scripts.health_check.subprocess.run") as mock_run:
             _send_alert("2026-04-05", "equity", 20, 15, log_path)
 
         assert mock_run.called
         cmd = mock_run.call_args[0][0]
-        assert "node" in cmd
+        assert "livewire_ops.py" in cmd[1]
+        assert cmd[2] == "send-alert"
         assert "--run-date" in cmd
         assert "2026-04-05" in cmd
         assert "--log-file" in cmd
@@ -329,7 +330,7 @@ class TestSendAlert:
         log_path = tmp_path / "health_check.log"
         log_path.touch()
 
-        with patch("scripts.health_check.subprocess.run") as mock_run:
+        with patch("livewire_scripts.health_check.subprocess.run") as mock_run:
             _send_alert("2026-04-05", "futures", 5, 3, log_path)
 
         cmd = mock_run.call_args[0][0]
@@ -347,9 +348,9 @@ class TestMain:
     def test_not_trading_day_without_force_exits(self):
         """Non-trading day without --force should print warning and return."""
         # Patch is_trading_day to always return False so the check triggers regardless of real date
-        with patch("scripts.health_check.is_trading_day", return_value=False):
+        with patch("livewire_scripts.health_check.is_trading_day", return_value=False):
             with patch("sys.argv", ["health_check.py", "--asset-class", "equity"]):
-                with patch("scripts.health_check.BronzeClient") as mock_bronze_cls:
+                with patch("livewire_scripts.health_check.BronzeClient") as mock_bronze_cls:
                     main()
                     # BronzeClient should not have been opened
                     mock_bronze_cls.assert_not_called()
@@ -363,7 +364,7 @@ class TestMain:
         _write_parquet(bronze_dir, "AAPL", [date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 8)])
 
         # Use --force so trading-day check is skipped and date.today() doesn't matter
-        with patch("scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
+        with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
             with patch("sys.argv", ["health_check.py", "--dry-run", "--force"]):
                 with patch("clients.ib_client.IBClient") as mock_ib_cls:
                     main()
@@ -381,7 +382,7 @@ class TestMain:
             date(2026, 1, 8), date(2026, 1, 9),
         ])
 
-        with patch("scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
+        with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
             with patch("sys.argv", ["health_check.py", "--force"]):
                 with patch("clients.ib_client.IBClient") as mock_ib_cls:
                     main()
@@ -392,7 +393,7 @@ class TestMain:
         bronze_dir = tmp_path / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
 
-        with patch("scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
+        with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
             with patch("sys.argv", ["health_check.py", "--force"]):
                 with patch("clients.ib_client.IBClient") as mock_ib_cls:
                     main()
@@ -408,7 +409,7 @@ class TestMain:
             date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 8),
         ])
 
-        with patch("scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
+        with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
             with patch("sys.argv", ["health_check.py", "--force", "--asset-class", "volatility"]):
                 with patch("clients.ib_client.IBClient") as mock_ib_cls:
                     main()
@@ -445,14 +446,14 @@ class TestMain:
 
         warehouse_dir = tmp_path
 
-        with patch("scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
-            with patch("scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
+        with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
+            with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
                 with patch("sys.argv", [
                     "health_check.py", "--force", "--alert-threshold", "100",
                 ]):
-                    with patch("scripts.health_check.subprocess.run") as mock_subprocess:
+                    with patch("livewire_scripts.health_check.subprocess.run") as mock_subprocess:
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm) as mock_ib_cls:
-                            with patch("scripts.daily_update.fetch_fallback_bars", return_value=([], [])):
+                            with patch("livewire_scripts.daily_update.fetch_fallback_bars", return_value=([], [])):
                                 main()
                                 # IB connection should have been attempted
                                 mock_ib_cls.assert_called_once()
@@ -488,14 +489,14 @@ class TestMain:
 
         warehouse_dir = tmp_path
 
-        with patch("scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
-            with patch("scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
+        with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
+            with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
                 with patch("sys.argv", [
                     "health_check.py", "--force", "--alert-threshold", "1",
                 ]):
-                    with patch("scripts.health_check.subprocess.run") as mock_subprocess:
+                    with patch("livewire_scripts.health_check.subprocess.run") as mock_subprocess:
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm):
-                            with patch("scripts.daily_update.fetch_fallback_bars", return_value=([], [])):
+                            with patch("livewire_scripts.daily_update.fetch_fallback_bars", return_value=([], [])):
                                 main()
                                 # Alert should be sent since threshold=1 and we repaired >=1
                                 mock_subprocess.assert_called_once()
@@ -524,12 +525,12 @@ class TestMain:
 
         warehouse_dir = tmp_path
 
-        with patch("scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
-            with patch("scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
+        with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
+            with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
                 with patch("sys.argv", ["health_check.py", "--force", "--alert-threshold", "100"]):
-                    with patch("scripts.health_check.subprocess.run"):
+                    with patch("livewire_scripts.health_check.subprocess.run"):
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm):
-                            with patch("scripts.daily_update.fetch_fallback_bars", return_value=([], [])):
+                            with patch("livewire_scripts.daily_update.fetch_fallback_bars", return_value=([], [])):
                                 # Should not raise — exception is caught internally
                                 main()
 
@@ -553,12 +554,12 @@ class TestMain:
 
         warehouse_dir = tmp_path
 
-        with patch("scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
-            with patch("scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
+        with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
+            with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
                 with patch("sys.argv", ["health_check.py", "--force", "--alert-threshold", "100"]):
-                    with patch("scripts.health_check.subprocess.run"):
+                    with patch("livewire_scripts.health_check.subprocess.run"):
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm):
-                            with patch("scripts.daily_update.fetch_fallback_bars", return_value=([], [])):
+                            with patch("livewire_scripts.daily_update.fetch_fallback_bars", return_value=([], [])):
                                 main()  # Should complete without error
 
     def test_backfill_validate_bars_issues_logged(self, tmp_path):
@@ -590,13 +591,13 @@ class TestMain:
 
         warehouse_dir = tmp_path
 
-        with patch("scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
-            with patch("scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
+        with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
+            with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
                 with patch("sys.argv", ["health_check.py", "--force", "--alert-threshold", "100"]):
-                    with patch("scripts.health_check.subprocess.run"):
+                    with patch("livewire_scripts.health_check.subprocess.run"):
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm):
-                            with patch("scripts.health_check.log") as mock_log:
-                                with patch("scripts.daily_update.fetch_fallback_bars", return_value=([], [])):
+                            with patch("livewire_scripts.health_check.log") as mock_log:
+                                with patch("livewire_scripts.daily_update.fetch_fallback_bars", return_value=([], [])):
                                     main()
                                     # log.warning should have been called for the bad bar issue
                                     mock_log.warning.assert_called()
@@ -662,13 +663,13 @@ class TestMain:
 
         warehouse_dir = tmp_path
 
-        with patch("scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
-            with patch("scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
+        with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
+            with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
                 with patch("sys.argv", [
                     "health_check.py", "--force", "--asset-class", "futures",
                     "--alert-threshold", "100",
                 ]):
-                    with patch("scripts.health_check.subprocess.run"):
+                    with patch("livewire_scripts.health_check.subprocess.run"):
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm):
                             main()  # Should complete without error
 
@@ -698,14 +699,14 @@ class TestMain:
 
         warehouse_dir = tmp_path
 
-        with patch("scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
-            with patch("scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
+        with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
+            with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
                 with patch("sys.argv", [
                     "health_check.py", "--force", "--alert-threshold", "100",
                 ]):
-                    with patch("scripts.health_check.subprocess.run"):
+                    with patch("livewire_scripts.health_check.subprocess.run"):
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm):
-                            with patch("scripts.daily_update.fetch_fallback_bars", return_value=([fallback_bar], ["fallback"])):
+                            with patch("livewire_scripts.daily_update.fetch_fallback_bars", return_value=([fallback_bar], ["fallback"])):
                                 with patch("clients.daily_bar_fallback.DailyBarFallbackClient"):
                                     main()  # Should complete without error
 
@@ -904,7 +905,7 @@ class TestReportIntradayHealth:
 
 class TestRepairIntradayWindow:
     def test_invokes_subprocess_with_expected_args(self):
-        with patch("scripts.health_check.subprocess.run") as mock_run:
+        with patch("livewire_scripts.health_check.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(returncode=0)
             rc = repair_intraday_window(
                 symbol="AAPL",
@@ -915,14 +916,14 @@ class TestRepairIntradayWindow:
             )
             assert rc == 0
             cmd = mock_run.call_args[0][0]
-            assert "backfill_intraday.py" in cmd[1]
+            assert "livewire_ingest.py" in cmd[1]
             assert "--tickers" in cmd and "AAPL" in cmd
             assert "--timeframe" in cmd and "5m" in cmd
             # repair_intraday_window converts --since to --years
             assert "--years" in cmd
 
     def test_propagates_nonzero_returncode(self):
-        with patch("scripts.health_check.subprocess.run") as mock_run:
+        with patch("livewire_scripts.health_check.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(returncode=2)
             rc = repair_intraday_window("AAPL", "5m", date(2026, 4, 1), "h", 4001)
             assert rc == 2
@@ -943,9 +944,9 @@ class TestMainIntradayBranch:
         full = sorted(generate_expected_intraday_timestamps([d], "5m"))
         _write_intraday_parquet(bronze_dir, "AAPL", "5m", full)
         monkeypatch.setattr(
-            "scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir
+            "livewire_scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir
         )
-        with patch("scripts.health_check.subprocess.run") as mock_run:
+        with patch("livewire_scripts.health_check.subprocess.run") as mock_run:
             with patch.object(
                 sys, "argv",
                 ["health_check.py", "--intraday", "--timeframe", "5m", "--force"],
@@ -959,9 +960,9 @@ class TestMainIntradayBranch:
         full = sorted(generate_expected_intraday_timestamps([d], "5m"))
         _write_intraday_parquet(bronze_dir, "AAPL", "5m", full)
         monkeypatch.setattr(
-            "scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir
+            "livewire_scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir
         )
-        with patch("scripts.health_check.subprocess.run") as mock_run:
+        with patch("livewire_scripts.health_check.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(returncode=0)
             with patch.object(
                 sys, "argv",
@@ -981,9 +982,9 @@ class TestMainIntradayBranch:
         full = sorted(generate_expected_intraday_timestamps([d], "5m"))
         _write_intraday_parquet(bronze_dir, "AAPL", "5m", full)
         monkeypatch.setattr(
-            "scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir
+            "livewire_scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir
         )
-        with patch("scripts.health_check.subprocess.run") as mock_run:
+        with patch("livewire_scripts.health_check.subprocess.run") as mock_run:
             with patch.object(
                 sys, "argv",
                 [
@@ -1000,9 +1001,9 @@ class TestMainIntradayBranch:
         full = sorted(generate_expected_intraday_timestamps([d], "5m"))
         _write_intraday_parquet(bronze_dir, "AAPL", "5m", full)
         monkeypatch.setattr(
-            "scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir
+            "livewire_scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir
         )
-        with patch("scripts.health_check.subprocess.run") as mock_run:
+        with patch("livewire_scripts.health_check.subprocess.run") as mock_run:
             with patch.object(
                 sys, "argv",
                 [
@@ -1020,9 +1021,9 @@ class TestMainIntradayBranch:
         full = sorted(generate_expected_intraday_timestamps([d], "5m"))
         _write_intraday_parquet(bronze_dir, "AAPL", "5m", full)
         monkeypatch.setattr(
-            "scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir
+            "livewire_scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir
         )
-        with patch("scripts.health_check.subprocess.run") as mock_run:
+        with patch("livewire_scripts.health_check.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(returncode=3)
             with patch.object(
                 sys, "argv",

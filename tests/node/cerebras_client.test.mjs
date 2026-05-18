@@ -9,7 +9,7 @@ import {
   extractExportedValue,
   generateHumanReadableIncidentReport,
   resolveCerebrasConfig,
-} from "./cerebras_client.mjs";
+} from "../../livewire_node/cerebras_client.mjs";
 
 test("extractExportedValue reads exported and quoted values", () => {
   const content = [

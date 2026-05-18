@@ -17,7 +17,7 @@ import pytest
 from ib_async import Contract, Forex, Future, Index, Stock
 
 from clients.bronze_client import BronzeClient
-from scripts.fetch_ib_historical import (
+from livewire_scripts.fetch_ib_historical import (
     IB_EARLIEST_DATE,
     _cursor_path,
     _make_contract,
@@ -248,19 +248,19 @@ class TestLoadPreset:
 
 class TestCursorPath:
     def test_returns_expected_path(self):
-        with patch("scripts.fetch_ib_historical.CURSOR_DIR", __import__("pathlib").Path("/tmp/logs")):
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", __import__("pathlib").Path("/tmp/logs")):
             path = _cursor_path("sp500")
         assert path.name == "cursor_sp500.json"
 
 
 class TestStorageClient:
     def test_storage_client_defaults_to_bronze_client(self):
-        from scripts import fetch_ib_historical as fetch_script
+        from livewire_scripts import fetch_ib_historical as fetch_script
 
         assert fetch_script._storage_client() is BronzeClient
 
     def test_storage_client_uses_dbclient_patch(self, monkeypatch):
-        from scripts import fetch_ib_historical as fetch_script
+        from livewire_scripts import fetch_ib_historical as fetch_script
 
         class ReplacementStorage:
             pass
@@ -271,7 +271,7 @@ class TestStorageClient:
 
 class TestLoadCursor:
     def test_returns_empty_dict_when_no_file(self, tmp_path):
-        with patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
             result = load_cursor("nonexistent")
         assert result == {}
 
@@ -281,7 +281,7 @@ class TestLoadCursor:
         cursor_file = tmp_path / "cursor_test.json"
         cursor_file.write_text(json.dumps(cursor_data))
 
-        with patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
             result = load_cursor("test")
         assert result == {"AAPL": ["1d", "1h", "5m"], "MSFT": ["1d", "1h", "5m"]}
 
@@ -290,7 +290,7 @@ class TestLoadCursor:
         cursor_file = tmp_path / "cursor_test.json"
         cursor_file.write_text(json.dumps(cursor_data))
 
-        with patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
             result = load_cursor("test")
         assert result == {"AAPL": ["1d", "1h"], "MSFT": ["1d"]}
 
@@ -298,14 +298,14 @@ class TestLoadCursor:
         cursor_file = tmp_path / "cursor_test.json"
         cursor_file.write_text(json.dumps({"started_at": "2025-01-01"}))
 
-        with patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
             result = load_cursor("test")
         assert result == {}
 
 
 class TestSaveCursor:
     def test_writes_cursor_file(self, tmp_path):
-        with patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
             save_cursor("test", {"AAPL": ["1d"], "MSFT": ["1d", "1h"]}, "2025-01-01T00:00:00")
 
         cursor_file = tmp_path / "cursor_test.json"
@@ -318,13 +318,13 @@ class TestSaveCursor:
 
     def test_creates_parent_dirs(self, tmp_path):
         cursor_dir = tmp_path / "nested" / "logs"
-        with patch("scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir):
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir):
             save_cursor("test", {"AAPL": ["1d"]}, "2025-01-01T00:00:00")
 
         assert (cursor_dir / "cursor_test.json").exists()
 
     def test_overwrites_existing_cursor(self, tmp_path):
-        with patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
             save_cursor("test", {"AAPL": ["1d"]}, "2025-01-01T00:00:00")
             save_cursor("test", {"AAPL": ["1d"], "MSFT": ["1d"]}, "2025-01-01T00:00:00")
 
@@ -337,13 +337,13 @@ class TestClearCursor:
         cursor_file = tmp_path / "cursor_test.json"
         cursor_file.write_text("{}")
 
-        with patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
             clear_cursor("test")
 
         assert not cursor_file.exists()
 
     def test_no_error_when_file_missing(self, tmp_path):
-        with patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
             clear_cursor("nonexistent")  # Should not raise
 
 
@@ -452,7 +452,7 @@ class TestFetchTickerBars:
         sem = asyncio.Semaphore(6)
 
         # Patch compute_date_windows to return exactly 2 windows
-        with patch("scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+        with patch("livewire_scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
             mock_cdw.return_value = [
                 ("1 Y", "20250101-00:00:00"),
                 ("1 Y", "20240101-00:00:00"),
@@ -476,7 +476,7 @@ class TestFetchTickerBars:
 
         sem = asyncio.Semaphore(6)
 
-        with patch("scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+        with patch("livewire_scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
             mock_cdw.return_value = [("1 Y", "20250101-00:00:00")]
             ticker, bars = asyncio.run(fetch_ticker_bars("AAPL", mock_ib, sem))
 
@@ -493,7 +493,7 @@ class TestFetchTickerBars:
 
         sem = asyncio.Semaphore(6)
 
-        with patch("scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+        with patch("livewire_scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
             mock_cdw.return_value = [("1 Y", "20250101-00:00:00")]
             ticker, bars = asyncio.run(fetch_ticker_bars("XAUUSD", mock_ib, sem, asset_class="cmdty"))
 
@@ -509,7 +509,7 @@ class TestFetchTickerBars:
 
         sem = asyncio.Semaphore(6)
 
-        with patch("scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+        with patch("livewire_scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
             mock_cdw.return_value = [("1 Y", "20250101-00:00:00")]
             ticker, bars = asyncio.run(fetch_ticker_bars("USDEUR", mock_ib, sem, asset_class="fx"))
 
@@ -526,7 +526,7 @@ class TestFetchTickerBars:
 
         sem = asyncio.Semaphore(6)
 
-        with patch("scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+        with patch("livewire_scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
             mock_cdw.return_value = [("1 Y", "20250101-00:00:00")]
             ticker, bars = asyncio.run(fetch_ticker_bars("BND", mock_ib, sem))
 
@@ -545,7 +545,7 @@ class TestFetchTickerBars:
 
         sem = asyncio.Semaphore(6)
 
-        with patch("scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+        with patch("livewire_scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
             mock_cdw.return_value = [("1 Y", "20250101-00:00:00")]
             ticker, bars = asyncio.run(fetch_ticker_bars("DVY", mock_ib, sem))
 
@@ -562,7 +562,7 @@ class TestFetchTickerBars:
 
         sem = asyncio.Semaphore(6)
 
-        with patch("scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+        with patch("livewire_scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
             mock_cdw.return_value = [("1 Y", "20250101-00:00:00")]
             ticker, bars = asyncio.run(fetch_ticker_bars("AAPL", mock_ib, sem))
 
@@ -578,7 +578,7 @@ class TestFetchTickerBars:
 
         sem = asyncio.Semaphore(6)
 
-        with patch("scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+        with patch("livewire_scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
             mock_cdw.return_value = [("1 Y", "20250101-00:00:00")]
             ticker, bars = asyncio.run(fetch_ticker_bars("AAPL", mock_ib, sem, max_years=2))
 
@@ -598,7 +598,7 @@ class TestFetchTickerBars:
         sem = asyncio.Semaphore(6)
         override_dt = datetime(2020, 6, 15)
 
-        with patch("scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+        with patch("livewire_scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
             mock_cdw.return_value = [("1 Y", "20200615-00:00:00")]
             ticker, bars = asyncio.run(
                 fetch_ticker_bars("AAPL", mock_ib, sem, max_years=2, end_dt_override=override_dt)
@@ -630,7 +630,7 @@ class TestFetchAllTickers:
 
         mock_ib = MagicMock()
 
-        with patch("scripts.fetch_ib_historical.fetch_ticker_bars", side_effect=mock_fetch_ticker_bars):
+        with patch("livewire_scripts.fetch_ib_historical.fetch_ticker_bars", side_effect=mock_fetch_ticker_bars):
             results = asyncio.run(fetch_all_tickers(["AAPL", "NVDA"], mock_ib, max_concurrent=6))
 
         assert "AAPL" in results
@@ -647,7 +647,7 @@ class TestFetchAllTickers:
         mock_ib = MagicMock()
         from clients.ib_client import IBError
 
-        with patch("scripts.fetch_ib_historical.fetch_ticker_bars", side_effect=mock_fetch_ticker_bars):
+        with patch("livewire_scripts.fetch_ib_historical.fetch_ticker_bars", side_effect=mock_fetch_ticker_bars):
             results = asyncio.run(fetch_all_tickers(["AAPL", "FAIL"], mock_ib))
 
         assert len(results["AAPL"]) == 1
@@ -661,7 +661,7 @@ class TestFetchAllTickers:
 
         mock_ib = MagicMock()
 
-        with patch("scripts.fetch_ib_historical.fetch_ticker_bars", side_effect=mock_fetch_ticker_bars):
+        with patch("livewire_scripts.fetch_ib_historical.fetch_ticker_bars", side_effect=mock_fetch_ticker_bars):
             results = asyncio.run(fetch_all_tickers(["AAPL", "BOOM"], mock_ib))
 
         assert len(results["AAPL"]) == 1
@@ -678,7 +678,7 @@ class TestFetchAllTickers:
         mock_ib = MagicMock()
         overrides = {"AAPL": datetime(2020, 6, 15)}
 
-        with patch("scripts.fetch_ib_historical.fetch_ticker_bars", side_effect=mock_fetch_ticker_bars):
+        with patch("livewire_scripts.fetch_ib_historical.fetch_ticker_bars", side_effect=mock_fetch_ticker_bars):
             results = asyncio.run(
                 fetch_all_tickers(["AAPL", "NVDA"], mock_ib, end_dt_overrides=overrides)
             )
@@ -904,10 +904,10 @@ class TestQualityHookIntegration:
         bronze = MagicMock()
         bronze.get_symbol_id.return_value = 42
 
-        with patch("scripts.fetch_ib_historical.detect_all", return_value=[fake_flag]) as m_detect, \
-             patch("scripts.fetch_ib_historical.write_sidecar", return_value=True) as m_sidecar, \
-             patch("scripts.fetch_ib_historical.append_audit", return_value=True) as m_audit, \
-             patch("scripts.fetch_ib_historical.alert_on_flag", return_value=True) as m_alert:
+        with patch("livewire_scripts.fetch_ib_historical.detect_all", return_value=[fake_flag]) as m_detect, \
+             patch("livewire_scripts.fetch_ib_historical.write_sidecar", return_value=True) as m_sidecar, \
+             patch("livewire_scripts.fetch_ib_historical.append_audit", return_value=True) as m_audit, \
+             patch("livewire_scripts.fetch_ib_historical.alert_on_flag", return_value=True) as m_alert:
             inserted = fetch_ticker("AAPL", bars, bronze, asset_class="equity")
         assert inserted == bronze.replace_ticker_rows.return_value
         assert m_detect.call_count == 1
@@ -929,10 +929,10 @@ class TestQualityHookIntegration:
         bronze = MagicMock()
         bronze.get_symbol_id.return_value = 42
 
-        with patch("scripts.fetch_ib_historical.detect_all", return_value=[fake_flag]) as m_detect, \
-             patch("scripts.fetch_ib_historical.write_sidecar", return_value=True) as m_sidecar, \
-             patch("scripts.fetch_ib_historical.append_audit", return_value=True) as m_audit, \
-             patch("scripts.fetch_ib_historical.alert_on_flag", return_value=True) as m_alert:
+        with patch("livewire_scripts.fetch_ib_historical.detect_all", return_value=[fake_flag]) as m_detect, \
+             patch("livewire_scripts.fetch_ib_historical.write_sidecar", return_value=True) as m_sidecar, \
+             patch("livewire_scripts.fetch_ib_historical.append_audit", return_value=True) as m_audit, \
+             patch("livewire_scripts.fetch_ib_historical.alert_on_flag", return_value=True) as m_alert:
             inserted = backfill_ticker("AAPL", bars, bronze, asset_class="equity")
         assert m_detect.call_count == 1
         assert m_sidecar.call_count == 1
@@ -947,10 +947,10 @@ class TestQualityHookIntegration:
         bronze = MagicMock()
         bronze.get_symbol_id.return_value = 42
 
-        with patch("scripts.fetch_ib_historical.detect_all", return_value=[]) as m_detect, \
-             patch("scripts.fetch_ib_historical.write_sidecar") as m_sidecar, \
-             patch("scripts.fetch_ib_historical.append_audit") as m_audit, \
-             patch("scripts.fetch_ib_historical.alert_on_flag") as m_alert:
+        with patch("livewire_scripts.fetch_ib_historical.detect_all", return_value=[]) as m_detect, \
+             patch("livewire_scripts.fetch_ib_historical.write_sidecar") as m_sidecar, \
+             patch("livewire_scripts.fetch_ib_historical.append_audit") as m_audit, \
+             patch("livewire_scripts.fetch_ib_historical.alert_on_flag") as m_alert:
             backfill_ticker("AAPL", bars, bronze, asset_class="equity")
         m_detect.assert_called_once()
         m_sidecar.assert_not_called()
@@ -960,7 +960,7 @@ class TestQualityHookIntegration:
     def test_empty_bars_skip_detection_entirely_for_both_publish_paths(self):
         """Existing 'if not bars: return 0' path is unchanged - detector not called."""
         bronze = MagicMock()
-        with patch("scripts.fetch_ib_historical.detect_all") as m_detect:
+        with patch("livewire_scripts.fetch_ib_historical.detect_all") as m_detect:
             fetch_inserted = fetch_ticker("AAPL", [], bronze)
             backfill_inserted = backfill_ticker("AAPL", [], bronze)
         assert fetch_inserted == 0
@@ -969,11 +969,11 @@ class TestQualityHookIntegration:
 
     def test_no_quality_flag_disables_hook(self, monkeypatch):
         """When MDW_NO_QUALITY=1 is set (or via module flag), detect_all is skipped."""
-        monkeypatch.setattr("scripts.fetch_ib_historical._QUALITY_ENABLED", False)
+        monkeypatch.setattr("livewire_scripts.fetch_ib_historical._QUALITY_ENABLED", False)
         bars = [_make_bar(date="2025-01-02")]
         bronze = MagicMock()
         bronze.get_symbol_id.return_value = 42
-        with patch("scripts.fetch_ib_historical.detect_all") as m_detect:
+        with patch("livewire_scripts.fetch_ib_historical.detect_all") as m_detect:
             backfill_ticker("AAPL", bars, bronze)
         m_detect.assert_not_called()
 
@@ -987,14 +987,14 @@ class TestQualityHookIntegration:
         mock_ib = _mock_ib_instance({"AAPL": [_make_bar(date="2025-01-02")]})
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
             ),
-            patch("scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
-            patch("scripts.fetch_ib_historical.detect_all") as m_detect,
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+            patch("livewire_scripts.fetch_ib_historical.detect_all") as m_detect,
         ):
             main()
 
@@ -1036,13 +1036,13 @@ class TestMain:
         cursor_dir = tmp_path / "cursors"
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
             ),
-            patch("scripts.fetch_ib_historical.BRONZE_DIR", bronze_dir),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", bronze_dir),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
         ):
             main()
 
@@ -1065,13 +1065,13 @@ class TestMain:
         cursor_dir = tmp_path / "cursors"
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
             ),
-            patch("scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
         ):
             main()  # Should not raise
 
@@ -1090,13 +1090,13 @@ class TestMain:
         mock_ib = _mock_ib_instance({"AAPL": [_make_bar()]})
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
             ),
-            patch("scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
         ):
             main()
 
@@ -1124,13 +1124,13 @@ class TestMain:
         cursor_dir = tmp_path / "cursors"
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
             ),
-            patch("scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
         ):
             main()
 
@@ -1169,13 +1169,13 @@ class TestMain:
         })
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
             ),
-            patch("scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
         ):
             main()
 
@@ -1203,13 +1203,13 @@ class TestMain:
         mock_ib = _mock_ib_instance({"AAPL": [_make_bar()]})
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
             ),
-            patch("scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
         ):
             main()
 
@@ -1236,8 +1236,8 @@ class TestMain:
         mock_ib = _mock_ib_instance({})
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
         ):
             main()  # Should return early without connecting
 
@@ -1253,13 +1253,13 @@ class TestMain:
         mock_ib = _mock_ib_instance(bars)
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
             ),
-            patch("scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
         ):
             main()
 
@@ -1284,13 +1284,13 @@ class TestMain:
         })
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
             ),
-            patch("scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
         ):
             main()
 
@@ -1327,13 +1327,13 @@ class TestMain:
         mock_ib = _mock_ib_instance({"NVDA": [_make_bar()]})
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
             ),
-            patch("scripts.fetch_ib_historical.BRONZE_DIR", bronze_dir),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", bronze_dir),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
         ):
             main()
 
@@ -1372,13 +1372,13 @@ class TestMain:
         })
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
             ),
-            patch("scripts.fetch_ib_historical.BRONZE_DIR", bronze_dir),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", bronze_dir),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
         ):
             main()
 
@@ -1404,13 +1404,13 @@ class TestMain:
         mock_ib = _mock_ib_instance({})
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
             ),
-            patch("scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
         ):
             main()
 
@@ -1443,13 +1443,13 @@ class TestMain:
         mock_ib = _mock_ib_instance({"AAPL": []})
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
             ),
-            patch("scripts.fetch_ib_historical.BRONZE_DIR", bronze_dir),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", bronze_dir),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
         ):
             main()
 
@@ -1487,13 +1487,13 @@ class TestMain:
         mock_ib = _mock_ib_instance({})
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
             ),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
-            patch("scripts.fetch_ib_historical.BRONZE_DIR", bronze_dir),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", bronze_dir),
         ):
             main()
 
@@ -1515,13 +1515,13 @@ class TestMain:
         vol_bronze_dir = tmp_path / "data-lake" / "bronze" / "asset_class=volatility"
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=kw.get("bronze_dir", vol_bronze_dir)),
             ),
-            patch("scripts.fetch_ib_historical.DATA_LAKE", tmp_path / "data-lake"),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+            patch("livewire_scripts.fetch_ib_historical.DATA_LAKE", tmp_path / "data-lake"),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
         ):
             main()
 
@@ -1546,13 +1546,13 @@ class TestMain:
         mock_ib = _mock_ib_instance({"AAPL": [_make_bar()]})
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
             ),
-            patch("scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
         ):
             main()
 
@@ -1571,13 +1571,13 @@ class TestMain:
         mock_ib = _mock_ib_instance({"AAPL": [_make_bar()]})
 
         with (
-            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
             patch(
-                "scripts.fetch_ib_historical.BronzeClient",
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
             ),
-            patch("scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
-            patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
         ):
             main()
 
@@ -1591,7 +1591,7 @@ class TestMain:
 
 class TestPerTimeframeCursor:
     def test_load_old_cursor_format_migrates_to_dict(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path)
+        monkeypatch.setattr("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path)
 
         # Write old format: completed = list of strings
         old = _cursor_path("test")
@@ -1605,7 +1605,7 @@ class TestPerTimeframeCursor:
         assert result == {"AAPL": ["1d", "1h", "5m"], "NVDA": ["1d", "1h", "5m"]}
 
     def test_load_new_cursor_format(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path)
+        monkeypatch.setattr("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path)
 
         new = _cursor_path("test")
         new.write_text(json.dumps({
@@ -1617,11 +1617,11 @@ class TestPerTimeframeCursor:
         assert result == {"AAPL": ["1d", "1h"], "NVDA": ["1d"]}
 
     def test_load_missing_cursor_returns_empty_dict(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path)
+        monkeypatch.setattr("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path)
         assert load_cursor("nonexistent") == {}
 
     def test_save_cursor_writes_dict_format(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path)
+        monkeypatch.setattr("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path)
 
         save_cursor("test", {"AAPL": ["1d", "1h"]}, started_at="2026-04-06T10:00:00")
 
@@ -1658,7 +1658,7 @@ class TestPerTimeframeCursor:
 class TestComputeIntradayChunks:
     def test_5m_chunks_one_year(self):
         """5m bars: 1-week chunks for 1 year of depth (~52 weeks)."""
-        from scripts.fetch_ib_historical import compute_intraday_chunks
+        from livewire_scripts.fetch_ib_historical import compute_intraday_chunks
         chunks = compute_intraday_chunks(timeframe="5m", years_back=1)
         assert 50 <= len(chunks) <= 54
         assert all(c[0] == "1 W" for c in chunks)
@@ -1667,12 +1667,12 @@ class TestComputeIntradayChunks:
 
     def test_1h_chunks_two_years(self):
         """1h bars: 1-month chunks for 2 years of depth (~24 months)."""
-        from scripts.fetch_ib_historical import compute_intraday_chunks
+        from livewire_scripts.fetch_ib_historical import compute_intraday_chunks
         chunks = compute_intraday_chunks(timeframe="1h", years_back=2)
         assert 22 <= len(chunks) <= 26
         assert all(c[0] == "1 M" for c in chunks)
 
     def test_invalid_timeframe_raises(self):
-        from scripts.fetch_ib_historical import compute_intraday_chunks
+        from livewire_scripts.fetch_ib_historical import compute_intraday_chunks
         with pytest.raises(ValueError, match="unsupported"):
             compute_intraday_chunks(timeframe="2m", years_back=1)

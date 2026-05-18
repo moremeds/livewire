@@ -51,7 +51,7 @@ def touch_parquet(bronze_dir: Path, symbol: str, filename: str) -> None:
 
 
 def fake_client(monkeypatch: pytest.MonkeyPatch):
-    import scripts.rebuild_postgres_from_parquet as script
+    import livewire_scripts.rebuild_postgres_from_parquet as script
 
     FakePostgresClient.instances.clear()
     monkeypatch.setattr(script, "PostgresClient", FakePostgresClient)

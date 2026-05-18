@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from scripts.run_daily_update_job import (
+from livewire_scripts.run_daily_update_job import (
     ASSET_CLASSES,
     _utc_now,
     AlertRequest,
@@ -39,8 +39,8 @@ def _config(tmp_path: Path, *, node_bin: str = "/opt/homebrew/bin/node") -> Runn
     return RunnerConfig(
         warehouse_dir=tmp_path / "warehouse",
         log_dir=tmp_path / "warehouse" / "logs",
-        daily_update_script=script_dir / "daily_update.py",
-        alert_script=script_dir / "send_daily_update_failure_email.mjs",
+        daily_update_script=script_dir / "livewire_ingest.py",
+        alert_script=script_dir / "livewire_ops.py",
         python_bin="/usr/bin/python3",
         node_bin=node_bin,
         max_attempts=3,
@@ -60,7 +60,7 @@ class TestBuildConfig:
         monkeypatch.delenv("MDW_DAILY_UPDATE_RETRY_DELAY_SECONDS", raising=False)
 
         with patch(
-            "scripts.run_daily_update_job.shutil.which",
+            "livewire_scripts.run_daily_update_job.shutil.which",
             return_value="/usr/local/bin/node",
         ):
             config = build_config()
@@ -124,6 +124,7 @@ class TestHelpers:
         assert build_daily_update_command(config, ["--force"]) == [
             "/usr/bin/python3",
             str(config.daily_update_script),
+            "daily",
             "--force",
         ]
 
@@ -136,9 +137,10 @@ class TestHelpers:
             repo_root=tmp_path / "repo",
         )
         full_command = build_alert_command(config, full_request)
-        assert full_command[:2] == [
-            "/opt/homebrew/bin/node",
+        assert full_command[:3] == [
+            "/usr/bin/python3",
             str(config.alert_script),
+            "send-alert",
         ]
         assert "--attempts" in full_command
         assert "--exit-code" in full_command
@@ -195,19 +197,19 @@ class TestHelpers:
         assert log_has_completion_marker(no_marker) is False
 
     def test_node_binary_exists(self):
-        with patch("scripts.run_daily_update_job.Path.exists", return_value=True):
+        with patch("livewire_scripts.run_daily_update_job.Path.exists", return_value=True):
             assert node_binary_exists("/opt/homebrew/bin/node") is True
 
-        with patch("scripts.run_daily_update_job.Path.exists", return_value=False):
+        with patch("livewire_scripts.run_daily_update_job.Path.exists", return_value=False):
             assert node_binary_exists("/opt/homebrew/bin/node") is False
 
         with patch(
-            "scripts.run_daily_update_job.shutil.which",
+            "livewire_scripts.run_daily_update_job.shutil.which",
             return_value="/usr/local/bin/node",
         ):
             assert node_binary_exists("node") is True
 
-        with patch("scripts.run_daily_update_job.shutil.which", return_value=None):
+        with patch("livewire_scripts.run_daily_update_job.shutil.which", return_value=None):
             assert node_binary_exists("node") is False
 
 
@@ -250,7 +252,8 @@ class TestEndOfDayQualityReport:
         assert rc == 0
         assert len(calls) >= 2
         report_cmd = calls[1]
-        assert any("data_quality_report.py" in str(c) for c in report_cmd)
+        assert any("livewire_quality.py" in str(c) for c in report_cmd)
+        assert "report" in report_cmd
         assert "--email" in report_cmd
 
     def test_report_failure_does_not_fail_daily(self, tmp_path):
@@ -259,7 +262,7 @@ class TestEndOfDayQualityReport:
 
         def fake_runner(cmd, **kwargs):
             calls.append(list(cmd))
-            rc = 0 if "daily_update.py" in " ".join(str(c) for c in cmd) else 2
+            rc = 0 if "livewire_ingest.py" in " ".join(str(c) for c in cmd) else 2
             return CompletedProcess(args=cmd, returncode=rc, stdout=b"", stderr=b"report failed")
 
         rc = run_with_retries(
@@ -291,7 +294,7 @@ class TestEndOfDayQualityReport:
         config.alert_script.parent.mkdir(parents=True, exist_ok=True)
         config.alert_script.write_text("console.log('x')\n", encoding="utf-8")
 
-        with patch("scripts.run_daily_update_job.node_binary_exists", return_value=False):
+        with patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=False):
             result = send_failure_alert(config, request, request.log_file, env={})
 
         assert result is None
@@ -308,7 +311,7 @@ class TestEndOfDayQualityReport:
             repo_root=tmp_path / "repo",
         )
 
-        with patch("scripts.run_daily_update_job.node_binary_exists", return_value=True):
+        with patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=True):
             result = send_failure_alert(config, request, request.log_file, env={})
 
         assert result is None
@@ -325,15 +328,16 @@ class TestEndOfDayQualityReport:
             repo_root=tmp_path / "repo",
         )
         config.alert_script.parent.mkdir(parents=True, exist_ok=True)
-        config.alert_script.write_text("console.log('x')\n", encoding="utf-8")
+        config.alert_script.write_text("print('x')\n", encoding="utf-8")
 
         def _runner(command, stdout, stderr, text, env, check):
-            assert command[0] == "/opt/homebrew/bin/node"
+            assert command[0] == "/usr/bin/python3"
+            assert command[2] == "send-alert"
             assert "--error-summary" in command
             assert "--attempts" not in command
             return SimpleNamespace(returncode=0, stdout="sent")
 
-        with patch("scripts.run_daily_update_job.node_binary_exists", return_value=True):
+        with patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=True):
             result = send_failure_alert(
                 config,
                 request,
@@ -363,7 +367,7 @@ class TestRunWithRetries:
             stdout.write("sync ok\n")
             return SimpleNamespace(returncode=0, stdout="")
 
-        with patch("scripts.run_daily_update_job.socket.gethostname", return_value="warehouse.local"):
+        with patch("livewire_scripts.run_daily_update_job.socket.gethostname", return_value="warehouse.local"):
             rc = run_with_retries(
                 config,
                 ["--dry-run"],
@@ -405,7 +409,7 @@ class TestRunWithRetries:
 
         sleep_calls: list[int] = []
 
-        with patch("scripts.run_daily_update_job.socket.gethostname", return_value="warehouse.local"):
+        with patch("livewire_scripts.run_daily_update_job.socket.gethostname", return_value="warehouse.local"):
             rc = run_with_retries(
                 config,
                 [],
@@ -454,7 +458,7 @@ class TestRunWithRetries:
         config.alert_script.write_text("console.log('send');\n", encoding="utf-8")
         sleep_calls: list[int] = []
 
-        with patch("scripts.run_daily_update_job.node_binary_exists", return_value=True):
+        with patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=True):
             rc = run_with_retries(
                 config,
                 [],
@@ -487,7 +491,7 @@ class TestRunWithRetries:
             stdout.write("sync failed\n")
             return SimpleNamespace(returncode=6, stdout="")
 
-        with patch("scripts.run_daily_update_job.node_binary_exists", return_value=False):
+        with patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=False):
             rc = run_with_retries(
                 config,
                 [],
@@ -527,7 +531,7 @@ class TestRunWithRetries:
         config.alert_script.parent.mkdir(parents=True, exist_ok=True)
         config.alert_script.write_text("console.log('send');\n", encoding="utf-8")
 
-        with patch("scripts.run_daily_update_job.node_binary_exists", return_value=True):
+        with patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=True):
             rc = run_with_retries(
                 config,
                 [],
@@ -551,8 +555,9 @@ class TestCboeVolatilitySync:
         config = _config(tmp_path)
         command = build_cboe_volatility_command(config)
         assert command[0] == "/usr/bin/python3"
-        assert "fetch_cboe_volatility.py" in command[1]
-        assert len(command) == 2  # No extra args, uses preset by default
+        assert "livewire_ingest.py" in command[1]
+        assert command[2] == "cboe-vol"
+        assert len(command) == 3  # No extra args, uses preset by default
 
     def test_run_cboe_volatility_sync_success(self, tmp_path):
         config = _config(tmp_path)
@@ -618,9 +623,9 @@ class TestMain:
             cboe_called.append(True)
             return 0
 
-        with patch("scripts.run_daily_update_job.build_config", return_value=config):
-            with patch("scripts.run_daily_update_job.run_with_retries", side_effect=_run_ib):
-                with patch("scripts.run_daily_update_job.run_cboe_volatility_sync", side_effect=_run_cboe):
+        with patch("livewire_scripts.run_daily_update_job.build_config", return_value=config):
+            with patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=_run_ib):
+                with patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", side_effect=_run_cboe):
                     assert main(["--dry-run"]) == 0
 
         # IB syncs equity and futures; volatility via CBOE
@@ -632,9 +637,9 @@ class TestMain:
     def test_main_explicit_asset_class_skips_cboe(self):
         config = _config(Path("/tmp/test"))
 
-        with patch("scripts.run_daily_update_job.build_config", return_value=config):
-            with patch("scripts.run_daily_update_job.run_with_retries", return_value=0) as run_mock:
-                with patch("scripts.run_daily_update_job.run_cboe_volatility_sync") as cboe_mock:
+        with patch("livewire_scripts.run_daily_update_job.build_config", return_value=config):
+            with patch("livewire_scripts.run_daily_update_job.run_with_retries", return_value=0) as run_mock:
+                with patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync") as cboe_mock:
                     assert main(["--dry-run", "--asset-class", "equity"]) == 0
 
         run_mock.assert_called_once_with(
@@ -650,15 +655,15 @@ class TestMain:
                 return 1
             return 0
 
-        with patch("scripts.run_daily_update_job.build_config", return_value=config):
-            with patch("scripts.run_daily_update_job.run_with_retries", side_effect=_run):
-                with patch("scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0):
+        with patch("livewire_scripts.run_daily_update_job.build_config", return_value=config):
+            with patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=_run):
+                with patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0):
                     assert main([]) == 1
 
     def test_main_returns_nonzero_if_cboe_fails(self):
         config = _config(Path("/tmp/test"))
 
-        with patch("scripts.run_daily_update_job.build_config", return_value=config):
-            with patch("scripts.run_daily_update_job.run_with_retries", return_value=0):
-                with patch("scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=1):
+        with patch("livewire_scripts.run_daily_update_job.build_config", return_value=config):
+            with patch("livewire_scripts.run_daily_update_job.run_with_retries", return_value=0):
+                with patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=1):
                     assert main([]) == 1

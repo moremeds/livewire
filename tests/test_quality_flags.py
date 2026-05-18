@@ -111,7 +111,7 @@ def test_alert_above_threshold_spawns(tmp_path, monkeypatch):
     assert ok is True
     assert called, "subprocess.run should have been invoked"
     cmd = called[0][0]
-    assert "send_daily_update_failure_email.mjs" in " ".join(cmd)
+    assert "livewire_ops.py" in " ".join(cmd)
     assert "flag-alert" in cmd
 
 

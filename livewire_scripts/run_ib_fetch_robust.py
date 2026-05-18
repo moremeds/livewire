@@ -117,10 +117,11 @@ class TickerOutcome:
 
 
 def _build_worker_cmd(ticker: str, mode: str, asset_class: str) -> list[str]:
-    """Construct the subprocess args for fetch_ib_historical."""
+    """Construct the subprocess args for the historical ingest command."""
     cmd = [
         sys.executable,
-        str(REPO_ROOT / "scripts" / "fetch_ib_historical.py"),
+        str(REPO_ROOT / "scripts" / "livewire_ingest.py"),
+        "historical",
         "--tickers",
         ticker,
         "--asset-class",

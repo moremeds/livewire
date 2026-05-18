@@ -20,20 +20,20 @@ Use this file for:
 - Live equity data is stored per ticker at `~/market-warehouse/data-lake/bronze/asset_class=equity/symbol=<ticker>/1d.parquet`.
 - Delisted symbols that should no longer participate in future syncs or backfills are archived outside the canonical sync path under `~/market-warehouse/data-lake/bronze-delisted/asset_class=equity/symbol=<ticker>/1d.parquet`.
 - DuckDB is rebuilt from bronze parquet when a local analytical DB file is needed.
-- `scripts/rebuild_postgres_from_parquet.py` rebuilds Postgres analytical tables under `MDW_POSTGRES_SCHEMA` (default `md`) from bronze parquet and can import telemetry / quality JSONL artifacts.
-- `scripts/smoke_postgres_analytical.py --ensure-schema` verifies Postgres connectivity, creates the schema when requested, and prints table counts.
-- `scripts/daily_update.py` is parquet-first and does not hold the live DuckDB write path.
-- `scripts/daily_update.py` supports `--target-date YYYY-MM-DD` for fixed-date catch-up runs and only publishes bars with `latest < trade_date <= target`.
-- Scheduled daily syncs now run through `scripts/run_daily_update_job.py`, which retries failures before sending Nodemailer-based terminal alerts.
-- A separate `scripts/check_daily_update_watchdog.py` watchdog is available to alert when the scheduled daily sync never starts or never writes a completion marker.
+- `scripts/livewire_ingest.py daily` is parquet-first and does not hold the live DuckDB write path.
+- `scripts/livewire_ingest.py daily` supports `--target-date YYYY-MM-DD` for fixed-date catch-up runs and only publishes bars with `latest < trade_date <= target`.
+- `scripts/livewire_store.py rebuild-postgres` rebuilds Postgres analytical tables under `MDW_POSTGRES_SCHEMA` (default `md`) from bronze parquet and can import telemetry / quality JSONL artifacts.
+- `scripts/livewire_store.py smoke-postgres --ensure-schema` verifies Postgres connectivity, creates the schema when requested, and prints table counts.
+- Scheduled daily syncs now run through `scripts/livewire_ops.py run-daily-job`, which retries failures before sending Nodemailer-based terminal alerts.
+- A separate `scripts/livewire_quality.py watchdog` watchdog is available to alert when the scheduled daily sync never starts or never writes a completion marker.
 - Failure alerts can now generate a human-readable Markdown incident report and include a Cerebras-generated summary plus proposed remediation in the email body when the AI config is available.
 - Daily syncs use IB as the primary source for equities and futures; CBOE's public API is the authoritative source for all volatility indices.
-- `scripts/fetch_cboe_volatility.py` fetches all volatility indices from `presets/volatility.json` directly from CBOE's API (`cdn.cboe.com/api/global/delayed_quotes/charts/historical/`).
-- `scripts/run_daily_update_job.py` syncs equities and futures via IB, then all volatility indices via CBOE in a single daemon run.
-- The canonical multi-ticker IB execution model is `scripts/run_ib_fetch_robust.py`. Use it instead of bare `fetch_ib_historical.py` for any bulk run >5 tickers.
+- `scripts/livewire_ingest.py cboe-vol` fetches all volatility indices from `presets/volatility.json` directly from CBOE's API (`cdn.cboe.com/api/global/delayed_quotes/charts/historical/`).
+- `scripts/livewire_ops.py run-daily-job` syncs equities and futures via IB, then all volatility indices via CBOE in a single daemon run.
+- The canonical multi-ticker IB execution model is `scripts/livewire_ingest.py robust`. Use it instead of direct historical command loops for any bulk run >5 tickers.
 - Telemetry events (IB farm states, connection lifecycle) land in `~/market-warehouse/logs/telemetry.jsonl`. Schema is source-tagged JSONL with `{ts, source, event, ...}`.
 - Quality flags (range_shortfall, interior_gaps, fetch_tainted, row_count_anomaly) are emitted to three independent paths: sidecar `<parquet>.meta.json`, central `quality_audit.jsonl`, and Nodemailer email via `--mode flag-alert`.
-- `scripts/data_quality_report.py --view summary --since 24h --email` is the daily rollup; it runs end-of-day from `run_daily_update_job.py` and writes a `quality_summary_YYYY-MM-DD.marker`.
+- `scripts/livewire_quality.py report --view summary --since 24h --email` is the daily rollup; it runs end-of-day from `scripts/livewire_ops.py run-daily-job` and writes a `quality_summary_YYYY-MM-DD.marker`.
 - Source enum is closed-set `{"ib", "uw", "massive"}` validated at every JSONL emit boundary.
 - Equities fallback scope is the repo's U.S. equity and ETF universe on the NYSE trading calendar.
 - Equities fallback provider order is:
@@ -42,7 +42,7 @@ Use this file for:
   - Stooq U.S. daily CSV
 - `IBClient.connect()` already retries successive `clientId` values after IB error `326`.
 - `DBClient.replace_equities_from_parquet()` recreates the analytical tables from scratch on each rebuild so repeat DuckDB rebuilds are safe against an existing DB file.
-- Preferred IBC startup on macOS is the machine-local secure service installed by `scripts/install_ibc_secure_service.py`, which writes wrappers under `~/ibc/bin`, a LaunchAgent under `~/Library/LaunchAgents/local.ibc-gateway.plist`, and renders a temporary runtime config from `~/ibc/config.secure.ini` plus Keychain secrets instead of storing IB credentials in plaintext config.
+- Preferred IBC startup on macOS is the machine-local secure service installed by `scripts/livewire_ops.py ibc-install`, which writes wrappers under `~/ibc/bin`, a LaunchAgent under `~/Library/LaunchAgents/local.ibc-gateway.plist`, and renders a temporary runtime config from `~/ibc/config.secure.ini` plus Keychain secrets instead of storing IB credentials in plaintext config.
 - For this repo, the secure IBC service is a required machine-local dependency for IB-backed workflows, but the service itself is global to the user's Mac rather than scoped to this repo.
 - `symbol_id` for new symbols is a stable 53-bit `blake2b(symbol)`-derived value.
 - The native macOS client has been extracted to the standalone **Sift** app at `~/dev/apps/util/sift/`.

@@ -12,12 +12,12 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["clients", "scripts"]
+source = ["clients", "livewire_scripts", "scripts"]
 omit = [
     "tests/*",
     "clients/ib_client.py",
     "clients/historical_provider.py",
-    "scripts/probe_ib_intraday.py",
+    "livewire_scripts/probe_ib_intraday.py",
 ]
 
 [tool.coverage.report]

@@ -50,7 +50,7 @@ class FakeSmokeClient:
 
 
 def test_missing_dsn_exits_with_clear_message(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-    import scripts.smoke_postgres_analytical as script
+    import livewire_scripts.smoke_postgres_analytical as script
 
     monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
 
@@ -59,7 +59,7 @@ def test_missing_dsn_exits_with_clear_message(monkeypatch: pytest.MonkeyPatch, c
 
 
 def test_fake_client_prints_expected_counts(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-    import scripts.smoke_postgres_analytical as script
+    import livewire_scripts.smoke_postgres_analytical as script
 
     monkeypatch.setenv("MDW_POSTGRES_DSN", "postgresql://example/livewire")
     monkeypatch.setattr(script, "PostgresClient", FakeSmokeClient)
