@@ -382,3 +382,46 @@ test("main prints help and success output", async () => {
   assert.match(logs[1], /Sent daily update failure alert: \[Market Data Warehouse\] daily_update failed on 2026-03-11/);
   assert.match(logs[1], /report: \/tmp\/daily\.human\.md/);
 });
+
+test("flag-alert mode renders HTML body with ticker and category", async () => {
+  const { parseArgs, buildFlagAlertMessage } = await import("./send_daily_update_failure_email.mjs");
+  const args = parseArgs([
+    "--mode", "flag-alert",
+    "--payload", JSON.stringify({
+      source: "ib",
+      ticker: "SMH",
+      category: "range_shortfall",
+      severity: "critical",
+      detail: { shortfall_days: 9601 },
+      ts: "2026-05-17T19:43:33Z",
+    }),
+  ]);
+  assert.equal(args.mode, "flag-alert");
+  const message = buildFlagAlertMessage(args.payload);
+  assert.match(message.subject, /\[Livewire\].*SMH.*range_shortfall/);
+  assert.match(message.html, /shortfall_days/);
+  assert.match(message.html, /critical/i);
+});
+
+test("flag-alert mode rejects missing payload", async () => {
+  const { parseArgs } = await import("./send_daily_update_failure_email.mjs");
+  assert.throws(() => parseArgs(["--mode", "flag-alert"]),
+    /payload.*required/i);
+});
+
+test("daily-summary mode renders rollup HTML", async () => {
+  const { parseArgs, buildDailySummaryMessage } = await import("./send_daily_update_failure_email.mjs");
+  const payload = {
+    window: "24h",
+    sources: [
+      { source: "ib", connection_events: 142, uptime_pct: 97.2, flap_count: 3 },
+    ],
+    flag_counts_by_category: { range_shortfall: 1, fetch_tainted: 2 },
+    top_tickers: [{ ticker: "SMH", flag_count: 2 }],
+  };
+  const args = parseArgs(["--mode", "daily-summary", "--payload", JSON.stringify(payload)]);
+  const msg = buildDailySummaryMessage(args.payload);
+  assert.match(msg.subject, /\[Livewire\].*daily summary/i);
+  assert.match(msg.html, /97\.2/);
+  assert.match(msg.html, /SMH/);
+});

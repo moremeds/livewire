@@ -515,6 +515,26 @@ class TestFetchFallbackBars:
 
 
 class TestFallbackClientSelection:
+    def test_storage_client_defaults_to_bronze_client(self):
+        from scripts import daily_update as daily_script
+
+        assert daily_script._storage_client() is BronzeClient
+
+    def test_storage_client_uses_dbclient_patch(self, monkeypatch):
+        from scripts import daily_update as daily_script
+
+        class ReplacementStorage:
+            pass
+
+        monkeypatch.setattr(daily_script, "DBClient", ReplacementStorage)
+        assert daily_script._storage_client() is ReplacementStorage
+
+    def test_fallback_client_defaults_to_daily_bar_fallback_client(self):
+        from clients.daily_bar_fallback import DailyBarFallbackClient
+
+        fallback = _fallback_client()
+        assert isinstance(fallback, DailyBarFallbackClient)
+
     def test_uses_patched_daily_bar_fallback_client(self, monkeypatch):
         sentinel = _mock_fallback_instance()
         monkeypatch.setattr("scripts.daily_update.DailyBarFallbackClient", lambda: sentinel)
@@ -704,6 +724,54 @@ class TestFetchBatch:
             fetch_batch([("FAIL", "5 D")], mock_ib, max_concurrent=6)
         )
         assert result["FAIL"] == []
+
+
+class TestQualityHookIntegration:
+    def test_quality_hook_fires_before_merge(self, tmp_path):
+        """The helper runs detect_all and emits every configured flag path."""
+        from clients.quality_detector import QualityFlag
+        from scripts.daily_update import _run_quality_detection
+
+        bars = [_make_bar(date="2026-05-15")]
+        parquet_path = tmp_path / "x.parquet"
+        parquet_path.write_bytes(b"")
+        fake_flag = QualityFlag(
+            category="fetch_tainted",
+            severity="warning",
+            detail={},
+            ts="2026-05-17T00:00:00Z",
+        )
+
+        with patch("scripts.daily_update.detect_all", return_value=[fake_flag]) as m_detect, \
+             patch("scripts.daily_update.write_sidecar", return_value=True) as m_sidecar, \
+             patch("scripts.daily_update.append_audit", return_value=True) as m_audit, \
+             patch("scripts.daily_update.alert_on_flag", return_value=True) as m_alert:
+            _run_quality_detection(
+                ticker="AAPL",
+                asset_class="equity",
+                bars=bars,
+                parquet_path=parquet_path,
+                expected_start=date(2026, 5, 14),
+            )
+
+        assert m_detect.called
+        assert m_sidecar.call_count == 1
+        assert m_audit.call_count == 1
+        assert m_alert.call_count == 1
+
+    def test_quality_hook_skips_when_no_bars(self, tmp_path):
+        from scripts.daily_update import _run_quality_detection
+
+        with patch("scripts.daily_update.detect_all") as m_detect:
+            _run_quality_detection(
+                ticker="AAPL",
+                asset_class="equity",
+                bars=[],
+                parquet_path=tmp_path / "x.parquet",
+                expected_start=date(2026, 5, 14),
+            )
+
+        m_detect.assert_not_called()
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -960,6 +1028,54 @@ class TestMain:
             rows = bronze.read_symbol_rows("AAPL")
         assert len(rows) == 2
         assert [row["trade_date"] for row in rows] == ["2025-01-02", "2025-01-03"]
+
+    @pytest.mark.integration
+    def test_main_calls_write_ticker_parquet_for_compat_storage(self, tmp_path, monkeypatch):
+        """Compatibility storage clients still receive the legacy parquet write hook."""
+        class CompatStorage:
+            def __init__(self):
+                self.write_calls = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def get_latest_dates(self):
+                return {"AAPL": "2025-01-02"}
+
+            def get_symbol_id(self, symbol):
+                return 1
+
+            def merge_ticker_rows(self, symbol, rows):
+                return len(rows)
+
+            def write_ticker_parquet(self, symbol, symbol_id, bronze_dir):
+                self.write_calls.append((symbol, symbol_id, bronze_dir))
+
+        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        storage = CompatStorage()
+        today = date(2025, 1, 3)
+        mock_ib = _mock_ib_instance({"AAPL": [_make_bar(date="2025-01-03")]})
+        mock_fallback = _mock_fallback_instance()
+
+        with (
+            patch("scripts.daily_update.is_trading_day", return_value=True),
+            patch("scripts.daily_update.date") as mock_date,
+            patch("scripts.daily_update.IBClient", return_value=mock_ib),
+            patch("scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch("scripts.daily_update.DBClient", lambda **kw: storage),
+            patch("scripts.daily_update.DATA_LAKE", tmp_path),
+        ):
+            mock_date.today.return_value = today
+            mock_date.fromisoformat = date.fromisoformat
+            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+            main()
+
+        assert storage.write_calls == [
+            ("AAPL", 1, tmp_path / "bronze" / "asset_class=equity")
+        ]
 
     @pytest.mark.integration
     def test_end_to_end_fx_inverts_usdeur(self, tmp_path, monkeypatch):

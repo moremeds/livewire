@@ -1,4 +1,4 @@
-# Codex Agent Guide
+# Codex Agent Guide — Livewire
 
 This file is the repo-root startup guide for Codex. Keep it concise, durable, and aligned with the live codebase.
 
@@ -6,16 +6,16 @@ This file is the repo-root startup guide for Codex. Keep it concise, durable, an
 
 At the start of every new Codex session in this repo:
 
-1. Read [CLAUDE.md](/Users/joemccann/dev/apps/finance/market-data-warehouse/CLAUDE.md) for implementation details, repo layout, and testing rules.
-2. Read [README.md](/Users/joemccann/dev/apps/finance/market-data-warehouse/README.md) for the current architecture, runtime behavior, and operator-facing commands.
-3. Read [.codex/project-memory.md](/Users/joemccann/dev/apps/finance/market-data-warehouse/.codex/project-memory.md) for durable project-specific memory that should persist across sessions.
+1. Read [CLAUDE.md](./CLAUDE.md) for implementation details, repo layout, and testing rules.
+2. Read [README.md](./README.md) for the current architecture, runtime behavior, and operator-facing commands.
+3. Read [.codex/project-memory.md](./.codex/project-memory.md) for durable project-specific memory that should persist across sessions.
 4. For native macOS client work, see the standalone Sift repo at `~/dev/apps/util/sift/`.
-5. Read [tasks/lessons.md](/Users/joemccann/dev/apps/finance/market-data-warehouse/tasks/lessons.md) when the task touches workflow, operational recovery, or a recently corrected mistake.
+5. Read [tasks/lessons.md](./tasks/lessons.md) when the task touches workflow, operational recovery, or a recently corrected mistake.
 6. Run `git status --short` before making assumptions about the worktree.
 
 ## Project Purpose
 
-This repo is a local-first market data warehouse optimized for single-machine operation.
+This repo is **Livewire**, a local-first market data warehouse optimized for single-machine operation. Rebranded 2026-05-17 from "market-data-warehouse"; the name is the project, "market data warehouse" describes the role.
 
 Current live shape:
 - Canonical storage is per-ticker bronze Parquet under `~/market-warehouse/data-lake/bronze/asset_class=equity/symbol=<ticker>/1d.parquet`
@@ -28,7 +28,7 @@ Current live shape:
 
 ## Working Rules
 
-- For non-trivial work, write a plan to [tasks/todo.md](/Users/joemccann/dev/apps/finance/market-data-warehouse/tasks/todo.md) first.
+- For non-trivial work, write a plan to [tasks/todo.md](./tasks/todo.md) first.
 - Every plan must include a dependency graph and `depends_on: []` task annotations.
 - Use `rg` for search and `rg --files` for file discovery.
 - Use `apply_patch` for manual file edits.
@@ -61,7 +61,7 @@ Current live shape:
 - Start from the actual failing behavior: logs, tests, or reproducible commands.
 - Fix the root cause, not just the symptom.
 - If the issue is in a test seam, prefer fixing the seam instead of adding runtime-only workaround logic.
-- If the user corrects a prior assumption or answer, update [tasks/lessons.md](/Users/joemccann/dev/apps/finance/market-data-warehouse/tasks/lessons.md).
+- If the user corrects a prior assumption or answer, update [tasks/lessons.md](./tasks/lessons.md).
 
 ## Operational Facts
 
@@ -73,6 +73,10 @@ Current live shape:
 - `scripts/daily_update.py` is the scheduled parquet-first daily sync and supports `--target-date YYYY-MM-DD` for fixed-date catch-up runs without publishing later bars.
 - `scripts/fetch_cboe_volatility.py` fetches all CBOE volatility indices directly from CBOE's public API. This is the authoritative daily sync source for VIX, VVIX, VXHYG, VXSMH, and all other volatility indices in `presets/volatility.json`.
 - `scripts/run_daily_update_job.py` syncs equities and futures via IB, then all volatility indices via CBOE in a single daemon run.
+- `scripts/run_ib_fetch_robust.py` is the canonical multi-ticker IB execution model. Use it instead of bare `fetch_ib_historical.py` for any bulk run over five tickers; outcomes are reported as `ok`, `ok-noop`, `skip`, `fail`, or `timeout`.
+- `scripts/data_quality_report.py --view summary --since 24h --email` is the daily quality rollup. The end-of-day path in `scripts/run_daily_update_job.py` invokes it after successful market-data syncs.
+- Reliability telemetry and quality audit events are source-tagged JSONL. Valid source values are the closed set `ib`, `uw`, and `massive`.
+- Quality flags are emitted independently to the parquet sidecar, central audit JSONL, and Nodemailer alert path; one failed emit path should not block the others.
 - `scripts/rebuild_duckdb_from_parquet.py` rebuilds DuckDB from bronze when a local DB file is needed and recreates the analytical tables from scratch on each run.
 - `scripts/backfill_intraday.py` is the canonical entry point for full historical 1h/5m backfills. It is the **only** script that actually fetches intraday bars from IB — `fetch_ib_historical.py` is daily-only and `intraday_update.py` only classifies session state. Reuses `compute_intraday_chunks` (1 W chunks for 5m, 1 M for 1h) and `validate_intraday_bar`. Per-timeframe cursor at `~/market-warehouse/cursors/cursor_intraday_{tf}_{name}.json`.
 - `scripts/coverage_report.py` runs after the upload step in the entrypoint job cycle. Writes a one-line coverage summary per day, and triggers a targeted backfill when any timeframe drops below `MDW_COVERAGE_ALERT_THRESHOLD` (default `0.95`). 1d branch shells out to `fetch_ib_historical.py`; 1h/5m branch shells out to `backfill_intraday.py`. Safety cap of 100 missing symbols aborts the auto-recovery and emails immediately. Email goes out only when post-recovery gaps remain.
@@ -98,6 +102,6 @@ Common traps — check these before investigating further:
 
 ## Memory Files
 
-- Use [.codex/project-memory.md](/Users/joemccann/dev/apps/finance/market-data-warehouse/.codex/project-memory.md) for durable, cross-session project memory.
-- Do not put ephemeral task state there. Use [tasks/todo.md](/Users/joemccann/dev/apps/finance/market-data-warehouse/tasks/todo.md) for active work and [tasks/lessons.md](/Users/joemccann/dev/apps/finance/market-data-warehouse/tasks/lessons.md) for correction-driven lessons.
+- Use [.codex/project-memory.md](./.codex/project-memory.md) for durable, cross-session project memory.
+- Do not put ephemeral task state there. Use [tasks/todo.md](./tasks/todo.md) for active work and [tasks/lessons.md](./tasks/lessons.md) for correction-driven lessons.
 - If a project rule, architecture decision, or stable operational fact changes, update `.codex/project-memory.md` in the same task.

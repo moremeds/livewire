@@ -38,6 +38,8 @@ from clients.intraday_bronze_client import (
     INTRADAY_TIMEFRAMES,
     IntradayBronzeClient,
 )
+from clients.quality_detector import _normalize_bars_for_detection, detect_all
+from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
 from scripts.daily_update import _make_contract, validate_intraday_bar
 from scripts.fetch_ib_historical import compute_intraday_chunks, load_preset
 
@@ -136,6 +138,49 @@ def ib_bar_to_row(bar: Any, symbol_id: int) -> dict[str, Any]:
     }
 
 
+def _run_quality_detection(
+    *,
+    ticker: str,
+    timeframe: str,
+    bars: list,
+    parquet_path: Path,
+    outcome: TickerOutcome,
+    source: str = "ib",
+) -> None:
+    """Run intraday quality detection and emit flags without blocking publish."""
+    if not bars:
+        return
+    errors = [{"code": 0, "count": 1, "message": e} for e in (outcome.errors or [])]
+    metadata = {
+        "asset_class": "equity",
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "source": source,
+        "bars_received": len(bars),
+        "errors_during_fetch": errors,
+        "expected_start": None,
+        "ib_head_timestamp": None,
+    }
+    normalized = _normalize_bars_for_detection(bars)
+    try:
+        flags = detect_all(bars=normalized, metadata=metadata, trading_calendar=None)
+    except Exception:  # pragma: no cover - detect_all wraps individual detectors
+        return
+    if not flags:
+        return
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    write_sidecar(parquet_path, flags, metadata)
+    for flag in flags:
+        append_audit(
+            flag,
+            source=source,
+            ticker=ticker,
+            timeframe=timeframe,
+            parquet_path=parquet_path,
+        )
+        alert_on_flag(flag, source=source, ticker=ticker)
+
+
 def should_skip_existing(
     bronze: IntradayBronzeClient, ticker: str, years: int
 ) -> bool:
@@ -196,6 +241,14 @@ def backfill_ticker(
             all_rows.append(row)
 
     if all_rows:
+        parquet_path = bronze.bronze_dir / f"symbol={ticker}" / f"{timeframe}.parquet"
+        _run_quality_detection(
+            ticker=ticker,
+            timeframe=timeframe,
+            bars=all_rows,
+            parquet_path=parquet_path,
+            outcome=outcome,
+        )
         outcome.bars_inserted = bronze.merge_ticker_rows(ticker, all_rows)
     return outcome
 

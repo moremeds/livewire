@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -251,6 +251,22 @@ class TestCursorPath:
         with patch("scripts.fetch_ib_historical.CURSOR_DIR", __import__("pathlib").Path("/tmp/logs")):
             path = _cursor_path("sp500")
         assert path.name == "cursor_sp500.json"
+
+
+class TestStorageClient:
+    def test_storage_client_defaults_to_bronze_client(self):
+        from scripts import fetch_ib_historical as fetch_script
+
+        assert fetch_script._storage_client() is BronzeClient
+
+    def test_storage_client_uses_dbclient_patch(self, monkeypatch):
+        from scripts import fetch_ib_historical as fetch_script
+
+        class ReplacementStorage:
+            pass
+
+        monkeypatch.setattr(fetch_script, "DBClient", ReplacementStorage)
+        assert fetch_script._storage_client() is ReplacementStorage
 
 
 class TestLoadCursor:
@@ -873,6 +889,116 @@ class TestBackfillTicker:
         assert inserted == 1
         assert rows[0]["close"] == pytest.approx(1 / 1.28)
         assert rows[0]["volume"] == 0
+
+
+class TestQualityHookIntegration:
+    def test_quality_hook_invoked_on_normal_fetch_success(self):
+        """Normal replace flow runs quality detection before publish."""
+        from clients.quality_detector import QualityFlag
+
+        fake_flag = QualityFlag(
+            category="range_shortfall", severity="warning",
+            detail={"x": 1}, ts="2026-05-17T00:00:00Z",
+        )
+        bars = [_make_bar(date="2025-01-02")]
+        bronze = MagicMock()
+        bronze.get_symbol_id.return_value = 42
+
+        with patch("scripts.fetch_ib_historical.detect_all", return_value=[fake_flag]) as m_detect, \
+             patch("scripts.fetch_ib_historical.write_sidecar", return_value=True) as m_sidecar, \
+             patch("scripts.fetch_ib_historical.append_audit", return_value=True) as m_audit, \
+             patch("scripts.fetch_ib_historical.alert_on_flag", return_value=True) as m_alert:
+            inserted = fetch_ticker("AAPL", bars, bronze, asset_class="equity")
+        assert inserted == bronze.replace_ticker_rows.return_value
+        assert m_detect.call_count == 1
+        assert m_sidecar.call_count == 1
+        assert m_audit.call_count == 1
+        assert m_alert.call_count == 1
+        _, kwargs = m_detect.call_args
+        assert kwargs["metadata"]["expected_start"] is None
+
+    def test_quality_hook_invoked_on_backfill_success(self):
+        """detect_all -> write_sidecar + append_audit + alert_on_flag all fire when flags exist."""
+        from clients.quality_detector import QualityFlag
+
+        fake_flag = QualityFlag(
+            category="range_shortfall", severity="warning",
+            detail={"x": 1}, ts="2026-05-17T00:00:00Z",
+        )
+        bars = [_make_bar(date="2025-01-02")]
+        bronze = MagicMock()
+        bronze.get_symbol_id.return_value = 42
+
+        with patch("scripts.fetch_ib_historical.detect_all", return_value=[fake_flag]) as m_detect, \
+             patch("scripts.fetch_ib_historical.write_sidecar", return_value=True) as m_sidecar, \
+             patch("scripts.fetch_ib_historical.append_audit", return_value=True) as m_audit, \
+             patch("scripts.fetch_ib_historical.alert_on_flag", return_value=True) as m_alert:
+            inserted = backfill_ticker("AAPL", bars, bronze, asset_class="equity")
+        assert m_detect.call_count == 1
+        assert m_sidecar.call_count == 1
+        assert m_audit.call_count == 1
+        assert m_alert.call_count == 1
+        _, kwargs = m_detect.call_args
+        assert kwargs["metadata"]["expected_start"] == IB_EARLIEST_DATE.date()
+
+    def test_clean_fetch_produces_no_sidecar(self):
+        """detect_all returns [] -> no emit calls."""
+        bars = [_make_bar(date="2025-01-02")]
+        bronze = MagicMock()
+        bronze.get_symbol_id.return_value = 42
+
+        with patch("scripts.fetch_ib_historical.detect_all", return_value=[]) as m_detect, \
+             patch("scripts.fetch_ib_historical.write_sidecar") as m_sidecar, \
+             patch("scripts.fetch_ib_historical.append_audit") as m_audit, \
+             patch("scripts.fetch_ib_historical.alert_on_flag") as m_alert:
+            backfill_ticker("AAPL", bars, bronze, asset_class="equity")
+        m_detect.assert_called_once()
+        m_sidecar.assert_not_called()
+        m_audit.assert_not_called()
+        m_alert.assert_not_called()
+
+    def test_empty_bars_skip_detection_entirely_for_both_publish_paths(self):
+        """Existing 'if not bars: return 0' path is unchanged - detector not called."""
+        bronze = MagicMock()
+        with patch("scripts.fetch_ib_historical.detect_all") as m_detect:
+            fetch_inserted = fetch_ticker("AAPL", [], bronze)
+            backfill_inserted = backfill_ticker("AAPL", [], bronze)
+        assert fetch_inserted == 0
+        assert backfill_inserted == 0
+        m_detect.assert_not_called()
+
+    def test_no_quality_flag_disables_hook(self, monkeypatch):
+        """When MDW_NO_QUALITY=1 is set (or via module flag), detect_all is skipped."""
+        monkeypatch.setattr("scripts.fetch_ib_historical._QUALITY_ENABLED", False)
+        bars = [_make_bar(date="2025-01-02")]
+        bronze = MagicMock()
+        bronze.get_symbol_id.return_value = 42
+        with patch("scripts.fetch_ib_historical.detect_all") as m_detect:
+            backfill_ticker("AAPL", bars, bronze)
+        m_detect.assert_not_called()
+
+    @pytest.mark.integration
+    def test_no_quality_cli_flag_disables_detection_for_main(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "sys.argv",
+            ["fetch_ib_historical.py", "--tickers", "AAPL", "--no-quality"],
+        )
+
+        mock_ib = _mock_ib_instance({"AAPL": [_make_bar(date="2025-01-02")]})
+
+        with (
+            patch("scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch(
+                "scripts.fetch_ib_historical.BronzeClient",
+                lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
+            ),
+            patch("scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
+            patch("scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+            patch("scripts.fetch_ib_historical.detect_all") as m_detect,
+        ):
+            main()
+
+        m_detect.assert_not_called()
 
 
 # ══════════════════════════════════════════════════════════════════════

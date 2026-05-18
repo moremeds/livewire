@@ -174,3 +174,30 @@ class TestConnectClientIdFallback:
         assert mock_ib.connect.call_count == 4
         assert mock_ib.connect.call_args_list[3][1]["clientId"] == 3
         assert client._last_client_id == 3
+
+
+def test_connect_attaches_telemetry(monkeypatch, tmp_path):
+    monkeypatch.setenv("MDW_TELEMETRY_PATH", str(tmp_path / "t.jsonl"))
+    fake_ib = MagicMock()
+    fake_ib.connect.return_value = None
+    fake_ib.errorEvent = MagicMock()
+    fake_ib.connectedEvent = MagicMock()
+    fake_ib.disconnectedEvent = MagicMock()
+    with patch("clients.ib_client.IB", return_value=fake_ib):
+        client = IBClient()
+        client.connect(host="127.0.0.1", port=4001, client_id=99)
+    fake_ib.errorEvent.connect.assert_called_once()
+    fake_ib.connectedEvent.connect.assert_called_once()
+
+
+def test_disconnect_detaches_telemetry(monkeypatch, tmp_path):
+    monkeypatch.setenv("MDW_TELEMETRY_PATH", str(tmp_path / "t.jsonl"))
+    fake_ib = MagicMock()
+    fake_ib.errorEvent = MagicMock()
+    fake_ib.connectedEvent = MagicMock()
+    fake_ib.disconnectedEvent = MagicMock()
+    with patch("clients.ib_client.IB", return_value=fake_ib):
+        client = IBClient()
+        client.connect(host="127.0.0.1", port=4001, client_id=99)
+        client.disconnect()
+    fake_ib.errorEvent.disconnect.assert_called_once()

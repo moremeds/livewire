@@ -9,6 +9,26 @@ from clients.bronze_client import BronzeClient
 from clients.db_client import DBClient
 
 
+@pytest.fixture(autouse=True)
+def _clear_alert_rate_limit():
+    try:
+        from clients import quality_flags
+
+        quality_flags._RATE_LIMIT_CACHE.clear()
+    except (ImportError, AttributeError):
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_reliability_artifact_paths(tmp_path, monkeypatch):
+    """Keep reliability tests from appending to operator-facing live logs."""
+    monkeypatch.setenv("MDW_QUALITY_AUDIT_PATH", str(tmp_path / "quality_audit.jsonl"))
+    monkeypatch.setenv("MDW_TELEMETRY_PATH", str(tmp_path / "telemetry.jsonl"))
+    monkeypatch.setenv("MDW_UNDELIVERED_DIR", str(tmp_path / "quality_alerts_undelivered"))
+    monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
+
+
 # ── DuckDB fixtures ────────────────────────────────────────────────────
 
 BOOTSTRAP_SQL = """
@@ -83,4 +103,3 @@ def bronze(tmp_bronze):
     client = BronzeClient(bronze_dir=tmp_bronze)
     yield client
     client.close()
-

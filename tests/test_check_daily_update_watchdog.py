@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from subprocess import CompletedProcess
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -80,6 +81,7 @@ class TestRunWatchdog:
             "=== Done 2026-03-11T20:05:09Z (attempt 1/3) ===\n",
             encoding="utf-8",
         )
+        (config.log_dir / "quality_summary_2026-03-11.marker").write_text("ok\n")
 
         assert run_watchdog(config, run_date="2026-03-11", env={}) == 0
 
@@ -155,6 +157,38 @@ class TestRunWatchdog:
         assert "WARNING: watchdog failure alert returned non-zero exit code 2. smtp down" in watchdog_log.read_text(
             encoding="utf-8"
         )
+
+
+class TestQualitySummaryMarker:
+    def test_passes_when_both_markers_present(self, tmp_path):
+        config = _config(tmp_path)
+        config.log_dir.mkdir(parents=True, exist_ok=True)
+        daily_log = build_daily_log_file(config.log_dir, "2026-05-18")
+        daily_log.write_text("=== Done 2026-05-18T20:00:00Z (attempt 1/3) ===\n")
+        (config.log_dir / "quality_summary_2026-05-18.marker").write_text("ok\n")
+
+        rc = run_watchdog(config, run_date="2026-05-18")
+        assert rc == 0
+
+    def test_alerts_when_quality_marker_missing(self, tmp_path):
+        config = _config(tmp_path)
+        config.log_dir.mkdir(parents=True, exist_ok=True)
+        config.alert_script.parent.mkdir(parents=True, exist_ok=True)
+        config.alert_script.write_text("console.log('sent')\n", encoding="utf-8")
+        daily_log = build_daily_log_file(config.log_dir, "2026-05-18")
+        daily_log.write_text("=== Done 2026-05-18T20:00:00Z (attempt 1/3) ===\n")
+
+        calls = []
+
+        def fake_runner(cmd, **kwargs):
+            calls.append(list(cmd))
+            return CompletedProcess(args=cmd, returncode=0, stdout="sent", stderr="")
+
+        with patch("scripts.run_daily_update_job.node_binary_exists", return_value=True):
+            rc = run_watchdog(config, run_date="2026-05-18", runner=fake_runner)
+
+        assert rc == WATCHDOG_ALERT_SENT_EXIT_CODE
+        assert calls, "watchdog should have spawned the alert subprocess"
 
 
 class TestMain:

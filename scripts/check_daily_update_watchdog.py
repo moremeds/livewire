@@ -79,11 +79,21 @@ def run_watchdog(
     daily_log_file = build_daily_log_file(config.log_dir, run_date)
     watchdog_log_file = build_watchdog_log_file(config.log_dir, run_date)
     marker_file = build_watchdog_marker_file(config.warehouse_dir, run_date)
+    quality_marker = config.log_dir / f"quality_summary_{run_date}.marker"
 
-    if log_has_completion_marker(daily_log_file):
+    daily_complete = log_has_completion_marker(daily_log_file)
+    quality_complete = quality_marker.exists()
+
+    if daily_complete and quality_complete:
         return 0
 
-    reason = determine_watchdog_error(daily_log_file, run_date)
+    if daily_complete:
+        reason = (
+            f"Daily sync completed on {run_date} but the end-of-day quality "
+            f"summary marker is missing at {quality_marker}."
+        )
+    else:
+        reason = determine_watchdog_error(daily_log_file, run_date)
     append_log(watchdog_log_file, f"=== Daily Update Watchdog {run_date} ===")
     append_log(watchdog_log_file, reason)
 

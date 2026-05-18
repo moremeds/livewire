@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from subprocess import CompletedProcess
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -189,6 +190,10 @@ class TestHelpers:
         assert log_has_completion_marker(log_file) is True
         assert log_has_completion_marker(tmp_path / "nope.log") is False
 
+        no_marker = tmp_path / "no_marker.log"
+        no_marker.write_text("started\nfailed\n", encoding="utf-8")
+        assert log_has_completion_marker(no_marker) is False
+
     def test_node_binary_exists(self):
         with patch("scripts.run_daily_update_job.Path.exists", return_value=True):
             assert node_binary_exists("/opt/homebrew/bin/node") is True
@@ -224,6 +229,54 @@ class TestSubprocessPaths:
 
         assert result.returncode == 0
         assert "hello from sync" in log_file.read_text(encoding="utf-8")
+
+
+class TestEndOfDayQualityReport:
+    def test_report_invoked_after_successful_daily(self, tmp_path):
+        config = _config(tmp_path)
+        calls = []
+
+        def fake_runner(cmd, **kwargs):
+            calls.append(list(cmd))
+            return CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
+
+        rc = run_with_retries(
+            config,
+            daily_update_args=[],
+            runner=fake_runner,
+            sleep_fn=lambda s: None,
+            now_fn=lambda: datetime(2026, 5, 18, 20, 0, tzinfo=timezone.utc),
+        )
+        assert rc == 0
+        assert len(calls) >= 2
+        report_cmd = calls[1]
+        assert any("data_quality_report.py" in str(c) for c in report_cmd)
+        assert "--email" in report_cmd
+
+    def test_report_failure_does_not_fail_daily(self, tmp_path):
+        config = _config(tmp_path)
+        calls = []
+
+        def fake_runner(cmd, **kwargs):
+            calls.append(list(cmd))
+            rc = 0 if "daily_update.py" in " ".join(str(c) for c in cmd) else 2
+            return CompletedProcess(args=cmd, returncode=rc, stdout=b"", stderr=b"report failed")
+
+        rc = run_with_retries(
+            config,
+            daily_update_args=[],
+            runner=fake_runner,
+            sleep_fn=lambda s: None,
+            now_fn=lambda: datetime(2026, 5, 18, 20, 0, tzinfo=timezone.utc),
+        )
+        assert rc == 0
+        log_file = build_log_file(
+            config.log_dir,
+            datetime(2026, 5, 18, 20, 0, tzinfo=timezone.utc),
+        )
+        assert "WARNING: end-of-day quality report failed" in log_file.read_text(
+            encoding="utf-8"
+        )
 
     def test_send_failure_alert_skips_when_node_missing(self, tmp_path):
         config = _config(tmp_path, node_bin="/missing/node")
