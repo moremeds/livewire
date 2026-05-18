@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from clients.telemetry import BaseTelemetry, ConnectionTelemetry, _parse_farm_name
+from clients.telemetry import UWTelemetry, MassiveTelemetry
 
 
 def test_base_telemetry_emits_jsonl_line(tmp_path):
@@ -194,3 +195,33 @@ def test_connection_telemetry_connected_disconnected_events(tmp_path):
     events = [r["event"] for r in records]
     assert "connected" in events
     assert "disconnected" in events
+
+
+def test_uw_telemetry_stub_no_op(tmp_path, caplog):
+    t = UWTelemetry(jsonl_path=tmp_path / "t.jsonl")
+    t.start()
+    t.record_request(endpoint="/options/AAPL", status=200, dt_ms=42)
+    t.record_rate_limit(remaining=100, reset_at=1700000000)
+    t.stop()
+    # Stub: methods exist, do not raise, emit JSONL records tagged uw
+    records = [json.loads(l) for l in (tmp_path / "t.jsonl").read_text().splitlines()]
+    assert any(r["source"] == "uw" for r in records)
+
+
+def test_massive_telemetry_stub_no_op(tmp_path):
+    t = MassiveTelemetry(jsonl_path=tmp_path / "t.jsonl")
+    t.start()
+    t.record_request(endpoint="/v2/bars/AAPL", status=200, dt_ms=15)
+    t.stop()
+    records = [json.loads(l) for l in (tmp_path / "t.jsonl").read_text().splitlines()]
+    assert any(r["source"] == "massive" for r in records)
+
+
+def test_uw_telemetry_source_locked_to_uw():
+    t = UWTelemetry(jsonl_path=None)
+    assert t.source == "uw"
+
+
+def test_massive_telemetry_source_locked_to_massive():
+    t = MassiveTelemetry(jsonl_path=None)
+    assert t.source == "massive"

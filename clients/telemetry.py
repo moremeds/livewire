@@ -159,3 +159,50 @@ class ConnectionTelemetry(BaseTelemetry):
 
     def _on_disconnected(self):
         self._emit({"event": "disconnected"})
+
+
+class UWTelemetry(BaseTelemetry):
+    """Unusual Whales telemetry. Stub interface for Sub-A."""
+
+    def __init__(self, *, jsonl_path: Optional[Path], source: str = "uw"):
+        super().__init__(source=source, jsonl_path=jsonl_path)
+
+    def start(self) -> None:
+        super().start()
+        if not self._disabled:
+            _logger.info("UWTelemetry started (stub; Sub-C activates record_request)")
+
+    def record_request(self, endpoint: str, status: int, dt_ms: int) -> None:
+        self._emit({
+            "event": "uw_request",
+            "endpoint": endpoint,
+            "status": int(status),
+            "dt_ms": int(dt_ms),
+        })
+
+    def record_rate_limit(self, remaining: int, reset_at: int) -> None:
+        self._emit({
+            "event": "uw_rate_limit",
+            "remaining": int(remaining),
+            "reset_at": int(reset_at),
+        })
+
+
+class MassiveTelemetry(BaseTelemetry):
+    """Massive.io telemetry. Stub interface for Sub-A."""
+
+    def __init__(self, *, jsonl_path: Optional[Path], source: str = "massive"):
+        super().__init__(source=source, jsonl_path=jsonl_path)
+
+    def start(self) -> None:
+        super().start()
+        if not self._disabled:
+            _logger.info("MassiveTelemetry started (stub; Sub-C activates record_request)")
+
+    def record_request(self, endpoint: str, status: int, dt_ms: int) -> None:
+        self._emit({
+            "event": "massive_request",
+            "endpoint": endpoint,
+            "status": int(status),
+            "dt_ms": int(dt_ms),
+        })
