@@ -255,6 +255,31 @@ def run_with_retries(
                     f"(attempt {attempt}/{config.max_attempts}) ==="
                 ),
             )
+            try:
+                report_result = runner(
+                    [
+                        sys.executable,
+                        str(SCRIPT_DIR / "data_quality_report.py"),
+                        "--view",
+                        "summary",
+                        "--since",
+                        "24h",
+                        "--email",
+                    ],
+                    timeout=120,
+                    check=False,
+                    capture_output=True,
+                )
+                if report_result.returncode != 0:
+                    append_log(
+                        log_file,
+                        (
+                            "WARNING: end-of-day quality report failed: "
+                            f"exit_code={report_result.returncode}"
+                        ),
+                    )
+            except Exception as exc:  # pragma: no cover - logged but tolerated
+                append_log(log_file, f"WARNING: end-of-day quality report failed: {exc}")
             return 0
 
         append_log(
