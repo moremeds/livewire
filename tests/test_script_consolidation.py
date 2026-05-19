@@ -41,7 +41,7 @@ def test_operator_entrypoints_render_subcommand_help() -> None:
         "livewire_ingest.py": ["daily", "historical", "robust", "cboe-vol", "intraday-backfill"],
         "livewire_quality.py": ["health", "coverage", "report", "weekly", "watchdog"],
         "livewire_ops.py": ["run-daily-job", "send-alert"],
-        "livewire_store.py": ["rebuild-duckdb", "rebuild-postgres", "smoke-postgres", "sync-r2", "migrate-parquet"],
+        "livewire_store.py": ["rebuild-postgres", "smoke-postgres", "sync-r2", "migrate-parquet"],
     }
 
     for script_name, commands in expected_commands.items():
@@ -60,7 +60,7 @@ def test_operator_entrypoints_forward_subcommand_help() -> None:
     examples = {
         "livewire_ingest.py": ("daily", "Daily market data update"),
         "livewire_quality.py": ("report", "Livewire data quality report"),
-        "livewire_store.py": ("rebuild-duckdb", "Rebuild market.duckdb"),
+        "livewire_store.py": ("rebuild-postgres", "Rebuild Postgres analytical tables"),
     }
 
     for script_name, (command, expected) in examples.items():

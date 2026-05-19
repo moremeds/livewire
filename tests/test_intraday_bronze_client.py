@@ -182,7 +182,7 @@ class TestDiscovery:
         result = client.get_latest_timestamps()
         # The result should map AAPL to ts2
         assert "AAPL" in result
-        # DuckDB may return tz-naive or tz-aware depending on version; compare on epoch
+        # Parquet readers may return tz-naive or tz-aware values; compare on epoch.
         latest = result["AAPL"]
         if latest.tzinfo is None:
             latest = latest.replace(tzinfo=_UTC)

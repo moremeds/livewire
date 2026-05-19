@@ -265,7 +265,7 @@ class TestStorageClient:
         class ReplacementStorage:
             pass
 
-        monkeypatch.setattr(fetch_script, "DBClient", ReplacementStorage)
+        monkeypatch.setattr(fetch_script, "StorageClient", ReplacementStorage)
         assert fetch_script._storage_client() is ReplacementStorage
 
 

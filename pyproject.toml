@@ -7,7 +7,7 @@ requires-python = ">=3.13"
 testpaths = ["tests"]
 addopts = "--strict-markers -v"
 markers = [
-    "integration: marks tests that use real DuckDB (deselect with '-m \"not integration\"')",
+    "integration: marks tests that use real filesystem or service-backed integrations (deselect with '-m \"not integration\"')",
     "postgres_live: marks tests that require MDW_TEST_POSTGRES_DSN and a disposable Postgres database",
 ]
 

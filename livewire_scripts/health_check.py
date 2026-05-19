@@ -137,30 +137,9 @@ def compute_range_duration(start_date: date, end_date: date) -> str:
 def get_all_trade_dates(bronze: BronzeClient) -> dict[str, list[date]]:
     """Return ``{symbol: [date, ...]}`` for every symbol in bronze, sorted ascending.
 
-    Uses a single bulk DuckDB query over the full parquet glob for efficiency.
     Returns ``{}`` when the bronze directory is empty or has no symbols.
     """
-    if not bronze.get_existing_symbols():
-        return {}
-
-    sql = f"""
-        SELECT symbol, trade_date
-        FROM read_parquet('{bronze._escaped_glob()}', hive_partitioning=true)
-        ORDER BY symbol, trade_date
-    """
-    rows = bronze._query(sql)
-
-    result: dict[str, list[date]] = {}
-    for row in rows:
-        symbol: str = row["symbol"]
-        raw = row["trade_date"]
-        if isinstance(raw, date):
-            d = raw
-        else:
-            d = date.fromisoformat(str(raw))
-        result.setdefault(symbol, []).append(d)
-
-    return result
+    return bronze.get_trade_dates_by_symbol()
 
 
 def generate_expected_intraday_timestamps(

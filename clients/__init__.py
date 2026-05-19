@@ -2,7 +2,6 @@ from clients.bronze_client import BronzeClient
 from clients.daily_bar_fallback import DailyBarFallbackClient
 from clients.massive_client import MassiveClient
 from clients.ib_client import IBClient
-from clients.db_client import DBClient
 from clients.postgres_client import PostgresClient
 from clients.intraday_bronze_client import (
     IntradayBronzeClient,
@@ -18,7 +17,6 @@ __all__ = [
     "DailyBarFallbackClient",
     "MassiveClient",
     "IBClient",
-    "DBClient",
     "PostgresClient",
     "IntradayBronzeClient",
     "INTRADAY_TIMEFRAMES",

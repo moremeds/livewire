@@ -528,7 +528,7 @@ class TestFallbackClientSelection:
         class ReplacementStorage:
             pass
 
-        monkeypatch.setattr(daily_script, "DBClient", ReplacementStorage)
+        monkeypatch.setattr(daily_script, "StorageClient", ReplacementStorage)
         assert daily_script._storage_client() is ReplacementStorage
 
     def test_fallback_client_defaults_to_daily_bar_fallback_client(self):
@@ -1352,7 +1352,7 @@ class TestMain:
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
-            patch("livewire_scripts.daily_update.DBClient", lambda **kw: storage),
+            patch("livewire_scripts.daily_update.StorageClient", lambda **kw: storage),
             patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path),
         ):
             mock_date.today.return_value = today
