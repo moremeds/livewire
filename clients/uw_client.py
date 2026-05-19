@@ -86,6 +86,7 @@ class UWClient:
         timeout: int = _DEFAULT_TIMEOUT,
         max_retries: int = _DEFAULT_MAX_RETRIES,
         backoff_factor: float = _DEFAULT_BACKOFF_FACTOR,
+        telemetry: Any = None,
     ):
         self._token = token or os.environ.get("UW_TOKEN")
         if not self._token:
@@ -98,6 +99,7 @@ class UWClient:
         self._timeout = timeout
         self._max_retries = max_retries
         self._backoff_factor = backoff_factor
+        self._telemetry = telemetry
 
         self._session = requests.Session()
         self._session.headers.update(
@@ -112,10 +114,14 @@ class UWClient:
         self._session.close()
 
     def __enter__(self) -> "UWClient":
+        if self._telemetry is not None:
+            self._telemetry.start()
         return self
 
     def __exit__(self, *exc) -> None:
         self.close()
+        if self._telemetry is not None:
+            self._telemetry.stop()
 
     # ── internal request layer ─────────────────────────────────────
 
@@ -126,6 +132,7 @@ class UWClient:
         last_exc: Optional[Exception] = None
 
         for attempt in range(1 + self._max_retries):
+            started = time.monotonic()
             try:
                 resp = self._session.get(url, params=params, timeout=self._timeout)
             except (ReqConnectionError, ReqTimeout) as exc:
@@ -136,6 +143,8 @@ class UWClient:
                 raise UWAPIError(f"Connection failed after {attempt + 1} attempts: {exc}") from exc
 
             status = resp.status_code
+            self._record_request(endpoint, status, started)
+            self._record_rate_limit(resp)
 
             if status == 200:
                 return resp.json()
@@ -188,6 +197,24 @@ class UWClient:
             return resp.json()
         except Exception:
             return {}
+
+    def _record_request(self, endpoint: str, status: int, started: float) -> None:
+        if self._telemetry is None:
+            return
+        dt_ms = int((time.monotonic() - started) * 1000)
+        self._telemetry.record_request(endpoint=endpoint, status=status, dt_ms=dt_ms)
+
+    def _record_rate_limit(self, resp: requests.Response) -> None:
+        if self._telemetry is None:
+            return
+        remaining = resp.headers.get("X-RateLimit-Remaining")
+        reset_at = resp.headers.get("X-RateLimit-Reset")
+        if remaining is None or reset_at is None:
+            return
+        try:
+            self._telemetry.record_rate_limit(remaining=int(remaining), reset_at=int(reset_at))
+        except (TypeError, ValueError):
+            return
 
     @staticmethod
     def _build_params(**kwargs: Any) -> Dict[str, Any]:

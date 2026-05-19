@@ -227,9 +227,16 @@ def test_massive_telemetry_stub_no_op(tmp_path):
     t = MassiveTelemetry(jsonl_path=tmp_path / "t.jsonl")
     t.start()
     t.record_request(endpoint="/v2/bars/AAPL", status=200, dt_ms=15)
+    t.record_rate_limit(remaining=12, reset_at=1778875200)
     t.stop()
     records = [json.loads(l) for l in (tmp_path / "t.jsonl").read_text().splitlines()]
     assert any(r["source"] == "massive" for r in records)
+    assert any(
+        r["event"] == "massive_rate_limit"
+        and r["remaining"] == 12
+        and r["reset_at"] == 1778875200
+        for r in records
+    )
 
 
 def test_uw_telemetry_source_locked_to_uw():

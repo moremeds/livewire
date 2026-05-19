@@ -338,6 +338,9 @@ python scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json 
 # Equity daily update
 python scripts/livewire_ingest.py daily
 
+# Equity daily update through Massive instead of IB
+python scripts/livewire_ingest.py daily --asset-class equity --source massive
+
 # Futures daily update
 python scripts/livewire_ingest.py daily --asset-class futures
 
@@ -369,6 +372,7 @@ Common flags:
 --target-date YYYY-MM-DD
 --preset presets/sp500.json
 --asset-class {equity|volatility|futures|cmdty|fx}
+--source {ib|massive}
 --host 127.0.0.1
 --port 4001
 ```

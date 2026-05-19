@@ -210,6 +210,62 @@ def test_row_count_anomaly_stub_returns_none():
     assert detect_row_count_anomaly([], reference_source=None) is None
 
 
+def test_row_count_anomaly_warning_with_missing_dates():
+    bars = [_Bar("2026-04-01"), _Bar("2026-04-02")]
+    flag = detect_row_count_anomaly(
+        bars,
+        reference_source={
+            "source": "massive",
+            "expected_count": 3,
+            "actual_count": 2,
+            "expected_dates": ["2026-04-01", "2026-04-02", "2026-04-03"],
+            "actual_dates": ["2026-04-01", "2026-04-02"],
+        },
+    )
+    assert flag is not None
+    assert flag.category == "row_count_anomaly"
+    assert flag.severity == "critical"
+    assert flag.detail["reference_source"] == "massive"
+    assert flag.detail["expected_count"] == 3
+    assert flag.detail["actual_count"] == 2
+    assert flag.detail["missing_dates"] == ["2026-04-03"]
+
+
+def test_row_count_anomaly_clean_under_threshold_returns_none():
+    flag = detect_row_count_anomaly(
+        [_Bar("2026-04-01") for _ in range(100)],
+        reference_source={"source": "massive", "expected_count": 100, "actual_count": 100},
+    )
+    assert flag is None
+
+
+def test_row_count_anomaly_warning_threshold():
+    flag = detect_row_count_anomaly(
+        [_Bar("2026-04-01") for _ in range(98)],
+        reference_source={"source": "massive", "expected_count": 100, "actual_count": 98},
+    )
+    assert flag is not None
+    assert flag.severity == "warning"
+
+
+def test_row_count_anomaly_uses_bars_when_actual_count_missing():
+    flag = detect_row_count_anomaly(
+        [_Bar("2026-04-01")],
+        reference_source={"source": "massive", "expected_count": 2},
+    )
+    assert flag is not None
+    assert flag.detail["actual_count"] == 1
+
+
+def test_row_count_anomaly_invalid_reference_is_detector_error_through_detect_all():
+    flags = detect_all(
+        bars=[_Bar("2026-04-01")],
+        metadata={"reference_source": {"source": "massive", "expected_count": 0}},
+        trading_calendar=lambda d: True,
+    )
+    assert any(f.category == "detector_error" for f in flags)
+
+
 def test_detect_all_clean_returns_empty():
     bars = [_Bar("2026-04-01"), _Bar("2026-04-02")]
     flags = detect_all(
@@ -296,3 +352,22 @@ def test_detect_all_includes_row_count_anomaly_when_detector_returns_flag(monkey
         trading_calendar=lambda d: True,
     )
     assert any(f.category == "row_count_anomaly" for f in flags)
+
+
+def test_detect_all_emits_real_row_count_anomaly_from_metadata():
+    flags = detect_all(
+        bars=[_Bar("2026-04-01")],
+        metadata={
+            "reference_source": {
+                "source": "massive",
+                "expected_count": 2,
+                "actual_count": 1,
+                "expected_dates": ["2026-04-01", "2026-04-02"],
+                "actual_dates": ["2026-04-01"],
+            },
+            "errors_during_fetch": [],
+        },
+        trading_calendar=lambda d: True,
+    )
+    flag = next(f for f in flags if f.category == "row_count_anomaly")
+    assert flag.detail["missing_dates"] == ["2026-04-02"]

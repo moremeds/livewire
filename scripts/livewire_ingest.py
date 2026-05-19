@@ -45,7 +45,12 @@ def _dispatch_module(module_name: str, argv: Sequence[str], display_name: str) -
     sys.argv = [display_name, *argv]
     try:
         signature = inspect.signature(module.main)
-        result = module.main(list(argv)) if signature.parameters else module.main()
+        try:
+            result = module.main(list(argv)) if signature.parameters else module.main()
+        except SystemExit as exc:
+            if exc.code in (0, None):
+                return 0
+            raise
     finally:
         sys.argv = original_argv
     return int(result or 0)
@@ -55,6 +60,24 @@ def _dispatch_backfill_all(argv: Sequence[str]) -> int:
     if argv:
         raise SystemExit("backfill-all does not accept arguments")
     return subprocess.call(["bash", str(REPO_ROOT / "tools" / "run_backfill_all.sh")])
+
+
+def _daily_source(argv: Sequence[str]) -> str:
+    """Return the operator-selected daily source without owning full daily parsing."""
+    for idx, item in enumerate(argv):
+        if item == "--source" and idx + 1 < len(argv):
+            return argv[idx + 1]
+        if item.startswith("--source="):
+            return item.split("=", 1)[1]
+    return "ib"
+
+
+def _requires_ib_preflight(command: str, rest: Sequence[str]) -> bool:
+    if {"-h", "--help"}.intersection(rest):
+        return False
+    if command == "daily":
+        return _daily_source(rest) != "massive"
+    return command in IB_COMMANDS
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -71,7 +94,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv[:1])
     rest = argv[1:]
 
-    if args.command in IB_COMMANDS and not {"-h", "--help"}.intersection(rest):
+    if _requires_ib_preflight(args.command, rest):
         from clients.ib_gateway_preflight import assert_gateway_up
 
         assert_gateway_up()

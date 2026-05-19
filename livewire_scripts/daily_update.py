@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import sys
+from contextlib import ExitStack
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
@@ -49,6 +50,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from clients.bronze_client import BronzeClient
 from clients.daily_bar_fallback import DailyBarFallbackClient
 from clients.ib_client import IBClient, IBError
+from clients.massive_client import MassiveAPIError, MassiveAuthError, MassiveClient
 from clients.quality_detector import _normalize_bars_for_detection, detect_all
 from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
 from clients.trading_calendar import (
@@ -83,6 +85,14 @@ def _fallback_client():
     if FallbackClient is not _DEFAULT_FALLBACK_CLIENT:
         return FallbackClient()
     return DailyBarFallbackClient()
+
+
+def _optional_massive_client():
+    """Return a Massive client when configured, otherwise disable Massive recovery."""
+    try:
+        return MassiveClient()
+    except MassiveAuthError:
+        return None
 
 # ── Config ─────────────────────────────────────────────────────────────
 
@@ -351,6 +361,7 @@ def _run_quality_detection(
     parquet_path: Path,
     expected_start: date | None = None,
     source: str = "ib",
+    reference_source: dict | None = None,
 ) -> None:
     """Run daily quality detection and emit flags without blocking publish."""
     if not bars:
@@ -366,6 +377,8 @@ def _run_quality_detection(
         "ib_head_timestamp": None,
         "errors_during_fetch": [],
     }
+    if reference_source is not None:
+        metadata["reference_source"] = reference_source
     try:
         flags = detect_all(bars=normalized, metadata=metadata, trading_calendar=None)
     except Exception:  # pragma: no cover - detect_all wraps individual detectors
@@ -495,6 +508,41 @@ def fetch_fallback_bars(
         sources.append(fallback_bar.source)
 
     return (bars, sources)
+
+
+def fetch_massive_bars(
+    ticker: str,
+    missing_dates: list[date],
+    massive_client,
+) -> tuple[list, list[str]]:
+    """Fetch Massive bars for unresolved daily dates."""
+    if massive_client is None or not missing_dates:
+        return ([], [])
+    wanted = set(missing_dates)
+    try:
+        bars = massive_client.get_daily_bars(ticker, min(missing_dates), max(missing_dates))
+    except MassiveAPIError as exc:
+        console.print(f"    [yellow]{ticker}: Massive recovery failed — {exc}[/yellow]")
+        return ([], [])
+    recovered = [
+        bar for bar in bars
+        if date.fromisoformat(str(bar.date)) in wanted
+    ]
+    return (recovered, ["massive"] * len(recovered))
+
+
+def _source_comparison(reference_bars: list, actual_bars: list) -> dict | None:
+    if not reference_bars:
+        return None
+    expected_dates = sorted(str(bar.date)[:10] for bar in reference_bars)
+    actual_dates = sorted(str(bar.date)[:10] for bar in actual_bars)
+    return {
+        "source": "massive",
+        "expected_count": len(expected_dates),
+        "actual_count": len(actual_dates),
+        "expected_dates": expected_dates,
+        "actual_dates": actual_dates,
+    }
 
 
 # ── Async fetching ─────────────────────────────────────────────────────
@@ -636,6 +684,12 @@ def main():
         default="equity",
         help="Asset class to update (default: equity).",
     )
+    parser.add_argument(
+        "--source",
+        choices=["ib", "massive"],
+        default="ib",
+        help="Daily source for equity updates (default: ib).",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -652,9 +706,16 @@ def main():
         return
 
     asset_class = args.asset_class
+    if args.source == "massive" and asset_class != "equity":
+        console.print("[red]--source massive is only supported for asset_class=equity.[/red]")
+        return 2
+
     bronze_dir = DATA_LAKE / "bronze" / f"asset_class={asset_class}"
 
-    console.print(f"\n[bold]Daily Update[/bold]  target_date={target}  force={args.force}  asset_class={asset_class}  host={args.host}  port={args.port}")
+    console.print(
+        f"\n[bold]Daily Update[/bold]  target_date={target}  force={args.force}  "
+        f"asset_class={asset_class}  source={args.source}  host={args.host}  port={args.port}"
+    )
 
     # ── Load preset filter (if any) ─────────────────────────────────
     preset_tickers: set[str] | None = None
@@ -717,8 +778,90 @@ def main():
         fallback_attempts = 0
         fallback_successes = 0
         fallback_symbols = 0
+        source_counts: dict[str, int] = {"ib": 0, "massive": 0}
 
-        with IBClient() as ib, _fallback_client() as fallback:
+        if args.source == "massive":
+            with MassiveClient() as massive:
+                for batch_idx, batch in enumerate([
+                    tickers_with_durations[i:i + args.batch_size]
+                    for i in range(0, len(tickers_with_durations), args.batch_size)
+                ]):
+                    console.print(
+                        f"\n[bold]Massive Batch {batch_idx + 1}"
+                        f" ({len(batch)} tickers)[/bold]"
+                    )
+                    for ticker, _duration in batch:
+                        latest = date.fromisoformat(latest_dates[ticker])
+                        bars, _sources = fetch_massive_bars(
+                            ticker,
+                            get_missing_trading_dates(latest, target, []),
+                            massive,
+                        )
+                        valid_bars, issues = validate_bars(bars, ticker, asset_class=asset_class)
+                        total_issues.extend(issues)
+                        total_validated += len(bars)
+                        valid_bars = [
+                            b
+                            for b in valid_bars
+                            if latest < date.fromisoformat(str(b.date)) <= target
+                        ]
+                        if not valid_bars:
+                            console.print(f"  [yellow]{ticker}[/yellow]: no bars from Massive")
+                            tickers_failed += 1
+                            continue
+
+                        symbol_id = bronze.get_symbol_id(ticker)
+                        rows = bars_to_rows(valid_bars, symbol_id)
+                        parquet_path = bronze_dir / f"symbol={ticker}" / "1d.parquet"
+                        _run_quality_detection(
+                            ticker=ticker,
+                            asset_class=asset_class,
+                            bars=valid_bars,
+                            parquet_path=parquet_path,
+                            expected_start=latest + timedelta(days=1) if latest else None,
+                            source="massive",
+                        )
+                        inserted = bronze.merge_ticker_rows(ticker, rows)
+                        if hasattr(bronze, "write_ticker_parquet"):
+                            bronze.write_ticker_parquet(ticker, symbol_id, bronze_dir)
+                        remaining_dates = get_missing_trading_dates(latest, target, valid_bars)
+                        total_inserted += inserted
+                        source_counts["massive"] += len(valid_bars)
+                        if remaining_dates:
+                            console.print(
+                                f"  [yellow]{ticker}[/yellow]: {inserted} bar"
+                                f"{'s' if inserted != 1 else ''} published from Massive, "
+                                f"still missing {', '.join(d.isoformat() for d in remaining_dates)}"
+                            )
+                            tickers_failed += 1
+                            continue
+                        tickers_updated += 1
+                        console.print(
+                            f"  [green]{ticker}[/green]: {inserted} bar"
+                            f"{'s' if inserted != 1 else ''} published from Massive"
+                        )
+
+            console.print(f"\n{'═' * 60}")
+            console.print(f"[bold]Daily Update Complete[/bold]")
+            console.print(f"  Tickers updated:    {tickers_updated}")
+            console.print(f"  Tickers failed:     {tickers_failed}")
+            console.print(f"  Fallback attempts:  {fallback_attempts}")
+            console.print(f"  Fallback successes: {fallback_successes}")
+            console.print(f"  Fallback symbols:   {fallback_symbols}")
+            console.print(f"  Source massive:     {source_counts.get('massive', 0)}")
+            console.print(f"  Bars inserted:      {total_inserted}")
+            console.print(f"  Bars validated:     {total_validated}")
+            console.print(f"  Validation issues:  {len(total_issues)}")
+            console.print()
+            if tickers_failed > 0:
+                return 1
+            return 0
+
+        with ExitStack() as stack:
+            ib = stack.enter_context(IBClient())
+            fallback = stack.enter_context(_fallback_client())
+            maybe_massive = _optional_massive_client() if asset_class == "equity" else None
+            massive = stack.enter_context(maybe_massive) if maybe_massive is not None else None
             ib.connect(host=args.host, port=args.port)
 
             batches = [
@@ -752,12 +895,32 @@ def main():
                     ]
 
                     # Fallback recovery (equity only — Nasdaq/Stooq don't cover indices/futures)
+                    reference_bars: list = []
                     if asset_class == "equity":
+                        reference_bars, _reference_sources = fetch_massive_bars(
+                            ticker,
+                            get_missing_trading_dates(latest, target, []),
+                            massive,
+                        )
                         missing_dates = get_missing_trading_dates(latest, target, valid_bars)
                         fallback_attempts += len(missing_dates)
-                        fallback_bars, fallback_sources = fetch_fallback_bars(
-                            ticker, missing_dates, fallback,
+                        massive_bars, massive_sources = fetch_massive_bars(
+                            ticker, missing_dates, massive,
                         )
+                        fallback_bars = massive_bars
+                        fallback_sources = massive_sources
+                        recovered_dates = {
+                            date.fromisoformat(str(bar.date)) for bar in massive_bars
+                        }
+                        public_missing_dates = [
+                            missing for missing in missing_dates
+                            if missing not in recovered_dates
+                        ]
+                        public_bars, public_sources = fetch_fallback_bars(
+                            ticker, public_missing_dates, fallback,
+                        )
+                        fallback_bars.extend(public_bars)
+                        fallback_sources.extend(public_sources)
                         if fallback_bars:
                             recovered_bars, fallback_issues = validate_bars(fallback_bars, ticker, asset_class=asset_class)
                             total_issues.extend(fallback_issues)
@@ -766,6 +929,10 @@ def main():
                                 valid_bars.extend(recovered_bars)
                                 fallback_successes += len(recovered_bars)
                                 fallback_symbols += 1
+                                for recovered in recovered_bars:
+                                    source_counts[getattr(recovered, "source", "massive")] = (
+                                        source_counts.get(getattr(recovered, "source", "massive"), 0) + 1
+                                    )
                                 console.print(
                                     f"  [cyan]{ticker}[/cyan]: recovered "
                                     f"{len(recovered_bars)} missing trading day"
@@ -805,12 +972,15 @@ def main():
                         bars=valid_bars,
                         parquet_path=parquet_path,
                         expected_start=latest + timedelta(days=1) if latest else None,
+                        source="ib",
+                        reference_source=_source_comparison(reference_bars, valid_bars),
                     )
                     inserted = bronze.merge_ticker_rows(ticker, rows)
                     if hasattr(bronze, "write_ticker_parquet"):
                         bronze.write_ticker_parquet(ticker, symbol_id, bronze_dir)
                     remaining_dates = get_missing_trading_dates(latest, target, valid_bars)
                     total_inserted += inserted
+                    source_counts["ib"] += len([b for b in valid_bars if getattr(b, "source", "ib") == "ib"])
 
                     if remaining_dates:
                         console.print(
@@ -834,6 +1004,8 @@ def main():
     console.print(f"  Fallback attempts:  {fallback_attempts}")
     console.print(f"  Fallback successes: {fallback_successes}")
     console.print(f"  Fallback symbols:   {fallback_symbols}")
+    for source_name, count in sorted(source_counts.items()):
+        console.print(f"  Source {source_name}:     {count}")
     console.print(f"  Bars inserted:      {total_inserted}")
     console.print(f"  Bars validated:     {total_validated}")
     console.print(f"  Validation issues:  {len(total_issues)}")
