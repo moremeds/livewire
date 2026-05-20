@@ -147,7 +147,7 @@ python scripts/livewire_store.py --help
 Top-level subcommands:
 
 ```text
-livewire_ingest.py   daily | historical | robust | cboe-vol | fred-rates | intraday-backfill | intraday-status | probe-intraday | universe | backfill-all
+livewire_ingest.py   daily | historical | robust | cboe-vol | fred-rates | intraday-backfill | intraday-status | probe-intraday | universe | backfill-all | daily-backfill
 livewire_quality.py  health | coverage | report | weekly | watchdog
 livewire_ops.py      run-daily-job | ibc-install | ibc-start | send-alert
 livewire_store.py    rebuild-postgres | smoke-postgres | sync-r2 | migrate-parquet
@@ -292,6 +292,25 @@ For a long local run, use `tmux` and keep logs under `~/market-warehouse/logs/`:
 tmux new-session -s livewire_backfill 'cd /Users/chenxi/projects/livewire && source ~/market-warehouse/.venv/bin/activate && python scripts/livewire_ingest.py backfill-all'
 ```
 
+### Daily Backfill
+
+Use `daily-backfill` for the routine daily warehouse run. It avoids deep IB historical backfill, but it does **not** limit intraday to already-existing parquet symbols: the Massive intraday lanes run across the full `sp500` + `ndx100` + `r2k` union so the warehouse is forward-populated even before the 5-year seed is complete.
+
+- Massive equity daily repair for `sp500`, `ndx100`, and `r2k`
+- FRED Treasury rates
+- CBOE daily volatility
+- Massive equity intraday recent-window catch-up for `1m`, `5m`, and `1h` across the full equity universe
+- IB `VIX`/`SPX` volatility intraday recent-window catch-up for `5m` and `1h`
+- Optional Postgres rebuild when `MDW_POSTGRES_DSN` is set
+
+```bash
+python scripts/livewire_ingest.py daily-backfill
+MDW_DAILY_BACKFILL_INTRADAY_DAYS=3 python scripts/livewire_ingest.py daily-backfill
+MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT=30 python scripts/livewire_ingest.py daily-backfill
+```
+
+Default intraday lookback is 7 calendar days. Default Massive intraday concurrency is 20.
+
 ---
 
 ### Backfill Missing Data
@@ -337,6 +356,9 @@ python scripts/livewire_ingest.py intraday-backfill --tickers AAPL --timeframe 5
 
 # Default equity intraday warehouse build input
 python scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json --timeframe 1m --source massive --years 5 --skip-existing
+
+# Recent-window intraday catch-up, used by daily-backfill
+python scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json --timeframe 1m --source massive --days 7 --max-concurrent 20
 
 # Non-equity intraday remains IB-backed
 python scripts/livewire_ingest.py intraday-backfill --preset presets/futures-index.json --asset-class futures --timeframe 1m --source ib --years 5

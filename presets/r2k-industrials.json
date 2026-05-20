@@ -1,6 +1,6 @@
 {
   "name": "r2k-industrials",
-  "description": "Russell 2000 Industrials (257 companies)",
+  "description": "Russell 2000 Industrials (252 companies)",
   "tickers": [
     "BE",
     "KTOS",
@@ -9,7 +9,6 @@
     "MOD",
     "DY",
     "SPXC",
-    "MOGA",
     "GTLS",
     "WTS",
     "AVAV",
@@ -76,7 +75,6 @@
     "CTRI",
     "DNOW",
     "HLIO",
-    "CSGS",
     "ATKR",
     "EPAC",
     "EOSE",
@@ -126,7 +124,6 @@
     "CRAI",
     "NPKI",
     "PBI",
-    "GLDD",
     "TNC",
     "ARRY",
     "TNET",
@@ -137,14 +134,12 @@
     "ALH",
     "BV",
     "FA",
-    "SNCY",
     "TE",
     "JBI",
     "LMB",
     "ACVA",
     "AMRC",
     "ALNT",
-    "MEG",
     "GHM",
     "NX",
     "VSTS",
@@ -272,10 +267,6 @@
     [
       "MOD",
       "DY"
-    ],
-    [
-      "SPXC",
-      "MOGA"
     ],
     [
       "GTLS",
@@ -410,10 +401,6 @@
       "HLIO"
     ],
     [
-      "CSGS",
-      "ATKR"
-    ],
-    [
       "EPAC",
       "EOSE"
     ],
@@ -510,10 +497,6 @@
       "PBI"
     ],
     [
-      "GLDD",
-      "TNC"
-    ],
-    [
       "ARRY",
       "TNET"
     ],
@@ -530,10 +513,6 @@
       "BV"
     ],
     [
-      "FA",
-      "SNCY"
-    ],
-    [
       "TE",
       "JBI"
     ],
@@ -544,10 +523,6 @@
     [
       "AMRC",
       "ALNT"
-    ],
-    [
-      "MEG",
-      "GHM"
     ],
     [
       "NX",

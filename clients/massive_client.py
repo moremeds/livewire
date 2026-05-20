@@ -295,7 +295,7 @@ class MassiveClient:
     @staticmethod
     def _extract_results(payload: dict) -> list[dict]:
         status = payload.get("status")
-        if status and status != "OK":
+        if status and status not in {"OK", "DELAYED"}:
             raise MassiveAPIError(str(status), response_body=payload)
         results = payload.get("results") or []
         return results if isinstance(results, list) else []

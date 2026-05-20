@@ -1,6 +1,6 @@
 {
   "name": "sp500",
-  "description": "Full S&P 500 \u2014 503 companies, 99 sub-industry groups, 286 curated pairs",
+  "description": "Full S&P 500 \u2014 501 companies, 99 sub-industry groups, 284 curated pairs",
   "tickers": [
     "A",
     "AAPL",
@@ -123,7 +123,6 @@
     "CSGP",
     "CSX",
     "CTAS",
-    "CTRA",
     "CTSH",
     "CTVA",
     "CVNA",
@@ -228,7 +227,6 @@
     "HIG",
     "HII",
     "HLT",
-    "HOLX",
     "HON",
     "HOOD",
     "HPE",
@@ -912,10 +910,6 @@
       "BAX"
     ],
     [
-      "GEHC",
-      "HOLX"
-    ],
-    [
       "IDXX",
       "RVTY"
     ],
@@ -1238,10 +1232,6 @@
     [
       "OXY",
       "APA"
-    ],
-    [
-      "CTRA",
-      "EQT"
     ],
     [
       "EXE",
@@ -2557,7 +2547,6 @@
         "DXCM",
         "EW",
         "GEHC",
-        "HOLX",
         "IDXX",
         "PODD",
         "ISRG",
@@ -2588,10 +2577,6 @@
         [
           "BDX",
           "BAX"
-        ],
-        [
-          "GEHC",
-          "HOLX"
         ],
         [
           "IDXX",
@@ -3328,7 +3313,6 @@
       "tickers": [
         "APA",
         "COP",
-        "CTRA",
         "DVN",
         "FANG",
         "EOG",
@@ -3349,10 +3333,6 @@
         [
           "OXY",
           "APA"
-        ],
-        [
-          "CTRA",
-          "EQT"
         ],
         [
           "EXE",

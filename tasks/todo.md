@@ -1,8 +1,8 @@
-# VIX/SPX Intraday Volatility Support
+# Daily Backfill Runner
 
 ## Goal
 
-Extend the existing intraday backfill support so `VIX` and `SPX` have an explicit IB-backed volatility/index intraday path, with correct volatility metadata, a scoped preset, operator docs, and regression coverage.
+Add a lightweight daily backfill runner separate from `backfill-all`. It should use Massive for recent equity daily repair and equity intraday catch-up, while keeping non-equity lanes on their current sources.
 
 ## Dependency Graph
 
@@ -13,47 +13,50 @@ Extend the existing intraday backfill support so `VIX` and `SPX` have an explici
 
 ## Tasks
 
-- [x] T0 Add failing tests for VIX/SPX volatility intraday routing and metadata.
+- [x] T0 Add failing coverage for the daily runner and recent intraday window support.
   depends_on: []
-  - Red proof: focused tests failed on missing `asset_class` quality metadata, missing `presets/volatility-intraday.json`, and backfill-all still using `presets/volatility.json` for intraday.
+  - Red proof: focused tests failed on missing `daily-backfill` dispatcher, missing runner file, and missing `--days`/recent-window intraday support.
 
-- [x] T1 Implement the runtime fix and scoped volatility intraday preset.
+- [x] T1 Add recent-window intraday support.
   depends_on: [T0]
-  - Added `asset_class` propagation into intraday quality metadata and a dedicated `presets/volatility-intraday.json` containing `VIX` and `SPX`.
+  - Add `--days` to `intraday-backfill`, preserving existing `--years` defaults for full builds.
 
-- [x] T2 Update backfill-all and docs to use the VIX/SPX intraday preset.
+- [x] T2 Add the daily backfill runner.
   depends_on: [T1]
-  - Backfill-all now runs volatility intraday against `presets/volatility-intraday.json`; docs and project memory distinguish daily CBOE volatility from IB VIX/SPX intraday.
+  - Add `tools/run_daily_backfill.sh` and `scripts/livewire_ingest.py daily-backfill`.
 
-- [x] T3 Run focused and full verification.
+- [x] T3 Update operator docs.
   depends_on: [T2]
-  - Focused verification: `77 passed`, 100% coverage for `backfill_intraday` and `fetch_cboe_volatility`.
-  - Shell/diff checks: `bash -n tools/run_backfill_all.sh` and `git diff --check` passed.
-  - Full gate: `941 passed, 1 skipped`, 100% coverage.
-  - Operator dry-run: VIX/SPX volatility preset reports 53 `5m` IB chunks each.
+  - Document when to use daily backfill versus full `backfill-all`.
 
-- [x] T4 Commit, push, and open a PR if verification passes.
+- [x] T4 Verify.
   depends_on: [T3]
-  - Commit: `a951f4c feat: add vix spx volatility intraday support`.
-  - PR: https://github.com/moremeds/livewire/pull/12
+  - Run focused tests, shell syntax checks, and the repo coverage gate if practical.
+  - Verification: `bash -n tools/run_daily_backfill.sh && bash -n tools/run_backfill_all.sh`, `git diff --check`, focused suite `80 passed`, intraday `--days` dry-run, full coverage gate `972 passed, 1 skipped`, 100% coverage.
 
-## Review
-- Design: add a final non-IB FRED phase after equity Phase 2, log to `backfill_fred_rates.log`, source `.env` if present, and let nonzero `fred-rates` exit codes fail the runner.
-- Red test proof:
-  - `python -m pytest tests/test_livewire_entrypoints.py::test_backfill_all_runner_includes_fred_rates_phase -q` -> failed because `PHASE 3: FRED Treasury rates` was absent from `tools/run_backfill_all.sh`.
-- Targeted verification:
-  - `python -m pytest tests/test_livewire_entrypoints.py tests/test_script_consolidation.py -q` -> 20 passed.
-- Full verification:
-  - `python -m pytest tests -q --cov=clients --cov=scripts --cov=livewire_scripts --cov-report=term-missing -W error::RuntimeWarning` -> 905 passed, 1 skipped, 100% coverage.
+# Preset Universe Cleanup
 
-# Massive Equity Incremental Backfill
+## Goal
 
-Dependency graph:
-- `task-1-historical-source-selector` depends_on: []
-- `task-2-orchestration-callers` depends_on: ["task-1-historical-source-selector"]
-- `task-3-docs-verification` depends_on: ["task-1-historical-source-selector", "task-2-orchestration-callers"]
+Remove target-date unavailable symbols from managed preset universes only when provider evidence shows they are inactive or absent from reference metadata. Keep active symbols in the universe even if a single daily repair run could not fill them.
 
-Tasks:
-- [x] `task-1-historical-source-selector` depends_on: [] Add `--source {auto,ib,massive}` to daily historical fetch/backfill, keep `auto` on IB for deep older-history backfill, and prevent forced Massive partial ranges from completing cursors.
-- [x] `task-2-orchestration-callers` depends_on: ["task-1-historical-source-selector"] Route robust backfill, coverage recovery, `livewire_ingest.py` preflight, and `backfill-all` Phase 2 through the source selector and Massive daily repair path.
-- [x] `task-3-docs-verification` depends_on: ["task-1-historical-source-selector", "task-2-orchestration-callers"] Update docs and run targeted plus full coverage verification.
+## Dependency Graph
+
+- U0 -> U1
+- U1 -> U2
+
+## Tasks
+
+- [x] U0 Verify unavailable daily symbols against parquet and providers.
+  depends_on: []
+  - Evidence: parquet still missed 47 symbols for `2026-05-19` after explicit IB retry; Massive metadata showed `KFS`, `MCW`, and `SLNO` are still active.
+
+- [x] U1 Remove only inactive or metadata-missing symbols from managed presets.
+  depends_on: [U0]
+  - Remove inactive/missing reference symbols from affected S&P 500 and Russell 2000 preset files.
+  - Kept active unresolved symbols: `KFS`, `MCW`, `SLNO`.
+
+- [x] U2 Verify preset cleanup and daily coverage view.
+  depends_on: [U1]
+  - Recheck preset counts, cursor consistency, and remaining daily gaps.
+  - Verification: all 162 preset JSON files parse; cleaned preset union is 2,401 symbols; only active unresolved daily gaps are `KFS`, `MCW`, and `SLNO`; `git diff --check`; focused tests `31 passed`.

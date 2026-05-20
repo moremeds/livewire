@@ -1,6 +1,6 @@
 {
   "name": "r2k-information-technology",
-  "description": "Russell 2000 Information Technology (210 companies)",
+  "description": "Russell 2000 Information Technology (207 companies)",
   "tickers": [
     "FN",
     "CRDO",
@@ -80,7 +80,6 @@
     "BLKB",
     "RAMP",
     "DGII",
-    "ASGN",
     "FRSH",
     "BBAI",
     "BRZE",
@@ -125,7 +124,6 @@
     "MITK",
     "CXM",
     "ASAN",
-    "SEMR",
     "PGY",
     "BTBT",
     "CCSI",
@@ -163,7 +161,6 @@
     "OOMA",
     "CRSR",
     "XPER",
-    "ONTF",
     "BELFA",
     "MEI",
     "BKTI",
@@ -371,10 +368,6 @@
       "DGII"
     ],
     [
-      "ASGN",
-      "FRSH"
-    ],
-    [
       "BBAI",
       "BRZE"
     ],
@@ -459,10 +452,6 @@
       "CXM"
     ],
     [
-      "ASAN",
-      "SEMR"
-    ],
-    [
       "PGY",
       "BTBT"
     ],
@@ -533,10 +522,6 @@
     [
       "OOMA",
       "CRSR"
-    ],
-    [
-      "XPER",
-      "ONTF"
     ],
     [
       "BELFA",

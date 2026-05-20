@@ -23,6 +23,7 @@ from livewire_scripts.backfill_intraday import (
     _resolve_tickers,
     backfill_ticker_massive,
     backfill_ticker,
+    compute_intraday_date_windows,
     ib_bar_to_row,
     load_cursor,
     main,
@@ -236,6 +237,30 @@ class TestBackfillTicker:
 
 
 class TestBackfillTickerMassive:
+    def test_compute_massive_windows_accepts_recent_days(self):
+        windows = compute_intraday_date_windows(5, lookback_days=45, window_days=30)
+
+        assert len(windows) == 2
+        assert (windows[0][1] - windows[0][0]).days == 29
+        assert (windows[-1][1] - windows[-1][0]).days <= 29
+
+    def test_recent_days_window_passed_to_massive_window_planner(self, tmp_path):
+        bronze = IntradayBronzeClient(bronze_dir=tmp_path / "bronze", timeframe="1m")
+        massive = MagicMock()
+        massive.get_intraday_bars.return_value = []
+        fake_windows = [(datetime(2026, 4, 6).date(), datetime(2026, 4, 7).date())]
+
+        with patch(
+            "livewire_scripts.backfill_intraday.compute_intraday_date_windows",
+            return_value=fake_windows,
+        ) as planner:
+            backfill_ticker_massive(
+                "AAPL", "1m", years=5, massive=massive, bronze=bronze,
+                lookback_days=7,
+            )
+
+        planner.assert_called_once_with(5, lookback_days=7)
+
     def test_unknown_error_recorded_and_continues(self, tmp_path):
         bronze = IntradayBronzeClient(bronze_dir=tmp_path / "bronze", timeframe="1m")
         massive = MagicMock()
@@ -318,10 +343,45 @@ class TestBackfillTickerMassive:
 
 
 class TestQualityHookIntegration:
-    def test_quality_hook_fires_with_outcome_errors(self, tmp_path):
+    def test_quality_hook_suppresses_bulk_email_alerts_by_default(self, tmp_path, monkeypatch):
         from clients.quality_detector import QualityFlag
         from livewire_scripts.backfill_intraday import _run_quality_detection
 
+        monkeypatch.delenv("MDW_INTRADAY_BACKFILL_ALERTS", raising=False)
+        bars = [_make_ib_bar(datetime(2026, 4, 6, 9, 30))]
+        outcome = TickerOutcome(ticker="AAPL", errors=["2026-04-06: provider error"])
+        parquet_path = tmp_path / "5m.parquet"
+        parquet_path.write_bytes(b"")
+        fake_flag = QualityFlag(
+            category="fetch_tainted",
+            severity="warning",
+            detail={},
+            ts="2026-05-17T00:00:00Z",
+        )
+
+        with (
+            patch("livewire_scripts.backfill_intraday.detect_all", return_value=[fake_flag]),
+            patch("livewire_scripts.backfill_intraday.write_sidecar") as write_sidecar,
+            patch("livewire_scripts.backfill_intraday.append_audit") as append_audit,
+            patch("livewire_scripts.backfill_intraday.alert_on_flag") as alert_on_flag,
+        ):
+            _run_quality_detection(
+                ticker="AAPL",
+                timeframe="5m",
+                bars=bars,
+                parquet_path=parquet_path,
+                outcome=outcome,
+            )
+
+        write_sidecar.assert_called_once()
+        append_audit.assert_called_once()
+        alert_on_flag.assert_not_called()
+
+    def test_quality_hook_fires_with_outcome_errors_when_enabled(self, tmp_path, monkeypatch):
+        from clients.quality_detector import QualityFlag
+        from livewire_scripts.backfill_intraday import _run_quality_detection
+
+        monkeypatch.setenv("MDW_INTRADAY_BACKFILL_ALERTS", "1")
         bars = [_make_ib_bar(datetime(2026, 4, 6, 9, 30))]
         outcome = TickerOutcome(ticker="AAPL", errors=["2026-04-06: error 162"])
         parquet_path = tmp_path / "5m.parquet"
@@ -816,6 +876,95 @@ class TestMain:
             "symbol=AAPL" / "1m.parquet"
         )
         assert bronze_path.exists()
+
+    def test_massive_run_can_process_tickers_concurrently(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
+        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
+        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+
+        class FakeMassive:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return None
+
+        def fake_backfill(ticker, *_args, **_kwargs):
+            return TickerOutcome(ticker=ticker, bars_inserted=1)
+
+        with patch("livewire_scripts.backfill_intraday.MassiveClient", side_effect=lambda: FakeMassive()):
+            with patch(
+                "livewire_scripts.backfill_intraday.backfill_ticker_massive",
+                side_effect=fake_backfill,
+            ) as backfill:
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "backfill_intraday.py", "--timeframe", "1m",
+                        "--source", "massive", "--tickers", "AAPL", "MSFT", "NVDA",
+                        "--days", "1", "--max-concurrent", "2",
+                    ],
+                ):
+                    main()
+
+        assert backfill.call_count == 3
+        out = capsys.readouterr().out
+        assert "max_concurrent=2" in out
+        assert "inserted=3" in out
+
+    def test_max_concurrent_must_be_positive(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
+        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
+        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "backfill_intraday.py", "--timeframe", "1m",
+                "--source", "massive", "--tickers", "AAPL",
+                "--max-concurrent", "0", "--dry-run",
+            ],
+        ):
+            with pytest.raises(SystemExit, match="--max-concurrent must be >= 1"):
+                main()
+
+    def test_massive_concurrent_worker_errors_are_reported_per_ticker(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
+        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
+        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+
+        class FakeMassive:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return None
+
+        def fake_backfill(ticker, *_args, **_kwargs):
+            if ticker == "MSFT":
+                raise RuntimeError("temporary provider failure")
+            return TickerOutcome(ticker=ticker, bars_inserted=1)
+
+        with patch("livewire_scripts.backfill_intraday.MassiveClient", side_effect=lambda: FakeMassive()):
+            with patch(
+                "livewire_scripts.backfill_intraday.backfill_ticker_massive",
+                side_effect=fake_backfill,
+            ):
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "backfill_intraday.py", "--timeframe", "1m",
+                        "--source", "massive", "--tickers", "AAPL", "MSFT",
+                        "--days", "1", "--max-concurrent", "2",
+                    ],
+                ):
+                    with pytest.raises(SystemExit):
+                        main()
+
+        assert load_cursor("1m", "custom") == set()
 
     def test_ib_no_data_skips_and_marks_completed(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")

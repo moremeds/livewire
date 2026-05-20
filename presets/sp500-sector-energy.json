@@ -5,7 +5,6 @@
     "APA",
     "BKR",
     "COP",
-    "CTRA",
     "CVX",
     "DVN",
     "EOG",
@@ -49,10 +48,6 @@
     [
       "OXY",
       "APA"
-    ],
-    [
-      "CTRA",
-      "EQT"
     ],
     [
       "EXE",

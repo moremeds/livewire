@@ -1,6 +1,6 @@
 {
   "name": "r2k-tier-top-100",
-  "description": "Russell 2000 R2K Top 100 by weight (most liquid) (100 companies)",
+  "description": "Russell 2000 R2K Top 100 by weight (most liquid) (99 companies)",
   "tickers": [
     "BE",
     "FN",
@@ -22,7 +22,6 @@
     "BBIO",
     "RMBS",
     "IDCC",
-    "MOGA",
     "GTLS",
     "CTRE",
     "AHR",
@@ -143,10 +142,6 @@
     [
       "RMBS",
       "IDCC"
-    ],
-    [
-      "MOGA",
-      "GTLS"
     ],
     [
       "CTRE",

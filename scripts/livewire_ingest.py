@@ -37,6 +37,7 @@ IB_COMMANDS = {
     "probe-intraday",
     "universe",
     "backfill-all",
+    "daily-backfill",
 }
 
 
@@ -61,6 +62,12 @@ def _dispatch_backfill_all(argv: Sequence[str]) -> int:
     if argv:
         raise SystemExit("backfill-all does not accept arguments")
     return subprocess.call(["bash", str(REPO_ROOT / "tools" / "run_backfill_all.sh")])
+
+
+def _dispatch_daily_backfill(argv: Sequence[str]) -> int:
+    if argv:
+        raise SystemExit("daily-backfill does not accept arguments")
+    return subprocess.call(["bash", str(REPO_ROOT / "tools" / "run_daily_backfill.sh")])
 
 
 def _arg_value(argv: Sequence[str], flag: str, default: str) -> str:
@@ -97,7 +104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Livewire ingestion commands")
     parser.add_argument(
         "command",
-        choices=[*COMMANDS.keys(), "backfill-all"],
+        choices=[*COMMANDS.keys(), "backfill-all", "daily-backfill"],
         help="Ingestion command to run",
     )
     if not argv or argv[0] in {"-h", "--help"}:
@@ -113,6 +120,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "backfill-all":
         return _dispatch_backfill_all(rest)
+    if args.command == "daily-backfill":
+        return _dispatch_daily_backfill(rest)
     return _dispatch_module(COMMANDS[args.command], rest, f"livewire_ingest.py {args.command}")
 
 

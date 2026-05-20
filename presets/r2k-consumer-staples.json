@@ -1,6 +1,6 @@
 {
   "name": "r2k-consumer-staples",
-  "description": "Russell 2000 Consumer Staples (61 companies)",
+  "description": "Russell 2000 Consumer Staples (60 companies)",
   "tickers": [
     "CALM",
     "PSMT",
@@ -31,7 +31,6 @@
     "ODC",
     "SENEA",
     "UTZ",
-    "STKL",
     "JBSS",
     "AVO",
     "MAMA",
@@ -120,10 +119,6 @@
     [
       "ODC",
       "SENEA"
-    ],
-    [
-      "UTZ",
-      "STKL"
     ],
     [
       "JBSS",

@@ -1,6 +1,6 @@
 {
   "name": "r2k-consumer-discretionary",
-  "description": "Russell 2000 Consumer Discretionary (197 companies)",
+  "description": "Russell 2000 Consumer Discretionary (192 companies)",
   "tickers": [
     "IBP",
     "TMHC",
@@ -21,7 +21,6 @@
     "ASO",
     "LTH",
     "PATK",
-    "TPH",
     "SIG",
     "SHAK",
     "KBH",
@@ -112,7 +111,6 @@
     "HOV",
     "BBW",
     "HZO",
-    "GDEN",
     "BLMN",
     "OXM",
     "RGR",
@@ -121,7 +119,6 @@
     "DFH",
     "SLDP",
     "MBUU",
-    "UDMY",
     "ARKO",
     "DIN",
     "CWH",
@@ -168,7 +165,6 @@
     "FLXS",
     "FNKO",
     "WEYS",
-    "EWCZ",
     "LOVE",
     "LEGH",
     "LE",
@@ -195,7 +191,6 @@
     "LVWR",
     "FFAI",
     "NRDY",
-    "MPX",
     "CURV",
     "COOK",
     "ZSPC"
@@ -236,10 +231,6 @@
     [
       "ASO",
       "LTH"
-    ],
-    [
-      "PATK",
-      "TPH"
     ],
     [
       "SIG",
@@ -422,10 +413,6 @@
       "HZO"
     ],
     [
-      "GDEN",
-      "BLMN"
-    ],
-    [
       "OXM",
       "RGR"
     ],
@@ -436,10 +423,6 @@
     [
       "DFH",
       "SLDP"
-    ],
-    [
-      "MBUU",
-      "UDMY"
     ],
     [
       "ARKO",
@@ -534,10 +517,6 @@
       "WEYS"
     ],
     [
-      "EWCZ",
-      "LOVE"
-    ],
-    [
       "LEGH",
       "LE"
     ],
@@ -584,10 +563,6 @@
     [
       "LVWR",
       "FFAI"
-    ],
-    [
-      "NRDY",
-      "MPX"
     ],
     [
       "CURV",

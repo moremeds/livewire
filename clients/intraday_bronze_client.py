@@ -164,11 +164,26 @@ class IntradayBronzeClient:
         self._publish(symbol, normalized)
         return len(normalized)
 
-    def merge_ticker_rows(self, symbol: str, rows: list[dict[str, Any]]) -> int:
+    def merge_ticker_rows(
+        self,
+        symbol: str,
+        rows: list[dict[str, Any]],
+        *,
+        overwrite_existing: bool = True,
+    ) -> int:
         """Merge *rows* into existing snapshot. Returns count of new rows added."""
         incoming = self._normalize_rows(rows, symbol)
         if not incoming:
             return 0
+
+        if not overwrite_existing:
+            existing_keys = self._read_symbol_timestamps(symbol)
+            new_rows = [
+                row for row in incoming if row["bar_timestamp"] not in existing_keys
+            ]
+            if not new_rows:
+                return 0
+            incoming = new_rows
 
         existing = self.read_symbol_rows(symbol)
         merged: dict[datetime, dict[str, Any]] = {
@@ -182,6 +197,20 @@ class IntradayBronzeClient:
         ordered = [merged[ts] for ts in sorted(merged)]
         self._publish(symbol, ordered)
         return inserted
+
+    def _read_symbol_timestamps(self, symbol: str) -> set[datetime]:
+        """Read only timestamp keys for a symbol snapshot."""
+        path = self._symbol_path(symbol)
+        if not path.exists():
+            return set()
+        table = pq.read_table(path, columns=["bar_timestamp"])
+        keys: set[datetime] = set()
+        for value in table.column("bar_timestamp").to_pylist():
+            if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+                keys.add(value.replace(tzinfo=timezone.utc))
+            else:
+                keys.add(value.astimezone(timezone.utc))
+        return keys
 
     def _symbol_path(self, symbol: str) -> Path:
         return self._bronze_dir / f"symbol={symbol}" / self._filename

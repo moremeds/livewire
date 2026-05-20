@@ -189,6 +189,7 @@ def test_ingest_preserves_nonzero_system_exit(monkeypatch) -> None:
     ["daily"],
     ["daily", "--source", "ib"],
     ["backfill-all"],
+    ["daily-backfill"],
 ])
 def test_ingest_ib_commands_keep_preflight(monkeypatch, argv) -> None:
     preflight_calls: list[bool] = []
@@ -244,6 +245,22 @@ def test_ingest_backfill_all_shells_to_tool(monkeypatch) -> None:
 
     with pytest.raises(SystemExit, match="does not accept arguments"):
         livewire_ingest.main(["backfill-all", "--unexpected"])
+
+
+def test_ingest_daily_backfill_shells_to_tool(monkeypatch) -> None:
+    seen = {}
+    def fake_call(cmd):
+        seen["cmd"] = cmd
+        return 0
+    monkeypatch.setattr(livewire_ingest.subprocess, "call", fake_call)
+    monkeypatch.setattr(ib_gateway_preflight, "assert_gateway_up", lambda: None)
+
+    assert livewire_ingest.main(["daily-backfill"]) == 0
+    assert seen["cmd"][0] == "bash"
+    assert seen["cmd"][1].endswith("tools/run_daily_backfill.sh")
+
+    with pytest.raises(SystemExit, match="does not accept arguments"):
+        livewire_ingest.main(["daily-backfill", "--unexpected"])
 
 
 def test_backfill_all_runner_includes_fred_rates_phase() -> None:

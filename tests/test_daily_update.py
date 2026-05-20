@@ -2343,6 +2343,17 @@ class TestValidateIntradayBar:
         issues = validate_intraday_bar(self._bar(ts), "AAPL", "5m")
         assert any("outside RTH" in i for i in issues)
 
+    def test_outside_rth_can_be_allowed_for_index_sessions(self):
+        # VIX-style index sessions can trade outside the equity RTH window.
+        ts = datetime(2026, 4, 7, 3, 15, tzinfo=_ET).astimezone(_UTC)
+        issues = validate_intraday_bar(
+            self._bar(ts),
+            "VIX",
+            "5m",
+            require_rth=False,
+        )
+        assert issues == []
+
     def test_after_close_rejected(self):
         # 16:30 ET on a trading day (after close)
         ts = datetime(2026, 4, 7, 16, 30, tzinfo=_ET).astimezone(_UTC)

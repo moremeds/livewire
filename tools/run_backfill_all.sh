@@ -14,11 +14,14 @@ VENV="$HOME/market-warehouse/.venv/bin/activate"
 SCRIPT="scripts/livewire_ingest.py"
 LOG_DIR="$HOME/market-warehouse/logs"
 ENV_FILE=".env"
-STALL_TIMEOUT=600    # seconds of no cursor update before killing (10 min)
-COOLDOWN=300         # seconds to wait after stall/failure (5 min IB cooldown)
+STALL_TIMEOUT="${MDW_BACKFILL_STALL_TIMEOUT:-600}"  # seconds of no activity before killing
+STALL_COOLDOWN="${MDW_BACKFILL_STALL_COOLDOWN:-${MDW_BACKFILL_COOLDOWN:-300}}"
+SUCCESS_COOLDOWN="${MDW_BACKFILL_SUCCESS_COOLDOWN:-0}"
+NO_PROGRESS_COOLDOWN="${MDW_BACKFILL_NO_PROGRESS_COOLDOWN:-30}"
 POLL_INTERVAL="${MDW_BACKFILL_POLL_INTERVAL:-30}"
 MAX_CONCURRENT=10
 BATCH_SIZE=5
+RUNNING_PIDS=()
 
 source "$VENV"
 if [ -f "$ENV_FILE" ]; then
@@ -31,12 +34,71 @@ fi
 timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
 log() { echo "[$(timestamp)] $*"; }
 
+track_pid() {
+    RUNNING_PIDS+=("$1")
+}
+
+untrack_pid() {
+    local target="$1"
+    local kept=()
+    local pid
+    for pid in "${RUNNING_PIDS[@]:-}"; do
+        if [ "$pid" != "$target" ]; then
+            kept+=("$pid")
+        fi
+    done
+    RUNNING_PIDS=("${kept[@]}")
+}
+
+kill_tree() {
+    local root="$1"
+    local signal="${2:-TERM}"
+    local children
+    children=$(pgrep -P "$root" 2>/dev/null || true)
+    local child
+    for child in $children; do
+        kill_tree "$child" "$signal"
+    done
+    kill "-$signal" "$root" 2>/dev/null || true
+}
+
+cleanup_children() {
+    local status=$?
+    trap - INT TERM EXIT
+    local pid
+    for pid in "${RUNNING_PIDS[@]:-}"; do
+        kill_tree "$pid" TERM
+    done
+    exit "$status"
+}
+
+trap cleanup_children INT TERM EXIT
+
 # Get mtime of a file in epoch seconds (0 if missing)
 file_mtime() {
     if [ -f "$1" ]; then
         stat -f %m "$1" 2>/dev/null || echo 0
     else
         echo 0
+    fi
+}
+
+max_mtime() {
+    local first
+    local second
+    first=$(file_mtime "$1")
+    second=$(file_mtime "$2")
+    if [ "$first" -gt "$second" ]; then
+        echo "$first"
+    else
+        echo "$second"
+    fi
+}
+
+sleep_if_needed() {
+    local seconds="$1"
+    if [ "$seconds" -gt 0 ]; then
+        sleep "$seconds"
     fi
 }
 
@@ -60,30 +122,40 @@ run_preset() {
 
     local start_completed
     start_completed=$(cursor_completed "$cursor_file")
+    local last_completed="$start_completed"
+    local log_file="$LOG_DIR/${label}.log"
     log "START $label — cursor completed: $start_completed"
     log "CMD: ${cmd[*]}"
 
     # Launch fetch
-    "${cmd[@]}" >> "$LOG_DIR/${label}.log" 2>&1 &
+    "${cmd[@]}" >> "$log_file" 2>&1 &
     local pid=$!
+    track_pid "$pid"
     log "PID: $pid"
 
     local last_mtime
-    last_mtime=$(file_mtime "$cursor_file")
+    last_mtime=$(max_mtime "$cursor_file" "$log_file")
     local last_check
     last_check=$(date +%s)
 
-    # Monitor via cursor file mtime
+    # Monitor cursor and child log activity. Massive intraday can spend a long
+    # time on a ticker before marking cursor completion; log writes still prove
+    # the process is alive.
     while kill -0 "$pid" 2>/dev/null; do
         sleep "$POLL_INTERVAL"
 
         local current_mtime
-        current_mtime=$(file_mtime "$cursor_file")
+        current_mtime=$(max_mtime "$cursor_file" "$log_file")
 
         if [ "$current_mtime" != "$last_mtime" ]; then
             local completed
             completed=$(cursor_completed "$cursor_file")
-            log "PROGRESS $label — completed: $completed"
+            if [ "$completed" != "$last_completed" ]; then
+                log "PROGRESS $label — completed: $completed"
+                last_completed="$completed"
+            else
+                log "ACTIVITY $label — child log updated; cursor completed: $completed"
+            fi
             last_mtime="$current_mtime"
             last_check=$(date +%s)
         else
@@ -92,18 +164,24 @@ run_preset() {
             local stall=$((now - last_check))
 
             if [ "$stall" -ge "$STALL_TIMEOUT" ]; then
-                log "STALL $label — no cursor update for ${stall}s, killing pid $pid"
-                kill "$pid" 2>/dev/null || true
+                log "STALL $label — no cursor/log activity for ${stall}s, killing pid $pid"
+                kill_tree "$pid" TERM
                 sleep 3
-                kill -9 "$pid" 2>/dev/null || true
-                wait "$pid" 2>/dev/null || true
+                kill_tree "$pid" KILL
+                set +e
+                wait "$pid" 2>/dev/null
+                set -e
+                untrack_pid "$pid"
                 return 1
             fi
         fi
     done
 
+    set +e
     wait "$pid" 2>/dev/null
     local exit_code=$?
+    set -e
+    untrack_pid "$pid"
     local end_completed
     end_completed=$(cursor_completed "$cursor_file")
     log "EXIT $label — code=$exit_code, completed: $start_completed → $end_completed"
@@ -143,26 +221,27 @@ run_until_done() {
             fi
 
             if [ "$completed" -gt "$before_completed" ]; then
-                log "PROGRESS $label — $before_completed → $completed. Cooling down ${COOLDOWN}s..."
+                log "PROGRESS $label — $before_completed → $completed. Cooling down ${SUCCESS_COOLDOWN}s..."
                 stale_count=0
+                sleep_if_needed "$SUCCESS_COOLDOWN"
             else
                 stale_count=$((stale_count + 1))
-                log "NO PROGRESS $label — still $completed/$total (stale $stale_count/$MAX_STALE). Cooling down ${COOLDOWN}s..."
+                log "NO PROGRESS $label — still $completed/$total (stale $stale_count/$MAX_STALE). Cooling down ${NO_PROGRESS_COOLDOWN}s..."
+                sleep_if_needed "$NO_PROGRESS_COOLDOWN"
             fi
 
             if [ "$stale_count" -ge "$MAX_STALE" ]; then
                 log "GIVING UP $label — $completed/$total done, $((total - completed)) tickers unfetchable. Moving on."
                 return 0
             fi
-            sleep "$COOLDOWN"
         else
             stale_count=$((stale_count + 1))
             if [ "$stale_count" -ge "$MAX_STALE" ]; then
                 log "GIVING UP $label — $completed/$total after $stale_count stalls. Moving on."
                 return 0
             fi
-            log "RESTART $label — stale $stale_count/$MAX_STALE. Cooling down ${COOLDOWN}s..."
-            sleep "$COOLDOWN"
+            log "RESTART $label — stale $stale_count/$MAX_STALE. Cooling down ${STALL_COOLDOWN}s..."
+            sleep_if_needed "$STALL_COOLDOWN"
         fi
     done
 }
@@ -173,7 +252,8 @@ mkdir -p "$LOG_DIR"
 
 log "============================================================"
 log "BACKFILL RUNNER START"
-log "Stall timeout: ${STALL_TIMEOUT}s, Cooldown: ${COOLDOWN}s"
+log "Stall timeout: ${STALL_TIMEOUT}s, Stall cooldown: ${STALL_COOLDOWN}s"
+log "Success cooldown: ${SUCCESS_COOLDOWN}s, No-progress cooldown: ${NO_PROGRESS_COOLDOWN}s"
 log "Batch: $BATCH_SIZE, Concurrent: $MAX_CONCURRENT"
 log "============================================================"
 
@@ -268,14 +348,18 @@ run_volatility_intraday() {
 log "Starting Massive equity intraday and IB/CBOE volatility lanes in parallel"
 run_equity_intraday &
 equity_intraday_pid=$!
+track_pid "$equity_intraday_pid"
 run_volatility_intraday &
 volatility_intraday_pid=$!
+track_pid "$volatility_intraday_pid"
 
 set +e
 wait "$equity_intraday_pid"
 equity_intraday_status=$?
+untrack_pid "$equity_intraday_pid"
 wait "$volatility_intraday_pid"
 volatility_intraday_status=$?
+untrack_pid "$volatility_intraday_pid"
 set -e
 
 if [ "$equity_intraday_status" -ne 0 ] || [ "$volatility_intraday_status" -ne 0 ]; then
