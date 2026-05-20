@@ -240,7 +240,7 @@ run_equity_intraday() {
     done
 }
 
-# Phases 7-8: Build volatility daily via CBOE, then volatility/index intraday via IB.
+# Phases 7-8: Build volatility daily via CBOE, then VIX/SPX volatility/index intraday via IB.
 run_volatility_intraday() {
     log "── PHASE 7: CBOE volatility daily ──"
     python "$SCRIPT" cboe-vol --preset presets/volatility.json >> "$LOG_DIR/volatility_cboe.log" 2>&1
@@ -249,7 +249,7 @@ run_volatility_intraday() {
     log "PHASE 7 COMPLETE"
     log "============================================================"
 
-    VOL_PRESET="presets/volatility.json"
+    VOL_PRESET="presets/volatility-intraday.json"
     VOL_NAME=$(python3 -c "import json; print(json.load(open('$VOL_PRESET'))['name'])")
     VOL_TOTAL=$(python3 -c "import json; print(len(json.load(open('$VOL_PRESET'))['tickers']))")
     for timeframe in 5m 1h; do

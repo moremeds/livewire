@@ -88,6 +88,7 @@ def test_backfill_all_includes_default_full_warehouse_phases() -> None:
     assert "cboe-vol --preset presets/volatility.json" in script
 
     assert "PHASE 8: IB volatility intraday" in script
+    assert 'VOL_PRESET="presets/volatility-intraday.json"' in script
     assert "--asset-class volatility" in script
     assert "--source ib" in script
     assert "run_equity_intraday &" in script
@@ -174,7 +175,7 @@ sys.exit(0)
     assert "scripts/livewire_ingest.py historical --preset presets/r2k.json --backfill --source auto" in calls
     assert "scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json --timeframe 1m --source massive" in calls
     assert "scripts/livewire_ingest.py intraday-backfill --preset presets/r2k.json --timeframe 5m --source massive" in calls
-    assert "scripts/livewire_ingest.py intraday-backfill --preset presets/volatility.json --timeframe 1h --source ib" in calls
+    assert "scripts/livewire_ingest.py intraday-backfill --preset presets/volatility-intraday.json --timeframe 1h --source ib" in calls
     assert "scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe all --include-reliability" in calls
     assert "scripts/livewire_store.py rebuild-postgres --asset-class volatility --timeframe 1d" in calls
     assert "ALL DONE" in result.stdout

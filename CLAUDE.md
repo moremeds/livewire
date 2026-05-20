@@ -19,6 +19,7 @@ livewire/                           # Git repo
 │   └── postgres_schema.py          # Postgres md.* schema definitions
 ├── presets/
 │   ├── volatility.json             # CBOE Volatility Indices (VIX, VVIX, etc.)
+│   ├── volatility-intraday.json    # VIX/SPX IB-backed intraday index bars
 │   ├── futures-index.json          # CME/CBOT Index Futures (ES, NQ, RTY, YM)
 │   ├── futures-energy.json         # NYMEX Energy Futures (CL, NG)
 │   ├── futures-metals.json         # COMEX Metals Futures (GC, SI)
@@ -109,7 +110,7 @@ Primary data source: **Interactive Brokers** via `ib_async`. Requires IB Gateway
 - `DailyBarFallbackClient` is a narrow recovery client for unresolved target-day gaps in the current U.S. equity universe. Provider order: Nasdaq `assetclass=stocks`, Nasdaq `assetclass=etf`, then Stooq U.S. daily CSV.
 - `MassiveClient` is the daily and intraday U.S. equity accelerator and validation reference. It uses `MASSIVE_API_KEY`, stores `adjusted=false` bars with `adj_close = close`, and is not used for broker-specific asset classes.
 - `adj_close` is set to `close` (IB TRADES data doesn't provide adjusted prices)
-- **CBOE volatility indices** are fetched directly from CBOE's public API (`cdn.cboe.com/api/global/delayed_quotes/charts/historical/`) via `scripts/livewire_ingest.py cboe-vol`, not IB. This is the authoritative source for VIX, VVIX, VXHYG, VXSMH, and all other CBOE volatility indices. The writer normalizes stale parquet schemas on merge (drops extra columns from older schema versions) and rewrites files to fix schema drift even when no new data is available.
+- **CBOE volatility indices** are fetched directly from CBOE's public API (`cdn.cboe.com/api/global/delayed_quotes/charts/historical/`) via `scripts/livewire_ingest.py cboe-vol`, not IB. This is the authoritative source for VIX, VVIX, VXHYG, VXSMH, and all other CBOE volatility indices. For `VIX` and `SPX`, `cboe-vol` also appends newer rows from CBOE's official daily-price CSV backup when the chart JSON lags. The writer normalizes stale parquet schemas on merge (drops extra columns from older schema versions) and rewrites files to fix schema drift even when no new data is available.
 - **Treasury yield rates** are fetched from FRED via `scripts/livewire_ingest.py fred-rates` using `FRED_API_KEY`. Default series are `DGS3`, `DGS5`, `DGS10`, and `DGS30`; they write to `data-lake/bronze/asset_class=rates/symbol=<series>/1d.parquet` with `trade_date`, `symbol_id`, `tenor_years`, `yield_pct`, and `source`.
 
 ### IB BarData → Bronze mapping
@@ -200,7 +201,7 @@ Current fetch behavior:
 python scripts/livewire_ingest.py backfill-all   # Runs default warehouse build
 ```
 
-`backfill-all` is the default warehouse build, not just daily equity. It runs equity daily seed/backfill for `sp500`, `ndx100`, and `r2k`; the older-history backfill phase remains IB-backed through `--source auto`. It then syncs FRED Treasury yield rates, then runs Massive equity intraday (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed volatility intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility.
+`backfill-all` is the default warehouse build, not just daily equity. It runs equity daily seed/backfill for `sp500`, `ndx100`, and `r2k`; the older-history backfill phase remains IB-backed through `--source auto`. It then syncs FRED Treasury yield rates, then runs Massive equity intraday (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed `VIX`/`SPX` intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility.
 
 Output: per-ticker bronze Parquet at `data-lake/bronze/asset_class=equity/symbol=<ticker>/{1d,1m,5m,1h}.parquet` and volatility/index bronze Parquet under `data-lake/bronze/asset_class=volatility/symbol=<ticker>/`. Postgres is rebuilt only when `MDW_POSTGRES_DSN` is configured.
 
@@ -300,7 +301,7 @@ Views are `summary`, `flap`, and `quality`; `--source` accepts `all`, `ib`, `uw`
 
 ### Intraday backfill (1m / 1h / 5m)
 
-`scripts/livewire_ingest.py intraday-backfill` is the canonical entry point for full historical intraday backfills. The default equity warehouse intraday build is Massive `1m` for 5 years. Non-equity intraday data remains IB-backed. `scripts/livewire_ingest.py historical` is daily-only and `scripts/livewire_ingest.py intraday-status` is a session-state classifier. Reuses `compute_intraday_chunks` for IB chunks (1 D for 1m, 1 W for 5m, 1 M for 1h) and `validate_intraday_bar`; rejected bars are logged but never written to bronze.
+`scripts/livewire_ingest.py intraday-backfill` is the canonical entry point for full historical intraday backfills. The default equity warehouse intraday build is Massive `1m` for 5 years. Non-equity intraday data remains IB-backed; volatility intraday is scoped to `VIX` and `SPX` through `presets/volatility-intraday.json`. `scripts/livewire_ingest.py historical` is daily-only and `scripts/livewire_ingest.py intraday-status` is a session-state classifier. Reuses `compute_intraday_chunks` for IB chunks (1 D for 1m, 1 W for 5m, 1 M for 1h) and `validate_intraday_bar`; rejected bars are logged but never written to bronze.
 
 ```bash
 source ~/market-warehouse/.venv/bin/activate
@@ -309,6 +310,7 @@ python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --tickers AAP
 python scripts/livewire_ingest.py intraday-backfill --timeframe 1h --preset presets/sp500.json  # Preset
 python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --tickers AAPL --dry-run     # Plan only
 python scripts/livewire_ingest.py intraday-backfill --timeframe 1m --asset-class futures --source ib --preset presets/futures-index.json
+python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --asset-class volatility --source ib --preset presets/volatility-intraday.json
 python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --preset presets/screened-universe.json --skip-existing
 python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --preset presets/sp500.json --max-tickers 50
 ```
@@ -434,7 +436,7 @@ Common traps that derail debugging sessions — check these before investigating
 - **Empty IB head timestamps**: IB returns empty head timestamps for some symbols. The fallback to `IB_EARLIEST_DATE` is intentional — don't treat it as an error.
 - **IB error 326 (client ID in use)**: Handled by auto-retry in `IBClient.connect()`. Don't manually reassign client IDs.
 - **Weekend/holiday runs**: IB returns no data on non-trading days. These are harmless no-ops — don't debug "no data returned" on weekends or holidays.
-- **CBOE volatility fetch**: Volatility indices use CBOE's public API, not IB. If VIX data looks stale, check `scripts/livewire_ingest.py cboe-vol`, not IB connectivity.
+- **CBOE volatility fetch**: Volatility indices use CBOE's public API, not IB. If VIX or SPX data looks stale, check `scripts/livewire_ingest.py cboe-vol` and the official daily-price CSV backup behavior, not IB connectivity.
 
 ## Provider Interface
 
