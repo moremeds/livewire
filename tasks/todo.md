@@ -3,47 +3,32 @@
 Use this file for the current task only. Replace it at the start of each non-trivial task.
 
 ## Objective
-- Retire DuckDB as an active Livewire analytical layer and dependency, leaving bronze Parquet as canonical storage and Postgres as the replayable analytical publish target.
+- Incorporate FRED Treasury yield ingestion into the consolidated `backfill-all` runner.
 
 ## Success Criteria
-- No active runtime code imports or shells out to DuckDB.
-- `DBClient`, the DuckDB rebuild implementation, and `scripts/livewire_store.py rebuild-duckdb` are removed.
-- Parquet aggregate/helper reads formerly using DuckDB are implemented with PyArrow/Parquet readers.
-- Bootstrap, active operator docs, and tests no longer require DuckDB.
-- Verification evidence includes targeted red/green tests, full coverage, a DuckDB-reference inventory, and manual self/adversarial review.
+- `python scripts/livewire_ingest.py backfill-all` invokes FRED rates ingestion after the existing equity normal/backfill phases.
+- The FRED step writes to the existing backfill log directory and uses the repo-local `.env` when present so `FRED_API_KEY` is available.
+- A FRED failure causes the backfill runner to fail rather than silently reporting all done.
+- Tests cover the script wiring and shell syntax.
 
 ## Dependency Graph
-- T0 -> T1 -> T2 -> T3 -> T4 -> T5 -> T6
+- T0 -> T1 -> T2 -> T3
 
 ## Tasks
-- [x] T0 Record baseline state and current DuckDB inventory
+- [x] T0 Inspect current backfill-all shell runner and command dispatch tests
   depends_on: []
-- [x] T1 Add failing tests for DuckDB retirement behavior
+- [x] T1 Add failing tests for FRED rates inclusion in backfill-all
   depends_on: [T0]
-- [x] T2 Replace DuckDB-backed Parquet helper reads with PyArrow readers
+- [x] T2 Patch `tools/run_backfill_all.sh` and docs
   depends_on: [T1]
-- [x] T3 Remove DuckDB client, rebuild command, fixtures, and tests
+- [x] T3 Run targeted and full verification
   depends_on: [T2]
-- [x] T4 Remove DuckDB from bootstrap and active operator docs
-  depends_on: [T3]
-- [x] T5 Run targeted and full verification, then commit implementation milestone
-  depends_on: [T4]
-- [x] T6 Perform rigid self-review and adversarial review, patch any findings, and commit review/docs milestone
-  depends_on: [T5]
 
 ## Review
-- Baseline before implementation:
-  - `python -m pytest tests -q --cov=clients --cov=scripts --cov=livewire_scripts --cov-report=term-missing -W error::RuntimeWarning` -> 888 passed, 1 skipped, 100% coverage.
-- Red tests:
-  - `python -m pytest tests/test_duckdb_retirement.py -q` -> failed on active DuckDB imports, `rebuild-duckdb`, and setup bootstrap/install references.
+- Design: add a final non-IB FRED phase after equity Phase 2, log to `backfill_fred_rates.log`, source `.env` if present, and let nonzero `fred-rates` exit codes fail the runner.
+- Red test proof:
+  - `python -m pytest tests/test_livewire_entrypoints.py::test_backfill_all_runner_includes_fred_rates_phase -q` -> failed because `PHASE 3: FRED Treasury rates` was absent from `tools/run_backfill_all.sh`.
 - Targeted verification:
-  - `python -m pytest tests/test_duckdb_retirement.py tests/test_bronze_client.py tests/test_coverage_report.py tests/test_health_check.py tests/test_run_ib_fetch_robust.py tests/test_script_consolidation.py tests/test_storage_client_compat.py -q` -> 145 passed.
-  - `python -m pytest tests/test_bronze_client.py tests/test_coverage_report.py -q` -> 44 passed.
+  - `python -m pytest tests/test_livewire_entrypoints.py tests/test_script_consolidation.py -q` -> 20 passed.
 - Full verification:
-  - `python -m pytest tests -q --cov=clients --cov=scripts --cov=livewire_scripts --cov-report=term-missing -W error::RuntimeWarning` -> 839 passed, 1 skipped, 100% coverage.
-- Self-review/adversarial review:
-  - `rg -n "DuckDB|duckdb|DBClient|db_client|tmp_duckdb|rebuild-duckdb|rebuild_duckdb|market\\.duckdb" README.md CLAUDE.md AGENTS.md .codex/project-memory.md clients livewire_scripts scripts pyproject.toml tests --glob '!tests/test_duckdb_retirement.py'` -> no active runtime/operator-doc references.
-  - Full-repo `rg` still finds historical references under archived `docs/superpowers/*` plans/specs and `docs/observability_defensive_blueprint.md`; those are preserved as historical design artifacts, not active commands or dependencies.
-  - `source ~/market-warehouse/.venv/bin/activate && python scripts/livewire_store.py --help` -> storage commands are `rebuild-postgres`, `smoke-postgres`, `sync-r2`, `migrate-parquet`.
-  - `bash -n scripts/setup_market_warehouse.sh && scripts/setup_market_warehouse.sh --help` -> setup script parses and help renders without DuckDB.
-  - `git diff --check origin/main...HEAD` -> passed.
+  - `python -m pytest tests -q --cov=clients --cov=scripts --cov=livewire_scripts --cov-report=term-missing -W error::RuntimeWarning` -> 905 passed, 1 skipped, 100% coverage.
