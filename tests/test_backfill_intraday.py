@@ -212,6 +212,28 @@ class TestBackfillTicker:
         assert outcome.chunks_fetched == 1
         assert outcome.bars_inserted == 0
 
+    def test_volatility_backfill_uses_index_contract_and_metadata(self, tmp_path):
+        bronze = IntradayBronzeClient(bronze_dir=tmp_path / "bronze", timeframe="5m")
+        bars = [_make_ib_bar(datetime(2026, 4, 6, 10, 0))]
+        ib = MagicMock()
+        ib.get_historical_data.return_value = bars
+        contract = object()
+
+        with patch("livewire_scripts.backfill_intraday.compute_intraday_chunks",
+                   return_value=[("1 W", "20260406-15:00:00")]):
+            with patch("livewire_scripts.backfill_intraday._make_contract",
+                       return_value=contract) as m_contract:
+                with patch("livewire_scripts.backfill_intraday._run_quality_detection") as m_quality:
+                    outcome = backfill_ticker(
+                        "VIX", "5m", years=1, ib=ib, bronze=bronze,
+                        asset_class="volatility",
+                    )
+
+        assert outcome.bars_inserted == 1
+        m_contract.assert_called_once_with("VIX", "volatility")
+        assert ib.get_historical_data.call_args.args[0] is contract
+        assert m_quality.call_args.kwargs["asset_class"] == "volatility"
+
 
 class TestBackfillTickerMassive:
     def test_unknown_error_recorded_and_continues(self, tmp_path):
@@ -321,10 +343,12 @@ class TestQualityHookIntegration:
                 bars=bars,
                 parquet_path=parquet_path,
                 outcome=outcome,
+                asset_class="volatility",
             )
 
         kwargs = m_detect.call_args.kwargs
         assert kwargs["metadata"]["errors_during_fetch"]
+        assert kwargs["metadata"]["asset_class"] == "volatility"
         assert m_sidecar.call_count == 1
         assert m_audit.call_count == 1
         assert m_alert.call_count == 1
@@ -477,6 +501,35 @@ class TestMain:
         out = capsys.readouterr().out
         assert "asset_class=futures" in out
         assert "source=ib" in out
+
+    def test_volatility_intraday_vix_spx_preset_dry_run(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
+        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
+        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+
+        preset_path = Path("presets/volatility-intraday.json")
+        preset = json.loads(preset_path.read_text(encoding="utf-8"))
+        assert preset["tickers"] == ["VIX", "SPX"]
+
+        with patch("livewire_scripts.backfill_intraday.compute_intraday_chunks",
+                   return_value=[("1 W", "x")]):
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "backfill_intraday.py", "--timeframe", "5m",
+                    "--asset-class", "volatility", "--preset", str(preset_path),
+                    "--dry-run",
+                ],
+            ):
+                main()
+
+        out = capsys.readouterr().out
+        assert "asset_class=volatility" in out
+        assert "source=ib" in out
+        assert "tickers=2" in out
+        assert "VIX: 1 chunks of 5 mins" in out
+        assert "SPX: 1 chunks of 5 mins" in out
 
     def test_skip_existing_marks_completed(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
@@ -691,6 +744,38 @@ class TestMain:
         bronze_path = (
             tmp_path / "lake" / "bronze" / "asset_class=equity" /
             "symbol=AAPL" / "5m.parquet"
+        )
+        assert bronze_path.exists()
+
+    def test_full_volatility_run_inserts_vix_under_volatility_asset_class(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
+        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
+        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+
+        bars = [_make_ib_bar(datetime(2026, 4, 6, 10, 0))]
+        fake_ib = MagicMock()
+        fake_ib.__enter__.return_value = fake_ib
+        fake_ib.__exit__.return_value = None
+        fake_ib.get_historical_data.return_value = bars
+
+        with patch("clients.ib_client.IBClient", return_value=fake_ib):
+            with patch(
+                "livewire_scripts.backfill_intraday.compute_intraday_chunks",
+                return_value=[("1 W", "20260406-15:00:00")],
+            ):
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "backfill_intraday.py", "--timeframe", "5m",
+                        "--asset-class", "volatility", "--tickers", "VIX",
+                    ],
+                ):
+                    main()
+
+        bronze_path = (
+            tmp_path / "lake" / "bronze" / "asset_class=volatility" /
+            "symbol=VIX" / "5m.parquet"
         )
         assert bronze_path.exists()
 

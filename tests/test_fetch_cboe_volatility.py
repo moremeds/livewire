@@ -13,7 +13,9 @@ import pytest
 
 from livewire_scripts.fetch_cboe_volatility import (
     _symbol_id,
+    append_official_backup_bars,
     bars_to_table,
+    fetch_cboe_official_csv_backup,
     fetch_cboe_historical,
     load_preset,
     main,
@@ -76,6 +78,75 @@ class TestFetchCboeHistorical:
             bars = fetch_cboe_historical("UNKNOWN")
 
         assert bars == []
+
+
+class TestOfficialCsvBackup:
+    def test_fetches_vix_ohlc_csv_backup(self):
+        mock_response = MagicMock()
+        mock_response.text = (
+            "DATE,OPEN,HIGH,LOW,CLOSE\n"
+            "05/19/2026,18.010000,18.360000,17.660000,18.060000\n"
+        )
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=mock_response):
+            bars = fetch_cboe_official_csv_backup("VIX")
+
+        assert bars == [
+            {
+                "date": "2026-05-19",
+                "open": "18.010000",
+                "high": "18.360000",
+                "low": "17.660000",
+                "close": "18.060000",
+                "volume": "0.0",
+            }
+        ]
+
+    def test_fetches_spx_close_only_csv_backup_as_ohlc_row(self):
+        mock_response = MagicMock()
+        mock_response.text = "DATE,SPX\n05/19/2026,7353.610000\n"
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=mock_response):
+            bars = fetch_cboe_official_csv_backup("SPX")
+
+        assert bars == [
+            {
+                "date": "2026-05-19",
+                "open": "7353.610000",
+                "high": "7353.610000",
+                "low": "7353.610000",
+                "close": "7353.610000",
+                "volume": "0.0",
+            }
+        ]
+
+    def test_unsupported_symbol_has_no_csv_backup(self):
+        assert fetch_cboe_official_csv_backup("VVIX") == []
+
+    def test_appends_only_csv_rows_newer_than_json(self):
+        json_bars = [
+            {"date": "2026-05-18", "open": "19.25", "high": "19.44", "low": "17.70", "close": "17.82", "volume": "0.0"},
+        ]
+        backup_bars = [
+            {"date": "2026-05-18", "open": "19.25", "high": "19.44", "low": "17.70", "close": "17.82", "volume": "0.0"},
+            {"date": "2026-05-19", "open": "18.01", "high": "18.36", "low": "17.66", "close": "18.06", "volume": "0.0"},
+        ]
+
+        merged = append_official_backup_bars("VIX", json_bars, backup_bars)
+
+        assert [bar["date"] for bar in merged] == ["2026-05-18", "2026-05-19"]
+
+    def test_returns_primary_rows_when_csv_has_no_newer_backup_rows(self):
+        json_bars = [
+            {"date": "2026-05-19", "open": "18.01", "high": "18.36", "low": "17.66", "close": "18.06", "volume": "0.0"},
+        ]
+        backup_bars = [
+            {"date": "2026-05-19", "open": "18.01", "high": "18.36", "low": "17.66", "close": "18.06", "volume": "0.0"},
+        ]
+
+        assert append_official_backup_bars("VIX", json_bars, backup_bars) is json_bars
 
 
 class TestBarsToTable:

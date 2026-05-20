@@ -1,0 +1,8 @@
+{
+  "name": "volatility-intraday",
+  "description": "VIX/SPX IB-backed intraday index bars",
+  "tickers": ["VIX", "SPX"],
+  "sector": "Volatility",
+  "source": "Interactive Brokers CBOE Index contracts",
+  "notes": "Daily volatility sync remains CBOE API via presets/volatility.json. Intraday volatility support is scoped to VIX and SPX."
+}

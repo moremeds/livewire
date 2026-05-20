@@ -273,14 +273,14 @@ Notes:
 
 * `cmdty` and `fx` use IB `MIDPOINT` daily bars and store volume as `0`.
 * FX pairs are six-letter local symbols. If IB supports only the reverse cross, the fetcher requests the supported pair and stores inverted OHLC rows. Example: `USDEUR` fetches `EURUSD`, then stores inverted `USDEUR`.
-* CBOE direct sync is the authoritative daily source for volatility indices.
+* CBOE direct sync is the authoritative daily source for volatility indices. For `VIX` and `SPX`, `cboe-vol` uses CBOE's official daily-price CSV as a backup for dates newer than the chart JSON feed.
 * FRED rates sync writes Treasury constant-maturity yields as percent values to `asset_class=rates` with columns `trade_date`, `symbol_id`, `tenor_years`, `yield_pct`, and `source`. Native FRED frequency is daily; `--frequency` can request lower-frequency aggregation such as `w`, `m`, `q`, or `a`.
 
 ---
 
 ### Default Warehouse Backfill
 
-The consolidated default warehouse backfill entrypoint runs `sp500`, `ndx100`, and `r2k` daily-bar normal fetches, then older-history backfills, with stall detection and cursor resume. It then syncs FRED Treasury yield rates. After that, it runs the Massive equity intraday lane (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed volatility intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility, including equity `1m`.
+The consolidated default warehouse backfill entrypoint runs `sp500`, `ndx100`, and `r2k` daily-bar normal fetches, then older-history backfills, with stall detection and cursor resume. It then syncs FRED Treasury yield rates. After that, it runs the Massive equity intraday lane (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed `VIX`/`SPX` intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility, including equity `1m`.
 
 ```bash
 python scripts/livewire_ingest.py backfill-all
@@ -321,7 +321,7 @@ python scripts/livewire_ingest.py historical --preset presets/volatility.json --
 
 ### Intraday Data
 
-Intraday bars are fetched through the ingest entrypoint. `historical` is daily-only; use `intraday-backfill` for intraday bars. The default equity warehouse build now uses **Massive 1m, 5 years**. Non-equity intraday data stays IB-backed.
+Intraday bars are fetched through the ingest entrypoint. `historical` is daily-only; use `intraday-backfill` for intraday bars. The default equity warehouse build now uses **Massive 1m, 5 years**. Non-equity intraday data stays IB-backed; volatility intraday is explicitly scoped to `VIX` and `SPX`.
 
 ```bash
 # Probe IB intraday timestamp behavior for the built-in AAPL fixture
@@ -338,6 +338,9 @@ python scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json 
 
 # Non-equity intraday remains IB-backed
 python scripts/livewire_ingest.py intraday-backfill --preset presets/futures-index.json --asset-class futures --timeframe 1m --source ib --years 5
+
+# VIX/SPX volatility-index intraday
+python scripts/livewire_ingest.py intraday-backfill --preset presets/volatility-intraday.json --asset-class volatility --timeframe 5m --source ib --skip-existing
 
 # Backfill a preset and skip files already present
 python scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json --timeframe 1h --skip-existing
