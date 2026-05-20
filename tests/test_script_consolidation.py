@@ -38,7 +38,7 @@ def test_operator_entrypoint_modules_are_importable() -> None:
 
 def test_operator_entrypoints_render_subcommand_help() -> None:
     expected_commands = {
-        "livewire_ingest.py": ["daily", "historical", "robust", "cboe-vol", "intraday-backfill"],
+        "livewire_ingest.py": ["daily", "historical", "robust", "cboe-vol", "fred-rates", "intraday-backfill"],
         "livewire_quality.py": ["health", "coverage", "report", "weekly", "watchdog"],
         "livewire_ops.py": ["run-daily-job", "send-alert"],
         "livewire_store.py": ["rebuild-postgres", "smoke-postgres", "sync-r2", "migrate-parquet"],

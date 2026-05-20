@@ -51,6 +51,7 @@ livewire/                           # Git repo
 ├── data-lake/
 │   ├── bronze/asset_class=equity/  # Per-ticker Hive-partitioned Parquet (symbol=AAPL/1d.parquet)
 │   ├── bronze/asset_class=futures/ # Per-contract Hive-partitioned Parquet (symbol=ES_202506/1d.parquet)
+│   ├── bronze/asset_class=rates/   # FRED Treasury yields (symbol=DGS10/1d.parquet)
 │   ├── bronze-delisted/asset_class=equity/  # Archived delisted symbols excluded from future sync/backfill runs
 │   ├── silver/                     # Cleaned / adjusted
 │   └── gold/                       # Derived analytics / factor tables
@@ -109,6 +110,7 @@ Primary data source: **Interactive Brokers** via `ib_async`. Requires IB Gateway
 - `MassiveClient` is the near-term daily U.S. equity accelerator and validation reference. It uses `MASSIVE_API_KEY`, stores `adjusted=false` bars with `adj_close = close`, and is not used for long historical backfills or broker-specific asset classes.
 - `adj_close` is set to `close` (IB TRADES data doesn't provide adjusted prices)
 - **CBOE volatility indices** are fetched directly from CBOE's public API (`cdn.cboe.com/api/global/delayed_quotes/charts/historical/`) via `scripts/livewire_ingest.py cboe-vol`, not IB. This is the authoritative source for VIX, VVIX, VXHYG, VXSMH, and all other CBOE volatility indices. The writer normalizes stale parquet schemas on merge (drops extra columns from older schema versions) and rewrites files to fix schema drift even when no new data is available.
+- **Treasury yield rates** are fetched from FRED via `scripts/livewire_ingest.py fred-rates` using `FRED_API_KEY`. Default series are `DGS3`, `DGS5`, `DGS10`, and `DGS30`; they write to `data-lake/bronze/asset_class=rates/symbol=<series>/1d.parquet` with `trade_date`, `symbol_id`, `tenor_years`, `yield_pct`, and `source`.
 
 ### IB BarData → Bronze mapping
 
@@ -150,6 +152,7 @@ python scripts/livewire_ingest.py historical --years 0 --skip-existing        # 
 python scripts/livewire_ingest.py historical --preset presets/sp500.json --backfill  # Backfill older data
 python scripts/livewire_ingest.py historical --preset presets/volatility.json --asset-class volatility  # CBOE vol indices (IB backfill)
 python scripts/livewire_ingest.py cboe-vol                                                        # CBOE vol indices (daily sync, preferred)
+python scripts/livewire_ingest.py fred-rates                                                      # FRED Treasury yields (DGS3/DGS5/DGS10/DGS30)
 python scripts/livewire_ingest.py historical --preset presets/futures-index.json --asset-class futures  # CME/CBOT index futures
 python scripts/livewire_ingest.py historical --preset presets/futures-energy.json --asset-class futures  # NYMEX energy futures
 python scripts/livewire_ingest.py historical --host 192.168.1.50 --port 4001 --tickers AAPL            # Remote IB Gateway
@@ -194,7 +197,7 @@ Current fetch behavior:
 ### Auto-restarting runner
 
 ```bash
-bash scripts/livewire_ingest.py backfill-all   # Runs all presets with stall detection + auto-restart
+python scripts/livewire_ingest.py backfill-all   # Runs equity presets with stall detection, then FRED rates
 ```
 
 Output: per-ticker bronze Parquet at `data-lake/bronze/asset_class=equity/symbol=<ticker>/1d.parquet` (or `asset_class=futures/symbol=ES_202506/1d.parquet` for futures). Postgres is rebuilt separately when SQL access is needed.

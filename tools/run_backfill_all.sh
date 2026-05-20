@@ -13,12 +13,19 @@ set -euo pipefail
 VENV="$HOME/market-warehouse/.venv/bin/activate"
 SCRIPT="scripts/livewire_ingest.py"
 LOG_DIR="$HOME/market-warehouse/logs"
+ENV_FILE=".env"
 STALL_TIMEOUT=600    # seconds of no cursor update before killing (10 min)
 COOLDOWN=300         # seconds to wait after stall/failure (5 min IB cooldown)
 MAX_CONCURRENT=10
 BATCH_SIZE=5
 
 source "$VENV"
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+fi
 
 timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
 log() { echo "[$(timestamp)] $*"; }
@@ -198,6 +205,15 @@ for preset in "${PRESETS[@]}"; do
         python "$SCRIPT" historical --preset "$preset" --backfill \
         --batch-size "$BATCH_SIZE" --max-concurrent "$MAX_CONCURRENT"
 done
+
+log "============================================================"
+log "PHASE 2 COMPLETE"
+log "============================================================"
+
+log "── PHASE 3: FRED Treasury rates ──"
+log "CMD: python $SCRIPT fred-rates"
+python "$SCRIPT" fred-rates >> "$LOG_DIR/backfill_fred_rates.log" 2>&1
+log "PHASE 3 COMPLETE"
 
 log "============================================================"
 log "ALL DONE"

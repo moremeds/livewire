@@ -37,6 +37,13 @@ class TestBronzeClient:
         assert bronze.read_symbol_rows("MISSING") == []
 
     @pytest.mark.integration
+    def test_missing_bronze_dir_helpers(self, tmp_path):
+        missing = BronzeClient(bronze_dir=tmp_path / "missing")
+
+        assert missing.get_existing_symbols() == set()
+        assert missing.get_trade_dates_by_symbol() == {}
+
+    @pytest.mark.integration
     def test_replace_ticker_rows_replaces_snapshot_atomically(self, bronze):
         first = [_row("2025-01-02", 999, 153.0)]
         second = [_row("2025-01-03", 111, 156.0)]
@@ -218,6 +225,51 @@ class TestBronzeClient:
         assert bronze._normalize_trade_date("2025-01-04") == date(2025, 1, 4)
         with pytest.raises(TypeError, match="unsupported trade_date type"):
             bronze._normalize_trade_date(123)
+
+    @pytest.mark.integration
+    def test_rates_asset_class_uses_yield_schema(self, tmp_bronze):
+        rates_bronze = BronzeClient(bronze_dir=tmp_bronze, asset_class="rates")
+        try:
+            sid = rates_bronze.get_symbol_id("DGS10")
+            inserted = rates_bronze.merge_ticker_rows(
+                "DGS10",
+                [
+                    {
+                        "trade_date": "2026-05-14",
+                        "symbol_id": sid,
+                        "tenor_years": 10,
+                        "yield_pct": "4.47",
+                        "source": "fred",
+                    },
+                    {
+                        "trade_date": "2026-05-15",
+                        "symbol_id": sid,
+                        "tenor_years": 10,
+                        "yield_pct": 4.59,
+                        "source": "fred",
+                    },
+                ],
+            )
+
+            assert inserted == 2
+            assert rates_bronze.read_symbol_rows("DGS10") == [
+                {
+                    "trade_date": "2026-05-14",
+                    "symbol_id": sid,
+                    "tenor_years": 10.0,
+                    "yield_pct": 4.47,
+                    "source": "fred",
+                },
+                {
+                    "trade_date": "2026-05-15",
+                    "symbol_id": sid,
+                    "tenor_years": 10.0,
+                    "yield_pct": 4.59,
+                    "source": "fred",
+                },
+            ]
+        finally:
+            rates_bronze.close()
 
 
 # ── Futures-specific tests ────────────────────────────────────────────

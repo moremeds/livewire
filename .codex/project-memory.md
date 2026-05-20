@@ -28,6 +28,7 @@ Use this file for:
 - Failure alerts can now generate a human-readable Markdown incident report and include a Cerebras-generated summary plus proposed remediation in the email body when the AI config is available.
 - Daily syncs use IB as the primary source for equities and futures; CBOE's public API is the authoritative source for all volatility indices.
 - `scripts/livewire_ingest.py cboe-vol` fetches all volatility indices from `presets/volatility.json` directly from CBOE's API (`cdn.cboe.com/api/global/delayed_quotes/charts/historical/`).
+- `scripts/livewire_ingest.py fred-rates` fetches U.S. Treasury constant-maturity yield series from FRED using `FRED_API_KEY`. Defaults are `DGS3`, `DGS5`, `DGS10`, and `DGS30`, persisted under `~/market-warehouse/data-lake/bronze/asset_class=rates/symbol=<series>/1d.parquet` with a rates-specific schema.
 - `scripts/livewire_ops.py run-daily-job` syncs equities and futures via IB, then all volatility indices via CBOE in a single daemon run.
 - The canonical multi-ticker IB execution model is `scripts/livewire_ingest.py robust`. Use it instead of direct historical command loops for any bulk run >5 tickers.
 - Telemetry events (IB farm states, connection lifecycle) land in `~/market-warehouse/logs/telemetry.jsonl`. Schema is source-tagged JSONL with `{ts, source, event, ...}`.
