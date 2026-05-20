@@ -440,7 +440,13 @@ def bars_to_midpoint_rows(bars: list, symbol_id: int, *, invert: bool = False) -
     return rows
 
 
-def validate_intraday_bar(bar: object, ticker: str, timeframe: str) -> list[str]:
+def validate_intraday_bar(
+    bar: object,
+    ticker: str,
+    timeframe: str,
+    *,
+    require_rth: bool = True,
+) -> list[str]:
     """Validate an intraday bar's timestamp against UTC, RTH, and grid alignment.
 
     Returns list of issue strings; empty if valid. Caller is responsible for
@@ -474,7 +480,7 @@ def validate_intraday_bar(bar: object, ticker: str, timeframe: str) -> list[str]
     rth_start = et.replace(hour=9, minute=30, second=0, microsecond=0)
     close_t = session_close_time(et.date())
     rth_end = et.replace(hour=close_t.hour, minute=close_t.minute, second=0, microsecond=0)
-    if not (rth_start <= et < rth_end):
+    if require_rth and not (rth_start <= et < rth_end):
         issues.append(f"{ticker} {ts}: outside RTH ({et.time()} ET)")
 
     # 5. Grid alignment

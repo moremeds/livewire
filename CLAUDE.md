@@ -199,9 +199,12 @@ Current fetch behavior:
 
 ```bash
 python scripts/livewire_ingest.py backfill-all   # Runs default warehouse build
+python scripts/livewire_ingest.py daily-backfill # Runs lightweight daily catch-up
 ```
 
 `backfill-all` is the default warehouse build, not just daily equity. It runs equity daily seed/backfill for `sp500`, `ndx100`, and `r2k`; the older-history backfill phase remains IB-backed through `--source auto`. It then syncs FRED Treasury yield rates, then runs Massive equity intraday (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed `VIX`/`SPX` intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility.
+
+`daily-backfill` is the routine catch-up runner. It uses Massive for recent equity daily gaps and recent-window equity intraday (`1m`, `5m`, `1h`; default 7 calendar days via `MDW_DAILY_BACKFILL_INTRADAY_DAYS`) across the full `sp500` + `ndx100` + `r2k` union, so it forward-populates intraday coverage instead of only maintaining already-existing symbols. Massive intraday concurrency defaults to `MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT=20`. Side lanes stay on their existing sources: FRED rates, CBOE daily volatility, IB `VIX`/`SPX` volatility intraday, and optional Postgres rebuild.
 
 Output: per-ticker bronze Parquet at `data-lake/bronze/asset_class=equity/symbol=<ticker>/{1d,1m,5m,1h}.parquet` and volatility/index bronze Parquet under `data-lake/bronze/asset_class=volatility/symbol=<ticker>/`. Postgres is rebuilt only when `MDW_POSTGRES_DSN` is configured.
 
@@ -306,6 +309,7 @@ Views are `summary`, `flap`, and `quality`; `--source` accepts `all`, `ib`, `uw`
 ```bash
 source ~/market-warehouse/.venv/bin/activate
 python scripts/livewire_ingest.py intraday-backfill --timeframe 1m --source massive --preset presets/sp500.json --years 5 --skip-existing
+python scripts/livewire_ingest.py intraday-backfill --timeframe 1m --source massive --preset presets/sp500.json --days 7
 python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --tickers AAPL MSFT          # Explicit list
 python scripts/livewire_ingest.py intraday-backfill --timeframe 1h --preset presets/sp500.json  # Preset
 python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --tickers AAPL --dry-run     # Plan only
@@ -318,6 +322,7 @@ python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --preset pres
 - Per-timeframe cursor: `~/market-warehouse/cursors/cursor_intraday_{1m,1h,5m}_{preset}.json`. Resumes after interrupt.
 - IB error 162/200 ("HMDS no data" / ambiguous contract) marks the ticker complete and moves on — no infinite retry loop.
 - Default depth: 5 years for 1m, 2 years for 1h, 1 year for 5m (matches `INTRADAY_MAX_DEPTH`).
+- `--days N` fetches only a recent calendar-day window and is intended for daily catch-up jobs.
 - `--source massive` is equity-only and bypasses IB preflight only for equity intraday runs. Other asset classes use `--source ib`.
 - `--skip-existing` consults `min(bar_timestamp)` in the existing per-ticker parquet and skips if it already covers the requested depth.
 - IB BarData with `formatDate=1` returns naive ET datetimes; the script attaches `America/New_York` and converts to UTC before validation/merge.

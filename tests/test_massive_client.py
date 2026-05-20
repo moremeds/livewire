@@ -370,6 +370,12 @@ def test_empty_or_missing_results_return_empty_lists():
     assert MassiveClient._extract_results({"status": "OK", "results": []}) == []
 
 
+def test_delayed_payload_returns_results():
+    payload = {"status": "DELAYED", "results": [{"T": "AAPL"}]}
+
+    assert MassiveClient._extract_results(payload) == [{"T": "AAPL"}]
+
+
 def test_non_ok_payload_raises():
     with pytest.raises(MassiveAPIError, match="NOT_AUTHORIZED"):
         MassiveClient._extract_results({"status": "NOT_AUTHORIZED"})

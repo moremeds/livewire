@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pyarrow.parquet as pq
+import pyarrow as pa
 import pytest
 
 from clients.intraday_bronze_client import (
@@ -140,6 +141,80 @@ class TestRowNormalization:
         assert len(loaded) == 2
         # ts1 was overwritten
         assert loaded[0]["volume"] == 999
+        client.close()
+
+    def test_merge_can_skip_existing_timestamp_overwrites(self, tmp_path):
+        client = IntradayBronzeClient(bronze_dir=tmp_path, timeframe="5m")
+        ts1 = datetime(2026, 4, 6, 13, 30, tzinfo=_UTC)
+        ts2 = datetime(2026, 4, 6, 13, 35, tzinfo=_UTC)
+        client.replace_ticker_rows("AAPL", [
+            {"bar_timestamp": ts1, "symbol_id": 1, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 100},
+        ])
+
+        n = client.merge_ticker_rows(
+            "AAPL",
+            [
+                {"bar_timestamp": ts1, "symbol_id": 1, "open": 9.0, "high": 9.0, "low": 9.0, "close": 9.0, "volume": 999},
+                {"bar_timestamp": ts2, "symbol_id": 1, "open": 1.5, "high": 2.5, "low": 1.0, "close": 2.0, "volume": 200},
+            ],
+            overwrite_existing=False,
+        )
+
+        assert n == 1
+        loaded = client.read_symbol_rows("AAPL")
+        assert len(loaded) == 2
+        assert loaded[0]["volume"] == 100
+        assert loaded[1]["volume"] == 200
+        client.close()
+
+    def test_merge_skips_publish_when_recent_rows_already_exist(self, tmp_path, monkeypatch):
+        client = IntradayBronzeClient(bronze_dir=tmp_path, timeframe="5m")
+        ts1 = datetime(2026, 4, 6, 13, 30, tzinfo=_UTC)
+        client.replace_ticker_rows("AAPL", [
+            {"bar_timestamp": ts1, "symbol_id": 1, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 100},
+        ])
+        published = False
+
+        def fail_publish(*_args):
+            nonlocal published
+            published = True
+            raise AssertionError("should not publish duplicate-only recent merge")
+
+        monkeypatch.setattr(client, "_publish", fail_publish)
+
+        n = client.merge_ticker_rows(
+            "AAPL",
+            [{"bar_timestamp": ts1, "symbol_id": 1, "open": 9.0, "high": 9.0, "low": 9.0, "close": 9.0, "volume": 999}],
+            overwrite_existing=False,
+        )
+
+        assert n == 0
+        assert published is False
+        client.close()
+
+    def test_merge_without_overwrite_can_create_new_symbol(self, tmp_path):
+        client = IntradayBronzeClient(bronze_dir=tmp_path, timeframe="5m")
+        ts1 = datetime(2026, 4, 6, 13, 30, tzinfo=_UTC)
+
+        n = client.merge_ticker_rows(
+            "AAPL",
+            [{"bar_timestamp": ts1, "symbol_id": 1, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 100}],
+            overwrite_existing=False,
+        )
+
+        assert n == 1
+        assert len(client.read_symbol_rows("AAPL")) == 1
+        client.close()
+
+    def test_read_symbol_timestamps_normalizes_naive_values(self, tmp_path):
+        client = IntradayBronzeClient(bronze_dir=tmp_path, timeframe="5m")
+        path = tmp_path / "symbol=AAPL" / "5m.parquet"
+        path.parent.mkdir(parents=True)
+        naive = datetime(2026, 4, 6, 13, 30)
+        table = pa.table({"bar_timestamp": [naive]})
+        pq.write_table(table, path)
+
+        assert client._read_symbol_timestamps("AAPL") == {naive.replace(tzinfo=_UTC)}
         client.close()
 
     def test_merge_empty_rows_returns_zero(self, tmp_path):
