@@ -96,6 +96,61 @@ def test_ingest_intraday_massive_equity_bypasses_ib_preflight(monkeypatch) -> No
     assert calls == [("livewire_scripts.backfill_intraday", [])]
 
 
+def test_ingest_historical_massive_equity_backfill_bypasses_ib_preflight(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_ingest.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=False),
+    )
+    monkeypatch.setattr(
+        ib_gateway_preflight,
+        "assert_gateway_up",
+        lambda: (_ for _ in ()).throw(AssertionError("preflight should not run")),
+    )
+
+    assert livewire_ingest.main([
+        "historical", "--source", "massive", "--backfill", "--tickers", "AAPL",
+    ]) == 0
+    assert calls == [("livewire_scripts.fetch_ib_historical", [])]
+
+
+def test_ingest_historical_auto_equity_backfill_keeps_preflight_with_massive_key(monkeypatch) -> None:
+    preflight_calls: list[bool] = []
+    monkeypatch.setenv("MASSIVE_API_KEY", "test-key")
+    monkeypatch.setattr(
+        livewire_ingest.importlib,
+        "import_module",
+        lambda name: _fake_module([], name, accepts_argv=False),
+    )
+    monkeypatch.setattr(
+        ib_gateway_preflight,
+        "assert_gateway_up",
+        lambda: preflight_calls.append(True),
+    )
+
+    assert livewire_ingest.main(["historical", "--backfill", "--tickers", "AAPL"]) == 0
+    assert preflight_calls == [True]
+
+
+def test_ingest_historical_auto_equity_backfill_keeps_preflight_without_massive_key(monkeypatch) -> None:
+    preflight_calls: list[bool] = []
+    monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+    monkeypatch.setattr(
+        livewire_ingest.importlib,
+        "import_module",
+        lambda name: _fake_module([], name, accepts_argv=False),
+    )
+    monkeypatch.setattr(
+        ib_gateway_preflight,
+        "assert_gateway_up",
+        lambda: preflight_calls.append(True),
+    )
+
+    assert livewire_ingest.main(["historical", "--backfill", "--tickers", "AAPL"]) == 0
+    assert preflight_calls == [True]
+
+
 def test_ingest_intraday_massive_non_equity_keeps_ib_preflight(monkeypatch) -> None:
     preflight_calls: list[bool] = []
     monkeypatch.setattr(

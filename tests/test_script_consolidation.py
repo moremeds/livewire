@@ -171,7 +171,7 @@ sys.exit(0)
 
     calls = (tmp_path / "calls.log").read_text(encoding="utf-8")
     assert "scripts/livewire_ingest.py historical --preset presets/sp500.json --years 0 --skip-existing" in calls
-    assert "scripts/livewire_ingest.py historical --preset presets/r2k.json --backfill" in calls
+    assert "scripts/livewire_ingest.py historical --preset presets/r2k.json --backfill --source auto" in calls
     assert "scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json --timeframe 1m --source massive" in calls
     assert "scripts/livewire_ingest.py intraday-backfill --preset presets/r2k.json --timeframe 5m --source massive" in calls
     assert "scripts/livewire_ingest.py intraday-backfill --preset presets/volatility.json --timeframe 1h --source ib" in calls

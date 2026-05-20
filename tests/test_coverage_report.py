@@ -245,8 +245,7 @@ class TestAutoRecover:
         assert outcome.recovered == 1
         assert outcome.still_missing == []
 
-    def test_daily_recovery_uses_fetch_ib_historical(self, seeded_bronze):
-        # 1d branch shells out to livewire_ingest.py, not livewire_ingest.py
+    def test_daily_recovery_uses_massive_daily_update(self, seeded_bronze):
         target = date(2026, 4, 6)
         (seeded_bronze / "asset_class=equity" / "symbol=AAPL" / "1d.parquet").unlink()
 
@@ -261,7 +260,11 @@ class TestAutoRecover:
         assert outcome.recovered == 1
         cmd = mock_run.call_args[0][0]
         assert "livewire_ingest.py" in cmd[1]
-        assert "--timeframe" not in cmd  # daily fetch doesn't pass --timeframe
+        assert cmd[2] == "daily"
+        assert cmd[cmd.index("--source") + 1] == "massive"
+        assert cmd[cmd.index("--target-date") + 1] == "2026-04-06"
+        assert "--tickers" in cmd
+        assert "--timeframe" not in cmd
 
     def test_partial_recovery_path(self, seeded_bronze):
         target = date(2026, 4, 6)

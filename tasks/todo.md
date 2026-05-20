@@ -215,3 +215,14 @@ Run real command-line E2E checks for Sub-A, Sub-B, Sub-C, and DuckDB retirement.
   - `python -m pytest tests/test_livewire_entrypoints.py tests/test_script_consolidation.py -q` -> 20 passed.
 - Full verification:
   - `python -m pytest tests -q --cov=clients --cov=scripts --cov=livewire_scripts --cov-report=term-missing -W error::RuntimeWarning` -> 905 passed, 1 skipped, 100% coverage.
+# Massive Equity Incremental Backfill
+
+Dependency graph:
+- `task-1-historical-source-selector` depends_on: []
+- `task-2-orchestration-callers` depends_on: ["task-1-historical-source-selector"]
+- `task-3-docs-verification` depends_on: ["task-1-historical-source-selector", "task-2-orchestration-callers"]
+
+Tasks:
+- [x] `task-1-historical-source-selector` depends_on: [] Add `--source {auto,ib,massive}` to daily historical fetch/backfill and make `auto` prefer Massive for equity `--backfill` when `MASSIVE_API_KEY` is configured.
+- [x] `task-2-orchestration-callers` depends_on: ["task-1-historical-source-selector"] Route robust backfill, coverage recovery, `livewire_ingest.py` preflight, and `backfill-all` Phase 2 through the new source selector.
+- [x] `task-3-docs-verification` depends_on: ["task-1-historical-source-selector", "task-2-orchestration-callers"] Update docs and run targeted plus full coverage verification.

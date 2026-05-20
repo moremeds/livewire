@@ -24,6 +24,7 @@ def test_parse_args_defaults():
     assert args.cooldown == 60
     assert args.asset_class == "equity"
     assert args.mode == "seed"
+    assert args.source == "auto"
 
 
 def test_parse_args_env_overrides(monkeypatch):
@@ -80,6 +81,12 @@ def test_build_worker_cmd_backfill():
     cmd = _build_worker_cmd("AAPL", "backfill", "equity")
     assert "--backfill" in cmd
     assert "--years" not in cmd
+    assert cmd[cmd.index("--source") + 1] == "auto"
+
+
+def test_build_worker_cmd_accepts_forced_source():
+    cmd = _build_worker_cmd("AAPL", "backfill", "equity", source="massive")
+    assert cmd[cmd.index("--source") + 1] == "massive"
 
 
 def test_count_rows_reads_parquet(tmp_path):

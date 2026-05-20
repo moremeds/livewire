@@ -57,6 +57,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients.bronze_client import BronzeClient
 from clients.ib_client import IBClient, IBError
+from clients.massive_client import MassiveAPIError, MassiveClient
 from clients.quality_detector import _normalize_bars_for_detection, detect_all
 from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
 
@@ -382,6 +383,49 @@ def bars_to_midpoint_rows(bars: list, symbol_id: int, *, invert: bool = False) -
     return rows
 
 
+def _resolve_historical_source(source: str, *, asset_class: str, backfill: bool) -> str:
+    """Resolve provider selection for the historical command."""
+    if source == "ib":
+        return "ib"
+    if source == "massive":
+        if asset_class != "equity":
+            raise SystemExit("--source massive is only supported for asset_class=equity")
+        if not backfill:
+            raise SystemExit("--source massive is only supported for historical --backfill")
+        return "massive"
+    if source == "auto":
+        return "ib"
+    raise SystemExit(f"unsupported source: {source}")
+
+
+def fetch_massive_backfill_bars(
+    ticker: str,
+    oldest_existing: str,
+    massive: MassiveClient,
+) -> tuple[list, bool, bool]:
+    """Fetch older daily equity bars from Massive before the current bronze start."""
+    oldest = date.fromisoformat(oldest_existing)
+    end = oldest - timedelta(days=1)
+    start = IB_EARLIEST_DATE.date()
+    if end < start:
+        return ([], True, True)
+    try:
+        bars = massive.get_daily_bars(ticker, start, end)
+    except MassiveAPIError as exc:
+        console.print(f"    [red]{ticker}: Massive {type(exc).__name__} — {exc}[/red]")
+        return ([], False, False)
+    if not bars:
+        return ([], True, True)
+    earliest = min(date.fromisoformat(str(bar.date)) for bar in bars)
+    complete = earliest <= start
+    if not complete:
+        console.print(
+            f"    [yellow]{ticker}: Massive returned partial history "
+            f"({earliest.isoformat()} → {end.isoformat()}); cursor will retry[/yellow]"
+        )
+    return (bars, True, complete)
+
+
 # ── Async fetching ────────────────────────────────────────────────────
 
 
@@ -628,6 +672,7 @@ def backfill_ticker(
     *,
     expected_start: date | None = None,
     ib_head_timestamp: date | None = None,
+    source: str = "ib",
 ) -> int:
     """Insert backfill bars for *ticker* without deleting existing data."""
     if not bars:
@@ -645,6 +690,7 @@ def backfill_ticker(
         parquet_path=parquet_path,
         expected_start=expected_start,
         ib_head_timestamp=ib_head_timestamp,
+        source=source,
     )
 
     symbol_id = bronze.get_symbol_id(ticker)
@@ -726,6 +772,12 @@ def main():
         help="Backfill mode: fetch only missing older data for tickers already in bronze parquet",
     )
     parser.add_argument(
+        "--source",
+        choices=["auto", "ib", "massive"],
+        default="auto",
+        help="Daily source selector (default: auto=IB for deep historical backfill).",
+    )
+    parser.add_argument(
         "--asset-class",
         choices=["equity", "volatility", "futures", "cmdty", "fx"],
         default="equity",
@@ -739,6 +791,11 @@ def main():
     args = parser.parse_args()
     global _QUALITY_ENABLED
     _QUALITY_ENABLED = not args.no_quality
+    resolved_source = _resolve_historical_source(
+        args.source,
+        asset_class=args.asset_class,
+        backfill=args.backfill,
+    )
 
     logging.basicConfig(
         level=logging.INFO,
@@ -763,7 +820,7 @@ def main():
     console.print(
         f"[bold]Config:[/bold]  batch_size={args.batch_size}  max_concurrent={args.max_concurrent}"
         f"  host={args.host}  port={args.port}  years={years_label}  skip_existing={args.skip_existing}"
-        f"  mode={mode_label}"
+        f"  mode={mode_label}  source={args.source}->{resolved_source}"
     )
 
     # ── Cursor management ────────────────────────────────────────────
@@ -798,17 +855,26 @@ def main():
     asset_class = args.asset_class
     bronze_dir = DATA_LAKE / "bronze" / f"asset_class={asset_class}"
 
-    with IBClient() as ib, _storage_client()(bronze_dir=bronze_dir, asset_class=asset_class) as bronze:
-        ib.connect(host=args.host, port=args.port)
-
-        if args.backfill:
-            _run_backfill(args, ib, bronze, all_tickers, remaining, completed,
-                          effective_cursor, started_at, asset_class=asset_class,
-                          bronze_dir=bronze_dir, exchange_map=exchange_map)
+    with _storage_client()(bronze_dir=bronze_dir, asset_class=asset_class) as bronze:
+        if args.backfill and resolved_source == "massive":
+            with MassiveClient() as massive:
+                _run_backfill_massive(
+                    args, massive, bronze, all_tickers, remaining, completed,
+                    effective_cursor, started_at, asset_class=asset_class,
+                    bronze_dir=bronze_dir,
+                )
         else:
-            _run_normal(args, ib, bronze, all_tickers, remaining, completed,
-                        effective_cursor, started_at, asset_class=asset_class,
-                        bronze_dir=bronze_dir, exchange_map=exchange_map)
+            with IBClient() as ib:
+                ib.connect(host=args.host, port=args.port)
+
+                if args.backfill:
+                    _run_backfill(args, ib, bronze, all_tickers, remaining, completed,
+                                  effective_cursor, started_at, asset_class=asset_class,
+                                  bronze_dir=bronze_dir, exchange_map=exchange_map)
+                else:
+                    _run_normal(args, ib, bronze, all_tickers, remaining, completed,
+                                effective_cursor, started_at, asset_class=asset_class,
+                                bronze_dir=bronze_dir, exchange_map=exchange_map)
 
         run_elapsed = time.monotonic() - run_t0
         console.print(f"\n{'═' * 60}")
@@ -924,6 +990,114 @@ def _run_backfill(args, ib, bronze, all_tickers, remaining, completed,
     console.print(
         f"\n[bold]Backfill complete:[/bold] {total_ok} ok, {total_fail} failed, "
         f"{total_rows:,} rows"
+    )
+    console.print(f"[bold]Cursor:[/bold] {n_done}/{len(all_tickers)} tickers saved")
+
+
+def _run_backfill_massive(args, massive, bronze, all_tickers, remaining, completed,
+                          cursor_name, started_at, *, asset_class="equity", bronze_dir=None):
+    """Backfill daily equity rows using Massive instead of IB."""
+    oldest_dates = get_oldest_dates(bronze)
+    backfill_tickers = [t for t in remaining if t in oldest_dates]
+    skipped_new = [t for t in remaining if t not in oldest_dates]
+    if skipped_new:
+        console.print(
+            f"[cyan]Skipping {len(skipped_new)} tickers not yet in bronze"
+            f" (use normal fetch first):[/cyan] [dim]{' '.join(skipped_new)}[/dim]"
+        )
+
+    if not backfill_tickers:
+        console.print("[green bold]No tickers to backfill.[/green bold]")
+        return
+
+    console.print(f"[bold]{len(backfill_tickers)} tickers to backfill via Massive[/bold]")
+    batches = [backfill_tickers[i:i + args.batch_size]
+               for i in range(0, len(backfill_tickers), args.batch_size)]
+
+    total_rows = 0
+    total_ok = 0
+    total_fail = 0
+    total_noop = 0
+
+    for batch_idx, batch in enumerate(batches):
+        batch_t0 = time.monotonic()
+        console.print(
+            f"\n{'─' * 60}\n"
+            f"[bold]Massive backfill batch {batch_idx + 1}/{len(batches)}"
+            f" ({len(batch)} tickers)[/bold]  "
+            f"[dim]{' '.join(batch)}[/dim]"
+        )
+
+        batch_rows = 0
+        batch_ok = 0
+        batch_fail = 0
+        batch_noop = 0
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Backfilling via Massive...", total=len(batch))
+
+            for ticker in batch:
+                progress.update(task, description=f"Massive backfill {ticker}...")
+                bars, provider_ok, provider_complete = fetch_massive_backfill_bars(
+                    ticker, oldest_dates[ticker], massive
+                )
+
+                if not provider_ok:
+                    console.print(f"  [yellow]{ticker}[/yellow]: Massive failed (will retry next run)")
+                    batch_fail += 1
+                    progress.advance(task)
+                    continue
+
+                count = backfill_ticker(
+                    ticker,
+                    bars,
+                    bronze,
+                    asset_class=asset_class,
+                    source="massive",
+                )
+                if provider_complete:
+                    mark_timeframe_done(completed, ticker, "1d")
+                    save_cursor(cursor_name, completed, started_at)
+
+                if count > 0:
+                    console.print(f"  [green]{ticker}[/green]: {count:,} Massive rows inserted")
+                    if provider_complete:
+                        batch_ok += 1
+                    else:
+                        batch_fail += 1
+                else:
+                    console.print(f"  [cyan]{ticker}[/cyan]: no older Massive rows")
+                    if provider_complete:
+                        batch_noop += 1
+                    else:
+                        batch_fail += 1
+
+                batch_rows += count
+                progress.advance(task)
+
+        batch_elapsed = time.monotonic() - batch_t0
+        total_rows += batch_rows
+        total_ok += batch_ok
+        total_fail += batch_fail
+        total_noop += batch_noop
+        n_done = sum(1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",)))
+        console.print(
+            f"\n  [bold]Massive batch {batch_idx + 1} done:[/bold] "
+            f"{batch_ok} ok, {batch_noop} noop, {batch_fail} failed, "
+            f"{batch_rows:,} rows in {batch_elapsed:.1f}s  "
+            f"[dim]({n_done}/{len(all_tickers)} total completed)[/dim]"
+        )
+
+    n_done = sum(1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",)))
+    console.print(
+        f"\n[bold]Massive backfill complete:[/bold] {total_ok} ok, "
+        f"{total_noop} noop, {total_fail} failed, {total_rows:,} rows"
     )
     console.print(f"[bold]Cursor:[/bold] {n_done}/{len(all_tickers)} tickers saved")
 

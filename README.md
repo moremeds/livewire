@@ -280,7 +280,7 @@ Notes:
 
 ### Default Warehouse Backfill
 
-The consolidated default warehouse backfill entrypoint runs `sp500`, `ndx100`, and `r2k` daily-bar normal fetches, then older-history backfills, with stall detection and cursor resume. It then syncs FRED Treasury yield rates. After that, it runs the Massive equity intraday lane (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed volatility intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility, including equity `1m`.
+The consolidated default warehouse backfill entrypoint runs `sp500`, `ndx100`, and `r2k` daily-bar normal fetches, then older-history backfills, with stall detection and cursor resume. Deep older-history backfill remains IB-backed because live Massive validation showed it can return only a partial historical range on long requests. Recent equity target-date recovery uses Massive through `daily --source massive`. After daily backfill, the runner syncs FRED Treasury yield rates, then runs the Massive equity intraday lane (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed volatility intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility, including equity `1m`.
 
 ```bash
 python scripts/livewire_ingest.py backfill-all
@@ -298,7 +298,9 @@ tmux new-session -s livewire_backfill 'cd /Users/chenxi/projects/livewire && sou
 
 ```bash
 # Equity backfill
-python scripts/livewire_ingest.py historical --preset presets/sp500.json --backfill
+python scripts/livewire_ingest.py historical --preset presets/sp500.json --backfill --source auto
+python scripts/livewire_ingest.py historical --preset presets/sp500.json --backfill --source ib       # force IB
+python scripts/livewire_ingest.py historical --preset presets/sp500.json --backfill --source massive  # force Massive; partial long-history ranges do not complete the cursor
 
 # Futures backfill
 python scripts/livewire_ingest.py historical --preset presets/futures-index.json --asset-class futures --backfill
@@ -353,6 +355,7 @@ python scripts/livewire_ingest.py daily
 
 # Equity daily update through Massive instead of IB
 python scripts/livewire_ingest.py daily --asset-class equity --source massive
+python scripts/livewire_ingest.py daily --asset-class equity --source massive --target-date 2026-04-06 --force --tickers AAPL MSFT
 
 # Futures daily update
 python scripts/livewire_ingest.py daily --asset-class futures
