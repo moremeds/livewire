@@ -36,3 +36,24 @@ Extend the existing intraday backfill support so `VIX` and `SPX` have an explici
   depends_on: [T3]
   - Commit: `a951f4c feat: add vix spx volatility intraday support`.
   - PR: https://github.com/moremeds/livewire/pull/12
+
+## Review
+- Design: add a final non-IB FRED phase after equity Phase 2, log to `backfill_fred_rates.log`, source `.env` if present, and let nonzero `fred-rates` exit codes fail the runner.
+- Red test proof:
+  - `python -m pytest tests/test_livewire_entrypoints.py::test_backfill_all_runner_includes_fred_rates_phase -q` -> failed because `PHASE 3: FRED Treasury rates` was absent from `tools/run_backfill_all.sh`.
+- Targeted verification:
+  - `python -m pytest tests/test_livewire_entrypoints.py tests/test_script_consolidation.py -q` -> 20 passed.
+- Full verification:
+  - `python -m pytest tests -q --cov=clients --cov=scripts --cov=livewire_scripts --cov-report=term-missing -W error::RuntimeWarning` -> 905 passed, 1 skipped, 100% coverage.
+
+# Massive Equity Incremental Backfill
+
+Dependency graph:
+- `task-1-historical-source-selector` depends_on: []
+- `task-2-orchestration-callers` depends_on: ["task-1-historical-source-selector"]
+- `task-3-docs-verification` depends_on: ["task-1-historical-source-selector", "task-2-orchestration-callers"]
+
+Tasks:
+- [x] `task-1-historical-source-selector` depends_on: [] Add `--source {auto,ib,massive}` to daily historical fetch/backfill, keep `auto` on IB for deep older-history backfill, and prevent forced Massive partial ranges from completing cursors.
+- [x] `task-2-orchestration-callers` depends_on: ["task-1-historical-source-selector"] Route robust backfill, coverage recovery, `livewire_ingest.py` preflight, and `backfill-all` Phase 2 through the source selector and Massive daily repair path.
+- [x] `task-3-docs-verification` depends_on: ["task-1-historical-source-selector", "task-2-orchestration-callers"] Update docs and run targeted plus full coverage verification.

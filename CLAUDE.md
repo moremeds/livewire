@@ -101,14 +101,14 @@ Authoritative runbook: `~/runbooks/trading-stack/ib-gateway-ibc.md`. Read it bef
 
 ## Data Ingestion
 
-Primary data source: **Interactive Brokers** via `ib_async`. Requires IB Gateway at `127.0.0.1:4001` — managed by trading-stack (see "IB Gateway / IBC" section above). IB-backed ingest commands run a preflight check before connecting; if the Gateway is down they print the trading-stack status and exit cleanly rather than burning a 4-min IB timeout. `daily --source massive` is the explicit non-IB daily equity path and bypasses IB preflight.
+Primary data source: **Interactive Brokers** via `ib_async`. Requires IB Gateway at `127.0.0.1:4001` — managed by trading-stack (see "IB Gateway / IBC" section above). IB-backed ingest commands run a preflight check before connecting; if the Gateway is down they print the trading-stack status and exit cleanly rather than burning a 4-min IB timeout. `daily --source massive` and `historical --backfill --source massive` are explicit non-IB equity paths and bypass IB preflight.
 
 - `IBClient` wraps `ib_async.IB` with connection management, historical data, and contract qualification
 - `IBClient.connect()` defaults to `clientId=0` and automatically retries successive `clientId` values if IB reports error `326` (`client id already in use`)
 - `IBClient.get_historical_data()` fetches daily bars via `reqHistoricalData`
 - `BronzeClient` is the live service storage client: it discovers symbols from parquet, merges or replaces per-ticker snapshots, and publishes with `temp -> validate -> os.replace()`
 - `DailyBarFallbackClient` is a narrow recovery client for unresolved target-day gaps in the current U.S. equity universe. Provider order: Nasdaq `assetclass=stocks`, Nasdaq `assetclass=etf`, then Stooq U.S. daily CSV.
-- `MassiveClient` is the near-term daily U.S. equity accelerator and validation reference. It uses `MASSIVE_API_KEY`, stores `adjusted=false` bars with `adj_close = close`, and is not used for long historical backfills or broker-specific asset classes.
+- `MassiveClient` is the daily and intraday U.S. equity accelerator and validation reference. It uses `MASSIVE_API_KEY`, stores `adjusted=false` bars with `adj_close = close`, and is not used for broker-specific asset classes.
 - `adj_close` is set to `close` (IB TRADES data doesn't provide adjusted prices)
 - **CBOE volatility indices** are fetched directly from CBOE's public API (`cdn.cboe.com/api/global/delayed_quotes/charts/historical/`) via `scripts/livewire_ingest.py cboe-vol`, not IB. This is the authoritative source for VIX, VVIX, VXHYG, VXSMH, and all other CBOE volatility indices. For `VIX` and `SPX`, `cboe-vol` also appends newer rows from CBOE's official daily-price CSV backup when the chart JSON lags. The writer normalizes stale parquet schemas on merge (drops extra columns from older schema versions) and rewrites files to fix schema drift even when no new data is available.
 - **Treasury yield rates** are fetched from FRED via `scripts/livewire_ingest.py fred-rates` using `FRED_API_KEY`. Default series are `DGS3`, `DGS5`, `DGS10`, and `DGS30`; they write to `data-lake/bronze/asset_class=rates/symbol=<series>/1d.parquet` with `trade_date`, `symbol_id`, `tenor_years`, `yield_pct`, and `source`.
@@ -150,7 +150,7 @@ python scripts/livewire_ingest.py historical                                  # 
 python scripts/livewire_ingest.py historical --tickers AAPL NVDA              # Custom tickers
 python scripts/livewire_ingest.py historical --preset presets/sp500.json      # From preset with cursor resume
 python scripts/livewire_ingest.py historical --years 0 --skip-existing        # Inception, skip existing
-python scripts/livewire_ingest.py historical --preset presets/sp500.json --backfill  # Backfill older data
+python scripts/livewire_ingest.py historical --preset presets/sp500.json --backfill --source auto  # Backfill older equity data; auto keeps deep history on IB
 python scripts/livewire_ingest.py historical --preset presets/volatility.json --asset-class volatility  # CBOE vol indices (IB backfill)
 python scripts/livewire_ingest.py cboe-vol                                                        # CBOE vol indices (daily sync, preferred)
 python scripts/livewire_ingest.py fred-rates                                                      # FRED Treasury yields (DGS3/DGS5/DGS10/DGS30)
@@ -190,7 +190,7 @@ Current fetch behavior:
 
 `--backfill` fetches only missing older data for tickers already in bronze parquet:
 - Queries each ticker's oldest existing `trade_date` from parquet
-- Fetches IB inception → oldest_date gap
+- Fetches the inception → oldest_date gap. For equity, `--source auto` keeps this deep older-history path on IB because live Massive validation showed long requests can return partial ranges. `--source massive` is explicit and does not complete the cursor if the returned range does not reach the requested start.
 - Merges older rows into the canonical parquet snapshot
 - Uses separate cursor JSON: `cursor_backfill_{name}.json`
 - Skips tickers not in bronze parquet (use normal fetch first)
@@ -201,7 +201,7 @@ Current fetch behavior:
 python scripts/livewire_ingest.py backfill-all   # Runs default warehouse build
 ```
 
-`backfill-all` is the default warehouse build, not just daily equity. It runs equity daily seed/backfill for `sp500`, `ndx100`, and `r2k`, then syncs FRED Treasury yield rates, then runs Massive equity intraday (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed `VIX`/`SPX` intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility.
+`backfill-all` is the default warehouse build, not just daily equity. It runs equity daily seed/backfill for `sp500`, `ndx100`, and `r2k`; the older-history backfill phase remains IB-backed through `--source auto`. It then syncs FRED Treasury yield rates, then runs Massive equity intraday (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed `VIX`/`SPX` intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility.
 
 Output: per-ticker bronze Parquet at `data-lake/bronze/asset_class=equity/symbol=<ticker>/{1d,1m,5m,1h}.parquet` and volatility/index bronze Parquet under `data-lake/bronze/asset_class=volatility/symbol=<ticker>/`. Postgres is rebuilt only when `MDW_POSTGRES_DSN` is configured.
 
@@ -259,7 +259,7 @@ The main sync runs at 13:05 Pacific local time daily (4:05 PM Eastern year-round
 - Bar validation: checks OHLCV relationships, positive prices, valid trading days, duplicate dates
 - Atomically rewrites a per-ticker bronze snapshot after each successful merge
 - The active sync universe is the canonical bronze tree only; archive delisted symbols outside that tree if they should stop participating in future syncs/backfills
-- Recovery path for unresolved target-day gaps (equity only): IB first, Massive second when `MASSIVE_API_KEY` is configured, then Nasdaq historical quote API (`stocks`, then `etf`) and Stooq `symbol.us`; fallback is skipped for non-equity asset classes (volatility, futures, CMDTY, FX)
+- Recovery path for unresolved target-day gaps (equity only): `daily --source massive` fetches the missing target-date bars directly from Massive; the default IB daily path can still compare against Massive when configured and then falls back to Nasdaq historical quote API (`stocks`, then `etf`) and Stooq `symbol.us`; fallback is skipped for non-equity asset classes (volatility, futures, CMDTY, FX)
 - Fallback bars use the same validation and bronze merge path as IB bars
 - Run summary exposes `Fallback attempts`, `Fallback successes`, `Fallback symbols`, and per-source counts
 - Pure-Python NYSE trading calendar — no new dependencies
@@ -335,7 +335,7 @@ python scripts/livewire_quality.py coverage --threshold 0.99               # Str
 python scripts/livewire_quality.py coverage --force                        # Run on a non-trading day
 ```
 
-- 1d recovery shells out to `scripts/livewire_ingest.py historical`; intraday recovery shells out to `scripts/livewire_ingest.py intraday-backfill --source massive --asset-class equity`.
+- 1d recovery shells out to `scripts/livewire_ingest.py daily --source massive --target-date <date> --tickers ...`; this path can publish a target-date row for an explicit missing bronze ticker, but it does not replace full historical seeding. Intraday recovery shells out to `scripts/livewire_ingest.py intraday-backfill --source massive --asset-class equity`.
 - **Safety cap (default 100):** if more than N symbols are missing for any single timeframe, the script aborts the auto-recovery and emails immediately. This prevents a runaway IB rate-limit hit when an entire daily run failed for some other reason.
 - Email goes out only when post-recovery gaps remain. A fully successful recovery downgrades to an INFO log — no false-positive email storms.
 - Reuses the existing Nodemailer alert path at `scripts/livewire_ops.py send-alert`.

@@ -203,7 +203,7 @@ for preset in "${PRESETS[@]}"; do
 
     log "── PHASE 2: Backfill $name ($total tickers) ──"
     run_until_done "backfill_${name}" "$cursor_file" "$total" \
-        python "$SCRIPT" historical --preset "$preset" --backfill \
+        python "$SCRIPT" historical --preset "$preset" --backfill --source auto \
         --batch-size "$BATCH_SIZE" --max-concurrent "$MAX_CONCURRENT"
 done
 

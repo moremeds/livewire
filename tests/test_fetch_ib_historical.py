@@ -17,12 +17,15 @@ import pytest
 from ib_async import Contract, Forex, Future, Index, Stock
 
 from clients.bronze_client import BronzeClient
+from clients.massive_client import MassiveAPIError
 from livewire_scripts.fetch_ib_historical import (
     IB_EARLIEST_DATE,
     _cursor_path,
     _make_contract,
+    _resolve_historical_source,
     _resolve_fx_pair,
     _run_backfill,
+    _run_backfill_massive,
     _run_normal,
     backfill_ticker,
     bars_to_futures_rows,
@@ -31,6 +34,7 @@ from livewire_scripts.fetch_ib_historical import (
     clear_cursor,
     compute_date_windows,
     fetch_all_tickers,
+    fetch_massive_backfill_bars,
     fetch_ticker,
     fetch_ticker_bars,
     get_existing_symbols,
@@ -258,6 +262,70 @@ class TestStorageClient:
         from livewire_scripts import fetch_ib_historical as fetch_script
 
         assert fetch_script._storage_client() is BronzeClient
+
+
+class TestHistoricalSource:
+    def test_auto_equity_backfill_uses_ib_even_when_key_exists(self, monkeypatch):
+        monkeypatch.setenv("MASSIVE_API_KEY", "test-key")
+        assert _resolve_historical_source("auto", asset_class="equity", backfill=True) == "ib"
+
+    def test_auto_without_key_uses_ib(self, monkeypatch):
+        monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+        assert _resolve_historical_source("auto", asset_class="equity", backfill=True) == "ib"
+
+    def test_auto_normal_seed_uses_ib_even_with_key(self, monkeypatch):
+        monkeypatch.setenv("MASSIVE_API_KEY", "test-key")
+        assert _resolve_historical_source("auto", asset_class="equity", backfill=False) == "ib"
+
+    def test_massive_is_rejected_for_non_equity(self):
+        with pytest.raises(SystemExit, match="asset_class=equity"):
+            _resolve_historical_source("massive", asset_class="futures", backfill=True)
+
+    def test_massive_is_rejected_for_normal_seed(self):
+        with pytest.raises(SystemExit, match="historical --backfill"):
+            _resolve_historical_source("massive", asset_class="equity", backfill=False)
+
+    def test_forced_massive_equity_backfill_resolves_to_massive(self):
+        assert _resolve_historical_source("massive", asset_class="equity", backfill=True) == "massive"
+
+    def test_unknown_source_is_rejected(self):
+        with pytest.raises(SystemExit, match="unsupported source"):
+            _resolve_historical_source("bogus", asset_class="equity", backfill=True)
+
+    def test_fetch_massive_backfill_bars_uses_gap_before_oldest(self):
+        massive = MagicMock()
+        massive.get_daily_bars.return_value = [_make_bar(date="2019-12-31")]
+        bars, ok, complete = fetch_massive_backfill_bars("AAPL", "2020-01-02", massive)
+        assert ok is True
+        assert complete is False
+        assert len(bars) == 1
+        massive.get_daily_bars.assert_called_once_with(
+            "AAPL", IB_EARLIEST_DATE.date(), date(2020, 1, 1)
+        )
+
+    def test_fetch_massive_backfill_bars_no_gap_before_earliest_date(self):
+        massive = MagicMock()
+        bars, ok, complete = fetch_massive_backfill_bars("AAPL", "1993-01-29", massive)
+        assert bars == []
+        assert ok is True
+        assert complete is True
+        massive.get_daily_bars.assert_not_called()
+
+    def test_fetch_massive_backfill_bars_empty_response_is_complete_noop(self):
+        massive = MagicMock()
+        massive.get_daily_bars.return_value = []
+        bars, ok, complete = fetch_massive_backfill_bars("AAPL", "2020-01-02", massive)
+        assert bars == []
+        assert ok is True
+        assert complete is True
+
+    def test_fetch_massive_backfill_bars_reports_provider_failure(self):
+        massive = MagicMock()
+        massive.get_daily_bars.side_effect = MassiveAPIError("down")
+        bars, ok, complete = fetch_massive_backfill_bars("AAPL", "2020-01-02", massive)
+        assert bars == []
+        assert ok is False
+        assert complete is False
 
     def test_storage_client_uses_dbclient_patch(self, monkeypatch):
         from livewire_scripts import fetch_ib_historical as fetch_script
@@ -1019,6 +1087,14 @@ def _mock_ib_instance(ticker_bars):
     return mock
 
 
+def _mock_massive_instance(ticker_bars):
+    mock = MagicMock()
+    mock.__enter__ = MagicMock(return_value=mock)
+    mock.__exit__ = MagicMock(return_value=False)
+    mock.get_daily_bars.side_effect = lambda ticker, start, end: ticker_bars.get(ticker, [])
+    return mock
+
+
 class TestMain:
     @pytest.mark.integration
     def test_main_end_to_end(self, tmp_path, monkeypatch):
@@ -1392,6 +1468,244 @@ class TestMain:
         assert cursor_file.exists()
         data = json.loads(cursor_file.read_text())
         assert "AAPL" in data["completed"]
+
+    @pytest.mark.integration
+    def test_main_backfill_forced_massive_uses_massive_without_ib(self, tmp_path, monkeypatch):
+        """Forced Massive source uses Massive for equity backfill."""
+        bronze_dir = tmp_path / "bronze"
+        _seed_bronze(
+            bronze_dir,
+            "AAPL",
+            [
+                {
+                    "trade_date": "2020-01-02",
+                    "symbol_id": 1,
+                    "open": 150.0, "high": 155.0, "low": 149.0,
+                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                }
+            ],
+        )
+        monkeypatch.setenv("MASSIVE_API_KEY", "test-key")
+        monkeypatch.setattr(
+            "sys.argv",
+            ["fetch_ib_historical.py", "--tickers", "AAPL", "--backfill", "--source", "massive"],
+        )
+
+        mock_massive = _mock_massive_instance({
+            "AAPL": [_make_bar(date="1993-01-29", close=120.0)],
+        })
+
+        with (
+            patch("livewire_scripts.fetch_ib_historical.IBClient", side_effect=AssertionError("IB should not open")),
+            patch("livewire_scripts.fetch_ib_historical.MassiveClient", return_value=mock_massive),
+            patch(
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
+                lambda **kw: BronzeClient(bronze_dir=bronze_dir),
+            ),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", bronze_dir),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+        ):
+            main()
+
+        with BronzeClient(bronze_dir=bronze_dir) as bronze:
+            rows = bronze.read_symbol_rows("AAPL")
+        assert [row["trade_date"] for row in rows] == ["1993-01-29", "2020-01-02"]
+        mock_massive.get_daily_bars.assert_called_once_with(
+            "AAPL", IB_EARLIEST_DATE.date(), date(2020, 1, 1)
+        )
+        cursor_file = tmp_path / "cursors" / "cursor_backfill_custom.json"
+        data = json.loads(cursor_file.read_text())
+        assert "AAPL" in data["completed"]
+
+    @pytest.mark.integration
+    def test_main_backfill_forced_ib_ignores_massive_key(self, tmp_path, monkeypatch):
+        bronze_dir = tmp_path / "bronze"
+        _seed_bronze(
+            bronze_dir,
+            "AAPL",
+            [
+                {
+                    "trade_date": "2020-01-02",
+                    "symbol_id": 1,
+                    "open": 150.0, "high": 155.0, "low": 149.0,
+                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                }
+            ],
+        )
+        monkeypatch.setenv("MASSIVE_API_KEY", "test-key")
+        monkeypatch.setattr(
+            "sys.argv",
+            ["fetch_ib_historical.py", "--tickers", "AAPL", "--backfill", "--source", "ib"],
+        )
+        mock_ib = _mock_ib_instance({"AAPL": [_make_bar(date="2019-06-15", close=120.0)]})
+
+        with (
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch("livewire_scripts.fetch_ib_historical.MassiveClient", side_effect=AssertionError("Massive should not open")),
+            patch(
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
+                lambda **kw: BronzeClient(bronze_dir=bronze_dir),
+            ),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", bronze_dir),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+        ):
+            main()
+
+        mock_ib.ib.run.assert_called_once()
+
+    @pytest.mark.integration
+    def test_run_backfill_massive_skips_tickers_without_bronze(self, tmp_path, monkeypatch):
+        bronze_dir = tmp_path / "bronze"
+        args = SimpleNamespace(batch_size=1)
+        with BronzeClient(bronze_dir=bronze_dir) as bronze:
+            _run_backfill_massive(
+                args,
+                MagicMock(),
+                bronze,
+                ["NEW"],
+                ["NEW"],
+                {},
+                "backfill_custom",
+                "2026-05-20T00:00:00",
+            )
+        assert not (tmp_path / "cursors" / "cursor_backfill_custom.json").exists()
+
+    @pytest.mark.integration
+    def test_run_backfill_massive_provider_failure_does_not_mark_cursor(self, tmp_path, monkeypatch):
+        bronze_dir = tmp_path / "bronze"
+        _seed_bronze(
+            bronze_dir,
+            "AAPL",
+            [
+                {
+                    "trade_date": "2020-01-02",
+                    "symbol_id": 1,
+                    "open": 150.0, "high": 155.0, "low": 149.0,
+                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                }
+            ],
+        )
+        monkeypatch.setattr("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors")
+        monkeypatch.setattr(
+            "livewire_scripts.fetch_ib_historical.fetch_massive_backfill_bars",
+            lambda ticker, oldest, massive: ([], False, False),
+        )
+        args = SimpleNamespace(batch_size=1)
+        with BronzeClient(bronze_dir=bronze_dir) as bronze:
+            _run_backfill_massive(
+                args,
+                MagicMock(),
+                bronze,
+                ["AAPL"],
+                ["AAPL"],
+                {},
+                "backfill_custom",
+                "2026-05-20T00:00:00",
+            )
+        assert not (tmp_path / "cursors" / "cursor_backfill_custom.json").exists()
+
+    @pytest.mark.integration
+    def test_run_backfill_massive_noop_marks_cursor(self, tmp_path, monkeypatch):
+        bronze_dir = tmp_path / "bronze"
+        _seed_bronze(
+            bronze_dir,
+            "AAPL",
+            [
+                {
+                    "trade_date": "1993-01-29",
+                    "symbol_id": 1,
+                    "open": 150.0, "high": 155.0, "low": 149.0,
+                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                }
+            ],
+        )
+        monkeypatch.setattr("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors")
+        args = SimpleNamespace(batch_size=1)
+        completed: dict[str, list[str]] = {}
+        with BronzeClient(bronze_dir=bronze_dir) as bronze:
+            _run_backfill_massive(
+                args,
+                MagicMock(),
+                bronze,
+                ["AAPL"],
+                ["AAPL"],
+                completed,
+                "backfill_custom",
+                "2026-05-20T00:00:00",
+            )
+        cursor_file = tmp_path / "cursors" / "cursor_backfill_custom.json"
+        data = json.loads(cursor_file.read_text())
+        assert "AAPL" in data["completed"]
+
+    @pytest.mark.integration
+    def test_run_backfill_massive_partial_rows_do_not_mark_cursor(self, tmp_path, monkeypatch):
+        bronze_dir = tmp_path / "bronze"
+        _seed_bronze(
+            bronze_dir,
+            "AAPL",
+            [
+                {
+                    "trade_date": "2020-01-02",
+                    "symbol_id": 1,
+                    "open": 150.0, "high": 155.0, "low": 149.0,
+                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                }
+            ],
+        )
+        monkeypatch.setattr("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors")
+        monkeypatch.setattr(
+            "livewire_scripts.fetch_ib_historical.fetch_massive_backfill_bars",
+            lambda ticker, oldest, massive: ([_make_bar(date="2019-06-15", close=120.0)], True, False),
+        )
+        args = SimpleNamespace(batch_size=1)
+        with BronzeClient(bronze_dir=bronze_dir) as bronze:
+            _run_backfill_massive(
+                args,
+                MagicMock(),
+                bronze,
+                ["AAPL"],
+                ["AAPL"],
+                {},
+                "backfill_custom",
+                "2026-05-20T00:00:00",
+            )
+            rows = bronze.read_symbol_rows("AAPL")
+        assert [row["trade_date"] for row in rows] == ["2019-06-15", "2020-01-02"]
+        assert not (tmp_path / "cursors" / "cursor_backfill_custom.json").exists()
+
+    @pytest.mark.integration
+    def test_run_backfill_massive_incomplete_empty_rows_do_not_mark_cursor(self, tmp_path, monkeypatch):
+        bronze_dir = tmp_path / "bronze"
+        _seed_bronze(
+            bronze_dir,
+            "AAPL",
+            [
+                {
+                    "trade_date": "2020-01-02",
+                    "symbol_id": 1,
+                    "open": 150.0, "high": 155.0, "low": 149.0,
+                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                }
+            ],
+        )
+        monkeypatch.setattr("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors")
+        monkeypatch.setattr(
+            "livewire_scripts.fetch_ib_historical.fetch_massive_backfill_bars",
+            lambda ticker, oldest, massive: ([], True, False),
+        )
+        args = SimpleNamespace(batch_size=1)
+        with BronzeClient(bronze_dir=bronze_dir) as bronze:
+            _run_backfill_massive(
+                args,
+                MagicMock(),
+                bronze,
+                ["AAPL"],
+                ["AAPL"],
+                {},
+                "backfill_custom",
+                "2026-05-20T00:00:00",
+            )
+        assert not (tmp_path / "cursors" / "cursor_backfill_custom.json").exists()
 
     @pytest.mark.integration
     def test_main_backfill_skips_tickers_not_in_bronze(self, tmp_path, monkeypatch):

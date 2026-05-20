@@ -51,6 +51,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         choices=["equity", "volatility", "futures", "cmdty", "fx"],
     )
     p.add_argument(
+        "--source",
+        choices=["auto", "ib", "massive"],
+        default="auto",
+        help="Historical daily source selector passed to worker processes.",
+    )
+    p.add_argument(
         "--timeout",
         type=int,
         default=_env_int("MDW_ORCHESTRATOR_TIMEOUT_SECONDS", 300),
@@ -116,7 +122,7 @@ class TickerOutcome:
     note: str = ""
 
 
-def _build_worker_cmd(ticker: str, mode: str, asset_class: str) -> list[str]:
+def _build_worker_cmd(ticker: str, mode: str, asset_class: str, source: str = "auto") -> list[str]:
     """Construct the subprocess args for the historical ingest command."""
     cmd = [
         sys.executable,
@@ -126,6 +132,8 @@ def _build_worker_cmd(ticker: str, mode: str, asset_class: str) -> list[str]:
         ticker,
         "--asset-class",
         asset_class,
+        "--source",
+        source,
         "--batch-size",
         "1",
         "--max-concurrent",
@@ -159,12 +167,13 @@ def run_one_ticker(
     timeout: int,
     max_attempts: int,
     cooldown: int,
+    source: str = "auto",
 ) -> TickerOutcome:
     parquet = _bronze_path_for(bronze_dir, asset_class, ticker)
     if _is_already_done(parquet, mode):
         return TickerOutcome(ticker, OutcomeCategory.SKIP, 0, 0.0, 0, 0)
 
-    cmd = _build_worker_cmd(ticker, mode, asset_class)
+    cmd = _build_worker_cmd(ticker, mode, asset_class, source)
     rows_before = _count_rows(parquet)
     start = time.monotonic()
 
@@ -262,6 +271,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             ticker=ticker,
             mode=args.mode,
             asset_class=args.asset_class,
+            source=args.source,
             bronze_dir=args.bronze_dir,
             timeout=args.timeout,
             max_attempts=args.max_attempts,

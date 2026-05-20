@@ -676,6 +676,12 @@ def main():
         help="Limit to tickers in a specific preset file",
     )
     parser.add_argument(
+        "--tickers",
+        nargs="+",
+        default=None,
+        help="Limit to explicit tickers; missing bronze symbols receive target-date rows only.",
+    )
+    parser.add_argument(
         "--target-date",
         type=str,
         default=None,
@@ -731,11 +737,16 @@ def main():
     with _storage_client()(bronze_dir=bronze_dir, asset_class=asset_class) as bronze:
         latest_dates = bronze.get_latest_dates()
 
-        if not latest_dates:
+        if not latest_dates and args.tickers is None:
             console.print(
                 "[yellow]No tickers found in bronze parquet. Run fetch_ib_historical.py first.[/yellow]"
             )
             return
+        if not latest_dates and args.tickers is not None:
+            latest_dates = {
+                ticker.upper(): previous_trading_day(target).isoformat()
+                for ticker in args.tickers
+            }
 
         # Filter to preset tickers if specified
         if preset_tickers is not None:
@@ -743,6 +754,16 @@ def main():
             if not latest_dates:
                 console.print("[yellow]No preset tickers found in bronze parquet.[/yellow]")
                 return
+        if args.tickers is not None:
+            explicit_tickers = {ticker.upper() for ticker in args.tickers}
+            missing_explicit = explicit_tickers - set(latest_dates)
+            latest_dates = {k: v for k, v in latest_dates.items() if k in explicit_tickers}
+            latest_dates.update(
+                {
+                    ticker: previous_trading_day(target).isoformat()
+                    for ticker in missing_explicit
+                }
+            )
 
         up_to_date, single_gap, multi_gap = classify_gaps(latest_dates, target)
         need_update = single_gap + multi_gap

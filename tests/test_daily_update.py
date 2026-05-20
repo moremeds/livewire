@@ -873,6 +873,74 @@ class TestMain:
         mock_massive.get_daily_bars.assert_called_once_with("AAPL", date(2025, 1, 3), date(2025, 1, 3))
 
     @pytest.mark.integration
+    def test_massive_source_can_limit_to_explicit_tickers(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "massive", "--tickers", "AAPL"])
+        bronze_dir = tmp_path / "bronze"
+        for symbol in ("AAPL", "MSFT"):
+            _seed_bronze(
+                bronze_dir,
+                symbol,
+                [
+                    {
+                        "trade_date": "2025-01-02",
+                        "symbol_id": 1,
+                        "open": 150.0, "high": 155.0, "low": 149.0,
+                        "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    }
+                ],
+            )
+        mock_massive = _mock_massive_instance(
+            {"AAPL": [_make_bar(date="2025-01-03", open=154.0, high=158.0, low=152.0, close=156.0)]}
+        )
+
+        with (
+            patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
+            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
+            patch(
+                "livewire_scripts.daily_update.BronzeClient",
+                lambda **kw: BronzeClient(bronze_dir=bronze_dir),
+            ),
+            patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
+        ):
+            mock_date.today.return_value = date(2025, 1, 3)
+            mock_date.fromisoformat = date.fromisoformat
+            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+            assert main() == 0
+
+        assert mock_massive.get_daily_bars.call_count == 1
+        mock_massive.get_daily_bars.assert_called_once_with("AAPL", date(2025, 1, 3), date(2025, 1, 3))
+
+    @pytest.mark.integration
+    def test_massive_source_can_recover_explicit_ticker_missing_bronze(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "massive", "--tickers", "AAPL"])
+        bronze_dir = tmp_path / "bronze"
+        mock_massive = _mock_massive_instance(
+            {"AAPL": [_make_bar(date="2025-01-03", open=154.0, high=158.0, low=152.0, close=156.0)]}
+        )
+
+        with (
+            patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
+            patch("livewire_scripts.daily_update.previous_trading_day", return_value=date(2025, 1, 2)),
+            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
+            patch(
+                "livewire_scripts.daily_update.BronzeClient",
+                lambda **kw: BronzeClient(bronze_dir=bronze_dir),
+            ),
+            patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
+        ):
+            mock_date.today.return_value = date(2025, 1, 3)
+            mock_date.fromisoformat = date.fromisoformat
+            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+            assert main() == 0
+
+        with BronzeClient(bronze_dir=bronze_dir) as bronze:
+            rows = bronze.read_symbol_rows("AAPL")
+        assert [row["trade_date"] for row in rows] == ["2025-01-03"]
+        mock_massive.get_daily_bars.assert_called_once_with("AAPL", date(2025, 1, 3), date(2025, 1, 3))
+
+    @pytest.mark.integration
     def test_massive_source_returns_failure_when_no_bars(self, tmp_path, monkeypatch):
         monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "massive"])
         bronze_dir = tmp_path / "bronze"

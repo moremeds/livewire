@@ -207,7 +207,10 @@ def auto_recover(
         cmd = [
             sys.executable,
             str(_INGEST_SCRIPT),
-            "historical",
+            "daily",
+            "--source", "massive",
+            "--force",
+            "--target-date", (target_date or date.today()).isoformat(),
             "--tickers", *missing_symbols,
         ]
     else:
