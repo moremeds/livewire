@@ -1,11 +1,10 @@
 {
   "name": "r2k-tier-tail-500",
-  "description": "Russell 2000 R2K Smallest 500 by weight (500 companies)",
+  "description": "Russell 2000 R2K Smallest 500 by weight (484 companies)",
   "tickers": [
     "MPLT",
     "XPER",
     "ATNI",
-    "ONTF",
     "ISTR",
     "NWFL",
     "EVEX",
@@ -75,7 +74,6 @@
     "CD",
     "OSG",
     "LILA",
-    "BLFY",
     "OPFI",
     "MITT",
     "PACK",
@@ -139,7 +137,6 @@
     "MYFW",
     "VTEX",
     "FBLA",
-    "CRDA",
     "CFFI",
     "WNEB",
     "BLZE",
@@ -210,7 +207,6 @@
     "BETR",
     "GLSI",
     "FCCO",
-    "EWCZ",
     "UIS",
     "INBK",
     "DOUG",
@@ -225,7 +221,6 @@
     "LOVE",
     "FXNC",
     "CMDB",
-    "LNKB",
     "PBFS",
     "PRTH",
     "SMHI",
@@ -397,7 +392,6 @@
     "DMRC",
     "AIRO",
     "ZVIA",
-    "UBFO",
     "PMTS",
     "FORR",
     "ECBK",
@@ -431,8 +425,6 @@
     "SFBC",
     "PAMT",
     "SI",
-    "INH",
-    "MPX",
     "TUSK",
     "RCEL",
     "ADV",
@@ -444,7 +436,6 @@
     "LFVN",
     "HQI",
     "PROP",
-    "AKE",
     "GAIA",
     "AVBH",
     "EHTH",
@@ -455,7 +446,6 @@
     "KG",
     "DH",
     "VHI",
-    "SWKH",
     "AREN",
     "LFT",
     "HURA",
@@ -489,28 +479,18 @@
     "SLSN",
     "MRDN",
     "VRM",
-    "ADRO",
     "SLND",
     "GOCO",
     "VGAS",
     "SAFX",
     "TVGN",
     "TSEOF",
-    "THRD",
-    "ZSPC",
-    "SBT",
-    "P5N994",
-    "GTXI",
-    "PDLI"
+    "ZSPC"
   ],
   "pairs": [
     [
       "MPLT",
       "XPER"
-    ],
-    [
-      "ATNI",
-      "ONTF"
     ],
     [
       "ISTR",
@@ -649,10 +629,6 @@
       "OSG"
     ],
     [
-      "LILA",
-      "BLFY"
-    ],
-    [
       "OPFI",
       "MITT"
     ],
@@ -775,10 +751,6 @@
     [
       "MYFW",
       "VTEX"
-    ],
-    [
-      "FBLA",
-      "CRDA"
     ],
     [
       "CFFI",
@@ -921,10 +893,6 @@
       "FCCO"
     ],
     [
-      "EWCZ",
-      "UIS"
-    ],
-    [
       "INBK",
       "DOUG"
     ],
@@ -947,10 +915,6 @@
     [
       "LOVE",
       "FXNC"
-    ],
-    [
-      "CMDB",
-      "LNKB"
     ],
     [
       "PBFS",
@@ -1293,10 +1257,6 @@
       "AIRO"
     ],
     [
-      "ZVIA",
-      "UBFO"
-    ],
-    [
       "PMTS",
       "FORR"
     ],
@@ -1361,14 +1321,6 @@
       "PAMT"
     ],
     [
-      "SI",
-      "INH"
-    ],
-    [
-      "MPX",
-      "TUSK"
-    ],
-    [
       "RCEL",
       "ADV"
     ],
@@ -1389,10 +1341,6 @@
       "PROP"
     ],
     [
-      "AKE",
-      "GAIA"
-    ],
-    [
       "AVBH",
       "EHTH"
     ],
@@ -1407,10 +1355,6 @@
     [
       "KG",
       "DH"
-    ],
-    [
-      "VHI",
-      "SWKH"
     ],
     [
       "AREN",
@@ -1477,10 +1421,6 @@
       "MRDN"
     ],
     [
-      "VRM",
-      "ADRO"
-    ],
-    [
       "SLND",
       "GOCO"
     ],
@@ -1491,18 +1431,6 @@
     [
       "TVGN",
       "TSEOF"
-    ],
-    [
-      "THRD",
-      "ZSPC"
-    ],
-    [
-      "SBT",
-      "P5N994"
-    ],
-    [
-      "GTXI",
-      "PDLI"
     ]
   ],
   "sector": "Multi-Sector",

@@ -4,7 +4,6 @@
   "tickers": [
     "APA",
     "COP",
-    "CTRA",
     "DVN",
     "FANG",
     "EOG",
@@ -25,10 +24,6 @@
     [
       "OXY",
       "APA"
-    ],
-    [
-      "CTRA",
-      "EQT"
     ],
     [
       "EXE",

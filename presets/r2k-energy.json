@@ -1,6 +1,6 @@
 {
   "name": "r2k-energy",
-  "description": "Russell 2000 Energy (105 companies)",
+  "description": "Russell 2000 Energy (104 companies)",
   "tickers": [
     "UEC",
     "AROC",
@@ -105,8 +105,7 @@
     "OPAL",
     "NXXT",
     "VGAS",
-    "SAFX",
-    "P5N994"
+    "SAFX"
   ],
   "pairs": [
     [
@@ -316,10 +315,6 @@
     [
       "VGAS",
       "SAFX"
-    ],
-    [
-      "P5N994",
-      "UEC"
     ]
   ],
   "sector": "Energy",

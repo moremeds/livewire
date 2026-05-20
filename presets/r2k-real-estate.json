@@ -1,6 +1,6 @@
 {
   "name": "r2k-real-estate",
-  "description": "Russell 2000 Real Estate (99 companies)",
+  "description": "Russell 2000 Real Estate (96 companies)",
   "tickers": [
     "CTRE",
     "AHR",
@@ -38,7 +38,6 @@
     "DHC",
     "IIPR",
     "PEB",
-    "ALEX",
     "XHR",
     "VRE",
     "SILA",
@@ -54,12 +53,10 @@
     "JBGS",
     "SAFE",
     "ESRT",
-    "PKST",
     "CBL",
     "WSR",
     "MMI",
     "NXRT",
-    "EXPI",
     "CTO",
     "UHT",
     "FOR",
@@ -176,10 +173,6 @@
       "PEB"
     ],
     [
-      "ALEX",
-      "XHR"
-    ],
-    [
       "VRE",
       "SILA"
     ],
@@ -208,16 +201,8 @@
       "ESRT"
     ],
     [
-      "PKST",
-      "CBL"
-    ],
-    [
       "WSR",
       "MMI"
-    ],
-    [
-      "NXRT",
-      "EXPI"
     ],
     [
       "CTO",

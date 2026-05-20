@@ -1,6 +1,6 @@
 {
   "name": "r2k",
-  "description": "Russell 2000 (IWM) \u2014 1929 companies, 11 sectors, 969 pairs",
+  "description": "Russell 2000 (IWM) \u2014 1886 companies, 11 sectors, 928 pairs",
   "tickers": [
     "AAMI",
     "AAOI",
@@ -26,7 +26,6 @@
     "ACIC",
     "ACIW",
     "ACLS",
-    "ACLX",
     "ACMR",
     "ACNB",
     "ACNT",
@@ -44,7 +43,6 @@
     "ADMA",
     "ADNT",
     "ADPT",
-    "ADRO",
     "ADTN",
     "ADUS",
     "ADV",
@@ -75,12 +73,10 @@
     "AIRS",
     "AISP",
     "AKBA",
-    "AKE",
     "AKR",
     "ALCO",
     "ALDX",
     "ALEC",
-    "ALEX",
     "ALG",
     "ALGT",
     "ALH",
@@ -159,7 +155,6 @@
     "ASAN",
     "ASB",
     "ASC",
-    "ASGN",
     "ASIC",
     "ASIX",
     "ASLE",
@@ -265,7 +260,6 @@
     "BL",
     "BLBD",
     "BLFS",
-    "BLFY",
     "BLKB",
     "BLMN",
     "BLND",
@@ -438,7 +432,6 @@
     "CRAI",
     "CRC",
     "CRCT",
-    "CRDA",
     "CRDF",
     "CRDO",
     "CRGY",
@@ -453,7 +446,6 @@
     "CRSR",
     "CRVL",
     "CRVS",
-    "CSGS",
     "CSPI",
     "CSR",
     "CSTL",
@@ -464,7 +456,6 @@
     "CTEV",
     "CTGO",
     "CTKB",
-    "CTLP",
     "CTO",
     "CTOS",
     "CTRE",
@@ -503,7 +494,6 @@
     "DAKT",
     "DAN",
     "DAVE",
-    "DAWN",
     "DBD",
     "DBI",
     "DBRG",
@@ -525,7 +515,6 @@
     "DGII",
     "DH",
     "DHC",
-    "DHIL",
     "DHT",
     "DIN",
     "DIOD",
@@ -572,7 +561,6 @@
     "EGBN",
     "EGHT",
     "EGY",
-    "EHAB",
     "EHTH",
     "EIG",
     "ELA",
@@ -618,10 +606,8 @@
     "EVI",
     "EVLV",
     "EVTC",
-    "EWCZ",
     "EWTX",
     "EXFY",
-    "EXPI",
     "EXPO",
     "EXTR",
     "EYE",
@@ -654,12 +640,10 @@
     "FFBC",
     "FFIC",
     "FFIN",
-    "FFWM",
     "FG",
     "FHTX",
     "FIBK",
     "FIGS",
-    "FIHL",
     "FINW",
     "FIP",
     "FISI",
@@ -683,7 +667,6 @@
     "FNLC",
     "FNWD",
     "FOA",
-    "FOLD",
     "FOR",
     "FORM",
     "FORR",
@@ -730,11 +713,9 @@
     "GCMG",
     "GCO",
     "GCT",
-    "GDEN",
     "GDOT",
     "GDYN",
     "GEF",
-    "GEFB",
     "GENC",
     "GENI",
     "GEO",
@@ -748,7 +729,6 @@
     "GIC",
     "GIII",
     "GKOS",
-    "GLDD",
     "GLNG",
     "GLRE",
     "GLSI",
@@ -783,7 +763,6 @@
     "GTLS",
     "GTN",
     "GTX",
-    "GTXI",
     "GTY",
     "GVA",
     "GWRS",
@@ -839,7 +818,6 @@
     "HSHP",
     "HSTM",
     "HTB",
-    "HTBK",
     "HTFL",
     "HTH",
     "HTLD",
@@ -892,7 +870,6 @@
     "INDI",
     "INDV",
     "INGN",
-    "INH",
     "INMB",
     "INN",
     "INNV",
@@ -1026,7 +1003,6 @@
     "LMB",
     "LMND",
     "LMNR",
-    "LNKB",
     "LNN",
     "LNSR",
     "LNTH",
@@ -1089,7 +1065,6 @@
     "MDXG",
     "MEC",
     "MED",
-    "MEG",
     "MEI",
     "METC",
     "MFA",
@@ -1123,13 +1098,11 @@
     "MNSB",
     "MNTK",
     "MOD",
-    "MOGA",
     "MOV",
     "MPAA",
     "MPB",
     "MPLT",
     "MPTI",
-    "MPX",
     "MQ",
     "MRBK",
     "MRCY",
@@ -1277,7 +1250,6 @@
     "ONB",
     "ONEW",
     "ONIT",
-    "ONTF",
     "OOMA",
     "OPAL",
     "OPBK",
@@ -1308,7 +1280,6 @@
     "OVBC",
     "OVLY",
     "OXM",
-    "P5N994",
     "PACB",
     "PACK",
     "PACS",
@@ -1337,7 +1308,6 @@
     "PDEX",
     "PDFS",
     "PDLB",
-    "PDLI",
     "PDM",
     "PDYN",
     "PEB",
@@ -1365,7 +1335,6 @@
     "PKBK",
     "PKE",
     "PKOH",
-    "PKST",
     "PL",
     "PLAB",
     "PLAY",
@@ -1532,7 +1501,6 @@
     "SBH",
     "SBRA",
     "SBSI",
-    "SBT",
     "SCHL",
     "SCL",
     "SCSC",
@@ -1544,7 +1512,6 @@
     "SEG",
     "SEI",
     "SEM",
-    "SEMR",
     "SENEA",
     "SEPN",
     "SERV",
@@ -1611,7 +1578,6 @@
     "SMTC",
     "SMTI",
     "SNBR",
-    "SNCY",
     "SNDA",
     "SNDX",
     "SNEX",
@@ -1647,7 +1613,6 @@
     "STEP",
     "STGW",
     "STIM",
-    "STKL",
     "STNE",
     "STNG",
     "STOK",
@@ -1666,7 +1631,6 @@
     "SVV",
     "SWBI",
     "SWIM",
-    "SWKH",
     "SWX",
     "SXC",
     "SXI",
@@ -1698,17 +1662,14 @@
     "TEAD",
     "TECX",
     "TENB",
-    "TERN",
     "TEX",
     "TFIN",
     "TG",
     "TGLS",
-    "TGNA",
     "TGTX",
     "TH",
     "THFF",
     "THR",
-    "THRD",
     "THRM",
     "THRY",
     "TIC",
@@ -1733,7 +1694,6 @@
     "TOWN",
     "TPB",
     "TPC",
-    "TPH",
     "TR",
     "TRAK",
     "TRC",
@@ -1771,11 +1731,9 @@
     "TYRA",
     "TZOO",
     "UAMY",
-    "UBFO",
     "UBSI",
     "UCB",
     "UCTT",
-    "UDMY",
     "UE",
     "UEC",
     "UFCS",
@@ -2221,10 +2179,6 @@
       "PWP"
     ],
     [
-      "CIM",
-      "FIHL"
-    ],
-    [
       "SAFT",
       "MBIN"
     ],
@@ -2309,10 +2263,6 @@
       "BRSP"
     ],
     [
-      "THFF",
-      "HTBK"
-    ],
-    [
       "IBCP",
       "FMNB"
     ],
@@ -2363,10 +2313,6 @@
     [
       "RBCAA",
       "ROOT"
-    ],
-    [
-      "CASS",
-      "CTLP"
     ],
     [
       "GCMG",
@@ -2441,10 +2387,6 @@
       "WRLD"
     ],
     [
-      "DHIL",
-      "KRNY"
-    ],
-    [
       "RRBI",
       "COFS"
     ],
@@ -2471,10 +2413,6 @@
     [
       "BWB",
       "HBT"
-    ],
-    [
-      "FFWM",
-      "BMRC"
     ],
     [
       "CZNC",
@@ -2557,10 +2495,6 @@
       "OSG"
     ],
     [
-      "BLFY",
-      "OPFI"
-    ],
-    [
       "MITT",
       "JMSB"
     ],
@@ -2587,10 +2521,6 @@
     [
       "CHMG",
       "MYFW"
-    ],
-    [
-      "FBLA",
-      "CRDA"
     ],
     [
       "CFFI",
@@ -2631,10 +2561,6 @@
     [
       "LDI",
       "GCBC"
-    ],
-    [
-      "FXNC",
-      "LNKB"
     ],
     [
       "PBFS",
@@ -2725,10 +2651,6 @@
       "CPSS"
     ],
     [
-      "UBFO",
-      "ECBK"
-    ],
-    [
       "CBNA",
       "UNB"
     ],
@@ -2741,10 +2663,6 @@
       "KG"
     ],
     [
-      "SWKH",
-      "LFT"
-    ],
-    [
       "RBKB",
       "MKTW"
     ],
@@ -2755,10 +2673,6 @@
     [
       "VRM",
       "GOCO"
-    ],
-    [
-      "SBT",
-      "UMBF"
     ],
     [
       "ENSG",
@@ -2813,10 +2727,6 @@
       "MMSI"
     ],
     [
-      "FOLD",
-      "TGTX"
-    ],
-    [
       "IRTC",
       "LGND"
     ],
@@ -2825,16 +2735,8 @@
       "SRRK"
     ],
     [
-      "ACLX",
-      "CRNX"
-    ],
-    [
       "ADMA",
       "MIRM"
-    ],
-    [
-      "TERN",
-      "CELC"
     ],
     [
       "LIVN",
@@ -3057,10 +2959,6 @@
       "CRVS"
     ],
     [
-      "DAWN",
-      "CDNA"
-    ],
-    [
       "BHVN",
       "MAZE"
     ],
@@ -3143,10 +3041,6 @@
     [
       "KURA",
       "ESPR"
-    ],
-    [
-      "INBX",
-      "EHAB"
     ],
     [
       "TCMD",
@@ -3509,16 +3403,8 @@
       "SI"
     ],
     [
-      "INH",
-      "RCEL"
-    ],
-    [
       "LUNG",
       "ARAY"
-    ],
-    [
-      "STIM",
-      "AKE"
     ],
     [
       "DH",
@@ -3541,18 +3427,6 @@
       "INMB"
     ],
     [
-      "ADRO",
-      "TVGN"
-    ],
-    [
-      "THRD",
-      "GTXI"
-    ],
-    [
-      "PDLI",
-      "ENSG"
-    ],
-    [
       "BE",
       "KTOS"
     ],
@@ -3563,10 +3437,6 @@
     [
       "MOD",
       "DY"
-    ],
-    [
-      "SPXC",
-      "MOGA"
     ],
     [
       "GTLS",
@@ -3701,10 +3571,6 @@
       "HLIO"
     ],
     [
-      "CSGS",
-      "ATKR"
-    ],
-    [
       "EPAC",
       "EOSE"
     ],
@@ -3801,10 +3667,6 @@
       "PBI"
     ],
     [
-      "GLDD",
-      "TNC"
-    ],
-    [
       "ARRY",
       "TNET"
     ],
@@ -3821,10 +3683,6 @@
       "BV"
     ],
     [
-      "FA",
-      "SNCY"
-    ],
-    [
       "TE",
       "JBI"
     ],
@@ -3835,10 +3693,6 @@
     [
       "AMRC",
       "ALNT"
-    ],
-    [
-      "MEG",
-      "GHM"
     ],
     [
       "NX",
@@ -4225,10 +4079,6 @@
       "DGII"
     ],
     [
-      "ASGN",
-      "FRSH"
-    ],
-    [
       "BBAI",
       "BRZE"
     ],
@@ -4313,10 +4163,6 @@
       "CXM"
     ],
     [
-      "ASAN",
-      "SEMR"
-    ],
-    [
       "PGY",
       "BTBT"
     ],
@@ -4387,10 +4233,6 @@
     [
       "OOMA",
       "CRSR"
-    ],
-    [
-      "XPER",
-      "ONTF"
     ],
     [
       "BELFA",
@@ -4523,10 +4365,6 @@
     [
       "ASO",
       "LTH"
-    ],
-    [
-      "PATK",
-      "TPH"
     ],
     [
       "SIG",
@@ -4709,10 +4547,6 @@
       "HZO"
     ],
     [
-      "GDEN",
-      "BLMN"
-    ],
-    [
       "OXM",
       "RGR"
     ],
@@ -4723,10 +4557,6 @@
     [
       "DFH",
       "SLDP"
-    ],
-    [
-      "MBUU",
-      "UDMY"
     ],
     [
       "ARKO",
@@ -4821,10 +4651,6 @@
       "WEYS"
     ],
     [
-      "EWCZ",
-      "LOVE"
-    ],
-    [
       "LEGH",
       "LE"
     ],
@@ -4871,10 +4697,6 @@
     [
       "LVWR",
       "FFAI"
-    ],
-    [
-      "NRDY",
-      "MPX"
     ],
     [
       "CURV",
@@ -5093,10 +4915,6 @@
       "SAFX"
     ],
     [
-      "P5N994",
-      "UEC"
-    ],
-    [
       "CTRE",
       "AHR"
     ],
@@ -5169,10 +4987,6 @@
       "PEB"
     ],
     [
-      "ALEX",
-      "XHR"
-    ],
-    [
       "VRE",
       "SILA"
     ],
@@ -5201,16 +5015,8 @@
       "ESRT"
     ],
     [
-      "PKST",
-      "CBL"
-    ],
-    [
       "WSR",
       "MMI"
-    ],
-    [
-      "NXRT",
-      "EXPI"
     ],
     [
       "CTO",
@@ -5413,10 +5219,6 @@
       "TTAM"
     ],
     [
-      "GEFB",
-      "ABAT"
-    ],
-    [
       "MAGN",
       "IPI"
     ],
@@ -5463,10 +5265,6 @@
     [
       "SATS",
       "LUMN"
-    ],
-    [
-      "TDS",
-      "TGNA"
     ],
     [
       "SPHR",
@@ -5674,10 +5472,6 @@
     [
       "ODC",
       "SENEA"
-    ],
-    [
-      "UTZ",
-      "STKL"
     ],
     [
       "JBSS",
@@ -5959,7 +5753,6 @@
         "PEBO",
         "PWP",
         "CIM",
-        "FIHL",
         "SAFT",
         "MBIN",
         "ORC",
@@ -6003,7 +5796,6 @@
         "CPF",
         "BRSP",
         "THFF",
-        "HTBK",
         "IBCP",
         "FMNB",
         "ESQ",
@@ -6031,7 +5823,6 @@
         "RBCAA",
         "ROOT",
         "CASS",
-        "CTLP",
         "GCMG",
         "SMBK",
         "SHBI",
@@ -6068,7 +5859,6 @@
         "HBCP",
         "BOW",
         "WRLD",
-        "DHIL",
         "KRNY",
         "RRBI",
         "COFS",
@@ -6084,7 +5874,6 @@
         "BCAL",
         "BWB",
         "HBT",
-        "FFWM",
         "BMRC",
         "CZNC",
         "CBAN",
@@ -6126,7 +5915,6 @@
         "CMTG",
         "CIA",
         "OSG",
-        "BLFY",
         "OPFI",
         "MITT",
         "JMSB",
@@ -6143,7 +5931,6 @@
         "CHMG",
         "MYFW",
         "FBLA",
-        "CRDA",
         "CFFI",
         "WNEB",
         "FUNC",
@@ -6165,7 +5952,6 @@
         "LDI",
         "GCBC",
         "FXNC",
-        "LNKB",
         "PBFS",
         "PRTH",
         "FCAP",
@@ -6210,7 +5996,6 @@
         "RMBI",
         "HNVR",
         "CPSS",
-        "UBFO",
         "ECBK",
         "CBNA",
         "UNB",
@@ -6218,15 +6003,13 @@
         "AVBH",
         "EHTH",
         "KG",
-        "SWKH",
         "LFT",
         "RBKB",
         "MKTW",
         "VALU",
         "SIEB",
         "VRM",
-        "GOCO",
-        "SBT"
+        "GOCO"
       ],
       "pairs": [
         [
@@ -6518,10 +6301,6 @@
           "PWP"
         ],
         [
-          "CIM",
-          "FIHL"
-        ],
-        [
           "SAFT",
           "MBIN"
         ],
@@ -6606,10 +6385,6 @@
           "BRSP"
         ],
         [
-          "THFF",
-          "HTBK"
-        ],
-        [
           "IBCP",
           "FMNB"
         ],
@@ -6660,10 +6435,6 @@
         [
           "RBCAA",
           "ROOT"
-        ],
-        [
-          "CASS",
-          "CTLP"
         ],
         [
           "GCMG",
@@ -6738,10 +6509,6 @@
           "WRLD"
         ],
         [
-          "DHIL",
-          "KRNY"
-        ],
-        [
           "RRBI",
           "COFS"
         ],
@@ -6768,10 +6535,6 @@
         [
           "BWB",
           "HBT"
-        ],
-        [
-          "FFWM",
-          "BMRC"
         ],
         [
           "CZNC",
@@ -6854,10 +6617,6 @@
           "OSG"
         ],
         [
-          "BLFY",
-          "OPFI"
-        ],
-        [
           "MITT",
           "JMSB"
         ],
@@ -6884,10 +6643,6 @@
         [
           "CHMG",
           "MYFW"
-        ],
-        [
-          "FBLA",
-          "CRDA"
         ],
         [
           "CFFI",
@@ -6928,10 +6683,6 @@
         [
           "LDI",
           "GCBC"
-        ],
-        [
-          "FXNC",
-          "LNKB"
         ],
         [
           "PBFS",
@@ -7022,10 +6773,6 @@
           "CPSS"
         ],
         [
-          "UBFO",
-          "ECBK"
-        ],
-        [
           "CBNA",
           "UNB"
         ],
@@ -7038,10 +6785,6 @@
           "KG"
         ],
         [
-          "SWKH",
-          "LFT"
-        ],
-        [
           "RBKB",
           "MKTW"
         ],
@@ -7052,10 +6795,6 @@
         [
           "VRM",
           "GOCO"
-        ],
-        [
-          "SBT",
-          "UMBF"
         ]
       ],
       "vol_driver": "Russell 2000 Financials \u2014 small-cap sector fundamentals"
@@ -7090,17 +6829,14 @@
         "ALKS",
         "BTSG",
         "MMSI",
-        "FOLD",
         "TGTX",
         "IRTC",
         "LGND",
         "INDV",
         "SRRK",
-        "ACLX",
         "CRNX",
         "ADMA",
         "MIRM",
-        "TERN",
         "CELC",
         "LIVN",
         "BKD",
@@ -7212,7 +6948,6 @@
         "AZTA",
         "PCRX",
         "CRVS",
-        "DAWN",
         "CDNA",
         "BHVN",
         "MAZE",
@@ -7257,7 +6992,6 @@
         "KURA",
         "ESPR",
         "INBX",
-        "EHAB",
         "TCMD",
         "JBIO",
         "PGEN",
@@ -7438,12 +7172,10 @@
         "OM",
         "BTMD",
         "SI",
-        "INH",
         "RCEL",
         "LUNG",
         "ARAY",
         "STIM",
-        "AKE",
         "DH",
         "HURA",
         "SBC",
@@ -7454,11 +7186,7 @@
         "TKNO",
         "ACTU",
         "INMB",
-        "ADRO",
-        "TVGN",
-        "THRD",
-        "GTXI",
-        "PDLI"
+        "TVGN"
       ],
       "pairs": [
         [
@@ -7514,10 +7242,6 @@
           "MMSI"
         ],
         [
-          "FOLD",
-          "TGTX"
-        ],
-        [
           "IRTC",
           "LGND"
         ],
@@ -7526,16 +7250,8 @@
           "SRRK"
         ],
         [
-          "ACLX",
-          "CRNX"
-        ],
-        [
           "ADMA",
           "MIRM"
-        ],
-        [
-          "TERN",
-          "CELC"
         ],
         [
           "LIVN",
@@ -7758,10 +7474,6 @@
           "CRVS"
         ],
         [
-          "DAWN",
-          "CDNA"
-        ],
-        [
           "BHVN",
           "MAZE"
         ],
@@ -7844,10 +7556,6 @@
         [
           "KURA",
           "ESPR"
-        ],
-        [
-          "INBX",
-          "EHAB"
         ],
         [
           "TCMD",
@@ -8210,16 +7918,8 @@
           "SI"
         ],
         [
-          "INH",
-          "RCEL"
-        ],
-        [
           "LUNG",
           "ARAY"
-        ],
-        [
-          "STIM",
-          "AKE"
         ],
         [
           "DH",
@@ -8240,18 +7940,6 @@
         [
           "ACTU",
           "INMB"
-        ],
-        [
-          "ADRO",
-          "TVGN"
-        ],
-        [
-          "THRD",
-          "GTXI"
-        ],
-        [
-          "PDLI",
-          "ENSG"
         ]
       ],
       "vol_driver": "Russell 2000 Health Care \u2014 small-cap sector fundamentals"
@@ -8267,7 +7955,6 @@
         "MOD",
         "DY",
         "SPXC",
-        "MOGA",
         "GTLS",
         "WTS",
         "AVAV",
@@ -8334,7 +8021,6 @@
         "CTRI",
         "DNOW",
         "HLIO",
-        "CSGS",
         "ATKR",
         "EPAC",
         "EOSE",
@@ -8384,7 +8070,6 @@
         "CRAI",
         "NPKI",
         "PBI",
-        "GLDD",
         "TNC",
         "ARRY",
         "TNET",
@@ -8395,14 +8080,12 @@
         "ALH",
         "BV",
         "FA",
-        "SNCY",
         "TE",
         "JBI",
         "LMB",
         "ACVA",
         "AMRC",
         "ALNT",
-        "MEG",
         "GHM",
         "NX",
         "VSTS",
@@ -8530,10 +8213,6 @@
         [
           "MOD",
           "DY"
-        ],
-        [
-          "SPXC",
-          "MOGA"
         ],
         [
           "GTLS",
@@ -8668,10 +8347,6 @@
           "HLIO"
         ],
         [
-          "CSGS",
-          "ATKR"
-        ],
-        [
           "EPAC",
           "EOSE"
         ],
@@ -8768,10 +8443,6 @@
           "PBI"
         ],
         [
-          "GLDD",
-          "TNC"
-        ],
-        [
           "ARRY",
           "TNET"
         ],
@@ -8788,10 +8459,6 @@
           "BV"
         ],
         [
-          "FA",
-          "SNCY"
-        ],
-        [
           "TE",
           "JBI"
         ],
@@ -8802,10 +8469,6 @@
         [
           "AMRC",
           "ALNT"
-        ],
-        [
-          "MEG",
-          "GHM"
         ],
         [
           "NX",
@@ -9120,7 +8783,6 @@
         "BLKB",
         "RAMP",
         "DGII",
-        "ASGN",
         "FRSH",
         "BBAI",
         "BRZE",
@@ -9165,7 +8827,6 @@
         "MITK",
         "CXM",
         "ASAN",
-        "SEMR",
         "PGY",
         "BTBT",
         "CCSI",
@@ -9203,7 +8864,6 @@
         "OOMA",
         "CRSR",
         "XPER",
-        "ONTF",
         "BELFA",
         "MEI",
         "BKTI",
@@ -9411,10 +9071,6 @@
           "DGII"
         ],
         [
-          "ASGN",
-          "FRSH"
-        ],
-        [
           "BBAI",
           "BRZE"
         ],
@@ -9499,10 +9155,6 @@
           "CXM"
         ],
         [
-          "ASAN",
-          "SEMR"
-        ],
-        [
           "PGY",
           "BTBT"
         ],
@@ -9573,10 +9225,6 @@
         [
           "OOMA",
           "CRSR"
-        ],
-        [
-          "XPER",
-          "ONTF"
         ],
         [
           "BELFA",
@@ -9700,7 +9348,6 @@
         "ASO",
         "LTH",
         "PATK",
-        "TPH",
         "SIG",
         "SHAK",
         "KBH",
@@ -9791,7 +9438,6 @@
         "HOV",
         "BBW",
         "HZO",
-        "GDEN",
         "BLMN",
         "OXM",
         "RGR",
@@ -9800,7 +9446,6 @@
         "DFH",
         "SLDP",
         "MBUU",
-        "UDMY",
         "ARKO",
         "DIN",
         "CWH",
@@ -9847,7 +9492,6 @@
         "FLXS",
         "FNKO",
         "WEYS",
-        "EWCZ",
         "LOVE",
         "LEGH",
         "LE",
@@ -9874,7 +9518,6 @@
         "LVWR",
         "FFAI",
         "NRDY",
-        "MPX",
         "CURV",
         "COOK",
         "ZSPC"
@@ -9915,10 +9558,6 @@
         [
           "ASO",
           "LTH"
-        ],
-        [
-          "PATK",
-          "TPH"
         ],
         [
           "SIG",
@@ -10101,10 +9740,6 @@
           "HZO"
         ],
         [
-          "GDEN",
-          "BLMN"
-        ],
-        [
           "OXM",
           "RGR"
         ],
@@ -10115,10 +9750,6 @@
         [
           "DFH",
           "SLDP"
-        ],
-        [
-          "MBUU",
-          "UDMY"
         ],
         [
           "ARKO",
@@ -10213,10 +9844,6 @@
           "WEYS"
         ],
         [
-          "EWCZ",
-          "LOVE"
-        ],
-        [
           "LEGH",
           "LE"
         ],
@@ -10263,10 +9890,6 @@
         [
           "LVWR",
           "FFAI"
-        ],
-        [
-          "NRDY",
-          "MPX"
         ],
         [
           "CURV",
@@ -10386,8 +10009,7 @@
         "OPAL",
         "NXXT",
         "VGAS",
-        "SAFX",
-        "P5N994"
+        "SAFX"
       ],
       "pairs": [
         [
@@ -10597,10 +10219,6 @@
         [
           "VGAS",
           "SAFX"
-        ],
-        [
-          "P5N994",
-          "UEC"
         ]
       ],
       "vol_driver": "Russell 2000 Energy \u2014 small-cap sector fundamentals"
@@ -10645,7 +10263,6 @@
         "DHC",
         "IIPR",
         "PEB",
-        "ALEX",
         "XHR",
         "VRE",
         "SILA",
@@ -10661,12 +10278,10 @@
         "JBGS",
         "SAFE",
         "ESRT",
-        "PKST",
         "CBL",
         "WSR",
         "MMI",
         "NXRT",
-        "EXPI",
         "CTO",
         "UHT",
         "FOR",
@@ -10783,10 +10398,6 @@
           "PEB"
         ],
         [
-          "ALEX",
-          "XHR"
-        ],
-        [
           "VRE",
           "SILA"
         ],
@@ -10815,16 +10426,8 @@
           "ESRT"
         ],
         [
-          "PKST",
-          "CBL"
-        ],
-        [
           "WSR",
           "MMI"
-        ],
-        [
-          "NXRT",
-          "EXPI"
         ],
         [
           "CTO",
@@ -10975,7 +10578,6 @@
         "CMCL",
         "CRML",
         "TTAM",
-        "GEFB",
         "ABAT",
         "MAGN",
         "IPI",
@@ -11118,10 +10720,6 @@
           "TTAM"
         ],
         [
-          "GEFB",
-          "ABAT"
-        ],
-        [
           "MAGN",
           "IPI"
         ],
@@ -11175,7 +10773,6 @@
         "SATS",
         "LUMN",
         "TDS",
-        "TGNA",
         "SPHR",
         "GSAT",
         "CNK",
@@ -11255,10 +10852,6 @@
         [
           "SATS",
           "LUMN"
-        ],
-        [
-          "TDS",
-          "TGNA"
         ],
         [
           "SPHR",
@@ -11447,7 +11040,6 @@
         "ODC",
         "SENEA",
         "UTZ",
-        "STKL",
         "JBSS",
         "AVO",
         "MAMA",
@@ -11536,10 +11128,6 @@
         [
           "ODC",
           "SENEA"
-        ],
-        [
-          "UTZ",
-          "STKL"
         ],
         [
           "JBSS",
@@ -11736,7 +11324,6 @@
         "BBIO",
         "RMBS",
         "IDCC",
-        "MOGA",
         "GTLS",
         "CTRE",
         "AHR",
@@ -11857,10 +11444,6 @@
         [
           "RMBS",
           "IDCC"
-        ],
-        [
-          "MOGA",
-          "GTLS"
         ],
         [
           "CTRE",
@@ -12045,7 +11628,6 @@
         "BBIO",
         "RMBS",
         "IDCC",
-        "MOGA",
         "GTLS",
         "CTRE",
         "AHR",
@@ -12205,7 +11787,6 @@
         "EBC",
         "KTB",
         "OUT",
-        "FOLD",
         "ACHR",
         "SKT",
         "MYRG",
@@ -12266,10 +11847,6 @@
         [
           "RMBS",
           "IDCC"
-        ],
-        [
-          "MOGA",
-          "GTLS"
         ],
         [
           "CTRE",
@@ -12588,10 +12165,6 @@
           "OUT"
         ],
         [
-          "FOLD",
-          "ACHR"
-        ],
-        [
           "SKT",
           "MYRG"
         ],
@@ -12654,7 +12227,6 @@
         "BBIO",
         "RMBS",
         "IDCC",
-        "MOGA",
         "GTLS",
         "CTRE",
         "AHR",
@@ -12814,7 +12386,6 @@
         "EBC",
         "KTB",
         "OUT",
-        "FOLD",
         "ACHR",
         "SKT",
         "MYRG",
@@ -12853,8 +12424,6 @@
         "PSMT",
         "AZZ",
         "SRRK",
-        "ACLX",
-        "TPH",
         "CRNX",
         "NG",
         "SIG",
@@ -12875,7 +12444,6 @@
         "AVNT",
         "CSTM",
         "MC",
-        "TERN",
         "BKU",
         "STNG",
         "CVSA",
@@ -12905,7 +12473,6 @@
         "WHD",
         "LEU",
         "CATY",
-        "TGNA",
         "PBH",
         "UNF",
         "HIMS",
@@ -13072,7 +12639,6 @@
         "NMRK",
         "BELFB",
         "KN",
-        "CSGS",
         "FBK",
         "MTX",
         "CPRI",
@@ -13175,10 +12741,6 @@
         [
           "RMBS",
           "IDCC"
-        ],
-        [
-          "MOGA",
-          "GTLS"
         ],
         [
           "CTRE",
@@ -13497,10 +13059,6 @@
           "OUT"
         ],
         [
-          "FOLD",
-          "ACHR"
-        ],
-        [
           "SKT",
           "MYRG"
         ],
@@ -13573,14 +13131,6 @@
           "AZZ"
         ],
         [
-          "SRRK",
-          "ACLX"
-        ],
-        [
-          "TPH",
-          "CRNX"
-        ],
-        [
           "NG",
           "SIG"
         ],
@@ -13615,10 +13165,6 @@
         [
           "AVNT",
           "CSTM"
-        ],
-        [
-          "MC",
-          "TERN"
         ],
         [
           "BKU",
@@ -13675,10 +13221,6 @@
         [
           "WHD",
           "LEU"
-        ],
-        [
-          "CATY",
-          "TGNA"
         ],
         [
           "PBH",
@@ -14013,10 +13555,6 @@
           "KN"
         ],
         [
-          "CSGS",
-          "FBK"
-        ],
-        [
           "MTX",
           "CPRI"
         ],
@@ -14223,7 +13761,6 @@
         "EBC",
         "KTB",
         "OUT",
-        "FOLD",
         "ACHR",
         "SKT",
         "MYRG",
@@ -14262,8 +13799,6 @@
         "PSMT",
         "AZZ",
         "SRRK",
-        "ACLX",
-        "TPH",
         "CRNX",
         "NG",
         "SIG",
@@ -14284,7 +13819,6 @@
         "AVNT",
         "CSTM",
         "MC",
-        "TERN",
         "BKU",
         "STNG",
         "CVSA",
@@ -14314,7 +13848,6 @@
         "WHD",
         "LEU",
         "CATY",
-        "TGNA",
         "PBH",
         "UNF",
         "HIMS",
@@ -14481,7 +14014,6 @@
         "NMRK",
         "BELFB",
         "KN",
-        "CSGS",
         "FBK",
         "MTX",
         "CPRI",
@@ -14587,7 +14119,6 @@
         "LC",
         "RCUS",
         "SLNO",
-        "ASGN",
         "NTST",
         "HLF",
         "ZD",
@@ -14806,10 +14337,6 @@
           "OUT"
         ],
         [
-          "FOLD",
-          "ACHR"
-        ],
-        [
           "SKT",
           "MYRG"
         ],
@@ -14882,14 +14409,6 @@
           "AZZ"
         ],
         [
-          "SRRK",
-          "ACLX"
-        ],
-        [
-          "TPH",
-          "CRNX"
-        ],
-        [
           "NG",
           "SIG"
         ],
@@ -14924,10 +14443,6 @@
         [
           "AVNT",
           "CSTM"
-        ],
-        [
-          "MC",
-          "TERN"
         ],
         [
           "BKU",
@@ -14984,10 +14499,6 @@
         [
           "WHD",
           "LEU"
-        ],
-        [
-          "CATY",
-          "TGNA"
         ],
         [
           "PBH",
@@ -15322,10 +14833,6 @@
           "KN"
         ],
         [
-          "CSGS",
-          "FBK"
-        ],
-        [
           "MTX",
           "CPRI"
         ],
@@ -15534,10 +15041,6 @@
           "SLNO"
         ],
         [
-          "ASGN",
-          "NTST"
-        ],
-        [
           "HLF",
           "ZD"
         ],
@@ -15655,7 +15158,6 @@
         "MPLT",
         "XPER",
         "ATNI",
-        "ONTF",
         "ISTR",
         "NWFL",
         "EVEX",
@@ -15725,7 +15227,6 @@
         "CD",
         "OSG",
         "LILA",
-        "BLFY",
         "OPFI",
         "MITT",
         "PACK",
@@ -15789,7 +15290,6 @@
         "MYFW",
         "VTEX",
         "FBLA",
-        "CRDA",
         "CFFI",
         "WNEB",
         "BLZE",
@@ -15860,7 +15360,6 @@
         "BETR",
         "GLSI",
         "FCCO",
-        "EWCZ",
         "UIS",
         "INBK",
         "DOUG",
@@ -15875,7 +15374,6 @@
         "LOVE",
         "FXNC",
         "CMDB",
-        "LNKB",
         "PBFS",
         "PRTH",
         "SMHI",
@@ -16047,7 +15545,6 @@
         "DMRC",
         "AIRO",
         "ZVIA",
-        "UBFO",
         "PMTS",
         "FORR",
         "ECBK",
@@ -16081,8 +15578,6 @@
         "SFBC",
         "PAMT",
         "SI",
-        "INH",
-        "MPX",
         "TUSK",
         "RCEL",
         "ADV",
@@ -16094,7 +15589,6 @@
         "LFVN",
         "HQI",
         "PROP",
-        "AKE",
         "GAIA",
         "AVBH",
         "EHTH",
@@ -16105,7 +15599,6 @@
         "KG",
         "DH",
         "VHI",
-        "SWKH",
         "AREN",
         "LFT",
         "HURA",
@@ -16139,28 +15632,18 @@
         "SLSN",
         "MRDN",
         "VRM",
-        "ADRO",
         "SLND",
         "GOCO",
         "VGAS",
         "SAFX",
         "TVGN",
         "TSEOF",
-        "THRD",
-        "ZSPC",
-        "SBT",
-        "P5N994",
-        "GTXI",
-        "PDLI"
+        "ZSPC"
       ],
       "pairs": [
         [
           "MPLT",
           "XPER"
-        ],
-        [
-          "ATNI",
-          "ONTF"
         ],
         [
           "ISTR",
@@ -16299,10 +15782,6 @@
           "OSG"
         ],
         [
-          "LILA",
-          "BLFY"
-        ],
-        [
           "OPFI",
           "MITT"
         ],
@@ -16425,10 +15904,6 @@
         [
           "MYFW",
           "VTEX"
-        ],
-        [
-          "FBLA",
-          "CRDA"
         ],
         [
           "CFFI",
@@ -16571,10 +16046,6 @@
           "FCCO"
         ],
         [
-          "EWCZ",
-          "UIS"
-        ],
-        [
           "INBK",
           "DOUG"
         ],
@@ -16597,10 +16068,6 @@
         [
           "LOVE",
           "FXNC"
-        ],
-        [
-          "CMDB",
-          "LNKB"
         ],
         [
           "PBFS",
@@ -16943,10 +16410,6 @@
           "AIRO"
         ],
         [
-          "ZVIA",
-          "UBFO"
-        ],
-        [
           "PMTS",
           "FORR"
         ],
@@ -17011,14 +16474,6 @@
           "PAMT"
         ],
         [
-          "SI",
-          "INH"
-        ],
-        [
-          "MPX",
-          "TUSK"
-        ],
-        [
           "RCEL",
           "ADV"
         ],
@@ -17039,10 +16494,6 @@
           "PROP"
         ],
         [
-          "AKE",
-          "GAIA"
-        ],
-        [
           "AVBH",
           "EHTH"
         ],
@@ -17057,10 +16508,6 @@
         [
           "KG",
           "DH"
-        ],
-        [
-          "VHI",
-          "SWKH"
         ],
         [
           "AREN",
@@ -17127,10 +16574,6 @@
           "MRDN"
         ],
         [
-          "VRM",
-          "ADRO"
-        ],
-        [
           "SLND",
           "GOCO"
         ],
@@ -17141,18 +16584,6 @@
         [
           "TVGN",
           "TSEOF"
-        ],
-        [
-          "THRD",
-          "ZSPC"
-        ],
-        [
-          "SBT",
-          "P5N994"
-        ],
-        [
-          "GTXI",
-          "PDLI"
         ]
       ],
       "vol_driver": "Small-cap factor exposure \u2014 smallest 500 by weight"

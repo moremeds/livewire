@@ -1,6 +1,6 @@
 {
   "name": "r2k-tier-top-500",
-  "description": "Russell 2000 R2K Top 500 by weight (500 companies)",
+  "description": "Russell 2000 R2K Top 500 by weight (493 companies)",
   "tickers": [
     "BE",
     "FN",
@@ -22,7 +22,6 @@
     "BBIO",
     "RMBS",
     "IDCC",
-    "MOGA",
     "GTLS",
     "CTRE",
     "AHR",
@@ -182,7 +181,6 @@
     "EBC",
     "KTB",
     "OUT",
-    "FOLD",
     "ACHR",
     "SKT",
     "MYRG",
@@ -221,8 +219,6 @@
     "PSMT",
     "AZZ",
     "SRRK",
-    "ACLX",
-    "TPH",
     "CRNX",
     "NG",
     "SIG",
@@ -243,7 +239,6 @@
     "AVNT",
     "CSTM",
     "MC",
-    "TERN",
     "BKU",
     "STNG",
     "CVSA",
@@ -273,7 +268,6 @@
     "WHD",
     "LEU",
     "CATY",
-    "TGNA",
     "PBH",
     "UNF",
     "HIMS",
@@ -440,7 +434,6 @@
     "NMRK",
     "BELFB",
     "KN",
-    "CSGS",
     "FBK",
     "MTX",
     "CPRI",
@@ -543,10 +536,6 @@
     [
       "RMBS",
       "IDCC"
-    ],
-    [
-      "MOGA",
-      "GTLS"
     ],
     [
       "CTRE",
@@ -865,10 +854,6 @@
       "OUT"
     ],
     [
-      "FOLD",
-      "ACHR"
-    ],
-    [
       "SKT",
       "MYRG"
     ],
@@ -941,14 +926,6 @@
       "AZZ"
     ],
     [
-      "SRRK",
-      "ACLX"
-    ],
-    [
-      "TPH",
-      "CRNX"
-    ],
-    [
       "NG",
       "SIG"
     ],
@@ -983,10 +960,6 @@
     [
       "AVNT",
       "CSTM"
-    ],
-    [
-      "MC",
-      "TERN"
     ],
     [
       "BKU",
@@ -1043,10 +1016,6 @@
     [
       "WHD",
       "LEU"
-    ],
-    [
-      "CATY",
-      "TGNA"
     ],
     [
       "PBH",
@@ -1379,10 +1348,6 @@
     [
       "BELFB",
       "KN"
-    ],
-    [
-      "CSGS",
-      "FBK"
     ],
     [
       "MTX",

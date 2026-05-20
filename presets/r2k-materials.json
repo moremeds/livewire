@@ -1,6 +1,6 @@
 {
   "name": "r2k-materials",
-  "description": "Russell 2000 Materials (82 companies)",
+  "description": "Russell 2000 Materials (81 companies)",
   "tickers": [
     "CDE",
     "HL",
@@ -60,7 +60,6 @@
     "CMCL",
     "CRML",
     "TTAM",
-    "GEFB",
     "ABAT",
     "MAGN",
     "IPI",
@@ -201,10 +200,6 @@
     [
       "CRML",
       "TTAM"
-    ],
-    [
-      "GEFB",
-      "ABAT"
     ],
     [
       "MAGN",

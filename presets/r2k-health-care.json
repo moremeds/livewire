@@ -1,6 +1,6 @@
 {
   "name": "r2k-health-care",
-  "description": "Russell 2000 Health Care (395 companies)",
+  "description": "Russell 2000 Health Care (384 companies)",
   "tickers": [
     "ENSG",
     "GH",
@@ -28,17 +28,14 @@
     "ALKS",
     "BTSG",
     "MMSI",
-    "FOLD",
     "TGTX",
     "IRTC",
     "LGND",
     "INDV",
     "SRRK",
-    "ACLX",
     "CRNX",
     "ADMA",
     "MIRM",
-    "TERN",
     "CELC",
     "LIVN",
     "BKD",
@@ -150,7 +147,6 @@
     "AZTA",
     "PCRX",
     "CRVS",
-    "DAWN",
     "CDNA",
     "BHVN",
     "MAZE",
@@ -195,7 +191,6 @@
     "KURA",
     "ESPR",
     "INBX",
-    "EHAB",
     "TCMD",
     "JBIO",
     "PGEN",
@@ -376,12 +371,10 @@
     "OM",
     "BTMD",
     "SI",
-    "INH",
     "RCEL",
     "LUNG",
     "ARAY",
     "STIM",
-    "AKE",
     "DH",
     "HURA",
     "SBC",
@@ -392,11 +385,7 @@
     "TKNO",
     "ACTU",
     "INMB",
-    "ADRO",
-    "TVGN",
-    "THRD",
-    "GTXI",
-    "PDLI"
+    "TVGN"
   ],
   "pairs": [
     [
@@ -452,10 +441,6 @@
       "MMSI"
     ],
     [
-      "FOLD",
-      "TGTX"
-    ],
-    [
       "IRTC",
       "LGND"
     ],
@@ -464,16 +449,8 @@
       "SRRK"
     ],
     [
-      "ACLX",
-      "CRNX"
-    ],
-    [
       "ADMA",
       "MIRM"
-    ],
-    [
-      "TERN",
-      "CELC"
     ],
     [
       "LIVN",
@@ -696,10 +673,6 @@
       "CRVS"
     ],
     [
-      "DAWN",
-      "CDNA"
-    ],
-    [
       "BHVN",
       "MAZE"
     ],
@@ -782,10 +755,6 @@
     [
       "KURA",
       "ESPR"
-    ],
-    [
-      "INBX",
-      "EHAB"
     ],
     [
       "TCMD",
@@ -1148,16 +1117,8 @@
       "SI"
     ],
     [
-      "INH",
-      "RCEL"
-    ],
-    [
       "LUNG",
       "ARAY"
-    ],
-    [
-      "STIM",
-      "AKE"
     ],
     [
       "DH",
@@ -1178,18 +1139,6 @@
     [
       "ACTU",
       "INMB"
-    ],
-    [
-      "ADRO",
-      "TVGN"
-    ],
-    [
-      "THRD",
-      "GTXI"
-    ],
-    [
-      "PDLI",
-      "ENSG"
     ]
   ],
   "sector": "Health Care",
