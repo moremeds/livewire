@@ -39,7 +39,7 @@ def test_operator_entrypoint_modules_are_importable() -> None:
 
 def test_operator_entrypoints_render_subcommand_help() -> None:
     expected_commands = {
-        "livewire_ingest.py": ["daily", "historical", "robust", "cboe-vol", "intraday-backfill"],
+        "livewire_ingest.py": ["daily", "historical", "robust", "cboe-vol", "fred-rates", "intraday-backfill"],
         "livewire_quality.py": ["health", "coverage", "report", "weekly", "watchdog"],
         "livewire_ops.py": ["run-daily-job", "send-alert"],
         "livewire_store.py": ["rebuild-postgres", "smoke-postgres", "sync-r2", "migrate-parquet"],
@@ -84,10 +84,10 @@ def test_backfill_all_includes_default_full_warehouse_phases() -> None:
     assert "--source massive" in script
     assert "--years 5" in script
 
-    assert "PHASE 6: CBOE volatility daily" in script
+    assert "PHASE 7: CBOE volatility daily" in script
     assert "cboe-vol --preset presets/volatility.json" in script
 
-    assert "PHASE 7: IB volatility intraday" in script
+    assert "PHASE 8: IB volatility intraday" in script
     assert "--asset-class volatility" in script
     assert "--source ib" in script
     assert "run_equity_intraday &" in script
@@ -95,7 +95,7 @@ def test_backfill_all_includes_default_full_warehouse_phases() -> None:
     assert "wait \"$equity_intraday_pid\"" in script
     assert "wait \"$volatility_intraday_pid\"" in script
 
-    assert "PHASE 8: Postgres analytical rebuild" in script
+    assert "PHASE 9: Postgres analytical rebuild" in script
     assert "rebuild-postgres --asset-class equity --timeframe all --include-reliability" in script
     assert "rebuild-postgres --asset-class volatility --timeframe 1d" in script
     assert "MDW_POSTGRES_DSN" in script

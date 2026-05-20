@@ -75,12 +75,31 @@ _FUTURES_PARQUET_SCHEMA = pa.schema(
     ]
 )
 
+_RATES_COLUMNS = (
+    "trade_date",
+    "symbol_id",
+    "tenor_years",
+    "yield_pct",
+    "source",
+)
+
+_RATES_PARQUET_SCHEMA = pa.schema(
+    [
+        ("trade_date", pa.date32()),
+        ("symbol_id", pa.int64()),
+        ("tenor_years", pa.float64()),
+        ("yield_pct", pa.float64()),
+        ("source", pa.string()),
+    ]
+)
+
 _SCHEMA_PROFILES = {
     "equity": (_BASE_COLUMNS, _PARQUET_SCHEMA, "symbol_id"),
     "volatility": (_BASE_COLUMNS, _PARQUET_SCHEMA, "symbol_id"),
     "cmdty": (_BASE_COLUMNS, _PARQUET_SCHEMA, "symbol_id"),
     "fx": (_BASE_COLUMNS, _PARQUET_SCHEMA, "symbol_id"),
     "futures": (_FUTURES_COLUMNS, _FUTURES_PARQUET_SCHEMA, "contract_id"),
+    "rates": (_RATES_COLUMNS, _RATES_PARQUET_SCHEMA, "symbol_id"),
 }
 
 
@@ -241,6 +260,8 @@ class BronzeClient:
     def _normalize_rows(self, rows: list[dict[str, Any]], symbol: str) -> list[dict[str, Any]]:
         if self._asset_class == "futures":
             return self._normalize_futures_rows(rows, symbol)
+        if self._asset_class == "rates":
+            return self._normalize_rates_rows(rows, symbol)
 
         symbol_id = self.get_symbol_id(symbol)
         normalized: dict[str, dict[str, Any]] = {}
@@ -257,6 +278,23 @@ class BronzeClient:
                 "close": float(row["close"]),
                 "adj_close": float(row["adj_close"]),
                 "volume": int(row["volume"]),
+            }
+
+        return [normalized[trade_date] for trade_date in sorted(normalized)]
+
+    def _normalize_rates_rows(self, rows: list[dict[str, Any]], symbol: str) -> list[dict[str, Any]]:
+        symbol_id = self.get_symbol_id(symbol)
+        normalized: dict[str, dict[str, Any]] = {}
+
+        for row in rows:
+            trade_date = self._normalize_trade_date(row["trade_date"])
+            trade_date_str = trade_date.isoformat()
+            normalized[trade_date_str] = {
+                "trade_date": trade_date_str,
+                "symbol_id": symbol_id,
+                "tenor_years": float(row["tenor_years"]),
+                "yield_pct": float(row["yield_pct"]),
+                "source": str(row["source"]),
             }
 
         return [normalized[trade_date] for trade_date in sorted(normalized)]
@@ -306,6 +344,19 @@ class BronzeClient:
                     "settlement": float(row["settlement"]),
                     "volume": int(row["volume"]),
                     "open_interest": int(row["open_interest"]),
+                }
+                for row in rows
+            ]
+            return pa.Table.from_pylist(payload, schema=self._schema)
+
+        if self._asset_class == "rates":
+            payload = [
+                {
+                    "trade_date": self._normalize_trade_date(row["trade_date"]),
+                    "symbol_id": int(row["symbol_id"]),
+                    "tenor_years": float(row["tenor_years"]),
+                    "yield_pct": float(row["yield_pct"]),
+                    "source": str(row["source"]),
                 }
                 for row in rows
             ]

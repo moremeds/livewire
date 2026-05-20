@@ -6,7 +6,7 @@ A **local-first financial data warehouse** for universe-scale market data.
 
 ## Overview
 
-Livewire is a market data warehouse designed for storing and analyzing historical **OHLCV data across equities, futures, volatility indices, spot commodities, and FX pairs**, with a clear path from **daily bars → intraday data → production analytics**.
+Livewire is a market data warehouse designed for storing and analyzing historical **OHLCV data across equities, futures, volatility indices, spot commodities, FX pairs, and rates**, with a clear path from **daily bars → intraday data → production analytics**.
 
 ### Core Stack
 
@@ -23,6 +23,7 @@ Livewire is a market data warehouse designed for storing and analyzing historica
   * **Volatility indices (CBOE API)**
   * **Spot commodities (IB CMDTY MIDPOINT)**
   * **FX pairs (IB Forex MIDPOINT, with reverse-pair inversion when needed)**
+  * **Treasury yields (FRED API)**
 * Per-ticker **bronze Parquet snapshots**
 * **Atomic writes + validation**
 * **Fallback recovery pipeline** for missing data
@@ -76,7 +77,8 @@ Live ingestion writes bronze Parquet only. Postgres is the replayable analytical
 │   │   ├── asset_class=volatility/symbol=VIX/1d.parquet
 │   │   ├── asset_class=futures/symbol=ES_202506/1d.parquet
 │   │   ├── asset_class=cmdty/symbol=XAUUSD/1d.parquet
-│   │   └── asset_class=fx/symbol=USDEUR/1d.parquet
+│   │   ├── asset_class=fx/symbol=USDEUR/1d.parquet
+│   │   └── asset_class=rates/symbol=DGS10/1d.parquet
 │   ├── silver/
 │   └── gold/
 ├── logs/
@@ -145,7 +147,7 @@ python scripts/livewire_store.py --help
 Top-level subcommands:
 
 ```text
-livewire_ingest.py   daily | historical | robust | cboe-vol | intraday-backfill | intraday-status | probe-intraday | universe | backfill-all
+livewire_ingest.py   daily | historical | robust | cboe-vol | fred-rates | intraday-backfill | intraday-status | probe-intraday | universe | backfill-all
 livewire_quality.py  health | coverage | report | weekly | watchdog
 livewire_ops.py      run-daily-job | ibc-install | ibc-start | send-alert
 livewire_store.py    rebuild-postgres | smoke-postgres | sync-r2 | migrate-parquet
@@ -238,6 +240,9 @@ python scripts/livewire_ingest.py historical --preset presets/fx-pairs.json --as
 # Volatility (CBOE direct)
 python scripts/livewire_ingest.py cboe-vol
 
+# Treasury yields from FRED (DGS3, DGS5, DGS10, DGS30)
+FRED_API_KEY=... python scripts/livewire_ingest.py fred-rates
+
 # Volatility historical backfill through IB Index contracts, when needed
 python scripts/livewire_ingest.py historical --preset presets/volatility.json --asset-class volatility
 ```
@@ -261,6 +266,7 @@ python scripts/livewire_ingest.py historical --preset presets/futures-treasuries
 python scripts/livewire_ingest.py historical --preset presets/cmdty-metals.json --asset-class cmdty
 python scripts/livewire_ingest.py historical --preset presets/fx-pairs.json --asset-class fx
 python scripts/livewire_ingest.py cboe-vol
+FRED_API_KEY=... python scripts/livewire_ingest.py fred-rates
 ```
 
 Notes:
@@ -268,12 +274,13 @@ Notes:
 * `cmdty` and `fx` use IB `MIDPOINT` daily bars and store volume as `0`.
 * FX pairs are six-letter local symbols. If IB supports only the reverse cross, the fetcher requests the supported pair and stores inverted OHLC rows. Example: `USDEUR` fetches `EURUSD`, then stores inverted `USDEUR`.
 * CBOE direct sync is the authoritative daily source for volatility indices.
+* FRED rates sync writes Treasury constant-maturity yields as percent values to `asset_class=rates` with columns `trade_date`, `symbol_id`, `tenor_years`, `yield_pct`, and `source`. Native FRED frequency is daily; `--frequency` can request lower-frequency aggregation such as `w`, `m`, `q`, or `a`.
 
 ---
 
 ### Default Warehouse Backfill
 
-The consolidated default warehouse backfill entrypoint runs `sp500`, `ndx100`, and `r2k` daily-bar normal fetches, then older-history backfills, with stall detection and cursor resume. It then runs the Massive equity intraday lane (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed volatility intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility, including equity `1m`.
+The consolidated default warehouse backfill entrypoint runs `sp500`, `ndx100`, and `r2k` daily-bar normal fetches, then older-history backfills, with stall detection and cursor resume. It then syncs FRED Treasury yield rates. After that, it runs the Massive equity intraday lane (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed volatility intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility, including equity `1m`.
 
 ```bash
 python scripts/livewire_ingest.py backfill-all

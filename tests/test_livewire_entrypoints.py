@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from clients import ib_gateway_preflight
 from scripts import livewire_ingest, livewire_ops, livewire_quality, livewire_store
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _fake_module(calls: list[tuple[str, list[str]]], name: str, *, accepts_argv: bool):
@@ -185,6 +189,19 @@ def test_ingest_backfill_all_shells_to_tool(monkeypatch) -> None:
 
     with pytest.raises(SystemExit, match="does not accept arguments"):
         livewire_ingest.main(["backfill-all", "--unexpected"])
+
+
+def test_backfill_all_runner_includes_fred_rates_phase() -> None:
+    script_path = REPO_ROOT / "tools" / "run_backfill_all.sh"
+    script = script_path.read_text(encoding="utf-8")
+
+    assert "PHASE 3: FRED Treasury rates" in script
+    assert "source .env" in script
+    assert "fred-rates" in script
+    assert "backfill_fred_rates.log" in script
+    assert script.index("PHASE 2 COMPLETE") < script.index("PHASE 3: FRED Treasury rates")
+
+    subprocess.run(["bash", "-n", str(script_path)], check=True)
 
 
 def test_quality_dispatches_argv_aware_module(monkeypatch) -> None:

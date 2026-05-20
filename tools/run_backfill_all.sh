@@ -13,6 +13,7 @@ set -euo pipefail
 VENV="$HOME/market-warehouse/.venv/bin/activate"
 SCRIPT="scripts/livewire_ingest.py"
 LOG_DIR="$HOME/market-warehouse/logs"
+ENV_FILE=".env"
 STALL_TIMEOUT=600    # seconds of no cursor update before killing (10 min)
 COOLDOWN=300         # seconds to wait after stall/failure (5 min IB cooldown)
 POLL_INTERVAL="${MDW_BACKFILL_POLL_INTERVAL:-30}"
@@ -20,6 +21,12 @@ MAX_CONCURRENT=10
 BATCH_SIZE=5
 
 source "$VENV"
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+fi
 
 timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
 log() { echo "[$(timestamp)] $*"; }
@@ -204,13 +211,18 @@ log "============================================================"
 log "PHASE 2 COMPLETE"
 log "============================================================"
 
-# Phases 3-5: Build default equity intraday bronze from Massive.
+log "── PHASE 3: FRED Treasury rates ──"
+log "CMD: python $SCRIPT fred-rates"
+python "$SCRIPT" fred-rates >> "$LOG_DIR/backfill_fred_rates.log" 2>&1
+log "PHASE 3 COMPLETE"
+
+# Phases 4-6: Build default equity intraday bronze from Massive.
 run_equity_intraday() {
     for timeframe in 1m 5m 1h; do
         case "$timeframe" in
-            1m) phase=3 ;;
-            5m) phase=4 ;;
-            1h) phase=5 ;;
+            1m) phase=4 ;;
+            5m) phase=5 ;;
+            1h) phase=6 ;;
         esac
         for preset in "${PRESETS[@]}"; do
             name=$(python3 -c "import json; print(json.load(open('$preset'))['name'])")
@@ -228,13 +240,13 @@ run_equity_intraday() {
     done
 }
 
-# Phases 6-7: Build volatility daily via CBOE, then volatility/index intraday via IB.
+# Phases 7-8: Build volatility daily via CBOE, then volatility/index intraday via IB.
 run_volatility_intraday() {
-    log "── PHASE 6: CBOE volatility daily ──"
+    log "── PHASE 7: CBOE volatility daily ──"
     python "$SCRIPT" cboe-vol --preset presets/volatility.json >> "$LOG_DIR/volatility_cboe.log" 2>&1
 
     log "============================================================"
-    log "PHASE 6 COMPLETE"
+    log "PHASE 7 COMPLETE"
     log "============================================================"
 
     VOL_PRESET="presets/volatility.json"
@@ -242,14 +254,14 @@ run_volatility_intraday() {
     VOL_TOTAL=$(python3 -c "import json; print(len(json.load(open('$VOL_PRESET'))['tickers']))")
     for timeframe in 5m 1h; do
         cursor_file="$HOME/market-warehouse/cursors/cursor_intraday_${timeframe}_${VOL_NAME}.json"
-        log "── PHASE 7: IB volatility intraday ${timeframe} ($VOL_TOTAL tickers) ──"
+        log "── PHASE 8: IB volatility intraday ${timeframe} ($VOL_TOTAL tickers) ──"
         run_until_done "intraday_${timeframe}_${VOL_NAME}" "$cursor_file" "$VOL_TOTAL" \
             python "$SCRIPT" intraday-backfill --preset "$VOL_PRESET" --timeframe "$timeframe" \
             --source ib --asset-class volatility --skip-existing
     done
 
     log "============================================================"
-    log "PHASE 7 COMPLETE"
+    log "PHASE 8 COMPLETE"
     log "============================================================"
 }
 
@@ -271,17 +283,17 @@ if [ "$equity_intraday_status" -ne 0 ] || [ "$volatility_intraday_status" -ne 0 
     exit 1
 fi
 
-# Phase 8: Rebuild Postgres analytical publish target when configured
+# Phase 9: Rebuild Postgres analytical publish target when configured
 if [ -n "${MDW_POSTGRES_DSN:-}" ]; then
-    log "── PHASE 8: Postgres analytical rebuild ──"
+    log "── PHASE 9: Postgres analytical rebuild ──"
     python scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe all --include-reliability
     python scripts/livewire_store.py rebuild-postgres --asset-class volatility --timeframe 1d
 else
-    log "── PHASE 8: Postgres analytical rebuild skipped — MDW_POSTGRES_DSN is not set ──"
+    log "── PHASE 9: Postgres analytical rebuild skipped — MDW_POSTGRES_DSN is not set ──"
 fi
 
 log "============================================================"
-log "PHASE 8 COMPLETE"
+log "PHASE 9 COMPLETE"
 log "============================================================"
 
 log "============================================================"
