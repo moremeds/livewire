@@ -180,6 +180,7 @@ def _run_quality_detection(
     bars: list,
     parquet_path: Path,
     outcome: TickerOutcome,
+    asset_class: str = "equity",
     source: str = "ib",
 ) -> None:
     """Run intraday quality detection and emit flags without blocking publish."""
@@ -187,7 +188,7 @@ def _run_quality_detection(
         return
     errors = [{"code": 0, "count": 1, "message": e} for e in (outcome.errors or [])]
     metadata = {
-        "asset_class": "equity",
+        "asset_class": asset_class,
         "ticker": ticker,
         "timeframe": timeframe,
         "source": source,
@@ -283,6 +284,7 @@ def backfill_ticker(
             bars=all_rows,
             parquet_path=parquet_path,
             outcome=outcome,
+            asset_class=asset_class,
         )
         outcome.bars_inserted = bronze.merge_ticker_rows(ticker, all_rows)
     return outcome
@@ -341,6 +343,7 @@ def backfill_ticker_massive(
             bars=all_rows,
             parquet_path=parquet_path,
             outcome=outcome,
+            asset_class="equity",
             source="massive",
         )
         outcome.bars_inserted = bronze.merge_ticker_rows(ticker, all_rows)

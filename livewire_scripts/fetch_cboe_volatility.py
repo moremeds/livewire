@@ -9,10 +9,12 @@ Writes to bronze parquet in the standard warehouse format.
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import sys
-from datetime import date
+from datetime import date, datetime
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,10 @@ from clients.bronze_client import PARQUET_FILENAME
 console = Console()
 
 CBOE_HISTORICAL_URL = "https://cdn.cboe.com/api/global/delayed_quotes/charts/historical/_{symbol}.json"
+CBOE_DAILY_PRICE_CSV_URLS = {
+    "VIX": "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv",
+    "SPX": "https://cdn.cboe.com/api/global/us_indices/daily_prices/SPX_History.csv",
+}
 
 DEFAULT_WAREHOUSE = Path.home() / "market-warehouse"
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -55,6 +61,65 @@ def fetch_cboe_historical(symbol: str) -> list[dict[str, Any]]:
     bars = data.get("data", [])
     console.print(f"  {symbol}: received {len(bars)} bars")
     return bars
+
+
+def fetch_cboe_official_csv_backup(symbol: str) -> list[dict[str, Any]]:
+    """Fetch official CBOE daily-price CSV rows for symbols with known backups."""
+    url = CBOE_DAILY_PRICE_CSV_URLS.get(symbol.upper())
+    if not url:
+        return []
+
+    console.print(f"  Fetching {symbol} official CSV backup from {url}")
+    resp = httpx.get(url, timeout=30)
+    resp.raise_for_status()
+
+    rows = []
+    for raw in csv.DictReader(StringIO(resp.text)):
+        trade_date = datetime.strptime(raw["DATE"], "%m/%d/%Y").date().isoformat()
+        if {"OPEN", "HIGH", "LOW", "CLOSE"}.issubset(raw):
+            open_value = raw["OPEN"]
+            high_value = raw["HIGH"]
+            low_value = raw["LOW"]
+            close_value = raw["CLOSE"]
+        else:
+            # CBOE's SPX daily CSV is close-only. Preserve the official close
+            # while fitting the existing volatility OHLC bronze schema.
+            close_value = raw[symbol.upper()]
+            open_value = high_value = low_value = close_value
+
+        rows.append({
+            "date": trade_date,
+            "open": open_value,
+            "high": high_value,
+            "low": low_value,
+            "close": close_value,
+            "volume": "0.0",
+        })
+
+    console.print(f"  {symbol}: received {len(rows)} official CSV backup rows")
+    return rows
+
+
+def append_official_backup_bars(
+    symbol: str,
+    bars: list[dict[str, Any]],
+    backup_bars: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Append official CSV backup rows that are newer than the primary JSON feed."""
+    if not backup_bars:
+        return bars
+
+    latest_primary = max((bar["date"] for bar in bars), default="")
+    additions = [bar for bar in backup_bars if bar["date"] > latest_primary]
+    if not additions:
+        console.print(f"  {symbol}: official CSV backup has no newer rows")
+        return bars
+
+    console.print(
+        f"  {symbol}: appending {len(additions)} official CSV backup rows "
+        f"({additions[0]['date']} -> {additions[-1]['date']})"
+    )
+    return [*bars, *additions]
 
 
 def bars_to_table(symbol: str, bars: list[dict[str, Any]]) -> pa.Table:
@@ -191,6 +256,14 @@ def main() -> None:
     for symbol in symbols:
         try:
             bars = fetch_cboe_historical(symbol)
+            try:
+                backup_bars = fetch_cboe_official_csv_backup(symbol)
+            except Exception as backup_exc:
+                console.print(
+                    f"  [yellow]{symbol}: official CSV backup skipped - {backup_exc}[/yellow]"
+                )
+                backup_bars = []
+            bars = append_official_backup_bars(symbol, bars, backup_bars)
             if not bars:
                 console.print(f"  [yellow]{symbol}: no data returned[/yellow]")
                 continue
