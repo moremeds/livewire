@@ -62,21 +62,25 @@ def _dispatch_backfill_all(argv: Sequence[str]) -> int:
     return subprocess.call(["bash", str(REPO_ROOT / "tools" / "run_backfill_all.sh")])
 
 
-def _daily_source(argv: Sequence[str]) -> str:
-    """Return the operator-selected daily source without owning full daily parsing."""
+def _arg_value(argv: Sequence[str], flag: str, default: str) -> str:
+    """Return a simple string option without owning subcommand parsing."""
     for idx, item in enumerate(argv):
-        if item == "--source" and idx + 1 < len(argv):
+        if item == flag and idx + 1 < len(argv):
             return argv[idx + 1]
-        if item.startswith("--source="):
+        if item.startswith(f"{flag}="):
             return item.split("=", 1)[1]
-    return "ib"
+    return default
 
 
 def _requires_ib_preflight(command: str, rest: Sequence[str]) -> bool:
     if {"-h", "--help"}.intersection(rest):
         return False
     if command == "daily":
-        return _daily_source(rest) != "massive"
+        return _arg_value(rest, "--source", "ib") != "massive"
+    if command == "intraday-backfill":
+        source = _arg_value(rest, "--source", "ib")
+        asset_class = _arg_value(rest, "--asset-class", "equity")
+        return not (source == "massive" and asset_class == "equity")
     return command in IB_COMMANDS
 
 

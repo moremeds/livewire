@@ -33,19 +33,20 @@ console = Console()
 _WAREHOUSE_DIR = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
 _LOG_DIR = _WAREHOUSE_DIR / "logs"
 
-_TIMEFRAMES: tuple[str, ...] = ("1d", "1h", "5m")
+_TIMEFRAMES: tuple[str, ...] = ("1d", "1m", "1h", "5m")
 
 # Match the leading line written by coverage_report.format_one_liner
-# Example: "2026-04-06 coverage: 1d=1166/1166 (100.00%) 1h=1162/1166 (99.66%) 5m=1158/1166 (99.31%)"
+# Example: "2026-04-06 coverage: 1d=1166/1166 (100.00%) 1m=1160/1166 (99.49%) 1h=1162/1166 (99.66%) 5m=1158/1166 (99.31%)"
 _HEADER_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2}) coverage:\s+"
     r"1d=(\d+)/(\d+).*?\s+"
+    r"(?:1m=(\d+)/(\d+).*?\s+)?"
     r"1h=(\d+)/(\d+).*?\s+"
     r"5m=(\d+)/(\d+)"
 )
 
 # Match a per-timeframe missing block, e.g. "  5m missing: NEWA, RECENT_IPO, ... (8 total)"
-_MISSING_RE = re.compile(r"^\s+(1d|1h|5m) missing:\s*(.+?)\s*$")
+_MISSING_RE = re.compile(r"^\s+(1d|1m|1h|5m) missing:\s*(.+?)\s*$")
 _TOTAL_SUFFIX_RE = re.compile(r",\s*\.\.\.\s*\((\d+) total\)\s*$")
 
 
@@ -68,13 +69,16 @@ def parse_coverage_log(path: Path) -> CoverageEntry | None:
         m = _HEADER_RE.match(line)
         if m:
             day = date.fromisoformat(m.group(1))
+            totals = {
+                "1d": (int(m.group(2)), int(m.group(3))),
+                "1h": (int(m.group(6)), int(m.group(7))),
+                "5m": (int(m.group(8)), int(m.group(9))),
+            }
+            if m.group(4) is not None and m.group(5) is not None:
+                totals["1m"] = (int(m.group(4)), int(m.group(5)))
             header = CoverageEntry(
                 day=day,
-                totals={
-                    "1d": (int(m.group(2)), int(m.group(3))),
-                    "1h": (int(m.group(4)), int(m.group(5))),
-                    "5m": (int(m.group(6)), int(m.group(7))),
-                },
+                totals=totals,
             )
             break
 
@@ -185,14 +189,17 @@ def render_markdown(week_label: str, entries: list[CoverageEntry]) -> str:
     lines.append(f"# Weekly Quality Report — {week_label}")
     lines.append("")
     lines.append("## Coverage trend (per timeframe)")
-    lines.append("| Day        | 1d        | 1h        | 5m        |")
-    lines.append("|------------|-----------|-----------|-----------|")
+    lines.append("| Day        | 1d        | 1m        | 1h        | 5m        |")
+    lines.append("|------------|-----------|-----------|-----------|-----------|")
     for entry in entries:
         cells = []
         for tf in _TIMEFRAMES:
             present, total = entry.totals.get(tf, (0, 0))
             cells.append(f"{present}/{total}")
-        lines.append(f"| {entry.day} | {cells[0]:9s} | {cells[1]:9s} | {cells[2]:9s} |")
+        lines.append(
+            f"| {entry.day} | {cells[0]:9s} | {cells[1]:9s} | "
+            f"{cells[2]:9s} | {cells[3]:9s} |"
+        )
     lines.append("")
 
     added, removed = detect_churn(entries)

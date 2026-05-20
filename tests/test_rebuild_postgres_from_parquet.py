@@ -77,12 +77,14 @@ def test_default_bronze_path_derives_from_asset_class(tmp_path: Path, monkeypatc
 def test_equity_all_calls_daily_and_existing_intraday(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     script = fake_client(monkeypatch)
     touch_parquet(tmp_path, "AAPL", "1d.parquet")
+    touch_parquet(tmp_path, "AAPL", "1m.parquet")
     touch_parquet(tmp_path, "AAPL", "1h.parquet")
 
     assert script.main(["--dsn", "postgresql://example/livewire", "--bronze-dir", str(tmp_path)]) == 0
 
     calls = FakePostgresClient.instances[0].calls
     assert ("replace_equities_from_parquet", tmp_path, "equity", "SMART") in calls
+    assert ("replace_equities_intraday_from_parquet", tmp_path, "1m") in calls
     assert ("replace_equities_intraday_from_parquet", tmp_path, "1h") in calls
     assert ("replace_equities_intraday_from_parquet", tmp_path, "5m") not in calls
     assert "Skipping 5m" in capsys.readouterr().out
@@ -182,6 +184,21 @@ def test_missing_explicit_timeframe_raises(tmp_path: Path, monkeypatch: pytest.M
             str(tmp_path),
             "--timeframe",
             "5m",
+        ])
+
+
+def test_missing_explicit_1m_timeframe_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    script = fake_client(monkeypatch)
+    touch_parquet(tmp_path, "AAPL", "1d.parquet")
+
+    with pytest.raises(FileNotFoundError, match="no 1m parquet snapshots found"):
+        script.main([
+            "--dsn",
+            "postgresql://example/livewire",
+            "--bronze-dir",
+            str(tmp_path),
+            "--timeframe",
+            "1m",
         ])
 
 

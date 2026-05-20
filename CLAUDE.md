@@ -197,7 +197,9 @@ Current fetch behavior:
 bash scripts/livewire_ingest.py backfill-all   # Runs all presets with stall detection + auto-restart
 ```
 
-Output: per-ticker bronze Parquet at `data-lake/bronze/asset_class=equity/symbol=<ticker>/1d.parquet` (or `asset_class=futures/symbol=ES_202506/1d.parquet` for futures). Postgres is rebuilt separately when SQL access is needed.
+`backfill-all` is the default warehouse build, not just daily equity. It runs equity daily seed/backfill for `sp500`, `ndx100`, and `r2k`, then runs Massive equity intraday (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed volatility intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility.
+
+Output: per-ticker bronze Parquet at `data-lake/bronze/asset_class=equity/symbol=<ticker>/{1d,1m,5m,1h}.parquet` and volatility/index bronze Parquet under `data-lake/bronze/asset_class=volatility/symbol=<ticker>/`. Postgres is rebuilt only when `MDW_POSTGRES_DSN` is configured.
 
 ### Futures preset format
 
@@ -293,29 +295,32 @@ python scripts/livewire_quality.py report --view summary --since 24h --email
 
 Views are `summary`, `flap`, and `quality`; `--source` accepts `all`, `ib`, `uw`, or `massive`. `--email` sends the daily-summary Nodemailer mode and writes `quality_summary_YYYY-MM-DD.marker` for the watchdog. Quality flags are emitted beside parquet as `<parquet>.meta.json`; the sidecar schema and central audit JSONL schema are specified in `docs/superpowers/specs/2026-05-17-mdw-reliability-foundation-design.md`.
 
-### Intraday backfill (1h / 5m)
+### Intraday backfill (1m / 1h / 5m)
 
-`scripts/livewire_ingest.py intraday-backfill` is the canonical entry point for full historical intraday backfills. It is the **only** operator command that actually pulls 1h/5m bars from IB; `scripts/livewire_ingest.py historical` is daily-only and `scripts/livewire_ingest.py intraday-status` is a session-state classifier. Reuses `compute_intraday_chunks` (1 W chunks for 5m, 1 M for 1h) and `validate_intraday_bar` from the Phase 1 plumbing; rejected bars are logged but never written to bronze.
+`scripts/livewire_ingest.py intraday-backfill` is the canonical entry point for full historical intraday backfills. The default equity warehouse intraday build is Massive `1m` for 5 years. Non-equity intraday data remains IB-backed. `scripts/livewire_ingest.py historical` is daily-only and `scripts/livewire_ingest.py intraday-status` is a session-state classifier. Reuses `compute_intraday_chunks` for IB chunks (1 D for 1m, 1 W for 5m, 1 M for 1h) and `validate_intraday_bar`; rejected bars are logged but never written to bronze.
 
 ```bash
 source ~/market-warehouse/.venv/bin/activate
+python scripts/livewire_ingest.py intraday-backfill --timeframe 1m --source massive --preset presets/sp500.json --years 5 --skip-existing
 python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --tickers AAPL MSFT          # Explicit list
 python scripts/livewire_ingest.py intraday-backfill --timeframe 1h --preset presets/sp500.json  # Preset
 python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --tickers AAPL --dry-run     # Plan only
+python scripts/livewire_ingest.py intraday-backfill --timeframe 1m --asset-class futures --source ib --preset presets/futures-index.json
 python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --preset presets/screened-universe.json --skip-existing
 python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --preset presets/sp500.json --max-tickers 50
 ```
 
-- Per-timeframe cursor: `~/market-warehouse/cursors/cursor_intraday_{1h,5m}_{preset}.json`. Resumes after interrupt.
+- Per-timeframe cursor: `~/market-warehouse/cursors/cursor_intraday_{1m,1h,5m}_{preset}.json`. Resumes after interrupt.
 - IB error 162/200 ("HMDS no data" / ambiguous contract) marks the ticker complete and moves on — no infinite retry loop.
-- Default depth: 2 years for 1h, 1 year for 5m (matches `INTRADAY_MAX_DEPTH`).
+- Default depth: 5 years for 1m, 2 years for 1h, 1 year for 5m (matches `INTRADAY_MAX_DEPTH`).
+- `--source massive` is equity-only and bypasses IB preflight only for equity intraday runs. Other asset classes use `--source ib`.
 - `--skip-existing` consults `min(bar_timestamp)` in the existing per-ticker parquet and skips if it already covers the requested depth.
 - IB BarData with `formatDate=1` returns naive ET datetimes; the script attaches `America/New_York` and converts to UTC before validation/merge.
-- Logs to `~/market-warehouse/logs/backfill_intraday_{1h,5m}_YYYY-MM-DD.log`.
+- Logs to `~/market-warehouse/logs/backfill_intraday_{1m,1h,5m}_YYYY-MM-DD.log`.
 
 ### Coverage tracking + auto-recovery
 
-`scripts/livewire_quality.py coverage` runs every day after the upload step in the container entrypoint. For each of the three timeframes (1d, 1h, 5m) it counts how many symbols have bars current as-of the target trading day, writes a one-line summary to `~/market-warehouse/logs/coverage_YYYY-MM-DD.log`, and — when coverage drops below `MDW_COVERAGE_ALERT_THRESHOLD` (default `0.95`) — triggers a targeted backfill subprocess and re-checks.
+`scripts/livewire_quality.py coverage` runs every day after the upload step in the container entrypoint. For each tracked timeframe (`1d`, `1m`, `1h`, `5m`) it counts how many symbols have bars current as-of the target trading day, writes a one-line summary to `~/market-warehouse/logs/coverage_YYYY-MM-DD.log`, and — when coverage drops below `MDW_COVERAGE_ALERT_THRESHOLD` (default `0.95`) — triggers a targeted backfill subprocess and re-checks.
 
 ```bash
 python scripts/livewire_quality.py coverage                                # Today's coverage + auto-recovery
@@ -325,7 +330,7 @@ python scripts/livewire_quality.py coverage --threshold 0.99               # Str
 python scripts/livewire_quality.py coverage --force                        # Run on a non-trading day
 ```
 
-- 1d recovery shells out to `scripts/livewire_ingest.py historical`; 1h/5m recovery shells out to `scripts/livewire_ingest.py intraday-backfill`.
+- 1d recovery shells out to `scripts/livewire_ingest.py historical`; intraday recovery shells out to `scripts/livewire_ingest.py intraday-backfill --source massive --asset-class equity`.
 - **Safety cap (default 100):** if more than N symbols are missing for any single timeframe, the script aborts the auto-recovery and emails immediately. This prevents a runaway IB rate-limit hit when an entire daily run failed for some other reason.
 - Email goes out only when post-recovery gaps remain. A fully successful recovery downgrades to an INFO log — no false-positive email storms.
 - Reuses the existing Nodemailer alert path at `scripts/livewire_ops.py send-alert`.

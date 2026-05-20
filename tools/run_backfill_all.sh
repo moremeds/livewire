@@ -15,6 +15,7 @@ SCRIPT="scripts/livewire_ingest.py"
 LOG_DIR="$HOME/market-warehouse/logs"
 STALL_TIMEOUT=600    # seconds of no cursor update before killing (10 min)
 COOLDOWN=300         # seconds to wait after stall/failure (5 min IB cooldown)
+POLL_INTERVAL="${MDW_BACKFILL_POLL_INTERVAL:-30}"
 MAX_CONCURRENT=10
 BATCH_SIZE=5
 
@@ -67,7 +68,7 @@ run_preset() {
 
     # Monitor via cursor file mtime
     while kill -0 "$pid" 2>/dev/null; do
-        sleep 30
+        sleep "$POLL_INTERVAL"
 
         local current_mtime
         current_mtime=$(file_mtime "$cursor_file")
@@ -198,6 +199,90 @@ for preset in "${PRESETS[@]}"; do
         python "$SCRIPT" historical --preset "$preset" --backfill \
         --batch-size "$BATCH_SIZE" --max-concurrent "$MAX_CONCURRENT"
 done
+
+log "============================================================"
+log "PHASE 2 COMPLETE"
+log "============================================================"
+
+# Phases 3-5: Build default equity intraday bronze from Massive.
+run_equity_intraday() {
+    for timeframe in 1m 5m 1h; do
+        case "$timeframe" in
+            1m) phase=3 ;;
+            5m) phase=4 ;;
+            1h) phase=5 ;;
+        esac
+        for preset in "${PRESETS[@]}"; do
+            name=$(python3 -c "import json; print(json.load(open('$preset'))['name'])")
+            total=$(python3 -c "import json; print(len(json.load(open('$preset'))['tickers']))")
+            cursor_file="$HOME/market-warehouse/cursors/cursor_intraday_${timeframe}_${name}.json"
+
+            log "── PHASE ${phase}: Massive ${timeframe} intraday $name ($total tickers, 5y) ──"
+            run_until_done "intraday_${timeframe}_${name}" "$cursor_file" "$total" \
+                python "$SCRIPT" intraday-backfill --preset "$preset" --timeframe "$timeframe" \
+                --source massive --asset-class equity --years 5 --skip-existing
+        done
+        log "============================================================"
+        log "PHASE ${phase} COMPLETE"
+        log "============================================================"
+    done
+}
+
+# Phases 6-7: Build volatility daily via CBOE, then volatility/index intraday via IB.
+run_volatility_intraday() {
+    log "── PHASE 6: CBOE volatility daily ──"
+    python "$SCRIPT" cboe-vol --preset presets/volatility.json >> "$LOG_DIR/volatility_cboe.log" 2>&1
+
+    log "============================================================"
+    log "PHASE 6 COMPLETE"
+    log "============================================================"
+
+    VOL_PRESET="presets/volatility.json"
+    VOL_NAME=$(python3 -c "import json; print(json.load(open('$VOL_PRESET'))['name'])")
+    VOL_TOTAL=$(python3 -c "import json; print(len(json.load(open('$VOL_PRESET'))['tickers']))")
+    for timeframe in 5m 1h; do
+        cursor_file="$HOME/market-warehouse/cursors/cursor_intraday_${timeframe}_${VOL_NAME}.json"
+        log "── PHASE 7: IB volatility intraday ${timeframe} ($VOL_TOTAL tickers) ──"
+        run_until_done "intraday_${timeframe}_${VOL_NAME}" "$cursor_file" "$VOL_TOTAL" \
+            python "$SCRIPT" intraday-backfill --preset "$VOL_PRESET" --timeframe "$timeframe" \
+            --source ib --asset-class volatility --skip-existing
+    done
+
+    log "============================================================"
+    log "PHASE 7 COMPLETE"
+    log "============================================================"
+}
+
+log "Starting Massive equity intraday and IB/CBOE volatility lanes in parallel"
+run_equity_intraday &
+equity_intraday_pid=$!
+run_volatility_intraday &
+volatility_intraday_pid=$!
+
+set +e
+wait "$equity_intraday_pid"
+equity_intraday_status=$?
+wait "$volatility_intraday_pid"
+volatility_intraday_status=$?
+set -e
+
+if [ "$equity_intraday_status" -ne 0 ] || [ "$volatility_intraday_status" -ne 0 ]; then
+    log "Parallel intraday phase failed: equity=$equity_intraday_status volatility=$volatility_intraday_status"
+    exit 1
+fi
+
+# Phase 8: Rebuild Postgres analytical publish target when configured
+if [ -n "${MDW_POSTGRES_DSN:-}" ]; then
+    log "── PHASE 8: Postgres analytical rebuild ──"
+    python scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe all --include-reliability
+    python scripts/livewire_store.py rebuild-postgres --asset-class volatility --timeframe 1d
+else
+    log "── PHASE 8: Postgres analytical rebuild skipped — MDW_POSTGRES_DSN is not set ──"
+fi
+
+log "============================================================"
+log "PHASE 8 COMPLETE"
+log "============================================================"
 
 log "============================================================"
 log "ALL DONE"

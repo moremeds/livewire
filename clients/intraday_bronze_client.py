@@ -1,4 +1,4 @@
-"""Intraday parquet bronze client (1h and 5m equity bars).
+"""Intraday parquet bronze client (1m, 1h, and 5m bars).
 
 Stores per-ticker per-timeframe parquet files alongside the existing 1d.parquet
 files written by BronzeClient. Schema is timestamp-keyed (bar_timestamp
@@ -27,27 +27,31 @@ _DEFAULT_BRONZE_DIR = (
     Path.home() / "market-warehouse" / "data-lake" / "bronze" / "asset_class=equity"
 )
 
-INTRADAY_TIMEFRAMES = ("1h", "5m")
+INTRADAY_TIMEFRAMES = ("1m", "1h", "5m")
 
 INTRADAY_PARQUET_FILENAME = {
+    "1m": "1m.parquet",
     "1h": "1h.parquet",
     "5m": "5m.parquet",
 }
 
 # IB historical request limits per timeframe
 INTRADAY_MAX_REQUEST_DURATION = {
+    "1m": "1 D",
     "1h": "1 M",
     "5m": "1 W",
 }
 
 # Realistic IB data depth per timeframe
 INTRADAY_MAX_DEPTH = {
+    "1m": "5 Y",
     "1h": "2 Y",
     "5m": "1 Y",
 }
 
 # IB barSizeSetting strings
 INTRADAY_IB_BAR_SIZE = {
+    "1m": "1 min",
     "1h": "1 hour",
     "5m": "5 mins",
 }

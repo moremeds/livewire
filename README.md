@@ -271,9 +271,9 @@ Notes:
 
 ---
 
-### Equity Preset Backfill
+### Default Warehouse Backfill
 
-The consolidated equity preset backfill entrypoint runs `sp500`, `ndx100`, and `r2k` daily-bar normal fetches, then older-history backfills, with stall detection and cursor resume:
+The consolidated default warehouse backfill entrypoint runs `sp500`, `ndx100`, and `r2k` daily-bar normal fetches, then older-history backfills, with stall detection and cursor resume. It then runs the Massive equity intraday lane (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed volatility intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility, including equity `1m`.
 
 ```bash
 python scripts/livewire_ingest.py backfill-all
@@ -282,7 +282,7 @@ python scripts/livewire_ingest.py backfill-all
 For a long local run, use `tmux` and keep logs under `~/market-warehouse/logs/`:
 
 ```bash
-tmux new-session -s livewire_equity_backfill 'cd /Users/chenxi/projects/livewire && source ~/market-warehouse/.venv/bin/activate && python scripts/livewire_ingest.py backfill-all'
+tmux new-session -s livewire_backfill 'cd /Users/chenxi/projects/livewire && source ~/market-warehouse/.venv/bin/activate && python scripts/livewire_ingest.py backfill-all'
 ```
 
 ---
@@ -314,7 +314,7 @@ python scripts/livewire_ingest.py historical --preset presets/volatility.json --
 
 ### Intraday Data
 
-Intraday bars are fetched through the ingest entrypoint. `historical` is daily-only; use `intraday-backfill` for 1h and 5m bars:
+Intraday bars are fetched through the ingest entrypoint. `historical` is daily-only; use `intraday-backfill` for intraday bars. The default equity warehouse build now uses **Massive 1m, 5 years**. Non-equity intraday data stays IB-backed.
 
 ```bash
 # Probe IB intraday timestamp behavior for the built-in AAPL fixture
@@ -325,6 +325,12 @@ python scripts/livewire_ingest.py intraday-status --timeframe 5m
 
 # Backfill one symbol
 python scripts/livewire_ingest.py intraday-backfill --tickers AAPL --timeframe 5m --years 1
+
+# Default equity intraday warehouse build input
+python scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json --timeframe 1m --source massive --years 5 --skip-existing
+
+# Non-equity intraday remains IB-backed
+python scripts/livewire_ingest.py intraday-backfill --preset presets/futures-index.json --asset-class futures --timeframe 1m --source ib --years 5
 
 # Backfill a preset and skip files already present
 python scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json --timeframe 1h --skip-existing
@@ -458,7 +464,7 @@ python scripts/livewire_store.py smoke-postgres --ensure-schema
 # Rebuild equity daily rows
 python scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe 1d
 
-# Rebuild all available equity timeframes; missing optional 1h/5m data is skipped
+# Rebuild all available equity timeframes; missing optional 1m/1h/5m data is skipped
 python scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe all
 
 # Rebuild futures and volatility when their bronze parquet exists
@@ -469,7 +475,7 @@ python scripts/livewire_store.py rebuild-postgres --asset-class volatility
 python scripts/livewire_store.py rebuild-postgres --include-reliability
 ```
 
-The Postgres schema contains `md.symbols`, `md.equities_daily`, `md.futures_daily`, `md.equities_1h`, `md.equities_5m`, `md.telemetry_events`, and `md.quality_flags`. The rebuild command streams local parquet/JSONL through Python and `psycopg`; it does not require server-side parquet extensions or database access to the local filesystem.
+The Postgres schema contains `md.symbols`, `md.equities_daily`, `md.futures_daily`, `md.equities_1m`, `md.equities_1h`, `md.equities_5m`, `md.telemetry_events`, and `md.quality_flags`. The rebuild command streams local parquet/JSONL through Python and `psycopg`; it does not require server-side parquet extensions or database access to the local filesystem.
 
 Rollback is to drop or truncate the target schema and replay from canonical bronze Parquet and JSONL artifacts:
 

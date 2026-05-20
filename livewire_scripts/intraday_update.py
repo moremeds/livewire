@@ -1,4 +1,4 @@
-"""Intraday update — refresh 1h and 5m bars for the equity universe.
+"""Intraday update — classify intraday bars for the equity universe.
 
 Iterates over INTRADAY_TIMEFRAMES, classifies each (symbol, timeframe) into
 one of 5 session states, and reports a summary. Actual fetching is a future
@@ -51,6 +51,7 @@ class SessionState(enum.Enum):
 def expected_last_bar_utc(trading_day: date, timeframe: str) -> datetime:
     """Return the UTC timestamp of the last bar of *trading_day* at *timeframe*.
 
+    For 1m bars: close - 1min (e.g., 15:59 ET on a normal day).
     For 5m bars: close - 5min (e.g., 15:55 ET on a normal day).
     For 1h bars: close - 1h (e.g., 15:30 ET on a normal day).
     """
@@ -62,7 +63,9 @@ def expected_last_bar_utc(trading_day: date, timeframe: str) -> datetime:
         trading_day.year, trading_day.month, trading_day.day,
         close_t.hour, close_t.minute, tzinfo=_ET,
     )
-    if timeframe == "5m":
+    if timeframe == "1m":
+        last_et = close_dt - timedelta(minutes=1)
+    elif timeframe == "5m":
         last_et = close_dt - timedelta(minutes=5)
     else:  # "1h"
         last_et = close_dt - timedelta(minutes=30)

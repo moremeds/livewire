@@ -20,11 +20,12 @@ _ET = ZoneInfo("America/New_York")
 
 
 class TestConstants:
-    def test_timeframes_are_1h_and_5m(self):
-        assert INTRADAY_TIMEFRAMES == ("1h", "5m")
+    def test_timeframes_include_1m_1h_and_5m(self):
+        assert INTRADAY_TIMEFRAMES == ("1m", "1h", "5m")
 
     def test_filenames_match_timeframes(self):
         assert INTRADAY_PARQUET_FILENAME == {
+            "1m": "1m.parquet",
             "1h": "1h.parquet",
             "5m": "5m.parquet",
         }
@@ -33,10 +34,10 @@ class TestConstants:
 class TestConstructor:
     def test_invalid_timeframe_raises(self, tmp_path):
         with pytest.raises(ValueError, match="unsupported timeframe"):
-            IntradayBronzeClient(bronze_dir=tmp_path, timeframe="1m")
+            IntradayBronzeClient(bronze_dir=tmp_path, timeframe="15m")
 
     def test_valid_timeframes_accepted(self, tmp_path):
-        for tf in ("1h", "5m"):
+        for tf in ("1m", "1h", "5m"):
             with IntradayBronzeClient(bronze_dir=tmp_path, timeframe=tf) as client:
                 assert client.timeframe == tf
 

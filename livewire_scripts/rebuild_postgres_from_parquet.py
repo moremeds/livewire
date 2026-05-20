@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--timeframe",
-        choices=["1d", "1h", "5m", "all"],
+        choices=["1d", "1m", "1h", "5m", "all"],
         default="all",
         help="Timeframe to rebuild",
     )
@@ -82,7 +82,7 @@ def _rebuild_equity_timeframes(db: PostgresClient, bronze_dir: Path, timeframe: 
             )
         else:
             console.print("Skipping 1d: no parquet snapshots found")
-    for intraday_tf in ("1h", "5m"):
+    for intraday_tf in ("1m", "1h", "5m"):
         if timeframe not in (intraday_tf, "all"):
             continue
         if not _has_parquet(bronze_dir, f"{intraday_tf}.parquet"):
@@ -97,7 +97,7 @@ def _validate_bronze_inputs(bronze_dir: Path, asset_class: str, timeframe: str) 
         raise FileNotFoundError(f"bronze directory does not exist: {bronze_dir}")
     filenames = _expected_filenames(asset_class, timeframe)
     if not any(_has_parquet(bronze_dir, filename) for filename in filenames):
-        if timeframe in ("1h", "5m"):
+        if timeframe in ("1m", "1h", "5m"):
             raise FileNotFoundError(f"no {timeframe} parquet snapshots found under: {bronze_dir}")
         raise FileNotFoundError(f"no bronze parquet snapshots found under: {bronze_dir}")
 
@@ -106,7 +106,7 @@ def _expected_filenames(asset_class: str, timeframe: str) -> list[str]:
     if asset_class in ("volatility", "futures"):
         return ["1d.parquet"]
     if timeframe == "all":
-        return ["1d.parquet", "1h.parquet", "5m.parquet"]
+        return ["1d.parquet", "1m.parquet", "1h.parquet", "5m.parquet"]
     if timeframe == "1d":
         return ["1d.parquet"]
     return [f"{timeframe}.parquet"]

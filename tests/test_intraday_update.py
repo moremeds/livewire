@@ -20,6 +20,12 @@ _ET = ZoneInfo("America/New_York")
 
 
 class TestExpectedLastBarUtc:
+    def test_normal_day_1m(self):
+        d = date(2026, 4, 7)
+        result = expected_last_bar_utc(d, timeframe="1m")
+        expected_et = datetime(2026, 4, 7, 15, 59, tzinfo=_ET)
+        assert result == expected_et.astimezone(_UTC)
+
     def test_normal_day_5m(self):
         # Tue Apr 7 2026, 5m bars, last bar = 15:55 ET
         d = date(2026, 4, 7)

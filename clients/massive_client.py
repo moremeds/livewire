@@ -80,6 +80,21 @@ class MassiveDailyBar:
         return self.trade_date.isoformat()
 
 
+@dataclass(frozen=True)
+class MassiveIntradayBar:
+    """Normalized Massive intraday aggregate bar."""
+
+    bar_timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+    source: str = "massive"
+    ticker: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
 class MassiveClient:
     """Small Massive REST client for stock daily aggregate endpoints."""
 
@@ -144,6 +159,29 @@ class MassiveClient:
         )
         return [
             self.normalize_daily_bar(row, ticker=ticker.upper())
+            for row in self._extract_results(payload)
+        ]
+
+    def get_intraday_bars(
+        self,
+        ticker: str,
+        start: date,
+        end: date,
+        *,
+        timeframe: str = "1m",
+        adjusted: bool = False,
+    ) -> list[MassiveIntradayBar]:
+        multiplier, timespan = self._intraday_aggregate_spec(timeframe)
+        endpoint = (
+            f"/v2/aggs/ticker/{ticker.upper()}/range/{multiplier}/{timespan}/"
+            f"{start.isoformat()}/{end.isoformat()}"
+        )
+        payload = self._get(
+            endpoint,
+            params={"adjusted": str(adjusted).lower(), "sort": "asc", "limit": 50000},
+        )
+        return [
+            self.normalize_intraday_bar(row, ticker=ticker.upper())
             for row in self._extract_results(payload)
         ]
 
@@ -308,6 +346,64 @@ class MassiveClient:
             ticker=str(symbol).upper(),
             metadata=metadata,
         )
+
+    @staticmethod
+    def normalize_intraday_bar(payload: dict, ticker: str | None = None) -> MassiveIntradayBar:
+        symbol = ticker or payload.get("T")
+        if not symbol:
+            raise MassiveMalformedBarError("intraday bar missing ticker")
+
+        raw_ts = payload.get("t")
+        if not isinstance(raw_ts, int):
+            raise MassiveMalformedBarError("bar timestamp t must be an integer")
+
+        open_px = MassiveClient._finite_float(payload, "o")
+        high_px = MassiveClient._finite_float(payload, "h")
+        low_px = MassiveClient._finite_float(payload, "l")
+        close_px = MassiveClient._finite_float(payload, "c")
+        raw_volume = MassiveClient._finite_float(payload, "v")
+
+        if open_px <= 0 or close_px <= 0:
+            raise MassiveMalformedBarError("open and close must be positive")
+        if high_px < low_px or high_px < open_px or high_px < close_px:
+            raise MassiveMalformedBarError("high must be >= low, open, and close")
+        if low_px > open_px or low_px > close_px:
+            raise MassiveMalformedBarError("low must be <= open and close")
+        if raw_volume < 0:
+            raise MassiveMalformedBarError("volume must be non-negative")
+
+        volume = int(round(raw_volume))
+        metadata = {
+            "raw_volume": raw_volume,
+            "volume_rounded": volume != raw_volume,
+        }
+        if "vw" in payload:
+            metadata["vwap"] = payload["vw"]
+        if "n" in payload:
+            metadata["transactions"] = payload["n"]
+
+        return MassiveIntradayBar(
+            bar_timestamp=datetime.fromtimestamp(raw_ts / 1000, timezone.utc),
+            open=open_px,
+            high=high_px,
+            low=low_px,
+            close=close_px,
+            volume=volume,
+            ticker=str(symbol).upper(),
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _intraday_aggregate_spec(timeframe: str) -> tuple[int, str]:
+        specs = {
+            "1m": (1, "minute"),
+            "5m": (5, "minute"),
+            "1h": (1, "hour"),
+        }
+        try:
+            return specs[timeframe]
+        except KeyError as exc:
+            raise MassiveValidationError(f"unsupported intraday timeframe: {timeframe}") from exc
 
     @staticmethod
     def _finite_float(payload: dict, key: str) -> float:

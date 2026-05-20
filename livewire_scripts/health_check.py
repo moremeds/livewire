@@ -33,7 +33,7 @@ from livewire_scripts.daily_update import (
 )
 
 _ET = ZoneInfo("America/New_York")
-_BAR_SIZE_MINUTES = {"1h": 60, "5m": 5}
+_BAR_SIZE_MINUTES = {"1m": 1, "1h": 60, "5m": 5}
 
 log = logging.getLogger(__name__)
 
@@ -149,6 +149,7 @@ def generate_expected_intraday_timestamps(
 
     For each trading day:
 
+    * **1m**: bars every minute from 9:30 ET up to ``close - 1min``.
     * **5m**: bars every 5 minutes from 9:30 ET up to ``close - 5min``.
     * **1h**: first bar at 9:30 ET (covers 9:30-10:00), then on the hour
       (10:00, 11:00, …) up to ``close - 1h``. This matches IB's actual
@@ -175,9 +176,9 @@ def generate_expected_intraday_timestamps(
             while current + step <= rth_close:
                 expected.add(current.astimezone(timezone.utc))
                 current += step
-        else:  # 5m
+        else:  # 1m / 5m
             current = rth_open
-            step = timedelta(minutes=5)
+            step = timedelta(minutes=_BAR_SIZE_MINUTES[timeframe])
             while current + step <= rth_close:
                 expected.add(current.astimezone(timezone.utc))
                 current += step
@@ -376,7 +377,7 @@ def main() -> None:
     parser.add_argument(
         "--intraday",
         action="store_true",
-        help="Run intraday (1h/5m) health check instead of daily",
+        help="Run intraday (1m/1h/5m) health check instead of daily",
     )
     parser.add_argument(
         "--timeframe",

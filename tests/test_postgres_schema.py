@@ -14,6 +14,7 @@ def test_schema_sql_contains_expected_tables() -> None:
         "symbols",
         "equities_daily",
         "futures_daily",
+        "equities_1m",
         "equities_1h",
         "equities_5m",
         "telemetry_events",

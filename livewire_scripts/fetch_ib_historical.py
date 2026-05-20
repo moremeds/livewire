@@ -279,6 +279,7 @@ def compute_intraday_chunks(
 ) -> list[tuple[str, str]]:
     """Generate ``(duration_str, end_datetime_str)`` chunks for an intraday backfill.
 
+    For 1m: walks backwards from now in 1-day chunks for ``years_back`` years.
     For 5m: walks backwards from now in 1-week chunks for ``years_back`` years.
     For 1h: walks backwards from now in 1-month chunks for ``years_back`` years.
 
@@ -292,7 +293,7 @@ def compute_intraday_chunks(
     duration = INTRADAY_MAX_REQUEST_DURATION[timeframe]
     end_dt = datetime.now()
 
-    _step_map = {"5m": timedelta(weeks=1), "1h": timedelta(days=30)}
+    _step_map = {"1m": timedelta(days=1), "5m": timedelta(weeks=1), "1h": timedelta(days=30)}
     step = _step_map[timeframe]
 
     head_dt = end_dt - timedelta(days=365 * years_back)

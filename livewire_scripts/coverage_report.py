@@ -1,6 +1,6 @@
 """Daily coverage report + auto-recovery for Livewire.
 
-For each of the three timeframes (1d, 1h, 5m), counts how many symbols have
+For each tracked timeframe (1d, 1m, 1h, 5m), counts how many symbols have
 bars current as-of the target trading day. If coverage drops below the
 threshold (default 95%), triggers a targeted backfill via fetch_ib_historical
 and re-checks. Sends an email alert when post-recovery coverage is still
@@ -42,7 +42,7 @@ _REPO_ROOT = _SCRIPT_DIR.parent
 _INGEST_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ingest.py"
 _OPS_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ops.py"
 
-TIMEFRAMES: tuple[str, ...] = ("1d", "1h", "5m")
+TIMEFRAMES: tuple[str, ...] = ("1d", "1m", "1h", "5m")
 DEFAULT_THRESHOLD = float(os.getenv("MDW_COVERAGE_ALERT_THRESHOLD", "0.95"))
 DEFAULT_SAFETY_CAP = 100
 
@@ -216,6 +216,8 @@ def auto_recover(
             str(_INGEST_SCRIPT),
             "intraday-backfill",
             "--timeframe", timeframe,
+            "--source", "massive",
+            "--asset-class", "equity",
             "--tickers", *missing_symbols,
         ]
     console.print(
