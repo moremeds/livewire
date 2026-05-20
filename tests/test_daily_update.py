@@ -2242,6 +2242,11 @@ class TestValidateIntradayBar:
         issues = validate_intraday_bar(self._bar(ts), "AAPL", "5m")
         assert issues == []
 
+    def test_valid_1m_bar_at_open(self):
+        ts = datetime(2026, 4, 7, 9, 30, tzinfo=_ET).astimezone(_UTC)
+        issues = validate_intraday_bar(self._bar(ts), "AAPL", "1m")
+        assert issues == []
+
     def test_valid_1h_bar_at_open(self):
         ts = datetime(2026, 4, 7, 9, 30, tzinfo=_ET).astimezone(_UTC)
         issues = validate_intraday_bar(self._bar(ts), "AAPL", "1h")
@@ -2281,6 +2286,11 @@ class TestValidateIntradayBar:
         ts = datetime(2026, 4, 7, 9, 32, tzinfo=_ET).astimezone(_UTC)
         issues = validate_intraday_bar(self._bar(ts), "AAPL", "5m")
         assert any("5-min grid" in i for i in issues)
+
+    def test_1m_grid_misalignment_rejected(self):
+        ts = datetime(2026, 4, 7, 9, 30, 30, tzinfo=_ET).astimezone(_UTC)
+        issues = validate_intraday_bar(self._bar(ts), "AAPL", "1m")
+        assert any("1-min grid" in i for i in issues)
 
     def test_1h_grid_at_30_accepted(self):
         # 9:30 ET — IB returns the opening 30-min bar at this time

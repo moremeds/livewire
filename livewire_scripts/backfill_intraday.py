@@ -1,4 +1,4 @@
-"""Full historical intraday backfill orchestrator (1h and 5m).
+"""Full historical intraday backfill orchestrator (1m, 1h, and 5m).
 
 For each ticker:
 1. Compute IB request chunks via compute_intraday_chunks
@@ -8,7 +8,7 @@ For each ticker:
 5. Merge into IntradayBronzeClient
 6. On success, mark ticker as completed in the per-timeframe cursor
 
-Per spec § 11. The first script in this repo that actually pulls 1h/5m
+Per spec § 11. The first script in this repo that actually pulls intraday
 bars from IB — daily_update + intraday_update only classify, and
 fetch_ib_historical.py is daily-only.
 """
@@ -38,9 +38,15 @@ from clients.intraday_bronze_client import (
     INTRADAY_TIMEFRAMES,
     IntradayBronzeClient,
 )
+from clients.massive_client import MassiveClient
 from clients.quality_detector import _normalize_bars_for_detection, detect_all
 from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
-from livewire_scripts.daily_update import _make_contract, validate_intraday_bar
+from livewire_scripts.daily_update import (
+    _make_contract,
+    is_trading_day,
+    session_close_time,
+    validate_intraday_bar,
+)
 from livewire_scripts.fetch_ib_historical import compute_intraday_chunks, load_preset
 
 log = logging.getLogger("backfill_intraday")
@@ -54,7 +60,7 @@ _CURSOR_DIR = _WAREHOUSE_DIR / "cursors"
 # IB error codes that mean "skip ticker, do not retry"
 _NO_DATA_ERRORS = {162, 200}
 
-_DEFAULT_YEARS = {"1h": 2, "5m": 1}
+_DEFAULT_YEARS = {"1m": 5, "1h": 2, "5m": 1}
 _ET = ZoneInfo("America/New_York")
 _UTC = timezone.utc
 
@@ -136,6 +142,35 @@ def ib_bar_to_row(bar: Any, symbol_id: int) -> dict[str, Any]:
         "close": float(bar.close),
         "volume": int(bar.volume),
     }
+
+
+def massive_intraday_bar_to_row(bar: Any, symbol_id: int) -> dict[str, Any]:
+    """Convert a normalized Massive intraday bar to a bronze row dict."""
+    ts = bar.bar_timestamp
+    if ts.tzinfo is None or ts.tzinfo.utcoffset(ts) is None:
+        raise ValueError("Massive intraday bar_timestamp must be tz-aware")
+    return {
+        "bar_timestamp": ts.astimezone(_UTC),
+        "symbol_id": symbol_id,
+        "open": float(bar.open),
+        "high": float(bar.high),
+        "low": float(bar.low),
+        "close": float(bar.close),
+        "volume": int(bar.volume),
+    }
+
+
+def _is_regular_trading_timestamp(ts: datetime) -> bool:
+    """Return True when a UTC timestamp falls inside the U.S. equity RTH window."""
+    if ts.tzinfo is None or ts.tzinfo.utcoffset(ts) is None or ts.utcoffset() != timedelta(0):
+        return False
+    et = ts.astimezone(_ET)
+    if not is_trading_day(et.date()):
+        return False
+    rth_start = et.replace(hour=9, minute=30, second=0, microsecond=0)
+    close_t = session_close_time(et.date())
+    rth_end = et.replace(hour=close_t.hour, minute=close_t.minute, second=0, microsecond=0)
+    return rth_start <= et < rth_end
 
 
 def _run_quality_detection(
@@ -253,8 +288,72 @@ def backfill_ticker(
     return outcome
 
 
-def plan_chunks(timeframe: str, years: int, tickers: Sequence[str]) -> list[str]:
+def compute_intraday_date_windows(years: int, *, window_days: int = 30) -> list[tuple[date, date]]:
+    """Return inclusive calendar date windows for Massive intraday aggregate pulls."""
+    end_day = datetime.now(_UTC).date()
+    start_day = end_day - timedelta(days=365 * years)
+    windows: list[tuple[date, date]] = []
+    cursor = start_day
+    while cursor <= end_day:
+        window_end = min(cursor + timedelta(days=window_days - 1), end_day)
+        windows.append((cursor, window_end))
+        cursor = window_end + timedelta(days=1)
+    return windows
+
+
+def backfill_ticker_massive(
+    ticker: str,
+    timeframe: str,
+    years: int,
+    massive: MassiveClient,
+    bronze: IntradayBronzeClient,
+) -> TickerOutcome:
+    """Fetch and merge Massive intraday aggregates for one equity ticker."""
+    outcome = TickerOutcome(ticker=ticker)
+    symbol_id = bronze.get_symbol_id(ticker)
+    all_rows: list[dict[str, Any]] = []
+
+    for start, end in compute_intraday_date_windows(years):
+        try:
+            bars = massive.get_intraday_bars(ticker, start, end, timeframe=timeframe)
+        except Exception as exc:
+            outcome.errors.append(f"{start}:{end}: {exc}")
+            continue
+
+        outcome.chunks_fetched += 1
+        for bar in bars:
+            row = massive_intraday_bar_to_row(bar, symbol_id)
+            if not _is_regular_trading_timestamp(row["bar_timestamp"]):
+                continue
+            issues = validate_intraday_bar(_BarRow(row["bar_timestamp"]), ticker, timeframe)
+            if issues:
+                outcome.rejected += 1
+                for issue in issues:
+                    log.debug("rejected %s", issue)
+                continue
+            all_rows.append(row)
+
+    if all_rows:
+        parquet_path = bronze.bronze_dir / f"symbol={ticker}" / f"{timeframe}.parquet"
+        _run_quality_detection(
+            ticker=ticker,
+            timeframe=timeframe,
+            bars=all_rows,
+            parquet_path=parquet_path,
+            outcome=outcome,
+            source="massive",
+        )
+        outcome.bars_inserted = bronze.merge_ticker_rows(ticker, all_rows)
+    return outcome
+
+
+def plan_chunks(
+    timeframe: str, years: int, tickers: Sequence[str], *, source: str = "ib"
+) -> list[str]:
     """Return human-readable lines describing the planned IB requests."""
+    if source == "massive":
+        windows = compute_intraday_date_windows(years)
+        return [f"{ticker}: {len(windows)} Massive date windows" for ticker in tickers]
     chunks = compute_intraday_chunks(timeframe, years)
     return [
         f"{ticker}: {len(chunks)} chunks of {INTRADAY_IB_BAR_SIZE[timeframe]}"
@@ -277,7 +376,19 @@ def main() -> None:
         "--timeframe",
         choices=list(INTRADAY_TIMEFRAMES),
         required=True,
-        help="Intraday timeframe (1h or 5m)",
+        help="Intraday timeframe (1m, 1h, or 5m)",
+    )
+    parser.add_argument(
+        "--source",
+        choices=["ib", "massive"],
+        default="ib",
+        help="Intraday source (default: ib; Massive supports equity only)",
+    )
+    parser.add_argument(
+        "--asset-class",
+        choices=["equity", "volatility", "futures", "cmdty", "fx"],
+        default="equity",
+        help="Asset class to fetch (default: equity). Non-equity intraday uses IB.",
     )
     grp = parser.add_mutually_exclusive_group()
     grp.add_argument("--tickers", nargs="+", help="Explicit ticker list")
@@ -296,6 +407,9 @@ def main() -> None:
     args = parser.parse_args()
 
     years = args.years if args.years is not None else _DEFAULT_YEARS[args.timeframe]
+    if args.source == "massive" and args.asset_class != "equity":
+        raise SystemExit("--source massive is only supported for equity intraday")
+
     cursor_name, tickers = _resolve_tickers(args)
 
     # Cursor is only meaningful for preset runs (resumable bulk backfills).
@@ -310,12 +424,13 @@ def main() -> None:
 
     console.print(
         f"\n[bold]Backfill intraday[/bold]  tf={args.timeframe}  years={years}  "
+        f"source={args.source}  asset_class={args.asset_class}  "
         f"tickers={len(tickers)}  pending={len(pending)}  "
         f"cursor={cursor_name if use_cursor else 'disabled'}"
     )
 
     if args.dry_run:
-        for line in plan_chunks(args.timeframe, years, pending):
+        for line in plan_chunks(args.timeframe, years, pending, source=args.source):
             console.print(f"  {line}")
         return
 
@@ -323,7 +438,7 @@ def main() -> None:
         console.print("[green]All tickers already completed for this cursor.[/green]")
         return
 
-    bronze_dir = _DATA_LAKE / "bronze" / "asset_class=equity"
+    bronze_dir = _DATA_LAKE / "bronze" / f"asset_class={args.asset_class}"
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = _LOG_DIR / f"backfill_intraday_{args.timeframe}_{date.today():%Y-%m-%d}.log"
     log_handler = logging.FileHandler(log_path)
@@ -331,17 +446,23 @@ def main() -> None:
     log.addHandler(log_handler)
     log.setLevel(logging.INFO)
 
-    # Lazy IB import — keeps tests free of the dependency until they patch it
-    from clients.ib_client import IBClient  # noqa: PLC0415
-
     bronze = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe=args.timeframe)
     t0 = time.monotonic()
     total_inserted = 0
     total_rejected = 0
     skipped: list[str] = []
+    failed: list[str] = []
 
-    with IBClient() as ib:
-        ib.connect(host=args.host, port=args.port)
+    if args.source == "massive":
+        provider_context = MassiveClient()
+    else:
+        # Lazy IB import keeps Massive-only and tests free of the dependency until needed.
+        from clients.ib_client import IBClient  # noqa: PLC0415
+        provider_context = IBClient()
+
+    with provider_context as provider:
+        if args.source == "ib":
+            provider.connect(host=args.host, port=args.port)
         for ticker in pending:
             if args.skip_existing and should_skip_existing(bronze, ticker, years):
                 console.print(f"  [dim]{ticker}: bronze already covers {years}y — skip[/dim]")
@@ -350,7 +471,13 @@ def main() -> None:
                     save_cursor(args.timeframe, cursor_name, completed)
                 continue
 
-            outcome = backfill_ticker(ticker, args.timeframe, years, ib, bronze)
+            if args.source == "massive":
+                outcome = backfill_ticker_massive(ticker, args.timeframe, years, provider, bronze)
+            else:
+                outcome = backfill_ticker(
+                    ticker, args.timeframe, years, provider, bronze,
+                    asset_class=args.asset_class,
+                )
             if outcome.skipped_reason:
                 console.print(f"  [yellow]{ticker}: {outcome.skipped_reason}[/yellow]")
                 skipped.append(ticker)
@@ -366,6 +493,13 @@ def main() -> None:
                 ticker, outcome.chunks_fetched, outcome.bars_inserted,
                 outcome.rejected, len(outcome.errors),
             )
+            if outcome.errors:
+                failed.append(ticker)
+                console.print(
+                    f"  [red]{ticker}[/red]: provider errors={len(outcome.errors)}; "
+                    "not marking cursor complete"
+                )
+                continue
             console.print(
                 f"  [green]{ticker}[/green]: +{outcome.bars_inserted} bars "
                 f"({outcome.rejected} rejected)"
@@ -377,8 +511,10 @@ def main() -> None:
     elapsed = time.monotonic() - t0
     console.print(
         f"\n[bold]Done.[/bold] inserted={total_inserted} rejected={total_rejected} "
-        f"skipped={len(skipped)} elapsed={elapsed:.1f}s"
+        f"skipped={len(skipped)} failed={len(failed)} elapsed={elapsed:.1f}s"
     )
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -212,7 +212,7 @@ class PostgresClient:
         timeframe: str,
     ) -> dict[str, int]:
         """Replace intraday rows for the symbols staged from parquet."""
-        if timeframe not in ("1h", "5m"):
+        if timeframe not in ("1m", "1h", "5m"):
             raise ValueError(f"unsupported intraday timeframe: {timeframe!r}")
         table = f"equities_{timeframe}"
         parquet_files = _parquet_files(bronze_dir, f"{timeframe}.parquet")

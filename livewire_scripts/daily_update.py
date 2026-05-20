@@ -478,7 +478,10 @@ def validate_intraday_bar(bar: object, ticker: str, timeframe: str) -> list[str]
         issues.append(f"{ticker} {ts}: outside RTH ({et.time()} ET)")
 
     # 5. Grid alignment
-    if timeframe == "5m":
+    if timeframe == "1m":
+        if et.second != 0:
+            issues.append(f"{ticker} {ts}: not aligned to 1-min grid")
+    elif timeframe == "5m":
         if et.minute % 5 != 0 or et.second != 0:
             issues.append(f"{ticker} {ts}: not aligned to 5-min grid")
     elif timeframe == "1h":

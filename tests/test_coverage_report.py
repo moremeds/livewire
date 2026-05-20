@@ -88,21 +88,21 @@ def _write_intraday(
             "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5,
             "volume": 1000,
         })
-    fname = "1h.parquet" if timeframe == "1h" else "5m.parquet"
     pq.write_table(
         pa.Table.from_pylist(rows, schema=_INTRADAY_SCHEMA),
-        sym_dir / fname,
+        sym_dir / f"{timeframe}.parquet",
         compression="snappy",
     )
 
 
 @pytest.fixture()
 def seeded_bronze(tmp_path):
-    """Two symbols (AAPL, MSFT), all 3 timeframes current to 2026-04-06."""
+    """Two symbols (AAPL, MSFT), all coverage timeframes current to 2026-04-06."""
     root = tmp_path / "bronze"
     target = date(2026, 4, 6)  # Monday
     for sym in ("AAPL", "MSFT"):
         _write_daily(root, sym, [date(2026, 4, 3), target])
+        _write_intraday(root, sym, "1m", [target])
         _write_intraday(root, sym, "1h", [target])
         _write_intraday(root, sym, "5m", [target])
     return root
@@ -114,7 +114,7 @@ def seeded_bronze(tmp_path):
 class TestComputeCoverage:
     def test_all_present(self, seeded_bronze):
         results = compute_coverage(date(2026, 4, 6), bronze_root=seeded_bronze)
-        for tf in ("1d", "1h", "5m"):
+        for tf in ("1d", "1m", "1h", "5m"):
             assert results[tf].total == 2
             assert results[tf].present == 2
             assert results[tf].missing_symbols == []
@@ -124,6 +124,7 @@ class TestComputeCoverage:
         root = tmp_path / "bronze"
         target = date(2026, 4, 6)
         _write_daily(root, "AAPL", [target])
+        _write_intraday(root, "AAPL", "1m", [target])
         _write_intraday(root, "AAPL", "1h", [target])
         _write_intraday(root, "AAPL", "5m", [date(2026, 3, 1)])  # stale
         results = compute_coverage(target, bronze_root=root)
@@ -132,19 +133,21 @@ class TestComputeCoverage:
         assert results["1d"].present == 1
 
     def test_missing_timeframe_file(self, tmp_path):
-        # Symbol exists for 1d only — 1h/5m parquet absent
+        # Symbol exists for 1d only — intraday parquet absent
         root = tmp_path / "bronze"
         target = date(2026, 4, 6)
         _write_daily(root, "AAPL", [target])
         results = compute_coverage(target, bronze_root=root)
         assert results["1d"].present == 1
+        assert results["1m"].present == 0
+        assert results["1m"].missing_symbols == ["AAPL"]
         assert results["1h"].present == 0
         assert results["1h"].missing_symbols == ["AAPL"]
         assert results["5m"].missing_symbols == ["AAPL"]
 
     def test_empty_bronze(self, tmp_path):
         results = compute_coverage(date(2026, 4, 6), bronze_root=tmp_path / "empty")
-        for tf in ("1d", "1h", "5m"):
+        for tf in ("1d", "1m", "1h", "5m"):
             assert results[tf].total == 0
             assert results[tf].present == 0
             assert results[tf].ratio == 1.0  # vacuous truth
@@ -175,12 +178,14 @@ class TestFormatters:
         line = format_one_liner(date(2026, 4, 6), results)
         assert line.startswith("2026-04-06 coverage:")
         assert "1d=2/2 (100.00%)" in line
+        assert "1m=2/2 (100.00%)" in line
         assert "1h=2/2 (100.00%)" in line
         assert "5m=2/2 (100.00%)" in line
 
     def test_missing_blocks_truncates_long_lists(self):
         results = {
             "1d": CoverageResult("1d", 20, 5, [f"S{i}" for i in range(15)]),
+            "1m": CoverageResult("1m", 20, 20, []),
             "1h": CoverageResult("1h", 20, 20, []),
             "5m": CoverageResult("5m", 20, 19, ["X"]),
         }
@@ -382,6 +387,7 @@ class TestMain:
         root = tmp_path / "bronze"
         target = date(2026, 4, 6)
         _write_daily(root, "AAPL", [target])
+        _write_intraday(root, "AAPL", "1m", [target])
         _write_intraday(root, "AAPL", "1h", [target])
         # 5m intentionally absent
         monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")

@@ -32,6 +32,7 @@ def _write_log(log_dir: Path, day: date, header: str, missing_lines: list[str] =
 def _spec_header(d: date, *, present_5m: int = 1166, total: int = 1166) -> str:
     return (
         f"{d} coverage: 1d={total}/{total} (100.00%) "
+        f"1m={total}/{total} (100.00%) "
         f"1h={total}/{total} (100.00%) "
         f"5m={present_5m}/{total} ({present_5m / total:.2%})"
     )
@@ -47,6 +48,7 @@ class TestParseCoverageLog:
         assert entry is not None
         assert entry.day == date(2026, 4, 6)
         assert entry.totals["1d"] == (1166, 1166)
+        assert entry.totals["1m"] == (1166, 1166)
         assert entry.totals["5m"] == (1166, 1166)
 
     def test_parses_missing_block_with_total_suffix(self, tmp_path):
@@ -172,24 +174,25 @@ class TestRenderMarkdown:
     def test_renders_clean_week(self):
         entries = [
             CoverageEntry(day=date(2026, 3, 30), totals={
-                "1d": (10, 10), "1h": (10, 10), "5m": (10, 10),
+                "1d": (10, 10), "1m": (10, 10), "1h": (10, 10), "5m": (10, 10),
             }),
             CoverageEntry(day=date(2026, 3, 31), totals={
-                "1d": (10, 10), "1h": (10, 10), "5m": (10, 10),
+                "1d": (10, 10), "1m": (10, 10), "1h": (10, 10), "5m": (10, 10),
             }),
         ]
         md = render_markdown("Week 14 of 2026", entries)
         assert "# Weekly Quality Report — Week 14 of 2026" in md
         assert "## Coverage trend" in md
+        assert "| 1m" in md
         assert "2026-03-30" in md
         assert "No churn detected" in md
         assert "None — every symbol recovered" in md
 
     def test_renders_persistent_gaps_section(self):
         entries = [
-            CoverageEntry(day=date(2026, 3, 30), totals={"1d": (10, 10), "1h": (10, 10), "5m": (10, 10)}, missing={"5m": ["LOWLIQ"]}),
-            CoverageEntry(day=date(2026, 3, 31), totals={"1d": (10, 10), "1h": (10, 10), "5m": (10, 10)}, missing={"5m": ["LOWLIQ"]}),
-            CoverageEntry(day=date(2026, 4, 1), totals={"1d": (10, 10), "1h": (10, 10), "5m": (10, 10)}, missing={"5m": ["LOWLIQ"]}),
+            CoverageEntry(day=date(2026, 3, 30), totals={"1d": (10, 10), "1m": (10, 10), "1h": (10, 10), "5m": (10, 10)}, missing={"5m": ["LOWLIQ"]}),
+            CoverageEntry(day=date(2026, 3, 31), totals={"1d": (10, 10), "1m": (10, 10), "1h": (10, 10), "5m": (10, 10)}, missing={"5m": ["LOWLIQ"]}),
+            CoverageEntry(day=date(2026, 4, 1), totals={"1d": (10, 10), "1m": (10, 10), "1h": (10, 10), "5m": (10, 10)}, missing={"5m": ["LOWLIQ"]}),
         ]
         md = render_markdown("Week 14 of 2026", entries)
         assert "LOWLIQ (5m): missing 3 of last 3 days" in md
@@ -198,10 +201,10 @@ class TestRenderMarkdown:
         # Universe grew from 10 → 12 → triggers the "Added" line
         entries = [
             CoverageEntry(day=date(2026, 3, 30), totals={
-                "1d": (10, 10), "1h": (10, 10), "5m": (10, 10),
+                "1d": (10, 10), "1m": (10, 10), "1h": (10, 10), "5m": (10, 10),
             }),
             CoverageEntry(day=date(2026, 4, 5), totals={
-                "1d": (12, 12), "1h": (12, 12), "5m": (12, 12),
+                "1d": (12, 12), "1m": (12, 12), "1h": (12, 12), "5m": (12, 12),
             }),
         ]
         md = render_markdown("Week 14 of 2026", entries)

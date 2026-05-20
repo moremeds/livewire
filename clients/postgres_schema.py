@@ -10,6 +10,7 @@ POSTGRES_TABLES = (
     "symbols",
     "equities_daily",
     "futures_daily",
+    "equities_1m",
     "equities_1h",
     "equities_5m",
     "telemetry_events",
@@ -64,6 +65,17 @@ CREATE TABLE IF NOT EXISTS {schema}.futures_daily (
     volume bigint NOT NULL,
     open_interest bigint NOT NULL,
     PRIMARY KEY (trade_date, contract_id)
+)""".strip()
+    yield f"""
+CREATE TABLE IF NOT EXISTS {schema}.equities_1m (
+    bar_timestamp timestamptz NOT NULL,
+    symbol_id bigint NOT NULL REFERENCES {schema}.symbols(symbol_id),
+    open double precision NOT NULL,
+    high double precision NOT NULL,
+    low double precision NOT NULL,
+    close double precision NOT NULL,
+    volume bigint NOT NULL,
+    PRIMARY KEY (bar_timestamp, symbol_id)
 )""".strip()
     yield f"""
 CREATE TABLE IF NOT EXISTS {schema}.equities_1h (

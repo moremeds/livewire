@@ -378,29 +378,38 @@ def test_empty_futures_bronze_returns_zero(tmp_path: Path) -> None:
     assert make_client(FakeConnection()).replace_futures_from_parquet(tmp_path) == {"rows": 0}
 
 
-def test_intraday_replace_supports_1h_and_5m(tmp_path: Path) -> None:
+def test_intraday_replace_supports_1m_1h_and_5m(tmp_path: Path) -> None:
     ts = datetime(2026, 1, 2, 14, 30, tzinfo=timezone.utc)
     write_intraday_parquet(
         tmp_path,
         "AAPL",
-        "1h",
+        "1m",
         [{"bar_timestamp": ts, "symbol_id": 11, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 100}],
     )
     write_intraday_parquet(
         tmp_path,
         "MSFT",
-        "5m",
+        "1h",
         [{"bar_timestamp": ts, "symbol_id": 22, "open": 3.0, "high": 4.0, "low": 2.5, "close": 3.5, "volume": 200}],
+    )
+    write_intraday_parquet(
+        tmp_path,
+        "NVDA",
+        "5m",
+        [{"bar_timestamp": ts, "symbol_id": 33, "open": 5.0, "high": 6.0, "low": 4.5, "close": 5.5, "volume": 300}],
     )
     conn = FakeConnection()
     client = make_client(conn)
 
+    assert client.replace_equities_intraday_from_parquet(tmp_path, "1m") == {"symbols": 1, "rows": 1}
     assert client.replace_equities_intraday_from_parquet(tmp_path, "1h") == {"symbols": 1, "rows": 1}
     assert client.replace_equities_intraday_from_parquet(tmp_path, "5m") == {"symbols": 1, "rows": 1}
     assert ("AAPL", 11, "equity", "SMART") in conn.copied_rows
     assert (ts, 11, 1.0, 2.0, 0.5, 1.5, 100) in conn.copied_rows
     assert ("MSFT", 22, "equity", "SMART") in conn.copied_rows
     assert (ts, 22, 3.0, 4.0, 2.5, 3.5, 200) in conn.copied_rows
+    assert ("NVDA", 33, "equity", "SMART") in conn.copied_rows
+    assert (ts, 33, 5.0, 6.0, 4.5, 5.5, 300) in conn.copied_rows
 
 
 def test_intraday_unsupported_timeframe_raises(tmp_path: Path) -> None:

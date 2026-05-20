@@ -16,6 +16,7 @@ Use this file for:
 
 - This project is **Livewire** (rebranded 2026-05-17 from "market-data-warehouse"). The git repo directory is `~/projects/livewire/`. The on-disk data tree intentionally stays at `~/market-warehouse/` — that path is descriptive of the role, not the project name, so it was not renamed. Functional identifiers (`MDW_*` env vars, `mdw.*` logger names, `md.*` analytical schema) are unchanged.
 - Canonical storage is bronze Parquet.
+- Raw market/vendor data should land as Parquet first; databases are derived/replayable publish or query targets unless a future project explicitly says otherwise.
 - Postgres is an optional replayable analytical publish target rebuilt from bronze parquet and reliability JSONL; it is not canonical storage and live ingestion scripts do not write to it.
 - Live equity data is stored per ticker at `~/market-warehouse/data-lake/bronze/asset_class=equity/symbol=<ticker>/1d.parquet`.
 - Delisted symbols that should no longer participate in future syncs or backfills are archived outside the canonical sync path under `~/market-warehouse/data-lake/bronze-delisted/asset_class=equity/symbol=<ticker>/1d.parquet`.
@@ -31,6 +32,10 @@ Use this file for:
 - `scripts/livewire_ingest.py fred-rates` fetches U.S. Treasury constant-maturity yield series from FRED using `FRED_API_KEY`. Defaults are `DGS3`, `DGS5`, `DGS10`, and `DGS30`, persisted under `~/market-warehouse/data-lake/bronze/asset_class=rates/symbol=<series>/1d.parquet` with a rates-specific schema.
 - `scripts/livewire_ops.py run-daily-job` syncs equities and futures via IB, then all volatility indices via CBOE in a single daemon run.
 - The canonical multi-ticker IB execution model is `scripts/livewire_ingest.py robust`. Use it instead of direct historical command loops for any bulk run >5 tickers.
+- `scripts/livewire_ingest.py backfill-all` is the default warehouse build: equity daily seed/backfill for `sp500`, `ndx100`, and `r2k`; FRED Treasury yield rates; Massive equity intraday (`1m`, `5m`, `1h`, 5 years); CBOE volatility daily; IB volatility/index intraday (`5m`, `1h`); and Postgres rebuild when `MDW_POSTGRES_DSN` is set. Massive equity and IB/CBOE volatility lanes run in parallel after daily equity/FRED backfill.
+- Default equity intraday warehouse build target is Massive `1m` bars with 5 years of history, written to bronze Parquet via `scripts/livewire_ingest.py intraday-backfill --source massive --timeframe 1m --years 5`.
+- Equity `1m` is included in Postgres analytical rebuilds (`equities_1m`) and daily/weekly coverage surfaces alongside `1d`, `1h`, and `5m`.
+- Intraday for non-equity asset classes remains IB-backed; `--source massive` is equity-only.
 - Telemetry events (IB farm states, connection lifecycle) land in `~/market-warehouse/logs/telemetry.jsonl`. Schema is source-tagged JSONL with `{ts, source, event, ...}`.
 - Quality flags (range_shortfall, interior_gaps, fetch_tainted, row_count_anomaly) are emitted to three independent paths: sidecar `<parquet>.meta.json`, central `quality_audit.jsonl`, and Nodemailer email via `--mode flag-alert`.
 - `scripts/livewire_quality.py report --view summary --since 24h --email` is the daily rollup; it runs end-of-day from `scripts/livewire_ops.py run-daily-job` and writes a `quality_summary_YYYY-MM-DD.marker`.
@@ -42,6 +47,7 @@ Use this file for:
   - Stooq U.S. daily CSV
 - `IBClient.connect()` already retries successive `clientId` values after IB error `326`.
 - `PostgresClient.replace_equities_from_parquet()` recreates the selected analytical tables from scratch on rebuild so repeat Postgres rebuilds are replayable from bronze.
+- Roadmap naming decision: **Sub-F is Silver** and owns the reproducible cleaned/adjusted layer derived from canonical bronze. **Sub-G is Gold** and owns factors, analytics, and strategy-ready derived tables. Sub-B Postgres remains the replayable SQL publish target and should not be described as silver by itself.
 - Preferred IBC startup on macOS is the machine-local secure service installed by `scripts/livewire_ops.py ibc-install`, which writes wrappers under `~/ibc/bin`, a LaunchAgent under `~/Library/LaunchAgents/local.ibc-gateway.plist`, and renders a temporary runtime config from `~/ibc/config.secure.ini` plus Keychain secrets instead of storing IB credentials in plaintext config.
 - For this repo, the secure IBC service is a required machine-local dependency for IB-backed workflows, but the service itself is global to the user's Mac rather than scoped to this repo.
 - `symbol_id` for new symbols is a stable 53-bit `blake2b(symbol)`-derived value.

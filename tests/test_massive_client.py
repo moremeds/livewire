@@ -11,6 +11,7 @@ from clients.massive_client import (
     MassiveAPIError,
     MassiveAuthError,
     MassiveClient,
+    MassiveIntradayBar,
     MassiveMalformedBarError,
     MassiveNotFoundError,
     MassiveRateLimitError,
@@ -133,6 +134,68 @@ def test_get_daily_bars_uses_custom_aggregate_endpoint_and_normalizes():
     assert "adjusted=false" in request.url
     assert "sort=asc" in request.url
     assert "limit=50000" in request.url
+
+
+@responses.activate
+def test_get_intraday_bars_uses_minute_aggregate_endpoint_and_normalizes():
+    endpoint = "/v2/aggs/ticker/AAPL/range/1/minute/2026-05-11/2026-05-11"
+    responses.add(
+        responses.GET,
+        _url(endpoint),
+        json=_payload(_bar(t=_ms(datetime(2026, 5, 11, 9, 30)))),
+        status=200,
+    )
+
+    with _make_client() as client:
+        bars = client.get_intraday_bars(
+            "aapl",
+            date(2026, 5, 11),
+            date(2026, 5, 11),
+            timeframe="1m",
+        )
+
+    assert bars == [
+        MassiveIntradayBar(
+            bar_timestamp=datetime(2026, 5, 11, 13, 30, tzinfo=ZoneInfo("UTC")),
+            open=210.0,
+            high=215.0,
+            low=209.5,
+            close=214.25,
+            volume=42247286,
+            ticker="AAPL",
+            metadata={"raw_volume": 42247285.857671, "volume_rounded": True, "vwap": 212.2, "transactions": 100},
+        )
+    ]
+    request = responses.calls[0].request
+    assert request.url is not None
+    assert "adjusted=false" in request.url
+    assert "sort=asc" in request.url
+    assert "limit=50000" in request.url
+
+
+@pytest.mark.parametrize(
+    "bad_bar, message",
+    [
+        (_bar(t="not-int"), "timestamp"),
+        (_bar(o=0), "positive"),
+        (_bar(h=1, l=2), "high"),
+        (_bar(h=1000, l=999), "low"),
+        (_bar(v=-1), "volume"),
+    ],
+)
+def test_normalize_intraday_rejects_malformed_bars(bad_bar, message):
+    with pytest.raises(MassiveMalformedBarError, match=message):
+        MassiveClient.normalize_intraday_bar(bad_bar, ticker="AAPL")
+
+
+def test_normalize_intraday_rejects_missing_ticker():
+    with pytest.raises(MassiveMalformedBarError, match="ticker"):
+        MassiveClient.normalize_intraday_bar(_bar(), ticker=None)
+
+
+def test_intraday_aggregate_spec_rejects_unsupported_timeframe():
+    with pytest.raises(MassiveValidationError, match="unsupported intraday timeframe"):
+        MassiveClient._intraday_aggregate_spec("15m")
 
 
 @responses.activate
