@@ -20,6 +20,7 @@ COMMANDS = {
     "report": "livewire_scripts.data_quality_report",
     "weekly": "livewire_scripts.weekly_quality_summary",
     "watchdog": "livewire_scripts.check_daily_update_watchdog",
+    "warehouse": "livewire_scripts.warehouse_health_report",
 }
 
 

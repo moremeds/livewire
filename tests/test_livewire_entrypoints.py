@@ -44,6 +44,18 @@ def test_ingest_dispatches_module_commands(monkeypatch) -> None:
     assert preflight_calls == [True]
 
 
+def test_quality_dispatches_warehouse_report(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_quality.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+
+    assert livewire_quality.main(["warehouse", "--output", "report.html"]) == 7
+    assert calls == [("livewire_scripts.warehouse_health_report", ["--output", "report.html"])]
+
+
 def test_ingest_daily_massive_bypasses_ib_preflight(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(
