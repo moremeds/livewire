@@ -6,11 +6,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 EXPECTED_SCRIPT_FILES = {
+    "livewire.py",
     "livewire_ingest.py",
     "livewire_ops.py",
     "livewire_quality.py",
@@ -20,7 +20,9 @@ EXPECTED_SCRIPT_FILES = {
 
 
 def test_scripts_directory_exposes_only_five_operator_entrypoints() -> None:
-    script_files = {path.name for path in (REPO_ROOT / "scripts").iterdir() if path.is_file()}
+    script_files = {
+        path.name for path in (REPO_ROOT / "scripts").iterdir() if path.is_file()
+    }
 
     assert script_files == EXPECTED_SCRIPT_FILES
 
@@ -40,12 +42,22 @@ def test_operator_entrypoint_modules_are_importable() -> None:
 def test_operator_entrypoints_render_subcommand_help() -> None:
     expected_commands = {
         "livewire_ingest.py": [
-            "daily", "historical", "robust", "cboe-vol", "fred-rates",
-            "intraday-backfill", "daily-backfill",
+            "daily",
+            "historical",
+            "robust",
+            "cboe-vol",
+            "fred-rates",
+            "intraday-backfill",
+            "daily-backfill",
         ],
         "livewire_quality.py": ["health", "coverage", "report", "weekly", "watchdog"],
         "livewire_ops.py": ["run-daily-job", "send-alert"],
-        "livewire_store.py": ["rebuild-postgres", "smoke-postgres", "sync-r2", "migrate-parquet"],
+        "livewire_store.py": [
+            "rebuild-postgres",
+            "smoke-postgres",
+            "sync-r2",
+            "migrate-parquet",
+        ],
     }
 
     for script_name, commands in expected_commands.items():
@@ -69,7 +81,12 @@ def test_operator_entrypoints_forward_subcommand_help() -> None:
 
     for script_name, (command, expected) in examples.items():
         result = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "scripts" / script_name), command, "--help"],
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / script_name),
+                command,
+                "--help",
+            ],
             check=True,
             capture_output=True,
             text=True,
@@ -96,8 +113,8 @@ def test_backfill_all_includes_default_full_warehouse_phases() -> None:
     assert "--source ib" in script
     assert "run_equity_intraday &" in script
     assert "run_volatility_intraday &" in script
-    assert "wait \"$equity_intraday_pid\"" in script
-    assert "wait \"$volatility_intraday_pid\"" in script
+    assert 'wait "$equity_intraday_pid"' in script
+    assert 'wait "$volatility_intraday_pid"' in script
     assert "trap cleanup_children INT TERM EXIT" in script
     assert "kill_tree" in script
     assert "max_mtime" in script
@@ -105,7 +122,10 @@ def test_backfill_all_includes_default_full_warehouse_phases() -> None:
     assert "MDW_BACKFILL_NO_PROGRESS_COOLDOWN" in script
 
     assert "PHASE 9: Postgres analytical rebuild" in script
-    assert "rebuild-postgres --asset-class equity --timeframe all --include-reliability" in script
+    assert (
+        "rebuild-postgres --asset-class equity --timeframe all --include-reliability"
+        in script
+    )
     assert "rebuild-postgres --asset-class volatility --timeframe 1d" in script
     assert "MDW_POSTGRES_DSN" in script
 
@@ -179,13 +199,34 @@ sys.exit(0)
     )
 
     calls = (tmp_path / "calls.log").read_text(encoding="utf-8")
-    assert "scripts/livewire_ingest.py historical --preset presets/sp500.json --years 0 --skip-existing" in calls
-    assert "scripts/livewire_ingest.py historical --preset presets/r2k.json --backfill --source auto" in calls
-    assert "scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json --timeframe 1m --source massive" in calls
-    assert "scripts/livewire_ingest.py intraday-backfill --preset presets/r2k.json --timeframe 5m --source massive" in calls
-    assert "scripts/livewire_ingest.py intraday-backfill --preset presets/volatility-intraday.json --timeframe 1h --source ib" in calls
-    assert "scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe all --include-reliability" in calls
-    assert "scripts/livewire_store.py rebuild-postgres --asset-class volatility --timeframe 1d" in calls
+    assert (
+        "scripts/livewire_ingest.py historical --preset presets/sp500.json --years 0 --skip-existing"
+        in calls
+    )
+    assert (
+        "scripts/livewire_ingest.py historical --preset presets/r2k.json --backfill --source auto"
+        in calls
+    )
+    assert (
+        "scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json --timeframe 1m --source massive"
+        in calls
+    )
+    assert (
+        "scripts/livewire_ingest.py intraday-backfill --preset presets/r2k.json --timeframe 5m --source massive"
+        in calls
+    )
+    assert (
+        "scripts/livewire_ingest.py intraday-backfill --preset presets/volatility-intraday.json --timeframe 1h --source ib"
+        in calls
+    )
+    assert (
+        "scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe all --include-reliability"
+        in calls
+    )
+    assert (
+        "scripts/livewire_store.py rebuild-postgres --asset-class volatility --timeframe 1d"
+        in calls
+    )
     assert "ALL DONE" in result.stdout
 
 
@@ -203,22 +244,33 @@ def test_daily_backfill_includes_massive_recent_equity_and_same_side_lanes() -> 
     assert 'grep -q "Daily Update Complete"' in script
     assert "equity_ticker_union" in script
     assert "preset_tickers" in script
-    assert "VOL_TICKERS=($(preset_tickers \"$VOL_PRESET\"))" in script
+    assert 'VOL_TICKERS=($(preset_tickers "$VOL_PRESET"))' in script
     assert "daily --asset-class equity --source massive" in script
-    assert "--tickers \"${EQUITY_TICKERS[@]}\"" in script
+    assert '--tickers "${EQUITY_TICKERS[@]}"' in script
     assert '--target-date "$TARGET_DATE"' in script
-    assert "intraday-backfill --tickers \"${EQUITY_TICKERS[@]}\" --timeframe \"$timeframe\"" in script
-    assert "--source massive --asset-class equity --days \"$INTRADAY_DAYS\"" in script
-    assert "--max-concurrent \"$INTRADAY_CONCURRENT\"" in script
+    assert (
+        'intraday-backfill --tickers "${EQUITY_TICKERS[@]}" --timeframe "$timeframe"'
+        in script
+    )
+    assert '--source massive --asset-class equity --days "$INTRADAY_DAYS"' in script
+    assert '--max-concurrent "$INTRADAY_CONCURRENT"' in script
     assert "--existing-only" not in script
     assert "fred-rates" in script
     assert "cboe-vol --preset presets/volatility.json" in script
-    assert "intraday-backfill --tickers \"${VOL_TICKERS[@]}\" --timeframe \"$timeframe\"" in script
-    assert "--source ib --asset-class volatility --days \"$INTRADAY_DAYS\"" in script
-    assert "rebuild-postgres --asset-class equity --timeframe all --include-reliability" in script
+    assert (
+        'intraday-backfill --tickers "${VOL_TICKERS[@]}" --timeframe "$timeframe"'
+        in script
+    )
+    assert '--source ib --asset-class volatility --days "$INTRADAY_DAYS"' in script
+    assert (
+        "rebuild-postgres --asset-class equity --timeframe all --include-reliability"
+        in script
+    )
 
 
-def test_daily_backfill_smoke_runs_expected_phases_with_fake_python(tmp_path: Path) -> None:
+def test_daily_backfill_smoke_runs_expected_phases_with_fake_python(
+    tmp_path: Path,
+) -> None:
     home = tmp_path / "home"
     activate = home / "market-warehouse" / ".venv" / "bin" / "activate"
     activate.parent.mkdir(parents=True)
@@ -263,12 +315,26 @@ sys.exit(0)
     )
 
     calls = (tmp_path / "calls.log").read_text(encoding="utf-8")
-    assert "scripts/livewire_ingest.py daily --asset-class equity --source massive --tickers" in calls
+    assert (
+        "scripts/livewire_ingest.py daily --asset-class equity --source massive --tickers"
+        in calls
+    )
     assert "--target-date 2026-05-19 --force" in calls
     assert "scripts/livewire_ingest.py intraday-backfill --tickers" in calls
-    assert "--timeframe 1m --source massive --asset-class equity --days 3 --max-concurrent 7" in calls
+    assert (
+        "--timeframe 1m --source massive --asset-class equity --days 3 --max-concurrent 7"
+        in calls
+    )
     assert "scripts/livewire_ingest.py fred-rates" in calls
-    assert "scripts/livewire_ingest.py cboe-vol --preset presets/volatility.json" in calls
-    assert "scripts/livewire_ingest.py intraday-backfill --tickers VIX SPX --timeframe 1h --source ib --asset-class volatility --days 3" in calls
-    assert "scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe all --include-reliability" in calls
+    assert (
+        "scripts/livewire_ingest.py cboe-vol --preset presets/volatility.json" in calls
+    )
+    assert (
+        "scripts/livewire_ingest.py intraday-backfill --tickers VIX SPX --timeframe 1h --source ib --asset-class volatility --days 3"
+        in calls
+    )
+    assert (
+        "scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe all --include-reliability"
+        in calls
+    )
     assert "DAILY BACKFILL COMPLETE" in result.stdout
