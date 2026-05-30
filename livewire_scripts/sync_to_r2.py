@@ -51,10 +51,23 @@ def _get_bucket() -> str:
     return os.getenv("R2_BUCKET", "market-data")
 
 
+def _remote_size(s3, bucket: str, key: str) -> int | None:
+    """Return remote object size in bytes, or None if not found."""
+    try:
+        head = s3.head_object(Bucket=bucket, Key=key)
+        return head["ContentLength"]
+    except Exception as exc:
+        error_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+        if error_code in ("404", "NoSuchKey"):
+            return None
+        raise
+
+
 def upload(bronze_dir: Path, prefix: str = "bronze", dry_run: bool = False) -> int:
     """Upload local bronze Parquet files to R2.
 
-    Returns the number of files uploaded.
+    Skips files whose remote size matches the local size (incremental sync).
+    Returns the number of files uploaded (excludes skipped).
     """
     if not bronze_dir.exists():
         logger.warning("Bronze dir %s does not exist, nothing to upload", bronze_dir)
@@ -63,11 +76,18 @@ def upload(bronze_dir: Path, prefix: str = "bronze", dry_run: bool = False) -> i
     s3 = _get_s3_client()
     bucket = _get_bucket()
     uploaded = 0
+    skipped = 0
 
     for parquet_filename in PARQUET_FILES_TO_SYNC:
         for parquet_file in bronze_dir.rglob(parquet_filename):
             rel_path = parquet_file.relative_to(bronze_dir.parent)
-            s3_key = str(rel_path).replace("\\", "/")  # Windows compat
+            s3_key = str(rel_path).replace("\\", "/")
+            local_size = parquet_file.stat().st_size
+
+            remote = _remote_size(s3, bucket, s3_key)
+            if remote is not None and remote == local_size:
+                skipped += 1
+                continue
 
             if dry_run:
                 logger.info(
@@ -83,7 +103,10 @@ def upload(bronze_dir: Path, prefix: str = "bronze", dry_run: bool = False) -> i
             uploaded += 1
 
     logger.info(
-        "Upload complete: %d files %s", uploaded, "(dry run)" if dry_run else ""
+        "Upload complete: %d uploaded, %d skipped (unchanged) %s",
+        uploaded,
+        skipped,
+        "(dry run)" if dry_run else "",
     )
     return uploaded
 
@@ -91,11 +114,13 @@ def upload(bronze_dir: Path, prefix: str = "bronze", dry_run: bool = False) -> i
 def download(bronze_dir: Path, prefix: str = "bronze", dry_run: bool = False) -> int:
     """Download Parquet files from R2 to local bronze directory.
 
-    Returns the number of files downloaded.
+    Skips files whose local size matches the remote size (incremental sync).
+    Returns the number of files downloaded (excludes skipped).
     """
     s3 = _get_s3_client()
     bucket = _get_bucket()
     downloaded = 0
+    skipped = 0
 
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix + "/"):
@@ -105,6 +130,11 @@ def download(bronze_dir: Path, prefix: str = "bronze", dry_run: bool = False) ->
                 continue
 
             local_path = bronze_dir.parent / s3_key.replace("/", os.sep)
+            remote_size = obj.get("Size", -1)
+
+            if local_path.exists() and local_path.stat().st_size == remote_size:
+                skipped += 1
+                continue
 
             if dry_run:
                 logger.info(
@@ -121,7 +151,10 @@ def download(bronze_dir: Path, prefix: str = "bronze", dry_run: bool = False) ->
             downloaded += 1
 
     logger.info(
-        "Download complete: %d files %s", downloaded, "(dry run)" if dry_run else ""
+        "Download complete: %d downloaded, %d skipped (unchanged) %s",
+        downloaded,
+        skipped,
+        "(dry run)" if dry_run else "",
     )
     return downloaded
 
