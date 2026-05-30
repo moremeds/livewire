@@ -34,6 +34,8 @@ if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
 
 from rich.console import Console
 
+from clients.ingestion_common import load_preset
+from clients.ingestion_common import make_contract as _make_contract
 from clients.intraday_bronze_client import (
     INTRADAY_IB_BAR_SIZE,
     INTRADAY_TIMEFRAMES,
@@ -43,12 +45,11 @@ from clients.massive_client import MassiveClient
 from clients.quality_detector import _normalize_bars_for_detection, detect_all
 from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
 from livewire_scripts.daily_update import (
-    _make_contract,
     is_trading_day,
     session_close_time,
     validate_intraday_bar,
 )
-from livewire_scripts.fetch_ib_historical import compute_intraday_chunks, load_preset
+from livewire_scripts.fetch_ib_historical import compute_intraday_chunks
 
 log = logging.getLogger("backfill_intraday")
 console = Console()

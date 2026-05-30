@@ -63,6 +63,23 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients.bronze_client import BronzeClient
 from clients.ib_client import IBClient, IBError
+from clients.ingestion_common import (
+    ROOT_EXCHANGE_MAP,
+    SUPPORTED_IB_FX_PAIRS,
+    bars_to_futures_rows,
+    bars_to_midpoint_rows,
+    bars_to_rows,
+    load_preset,
+)
+from clients.ingestion_common import (
+    is_inverted_fx_pair as _is_inverted_fx_pair,
+)
+from clients.ingestion_common import (
+    make_contract as _make_contract,
+)
+from clients.ingestion_common import (
+    resolve_fx_pair as _resolve_fx_pair,
+)
 from clients.massive_client import MassiveAPIError, MassiveClient
 from clients.quality_detector import _normalize_bars_for_detection, detect_all
 from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
@@ -100,127 +117,14 @@ console = Console()
 _QUALITY_ENABLED = True
 
 
-ROOT_EXCHANGE_MAP = {
-    "ES": "CME",
-    "NQ": "CME",
-    "RTY": "CME",
-    "YM": "CBOT",
-    "ZB": "CBOT",
-    "ZN": "CBOT",
-    "ZF": "CBOT",
-    "CL": "NYMEX",
-    "NG": "NYMEX",
-    "GC": "COMEX",
-    "SI": "COMEX",
-}
-SUPPORTED_IB_FX_PAIRS = {
-    "EURUSD",
-    "GBPUSD",
-    "AUDUSD",
-    "NZDUSD",
-    "USDJPY",
-    "USDCHF",
-    "USDCAD",
-    "USDHKD",
-    "USDSGD",
-    "USDSEK",
-    "USDNOK",
-    "USDDKK",
-    "USDCNH",
-    "USDMXN",
-    "USDZAR",
-    "EURGBP",
-    "EURJPY",
-    "EURCHF",
-    "EURCAD",
-    "EURAUD",
-    "EURNZD",
-    "GBPJPY",
-    "GBPCHF",
-    "GBPCAD",
-    "GBPAUD",
-    "GBPNZD",
-    "AUDJPY",
-    "AUDCHF",
-    "AUDCAD",
-    "AUDNZD",
-    "NZDJPY",
-    "NZDCHF",
-    "NZDCAD",
-    "CADJPY",
-    "CADCHF",
-    "CHFJPY",
-}
-
-
-def _resolve_fx_pair(ticker: str) -> tuple[str, bool]:
-    """Return ``(ib_pair, invert)`` for a local six-letter FX pair."""
-    pair = ticker.upper()
-    if len(pair) != 6 or not pair.isalpha():
-        raise ValueError(f"FX ticker must be a six-letter currency pair: {ticker!r}")
-    if pair in SUPPORTED_IB_FX_PAIRS:
-        return (pair, False)
-
-    reversed_pair = pair[3:] + pair[:3]
-    if reversed_pair in SUPPORTED_IB_FX_PAIRS:
-        return (reversed_pair, True)
-
-    raise ValueError(f"unsupported FX pair: {ticker!r}")
-
-
-def _is_inverted_fx_pair(ticker: str) -> bool:
-    """Return True when local FX rows must invert the source pair."""
-    return _resolve_fx_pair(ticker)[1]
-
-
-def _make_contract(
-    ticker: str, asset_class: str = "equity", exchange: str | None = None
-):
-    """Build an IB contract for the given *ticker* and *asset_class*."""
-    if asset_class == "futures":
-        root, expiry = ticker.rsplit("_", 1)
-        exch = exchange or ROOT_EXCHANGE_MAP.get(root, "CME")
-        return Future(root, expiry, exch, "USD")
-    if asset_class == "cmdty":
-        return Contract(
-            secType="CMDTY",
-            symbol=ticker.upper(),
-            exchange=exchange or "SMART",
-            currency="USD",
-        )
-    if asset_class == "fx":
-        source_pair, _ = _resolve_fx_pair(ticker)
-        return Forex(source_pair)
-    if asset_class == "volatility":
-        return Index(ticker, "CBOE", "USD")
-    return Stock(ticker, "SMART", "USD")
+# ROOT_EXCHANGE_MAP, SUPPORTED_IB_FX_PAIRS, _resolve_fx_pair,
+# _is_inverted_fx_pair, _make_contract → imported from clients.ingestion_common
 
 
 # ── Preset & cursor helpers ───────────────────────────────────────────
 
 
-def load_preset(path: str | Path) -> tuple[str, list[str], dict[str, str]]:
-    """Read a preset JSON file and return ``(name, tickers, exchange_map)``.
-
-    Standard presets use a ``tickers`` array.  Futures presets use a
-    ``contracts`` array of ``{root, exchange, expiry}`` dicts which are
-    flattened into composite ticker strings (``ES_202506``) and an exchange
-    map so ``_make_contract`` can resolve the correct venue.
-    """
-    p = Path(path)
-    with p.open() as f:
-        data = json.load(f)
-
-    exchange_map: dict[str, str] = {}
-    if "contracts" in data:
-        tickers: list[str] = []
-        for contract in data["contracts"]:
-            composite = f"{contract['root']}_{contract['expiry']}"
-            tickers.append(composite)
-            exchange_map[composite] = contract.get("exchange", "CME")
-        return (data["name"], tickers, exchange_map)
-
-    return (data["name"], data["tickers"], exchange_map)
+# load_preset → imported from clients.ingestion_common
 
 
 def _cursor_path(name: str) -> Path:
@@ -362,84 +266,8 @@ def compute_intraday_chunks(
     return chunks
 
 
-# ── Transform ──────────────────────────────────────────────────────────
-
-
-def bars_to_rows(bars: list, symbol_id: int) -> list[dict]:
-    """Convert IB BarData objects to md.equities_daily row dicts.
-
-    IB BarData fields: date, open, high, low, close, volume (native types).
-    """
-    rows = []
-    for bar in bars:
-        rows.append(
-            {
-                "trade_date": str(bar.date),
-                "symbol_id": symbol_id,
-                "open": float(bar.open),
-                "high": float(bar.high),
-                "low": float(bar.low),
-                "close": float(bar.close),
-                "adj_close": float(bar.close),
-                "volume": int(bar.volume),
-            }
-        )
-    return rows
-
-
-def bars_to_futures_rows(
-    bars: list,
-    contract_id: int,
-    root_symbol: str,
-    expiry_date: str,
-) -> list[dict]:
-    """Convert IB BarData objects to md.futures_daily row dicts.
-
-    settlement defaults to close; open_interest defaults to 0 (IB BarData
-    does not include these fields for daily bars).
-    """
-    rows = []
-    for bar in bars:
-        rows.append(
-            {
-                "trade_date": str(bar.date),
-                "contract_id": contract_id,
-                "root_symbol": root_symbol,
-                "expiry_date": expiry_date,
-                "open": float(bar.open),
-                "high": float(bar.high),
-                "low": float(bar.low),
-                "close": float(bar.close),
-                "settlement": float(bar.close),
-                "volume": int(bar.volume),
-                "open_interest": 0,
-            }
-        )
-    return rows
-
-
-def bars_to_midpoint_rows(
-    bars: list, symbol_id: int, *, invert: bool = False
-) -> list[dict]:
-    """Convert IB midpoint bars to daily bronze rows.
-
-    IB midpoint bars report volume as ``-1``. Store volume as 0 because no
-    exchange volume is available for this data type.
-    """
-    rows = bars_to_rows(bars, symbol_id)
-    for row in rows:
-        if invert:
-            open_px = row["open"]
-            high_px = row["high"]
-            low_px = row["low"]
-            close_px = row["close"]
-            row["open"] = 1 / open_px
-            row["high"] = 1 / low_px
-            row["low"] = 1 / high_px
-            row["close"] = 1 / close_px
-            row["adj_close"] = row["close"]
-        row["volume"] = 0
-    return rows
+# bars_to_rows, bars_to_futures_rows, bars_to_midpoint_rows
+# → imported from clients.ingestion_common
 
 
 def _resolve_historical_source(source: str, *, asset_class: str, backfill: bool) -> str:
