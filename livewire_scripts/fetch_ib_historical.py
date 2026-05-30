@@ -49,7 +49,13 @@ from pathlib import Path
 from ib_async import Contract, Forex, Future, Index, Stock
 from rich.console import Console
 from rich.logging import RichHandler
-from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+)
 
 # Add project root to path so clients module is importable
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -73,9 +79,12 @@ def _storage_client():
         return StorageClient
     return BronzeClient
 
+
 # ── Config ─────────────────────────────────────────────────────────────
 
-DATA_LAKE = Path(os.getenv("MDW_DATA_LAKE", str(Path.home() / "market-warehouse" / "data-lake")))
+DATA_LAKE = Path(
+    os.getenv("MDW_DATA_LAKE", str(Path.home() / "market-warehouse" / "data-lake"))
+)
 BRONZE_DIR = DATA_LAKE / "bronze" / "asset_class=equity"
 CURSOR_DIR = Path.home() / "market-warehouse" / "logs"
 
@@ -92,20 +101,55 @@ _QUALITY_ENABLED = True
 
 
 ROOT_EXCHANGE_MAP = {
-    "ES": "CME", "NQ": "CME", "RTY": "CME",
-    "YM": "CBOT", "ZB": "CBOT", "ZN": "CBOT", "ZF": "CBOT",
-    "CL": "NYMEX", "NG": "NYMEX",
-    "GC": "COMEX", "SI": "COMEX",
+    "ES": "CME",
+    "NQ": "CME",
+    "RTY": "CME",
+    "YM": "CBOT",
+    "ZB": "CBOT",
+    "ZN": "CBOT",
+    "ZF": "CBOT",
+    "CL": "NYMEX",
+    "NG": "NYMEX",
+    "GC": "COMEX",
+    "SI": "COMEX",
 }
 SUPPORTED_IB_FX_PAIRS = {
-    "EURUSD", "GBPUSD", "AUDUSD", "NZDUSD",
-    "USDJPY", "USDCHF", "USDCAD", "USDHKD", "USDSGD", "USDSEK", "USDNOK",
-    "USDDKK", "USDCNH", "USDMXN", "USDZAR",
-    "EURGBP", "EURJPY", "EURCHF", "EURCAD", "EURAUD", "EURNZD",
-    "GBPJPY", "GBPCHF", "GBPCAD", "GBPAUD", "GBPNZD",
-    "AUDJPY", "AUDCHF", "AUDCAD", "AUDNZD",
-    "NZDJPY", "NZDCHF", "NZDCAD",
-    "CADJPY", "CADCHF", "CHFJPY",
+    "EURUSD",
+    "GBPUSD",
+    "AUDUSD",
+    "NZDUSD",
+    "USDJPY",
+    "USDCHF",
+    "USDCAD",
+    "USDHKD",
+    "USDSGD",
+    "USDSEK",
+    "USDNOK",
+    "USDDKK",
+    "USDCNH",
+    "USDMXN",
+    "USDZAR",
+    "EURGBP",
+    "EURJPY",
+    "EURCHF",
+    "EURCAD",
+    "EURAUD",
+    "EURNZD",
+    "GBPJPY",
+    "GBPCHF",
+    "GBPCAD",
+    "GBPAUD",
+    "GBPNZD",
+    "AUDJPY",
+    "AUDCHF",
+    "AUDCAD",
+    "AUDNZD",
+    "NZDJPY",
+    "NZDCHF",
+    "NZDCAD",
+    "CADJPY",
+    "CADCHF",
+    "CHFJPY",
 }
 
 
@@ -129,14 +173,21 @@ def _is_inverted_fx_pair(ticker: str) -> bool:
     return _resolve_fx_pair(ticker)[1]
 
 
-def _make_contract(ticker: str, asset_class: str = "equity", exchange: str | None = None):
+def _make_contract(
+    ticker: str, asset_class: str = "equity", exchange: str | None = None
+):
     """Build an IB contract for the given *ticker* and *asset_class*."""
     if asset_class == "futures":
         root, expiry = ticker.rsplit("_", 1)
         exch = exchange or ROOT_EXCHANGE_MAP.get(root, "CME")
         return Future(root, expiry, exch, "USD")
     if asset_class == "cmdty":
-        return Contract(secType="CMDTY", symbol=ticker.upper(), exchange=exchange or "SMART", currency="USD")
+        return Contract(
+            secType="CMDTY",
+            symbol=ticker.upper(),
+            exchange=exchange or "SMART",
+            currency="USD",
+        )
     if asset_class == "fx":
         source_pair, _ = _resolve_fx_pair(ticker)
         return Forex(source_pair)
@@ -242,9 +293,7 @@ def clear_cursor(name: str) -> None:
 # ── Date windowing ────────────────────────────────────────────────────
 
 
-def compute_date_windows(
-    head_dt: datetime, end_dt: datetime
-) -> list[tuple[str, str]]:
+def compute_date_windows(head_dt: datetime, end_dt: datetime) -> list[tuple[str, str]]:
     """Generate ``("1 Y", end_datetime_str)`` tuples covering *head_dt* to *end_dt*.
 
     Walks backwards from *end_dt* in ~1-year steps.  Each window requests up to
@@ -294,7 +343,12 @@ def compute_intraday_chunks(
     duration = INTRADAY_MAX_REQUEST_DURATION[timeframe]
     end_dt = datetime.now()
 
-    _step_map = {"1m": timedelta(days=1), "5m": timedelta(weeks=1), "1h": timedelta(days=30)}
+    _step_map = {
+        "1m": timedelta(days=1),
+        "5m": timedelta(weeks=1),
+        "30m": timedelta(days=30),
+        "1h": timedelta(days=30),
+    }
     step = _step_map[timeframe]
 
     head_dt = end_dt - timedelta(days=365 * years_back)
@@ -334,7 +388,10 @@ def bars_to_rows(bars: list, symbol_id: int) -> list[dict]:
 
 
 def bars_to_futures_rows(
-    bars: list, contract_id: int, root_symbol: str, expiry_date: str,
+    bars: list,
+    contract_id: int,
+    root_symbol: str,
+    expiry_date: str,
 ) -> list[dict]:
     """Convert IB BarData objects to md.futures_daily row dicts.
 
@@ -361,7 +418,9 @@ def bars_to_futures_rows(
     return rows
 
 
-def bars_to_midpoint_rows(bars: list, symbol_id: int, *, invert: bool = False) -> list[dict]:
+def bars_to_midpoint_rows(
+    bars: list, symbol_id: int, *, invert: bool = False
+) -> list[dict]:
     """Convert IB midpoint bars to daily bronze rows.
 
     IB midpoint bars report volume as ``-1``. Store volume as 0 because no
@@ -389,9 +448,13 @@ def _resolve_historical_source(source: str, *, asset_class: str, backfill: bool)
         return "ib"
     if source == "massive":
         if asset_class != "equity":
-            raise SystemExit("--source massive is only supported for asset_class=equity")
+            raise SystemExit(
+                "--source massive is only supported for asset_class=equity"
+            )
         if not backfill:
-            raise SystemExit("--source massive is only supported for historical --backfill")
+            raise SystemExit(
+                "--source massive is only supported for historical --backfill"
+            )
         return "massive"
     if source == "auto":
         return "ib"
@@ -430,7 +493,9 @@ def fetch_massive_backfill_bars(
 
 
 async def fetch_ticker_bars(
-    ticker: str, ib: IBClient, semaphore: asyncio.Semaphore,
+    ticker: str,
+    ib: IBClient,
+    semaphore: asyncio.Semaphore,
     max_years: int = 0,
     end_dt_override: datetime | None = None,
     asset_class: str = "equity",
@@ -511,7 +576,9 @@ async def fetch_ticker_bars(
 
 
 async def fetch_all_tickers(
-    tickers: list[str], ib: IBClient, max_concurrent: int = 6,
+    tickers: list[str],
+    ib: IBClient,
+    max_concurrent: int = 6,
     max_years: int = 0,
     end_dt_overrides: dict[str, datetime] | None = None,
     asset_class: str = "equity",
@@ -526,8 +593,14 @@ async def fetch_all_tickers(
     in empty bar lists (the run continues for remaining tickers).
     """
     t0 = time.monotonic()
-    mode_label = ", backfill" if end_dt_overrides else (f", {max_years}Y lookback" if max_years else ", inception")
-    console.print(f"  [bold]Fetching {len(tickers)} tickers (max {max_concurrent} concurrent{mode_label})...[/bold]")
+    mode_label = (
+        ", backfill"
+        if end_dt_overrides
+        else (f", {max_years}Y lookback" if max_years else ", inception")
+    )
+    console.print(
+        f"  [bold]Fetching {len(tickers)} tickers (max {max_concurrent} concurrent{mode_label})...[/bold]"
+    )
     semaphore = asyncio.Semaphore(max_concurrent)
     results: dict[str, list] = {}
 
@@ -535,7 +608,15 @@ async def fetch_all_tickers(
         try:
             edt = end_dt_overrides.get(ticker) if end_dt_overrides else None
             exch = (exchange_map or {}).get(ticker)
-            return await fetch_ticker_bars(ticker, ib, semaphore, max_years=max_years, end_dt_override=edt, asset_class=asset_class, exchange=exch)
+            return await fetch_ticker_bars(
+                ticker,
+                ib,
+                semaphore,
+                max_years=max_years,
+                end_dt_override=edt,
+                asset_class=asset_class,
+                exchange=exch,
+            )
         except (IBError, Exception) as exc:
             console.print(f"    [red]{ticker}: {type(exc).__name__} — {exc}[/red]")
             return (ticker, [])
@@ -642,7 +723,9 @@ def fetch_ticker(
         expiry_date = f"{expiry[:4]}-{expiry[4:6]}-01"
         rows = bars_to_futures_rows(bars, symbol_id, root, expiry_date)
     elif asset_class in {"cmdty", "fx"}:
-        rows = bars_to_midpoint_rows(bars, symbol_id, invert=asset_class == "fx" and _is_inverted_fx_pair(ticker))
+        rows = bars_to_midpoint_rows(
+            bars, symbol_id, invert=asset_class == "fx" and _is_inverted_fx_pair(ticker)
+        )
     else:
         rows = bars_to_rows(bars, symbol_id)
     inserted = bronze.replace_ticker_rows(ticker, rows)
@@ -699,7 +782,9 @@ def backfill_ticker(
         expiry_date = f"{expiry[:4]}-{expiry[4:6]}-01"
         rows = bars_to_futures_rows(bars, symbol_id, root, expiry_date)
     elif asset_class in {"cmdty", "fx"}:
-        rows = bars_to_midpoint_rows(bars, symbol_id, invert=asset_class == "fx" and _is_inverted_fx_pair(ticker))
+        rows = bars_to_midpoint_rows(
+            bars, symbol_id, invert=asset_class == "fx" and _is_inverted_fx_pair(ticker)
+        )
     else:
         rows = bars_to_rows(bars, symbol_id)
     inserted = bronze.merge_ticker_rows(ticker, rows)
@@ -712,7 +797,9 @@ def backfill_ticker(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fetch historical OHLCV from Interactive Brokers")
+    parser = argparse.ArgumentParser(
+        description="Fetch historical OHLCV from Interactive Brokers"
+    )
     ticker_group = parser.add_mutually_exclusive_group()
     ticker_group.add_argument(
         "--tickers",
@@ -807,7 +894,9 @@ def main():
     exchange_map: dict[str, str] = {}
     if args.preset:
         cursor_name, all_tickers, exchange_map = load_preset(args.preset)
-        console.print(f"\n[bold]Preset:[/bold] {cursor_name} ({len(all_tickers)} tickers)")
+        console.print(
+            f"\n[bold]Preset:[/bold] {cursor_name} ({len(all_tickers)} tickers)"
+        )
     else:
         cursor_name = "custom"
         all_tickers = args.tickers if args.tickers else MAG7
@@ -831,16 +920,22 @@ def main():
         console.print("[yellow]Cursor reset.[/yellow]")
 
     completed = load_cursor(effective_cursor)
-    remaining = [t for t in all_tickers if not is_ticker_complete(completed, t, ("1d",))]
+    remaining = [
+        t for t in all_tickers if not is_ticker_complete(completed, t, ("1d",))
+    ]
 
-    n_completed = sum(1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",)))
+    n_completed = sum(
+        1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",))
+    )
     console.print(
         f"\n[bold]{len(remaining)} of {len(all_tickers)} tickers remaining"
         f" ({n_completed} already completed via cursor)[/bold]"
     )
 
     if not remaining:
-        console.print("[green bold]All tickers already completed. Use --reset to re-run.[/green bold]\n")
+        console.print(
+            "[green bold]All tickers already completed. Use --reset to re-run.[/green bold]\n"
+        )
         return
 
     cursor_file = _cursor_path(effective_cursor)
@@ -859,8 +954,15 @@ def main():
         if args.backfill and resolved_source == "massive":
             with MassiveClient() as massive:
                 _run_backfill_massive(
-                    args, massive, bronze, all_tickers, remaining, completed,
-                    effective_cursor, started_at, asset_class=asset_class,
+                    args,
+                    massive,
+                    bronze,
+                    all_tickers,
+                    remaining,
+                    completed,
+                    effective_cursor,
+                    started_at,
+                    asset_class=asset_class,
                     bronze_dir=bronze_dir,
                 )
         else:
@@ -868,13 +970,33 @@ def main():
                 ib.connect(host=args.host, port=args.port)
 
                 if args.backfill:
-                    _run_backfill(args, ib, bronze, all_tickers, remaining, completed,
-                                  effective_cursor, started_at, asset_class=asset_class,
-                                  bronze_dir=bronze_dir, exchange_map=exchange_map)
+                    _run_backfill(
+                        args,
+                        ib,
+                        bronze,
+                        all_tickers,
+                        remaining,
+                        completed,
+                        effective_cursor,
+                        started_at,
+                        asset_class=asset_class,
+                        bronze_dir=bronze_dir,
+                        exchange_map=exchange_map,
+                    )
                 else:
-                    _run_normal(args, ib, bronze, all_tickers, remaining, completed,
-                                effective_cursor, started_at, asset_class=asset_class,
-                                bronze_dir=bronze_dir, exchange_map=exchange_map)
+                    _run_normal(
+                        args,
+                        ib,
+                        bronze,
+                        all_tickers,
+                        remaining,
+                        completed,
+                        effective_cursor,
+                        started_at,
+                        asset_class=asset_class,
+                        bronze_dir=bronze_dir,
+                        exchange_map=exchange_map,
+                    )
 
         run_elapsed = time.monotonic() - run_t0
         console.print(f"\n{'═' * 60}")
@@ -883,7 +1005,9 @@ def main():
         # Summary
         summary = bronze.get_summary()
         if summary:
-            console.print(f"\n[bold]Data summary ({len(summary)} symbols in bronze):[/bold]")
+            console.print(
+                f"\n[bold]Data summary ({len(summary)} symbols in bronze):[/bold]"
+            )
             for row in summary:
                 console.print(
                     f"  {row['symbol']:6s}  {row['rows']:>6,d} rows  "
@@ -893,9 +1017,20 @@ def main():
     console.print("\n[green bold]Done.[/green bold]\n")
 
 
-def _run_backfill(args, ib, bronze, all_tickers, remaining, completed,
-                  cursor_name, started_at, *, asset_class="equity", bronze_dir=None,
-                  exchange_map=None):
+def _run_backfill(
+    args,
+    ib,
+    bronze,
+    all_tickers,
+    remaining,
+    completed,
+    cursor_name,
+    started_at,
+    *,
+    asset_class="equity",
+    bronze_dir=None,
+    exchange_map=None,
+):
     """Backfill mode: fetch only missing older data for tickers already in bronze."""
     oldest_dates = get_oldest_dates(bronze)
 
@@ -920,8 +1055,10 @@ def _run_backfill(args, ib, bronze, all_tickers, remaining, completed,
     console.print(f"[bold]{len(backfill_tickers)} tickers to backfill[/bold]")
 
     # Batch processing
-    batches = [backfill_tickers[i:i + args.batch_size]
-               for i in range(0, len(backfill_tickers), args.batch_size)]
+    batches = [
+        backfill_tickers[i : i + args.batch_size]
+        for i in range(0, len(backfill_tickers), args.batch_size)
+    ]
 
     total_rows = 0
     total_ok = 0
@@ -938,10 +1075,14 @@ def _run_backfill(args, ib, bronze, all_tickers, remaining, completed,
 
         batch_overrides = {t: end_dt_overrides[t] for t in batch}
         ticker_bars = ib.ib.run(
-            fetch_all_tickers(batch, ib, max_concurrent=args.max_concurrent,
-                              end_dt_overrides=batch_overrides,
-                              asset_class=asset_class,
-                              exchange_map=exchange_map)
+            fetch_all_tickers(
+                batch,
+                ib,
+                max_concurrent=args.max_concurrent,
+                end_dt_overrides=batch_overrides,
+                asset_class=asset_class,
+                exchange_map=exchange_map,
+            )
         )
 
         batch_rows = 0
@@ -965,10 +1106,14 @@ def _run_backfill(args, ib, bronze, all_tickers, remaining, completed,
                 if count > 0:
                     mark_timeframe_done(completed, ticker, "1d")
                     save_cursor(cursor_name, completed, started_at)
-                    console.print(f"  [green]{ticker}[/green]: {count:,} backfill rows inserted")
+                    console.print(
+                        f"  [green]{ticker}[/green]: {count:,} backfill rows inserted"
+                    )
                     batch_ok += 1
                 else:
-                    console.print(f"  [yellow]{ticker}[/yellow]: 0 backfill rows (will retry next run)")
+                    console.print(
+                        f"  [yellow]{ticker}[/yellow]: 0 backfill rows (will retry next run)"
+                    )
                     batch_fail += 1
 
                 batch_rows += count
@@ -978,7 +1123,9 @@ def _run_backfill(args, ib, bronze, all_tickers, remaining, completed,
         total_rows += batch_rows
         total_ok += batch_ok
         total_fail += batch_fail
-        n_done = sum(1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",)))
+        n_done = sum(
+            1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",))
+        )
         console.print(
             f"\n  [bold]Batch {batch_idx + 1} done:[/bold] "
             f"{batch_ok} ok, {batch_fail} failed, "
@@ -994,8 +1141,19 @@ def _run_backfill(args, ib, bronze, all_tickers, remaining, completed,
     console.print(f"[bold]Cursor:[/bold] {n_done}/{len(all_tickers)} tickers saved")
 
 
-def _run_backfill_massive(args, massive, bronze, all_tickers, remaining, completed,
-                          cursor_name, started_at, *, asset_class="equity", bronze_dir=None):
+def _run_backfill_massive(
+    args,
+    massive,
+    bronze,
+    all_tickers,
+    remaining,
+    completed,
+    cursor_name,
+    started_at,
+    *,
+    asset_class="equity",
+    bronze_dir=None,
+):
     """Backfill daily equity rows using Massive instead of IB."""
     oldest_dates = get_oldest_dates(bronze)
     backfill_tickers = [t for t in remaining if t in oldest_dates]
@@ -1010,9 +1168,13 @@ def _run_backfill_massive(args, massive, bronze, all_tickers, remaining, complet
         console.print("[green bold]No tickers to backfill.[/green bold]")
         return
 
-    console.print(f"[bold]{len(backfill_tickers)} tickers to backfill via Massive[/bold]")
-    batches = [backfill_tickers[i:i + args.batch_size]
-               for i in range(0, len(backfill_tickers), args.batch_size)]
+    console.print(
+        f"[bold]{len(backfill_tickers)} tickers to backfill via Massive[/bold]"
+    )
+    batches = [
+        backfill_tickers[i : i + args.batch_size]
+        for i in range(0, len(backfill_tickers), args.batch_size)
+    ]
 
     total_rows = 0
     total_ok = 0
@@ -1049,7 +1211,9 @@ def _run_backfill_massive(args, massive, bronze, all_tickers, remaining, complet
                 )
 
                 if not provider_ok:
-                    console.print(f"  [yellow]{ticker}[/yellow]: Massive failed (will retry next run)")
+                    console.print(
+                        f"  [yellow]{ticker}[/yellow]: Massive failed (will retry next run)"
+                    )
                     batch_fail += 1
                     progress.advance(task)
                     continue
@@ -1066,7 +1230,9 @@ def _run_backfill_massive(args, massive, bronze, all_tickers, remaining, complet
                     save_cursor(cursor_name, completed, started_at)
 
                 if count > 0:
-                    console.print(f"  [green]{ticker}[/green]: {count:,} Massive rows inserted")
+                    console.print(
+                        f"  [green]{ticker}[/green]: {count:,} Massive rows inserted"
+                    )
                     if provider_complete:
                         batch_ok += 1
                     else:
@@ -1086,7 +1252,9 @@ def _run_backfill_massive(args, massive, bronze, all_tickers, remaining, complet
         total_ok += batch_ok
         total_fail += batch_fail
         total_noop += batch_noop
-        n_done = sum(1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",)))
+        n_done = sum(
+            1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",))
+        )
         console.print(
             f"\n  [bold]Massive batch {batch_idx + 1} done:[/bold] "
             f"{batch_ok} ok, {batch_noop} noop, {batch_fail} failed, "
@@ -1102,9 +1270,20 @@ def _run_backfill_massive(args, massive, bronze, all_tickers, remaining, complet
     console.print(f"[bold]Cursor:[/bold] {n_done}/{len(all_tickers)} tickers saved")
 
 
-def _run_normal(args, ib, bronze, all_tickers, remaining, completed,
-                cursor_name, started_at, *, asset_class="equity", bronze_dir=None,
-                exchange_map=None):
+def _run_normal(
+    args,
+    ib,
+    bronze,
+    all_tickers,
+    remaining,
+    completed,
+    cursor_name,
+    started_at,
+    *,
+    asset_class="equity",
+    bronze_dir=None,
+    exchange_map=None,
+):
     """Normal fetch mode: replace the per-ticker bronze snapshot."""
     if args.skip_existing:
         existing = get_existing_symbols(bronze)
@@ -1118,7 +1297,9 @@ def _run_normal(args, ib, bronze, all_tickers, remaining, completed,
                 f"[cyan]Skipped {len(skipped)} tickers already in bronze:[/cyan] "
                 f"[dim]{' '.join(skipped)}[/dim]"
             )
-        console.print(f"[bold]{len(remaining)} tickers to fetch after skip-existing[/bold]")
+        console.print(
+            f"[bold]{len(remaining)} tickers to fetch after skip-existing[/bold]"
+        )
 
     if not remaining:
         console.print(
@@ -1126,7 +1307,10 @@ def _run_normal(args, ib, bronze, all_tickers, remaining, completed,
         )
         return
 
-    batches = [remaining[i:i + args.batch_size] for i in range(0, len(remaining), args.batch_size)]
+    batches = [
+        remaining[i : i + args.batch_size]
+        for i in range(0, len(remaining), args.batch_size)
+    ]
 
     total_rows = 0
     total_ok = 0
@@ -1142,8 +1326,14 @@ def _run_normal(args, ib, bronze, all_tickers, remaining, completed,
         )
 
         ticker_bars = ib.ib.run(
-            fetch_all_tickers(batch, ib, max_concurrent=args.max_concurrent, max_years=args.years,
-                              asset_class=asset_class, exchange_map=exchange_map)
+            fetch_all_tickers(
+                batch,
+                ib,
+                max_concurrent=args.max_concurrent,
+                max_years=args.years,
+                asset_class=asset_class,
+                exchange_map=exchange_map,
+            )
         )
 
         batch_rows = 0
@@ -1170,7 +1360,9 @@ def _run_normal(args, ib, bronze, all_tickers, remaining, completed,
                     console.print(f"  [green]{ticker}[/green]: {count:,} rows inserted")
                     batch_ok += 1
                 else:
-                    console.print(f"  [yellow]{ticker}[/yellow]: 0 rows (will retry next run)")
+                    console.print(
+                        f"  [yellow]{ticker}[/yellow]: 0 rows (will retry next run)"
+                    )
                     batch_fail += 1
 
                 batch_rows += count
@@ -1180,7 +1372,9 @@ def _run_normal(args, ib, bronze, all_tickers, remaining, completed,
         total_rows += batch_rows
         total_ok += batch_ok
         total_fail += batch_fail
-        n_done = sum(1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",)))
+        n_done = sum(
+            1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",))
+        )
         console.print(
             f"\n  [bold]Batch {batch_idx + 1} done:[/bold] "
             f"{batch_ok} ok, {batch_fail} failed, "

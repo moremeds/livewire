@@ -19,7 +19,13 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-PARQUET_FILES_TO_SYNC = ("1d.parquet", "1h.parquet", "5m.parquet")
+PARQUET_FILES_TO_SYNC = (
+    "1d.parquet",
+    "1h.parquet",
+    "30m.parquet",
+    "5m.parquet",
+    "1m.parquet",
+)
 
 logger = logging.getLogger("livewire.sync_to_r2")
 
@@ -64,14 +70,21 @@ def upload(bronze_dir: Path, prefix: str = "bronze", dry_run: bool = False) -> i
             s3_key = str(rel_path).replace("\\", "/")  # Windows compat
 
             if dry_run:
-                logger.info("[DRY RUN] Would upload %s → s3://%s/%s", parquet_file, bucket, s3_key)
+                logger.info(
+                    "[DRY RUN] Would upload %s → s3://%s/%s",
+                    parquet_file,
+                    bucket,
+                    s3_key,
+                )
             else:
                 logger.info("Uploading %s → s3://%s/%s", parquet_file, bucket, s3_key)
                 s3.upload_file(str(parquet_file), bucket, s3_key)
 
             uploaded += 1
 
-    logger.info("Upload complete: %d files %s", uploaded, "(dry run)" if dry_run else "")
+    logger.info(
+        "Upload complete: %d files %s", uploaded, "(dry run)" if dry_run else ""
+    )
     return uploaded
 
 
@@ -94,7 +107,12 @@ def download(bronze_dir: Path, prefix: str = "bronze", dry_run: bool = False) ->
             local_path = bronze_dir.parent / s3_key.replace("/", os.sep)
 
             if dry_run:
-                logger.info("[DRY RUN] Would download s3://%s/%s → %s", bucket, s3_key, local_path)
+                logger.info(
+                    "[DRY RUN] Would download s3://%s/%s → %s",
+                    bucket,
+                    s3_key,
+                    local_path,
+                )
             else:
                 local_path.parent.mkdir(parents=True, exist_ok=True)
                 logger.info("Downloading s3://%s/%s → %s", bucket, s3_key, local_path)
@@ -102,25 +120,37 @@ def download(bronze_dir: Path, prefix: str = "bronze", dry_run: bool = False) ->
 
             downloaded += 1
 
-    logger.info("Download complete: %d files %s", downloaded, "(dry run)" if dry_run else "")
+    logger.info(
+        "Download complete: %d files %s", downloaded, "(dry run)" if dry_run else ""
+    )
     return downloaded
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Sync bronze Parquet to/from Cloudflare R2")
+    parser = argparse.ArgumentParser(
+        description="Sync bronze Parquet to/from Cloudflare R2"
+    )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--upload", action="store_true", help="Push local bronze → R2")
     group.add_argument("--download", action="store_true", help="Pull R2 → local bronze")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be synced")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be synced"
+    )
     parser.add_argument(
         "--data-lake",
         type=Path,
-        default=Path(os.getenv("MDW_DATA_LAKE", str(Path.home() / "market-warehouse" / "data-lake"))),
+        default=Path(
+            os.getenv(
+                "MDW_DATA_LAKE", str(Path.home() / "market-warehouse" / "data-lake")
+            )
+        ),
         help="Data lake root directory",
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
 
     bronze_dir = args.data_lake / "bronze"
 

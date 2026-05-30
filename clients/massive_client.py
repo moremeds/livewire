@@ -11,7 +11,12 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 import requests
-from requests.exceptions import ConnectionError as ReqConnectionError, Timeout as ReqTimeout
+from requests.exceptions import (
+    ConnectionError as ReqConnectionError,
+)
+from requests.exceptions import (
+    Timeout as ReqTimeout,
+)
 
 _DEFAULT_BASE_URL = "https://api.massive.com"
 _DEFAULT_TIMEOUT = 30
@@ -231,11 +236,19 @@ class MassiveClient:
                 return self._safe_json(resp)
 
             body = self._safe_json(resp)
-            msg = body.get("message", "") or body.get("error", "") or resp.reason or f"HTTP {resp.status_code}"
+            msg = (
+                body.get("message", "")
+                or body.get("error", "")
+                or resp.reason
+                or f"HTTP {resp.status_code}"
+            )
             exc = self._exception_for_status(resp.status_code, msg, body)
             last_exc = exc
 
-            if resp.status_code in _RETRYABLE_STATUS_CODES and attempt < self._max_retries:
+            if (
+                resp.status_code in _RETRYABLE_STATUS_CODES
+                and attempt < self._max_retries
+            ):
                 self._sleep_backoff(attempt, resp)
                 continue
             raise exc
@@ -264,7 +277,9 @@ class MassiveClient:
             return MassiveServerError(msg, status_code=status, response_body=body)
         return MassiveAPIError(msg, status_code=status, response_body=body)
 
-    def _sleep_backoff(self, attempt: int, resp: requests.Response | None = None) -> None:
+    def _sleep_backoff(
+        self, attempt: int, resp: requests.Response | None = None
+    ) -> None:
         retry_after = None if resp is None else resp.headers.get("Retry-After")
         if retry_after is not None:
             try:
@@ -272,7 +287,7 @@ class MassiveClient:
                 return
             except (TypeError, ValueError):
                 pass
-        time.sleep(self._backoff_factor * (2 ** attempt))
+        time.sleep(self._backoff_factor * (2**attempt))
 
     def _record_request(self, endpoint: str, status: int, started: float) -> None:
         if self._telemetry is None:
@@ -288,7 +303,9 @@ class MassiveClient:
         if remaining is None or reset_at is None:
             return
         try:
-            self._telemetry.record_rate_limit(remaining=int(remaining), reset_at=int(reset_at))
+            self._telemetry.record_rate_limit(
+                remaining=int(remaining), reset_at=int(reset_at)
+            )
         except (TypeError, ValueError):
             return
 
@@ -301,7 +318,9 @@ class MassiveClient:
         return results if isinstance(results, list) else []
 
     @staticmethod
-    def normalize_daily_bar(payload: dict, ticker: str | None = None) -> MassiveDailyBar:
+    def normalize_daily_bar(
+        payload: dict, ticker: str | None = None
+    ) -> MassiveDailyBar:
         symbol = ticker or payload.get("T")
         if not symbol:
             raise MassiveMalformedBarError("grouped bar missing ticker")
@@ -309,7 +328,9 @@ class MassiveClient:
         raw_ts = payload.get("t")
         if not isinstance(raw_ts, int):
             raise MassiveMalformedBarError("bar timestamp t must be an integer")
-        trade_date = datetime.fromtimestamp(raw_ts / 1000, timezone.utc).astimezone(_ET).date()
+        trade_date = (
+            datetime.fromtimestamp(raw_ts / 1000, timezone.utc).astimezone(_ET).date()
+        )
 
         open_px = MassiveClient._finite_float(payload, "o")
         high_px = MassiveClient._finite_float(payload, "h")
@@ -348,7 +369,9 @@ class MassiveClient:
         )
 
     @staticmethod
-    def normalize_intraday_bar(payload: dict, ticker: str | None = None) -> MassiveIntradayBar:
+    def normalize_intraday_bar(
+        payload: dict, ticker: str | None = None
+    ) -> MassiveIntradayBar:
         symbol = ticker or payload.get("T")
         if not symbol:
             raise MassiveMalformedBarError("intraday bar missing ticker")
@@ -398,12 +421,15 @@ class MassiveClient:
         specs = {
             "1m": (1, "minute"),
             "5m": (5, "minute"),
+            "30m": (30, "minute"),
             "1h": (1, "hour"),
         }
         try:
             return specs[timeframe]
         except KeyError as exc:
-            raise MassiveValidationError(f"unsupported intraday timeframe: {timeframe}") from exc
+            raise MassiveValidationError(
+                f"unsupported intraday timeframe: {timeframe}"
+            ) from exc
 
     @staticmethod
     def _finite_float(payload: dict, key: str) -> float:

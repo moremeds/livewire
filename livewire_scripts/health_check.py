@@ -33,12 +33,14 @@ from livewire_scripts.daily_update import (
 )
 
 _ET = ZoneInfo("America/New_York")
-_BAR_SIZE_MINUTES = {"1m": 1, "1h": 60, "5m": 5}
+_BAR_SIZE_MINUTES = {"1m": 1, "1h": 60, "5m": 5, "30m": 30}
 
 log = logging.getLogger(__name__)
 
 console = Console()
-_WAREHOUSE_DIR = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
+_WAREHOUSE_DIR = Path(
+    os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))
+)
 _DATA_LAKE = _WAREHOUSE_DIR / "data-lake"
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -52,7 +54,9 @@ def _resolve_bronze_dir(asset_class: str) -> Path:
     return _DATA_LAKE / "bronze" / f"asset_class={asset_class}"
 
 
-def find_interior_gaps(actual_dates: list[date], asset_class: str = "equity") -> list[date]:
+def find_interior_gaps(
+    actual_dates: list[date], asset_class: str = "equity"
+) -> list[date]:
     """Return trading/weekday dates missing between the min and max of *actual_dates*.
 
     For equity/volatility asset classes the NYSE calendar is used to determine
@@ -309,13 +313,20 @@ def repair_intraday_window(
         sys.executable,
         str(_INGEST_SCRIPT),
         "intraday-backfill",
-        "--tickers", symbol,
-        "--timeframe", timeframe,
-        "--years", str(years),
-        "--host", host,
-        "--port", str(port),
+        "--tickers",
+        symbol,
+        "--timeframe",
+        timeframe,
+        "--years",
+        str(years),
+        "--host",
+        host,
+        "--port",
+        str(port),
     ]
-    console.print(f"[cyan]Repairing {symbol} {timeframe} since {since} ({years}y)[/cyan]")
+    console.print(
+        f"[cyan]Repairing {symbol} {timeframe} since {since} ({years}y)[/cyan]"
+    )
     result = subprocess.run(cmd, check=False)
     return result.returncode
 
@@ -336,11 +347,16 @@ def _send_alert(
         sys.executable,
         str(_OPS_SCRIPT),
         "send-alert",
-        "--run-date", run_date,
-        "--log-file", str(log_path),
-        "--error-summary", error_summary,
-        "--repo-root", str(_REPO_ROOT),
-        "--job-name", "health_check",
+        "--run-date",
+        run_date,
+        "--log-file",
+        str(log_path),
+        "--error-summary",
+        error_summary,
+        "--repo-root",
+        str(_REPO_ROOT),
+        "--job-name",
+        "health_check",
     ]
     subprocess.run(cmd, check=False)
 
@@ -348,8 +364,12 @@ def _send_alert(
 def main() -> None:
     """CLI entry point for the warehouse health check."""
     parser = argparse.ArgumentParser(description="Livewire health check")
-    parser.add_argument("--dry-run", action="store_true", help="Report gaps without backfilling")
-    parser.add_argument("--force", action="store_true", help="Run even if not a trading day")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Report gaps without backfilling"
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="Run even if not a trading day"
+    )
     parser.add_argument(
         "--asset-class",
         choices=["equity", "volatility", "futures"],
@@ -424,9 +444,7 @@ def main() -> None:
                 port=args.port,
             )
             if rc != 0:
-                console.print(
-                    f"[red]Repair subprocess exited with code {rc}[/red]"
-                )
+                console.print(f"[red]Repair subprocess exited with code {rc}[/red]")
         elif args.symbol and not args.since:
             console.print(
                 "[dim]Report-only: pass --since YYYY-MM-DD to enable repair[/dim]"
@@ -467,7 +485,9 @@ def main() -> None:
         total_gaps = sum(len(g) for g in gaps_by_symbol.values())
         console.print(f"\n[bold]Gap Report ({len(all_dates)} symbols):[/bold]")
         if gaps_by_symbol:
-            console.print(f"  [red]Interior gaps found in {len(gaps_by_symbol)} symbols ({total_gaps} gap-days total)[/red]")
+            console.print(
+                f"  [red]Interior gaps found in {len(gaps_by_symbol)} symbols ({total_gaps} gap-days total)[/red]"
+            )
             for sym, gaps in sorted(gaps_by_symbol.items()):
                 ranges = group_contiguous_dates(gaps)
                 for start, end in ranges:
@@ -502,7 +522,9 @@ def main() -> None:
         repaired = 0
         fallback_repaired = 0
 
-        console.print(f"\n[bold]Backfilling {len(gaps_by_symbol)} symbols via IB...[/bold]")
+        console.print(
+            f"\n[bold]Backfilling {len(gaps_by_symbol)} symbols via IB...[/bold]"
+        )
 
         with IBClient(host=args.host, port=args.port) as ib:
             ib.ib.run(ib.connect())
@@ -540,7 +562,9 @@ def main() -> None:
                         expiry_code = symbol.rsplit("_", 1)[1]
                         expiry_date = f"{expiry_code[:4]}-{expiry_code[4:6]}-01"
                         contract_id = bronze.get_symbol_id(symbol)
-                        rows = bars_to_futures_rows(valid_bars, contract_id, root_symbol, expiry_date)
+                        rows = bars_to_futures_rows(
+                            valid_bars, contract_id, root_symbol, expiry_date
+                        )
                     else:
                         symbol_id = bronze.get_symbol_id(symbol)
                         rows = bars_to_rows(valid_bars, symbol_id)
@@ -550,19 +574,31 @@ def main() -> None:
                 if symbol_rows:
                     inserted = bronze.merge_ticker_rows(symbol, symbol_rows)
                     repaired += inserted
-                    console.print(f"  [green]{symbol}: +{inserted} bars repaired via IB[/green]")
+                    console.print(
+                        f"  [green]{symbol}: +{inserted} bars repaired via IB[/green]"
+                    )
 
                 # Equity fallback for remaining gaps
                 if asset_class == "equity":
                     # Re-check which gaps remain after IB merge
-                    updated_dates = [date.fromisoformat(r["trade_date"]) for r in bronze.read_symbol_rows(symbol)]
-                    remaining = find_interior_gaps(updated_dates, asset_class=asset_class)
+                    updated_dates = [
+                        date.fromisoformat(r["trade_date"])
+                        for r in bronze.read_symbol_rows(symbol)
+                    ]
+                    remaining = find_interior_gaps(
+                        updated_dates, asset_class=asset_class
+                    )
                     remaining_set = set(remaining) & set(gaps)
 
                     if remaining_set:
-                        from clients.daily_bar_fallback import DailyBarFallbackClient  # noqa: PLC0415
+                        from clients.daily_bar_fallback import (
+                            DailyBarFallbackClient,  # noqa: PLC0415
+                        )
+
                         fallback = DailyBarFallbackClient()
-                        fb_bars, _ = fetch_fallback_bars(symbol, sorted(remaining_set), fallback)
+                        fb_bars, _ = fetch_fallback_bars(
+                            symbol, sorted(remaining_set), fallback
+                        )
                         if fb_bars:
                             symbol_id = bronze.get_symbol_id(symbol)
                             fb_rows = bars_to_rows(fb_bars, symbol_id)
