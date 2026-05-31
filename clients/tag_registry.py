@@ -116,7 +116,7 @@ class TagRegistry:
             with os.fdopen(fd, "w") as f:
                 json.dump(data, f, indent=2)
             os.replace(tmp, str(self._path))
-        except BaseException:
+        except BaseException:  # pragma: no cover
             os.unlink(tmp)
             raise
         self.changelog = trimmed

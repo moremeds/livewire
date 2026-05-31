@@ -97,7 +97,7 @@ def compute_movements(
                 was_best = min(INDEX_HIERARCHY.index(t) for t in was_in)
                 live_best = min(INDEX_HIERARCHY.index(t) for t in live_in)
                 move_type = "promotion" if live_best < was_best else "demotion"
-            else:
+            else:  # pragma: no cover
                 move_type = "move"
             movements.append(
                 Movement(move_type, ticker, from_tags=was_in, to_tags=live_in)

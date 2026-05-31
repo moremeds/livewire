@@ -143,6 +143,21 @@ class TestRegistryOperations:
         reg.set_tags("AAPL", {"sp500", "ndx100"}, status="active")
         assert reg.get("AAPL").earliest_available == "1993-01-29"
 
+    def test_by_tags_active_only_filters_delisted(self, tmp_path):
+        reg = TagRegistry(tmp_path / "r.json")
+        reg.set_tags("AAPL", {"sp500", "ndx100"}, status="active")
+        reg.set_tags("TWTR", {"sp500", "ndx100"}, status="delisted")
+        assert reg.by_tags({"sp500", "ndx100"}, active_only=True) == {"AAPL"}
+        assert reg.by_tags({"sp500", "ndx100"}, active_only=False) == {"AAPL", "TWTR"}
+
+    def test_save_with_delisted_entry(self, tmp_path):
+        reg = TagRegistry(tmp_path / "r.json")
+        reg.set_tags("TWTR", {"sp500"}, status="active")
+        reg.mark_delisted("TWTR", delisted_at="2022-10-28")
+        reg.save()
+        reg2 = TagRegistry(tmp_path / "r.json")
+        assert reg2.get("TWTR").delisted_at == "2022-10-28"
+
 
 class TestChangelog:
     def test_log_promotion(self, tmp_path):

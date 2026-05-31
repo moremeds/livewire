@@ -178,6 +178,29 @@ class TestFetchR2K:
             fetch_r2k()
 
 
+class TestFetchNDX100Fallback:
+    @responses.activate
+    def test_fallback_to_wikitable_class(self):
+        fallback_html = """
+        <html><body>
+        <table class="wikitable sortable">
+        <thead><tr><th>Ticker</th><th>Company</th></tr></thead>
+        <tbody>
+        <tr><td>NVDA</td><td>NVIDIA</td></tr>
+        </tbody>
+        </table>
+        </body></html>
+        """
+        responses.add(
+            responses.GET,
+            "https://en.wikipedia.org/wiki/Nasdaq-100",
+            body=fallback_html,
+            status=200,
+        )
+        result = fetch_ndx100()
+        assert result == {"NVDA"}
+
+
 class TestCheckTickerStatus:
     @responses.activate
     def test_active_ticker(self):
@@ -217,6 +240,16 @@ class TestCheckTickerStatus:
         monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
         with pytest.raises(UniverseFetchError, match="MASSIVE_API_KEY"):
             check_ticker_status("AAPL")
+
+    def test_connection_error_raises(self, monkeypatch):
+        import requests as req_lib
+
+        def mock_get(*args, **kwargs):
+            raise req_lib.exceptions.ConnectionError("network down")
+
+        monkeypatch.setattr(req_lib, "get", mock_get)
+        with pytest.raises(UniverseFetchError, match="AAPL"):
+            check_ticker_status("AAPL", api_key="test-key")
 
     @responses.activate
     def test_server_error_raises(self):

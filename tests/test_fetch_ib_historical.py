@@ -1754,6 +1754,151 @@ class TestMain:
         assert "AAPL" in data["completed"]
 
     @pytest.mark.integration
+    def test_main_backfill_fetch_error_retries(self, tmp_path, monkeypatch):
+        """Backfill loop treats None bars (fetch error) as retryable."""
+        bronze_dir = tmp_path / "bronze"
+        _seed_bronze(
+            bronze_dir,
+            "FAIL",
+            [
+                {
+                    "trade_date": "2020-01-02",
+                    "symbol_id": 1,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
+                }
+            ],
+        )
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["fetch_ib_historical.py", "--tickers", "FAIL", "--backfill"],
+        )
+
+        mock_ib = _mock_ib_instance({"FAIL": None})
+        cursor_dir = tmp_path / "cursors"
+
+        with (
+            patch(
+                "livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib
+            ),
+            patch(
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
+                lambda **kw: BronzeClient(bronze_dir=bronze_dir),
+            ),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", bronze_dir),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
+        ):
+            main()
+
+        cursor_file = cursor_dir / "cursor_backfill_custom.json"
+        if cursor_file.exists():
+            data = json.loads(cursor_file.read_text())
+            assert "FAIL" not in data.get("completed", {})
+
+    @pytest.mark.integration
+    def test_main_backfill_bars_exist_but_zero_new(self, tmp_path, monkeypatch):
+        """Backfill with bars that duplicate existing data yields 0 new rows."""
+        bronze_dir = tmp_path / "bronze"
+        _seed_bronze(
+            bronze_dir,
+            "AAPL",
+            [
+                {
+                    "trade_date": "2020-01-02",
+                    "symbol_id": 1,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
+                }
+            ],
+        )
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["fetch_ib_historical.py", "--tickers", "AAPL", "--backfill"],
+        )
+
+        # Return bar with same date as existing — backfill_ticker merges, count=0
+        mock_ib = _mock_ib_instance(
+            {"AAPL": [_make_bar(date="2020-01-02", close=153.0)]}
+        )
+
+        with (
+            patch(
+                "livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib
+            ),
+            patch(
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
+                lambda **kw: BronzeClient(bronze_dir=bronze_dir),
+            ),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", bronze_dir),
+            patch(
+                "livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"
+            ),
+        ):
+            main()
+
+    @pytest.mark.integration
+    def test_main_seed_fetch_error_retries(self, tmp_path, monkeypatch):
+        """Seed loop treats None bars (fetch error) as retryable."""
+        monkeypatch.setattr("sys.argv", ["fetch_ib_historical.py", "--tickers", "FAIL"])
+
+        mock_ib = _mock_ib_instance({"FAIL": None})
+        cursor_dir = tmp_path / "cursors"
+
+        with (
+            patch(
+                "livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib
+            ),
+            patch(
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
+                lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
+            ),
+            patch(
+                "livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"
+            ),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
+        ):
+            main()
+
+        cursor_file = cursor_dir / "cursor_custom.json"
+        if cursor_file.exists():
+            data = json.loads(cursor_file.read_text())
+            assert "FAIL" not in data.get("completed", {})
+
+    @pytest.mark.integration
+    def test_main_seed_bars_exist_but_zero_rows(self, tmp_path, monkeypatch):
+        """Seed with bars that produce 0 rows (e.g. fetch_ticker returns 0)."""
+        monkeypatch.setattr("sys.argv", ["fetch_ib_historical.py", "--tickers", "AAPL"])
+
+        mock_ib = _mock_ib_instance({"AAPL": [_make_bar(date="2025-01-02")]})
+        cursor_dir = tmp_path / "cursors"
+
+        with (
+            patch(
+                "livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib
+            ),
+            patch(
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
+                lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
+            ),
+            patch(
+                "livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"
+            ),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
+            patch("livewire_scripts.fetch_ib_historical.fetch_ticker", return_value=0),
+        ):
+            main()
+
+    @pytest.mark.integration
     def test_main_backfill_forced_massive_uses_massive_without_ib(
         self, tmp_path, monkeypatch
     ):

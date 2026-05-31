@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from clients.tag_registry import TagRegistry
-from clients.universe_client import UniverseFetchError
+from clients.universe_client import TickerStatus, UniverseFetchError
 from livewire_scripts.universe_sync import (
     Movement,
     _archive_delisted,
@@ -311,6 +311,132 @@ class TestMain:
         main([])
         reg = TagRegistry(warehouse / "registry.json")
         assert len(reg.all_tickers()) > 0
+
+    @patch(
+        "livewire_scripts.universe_sync.fetch_sp500",
+        return_value=set(f"T{i}" for i in range(500)),
+    )
+    @patch(
+        "livewire_scripts.universe_sync.fetch_ndx100",
+        return_value=set(f"N{i}" for i in range(100)),
+    )
+    @patch(
+        "livewire_scripts.universe_sync.fetch_r2k",
+        return_value=set(f"R{i}" for i in range(1900)),
+    )
+    @patch("livewire_scripts.universe_sync.check_tickers_bulk")
+    def test_dead_ticker_check_with_polygon(
+        self, mock_bulk, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch
+    ):
+        warehouse, presets = self._setup_workspace(tmp_path, monkeypatch)
+        monkeypatch.setenv("MASSIVE_API_KEY", "test-key")
+        # Seed registry with AAPL in sp500 first
+        reg = TagRegistry(warehouse / "registry.json")
+        reg.set_tags("AAPL", {"sp500"}, status="active")
+        reg.set_tags("DEAD", {"sp500"}, status="active")
+        reg.save()
+        # Live data doesn't have DEAD, so it becomes a "remove" movement
+        mock_sp.return_value = set(f"T{i}" for i in range(500)) | {"AAPL"}
+        mock_bulk.return_value = {
+            "DEAD": TickerStatus(
+                ticker="DEAD",
+                active=False,
+                delisted_utc="2024-01-01",
+                list_date="2010-03-15",
+            )
+        }
+        main([])
+        reg2 = TagRegistry(warehouse / "registry.json")
+        entry = reg2.get("DEAD")
+        assert entry.status == "delisted"
+        assert entry.earliest_available == "2010-03-15"
+
+    @patch(
+        "livewire_scripts.universe_sync.fetch_sp500",
+        return_value=set(f"T{i}" for i in range(500)),
+    )
+    @patch(
+        "livewire_scripts.universe_sync.fetch_ndx100",
+        return_value=set(f"N{i}" for i in range(100)),
+    )
+    @patch(
+        "livewire_scripts.universe_sync.fetch_r2k",
+        return_value=set(f"R{i}" for i in range(1900)),
+    )
+    def test_skip_dead_flag(self, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch):
+        warehouse, _ = self._setup_workspace(tmp_path, monkeypatch)
+        monkeypatch.setenv("MASSIVE_API_KEY", "test-key")
+        main(["--skip-dead"])
+        # Should complete without calling Polygon
+
+    @patch(
+        "livewire_scripts.universe_sync.fetch_sp500",
+        return_value=set(f"T{i}" for i in range(500)) | {"AAPL"},
+    )
+    @patch(
+        "livewire_scripts.universe_sync.fetch_ndx100",
+        return_value=set(f"N{i}" for i in range(100)) | {"AAPL"},
+    )
+    @patch(
+        "livewire_scripts.universe_sync.fetch_r2k",
+        return_value=set(f"R{i}" for i in range(1900)),
+    )
+    def test_seeds_registry_and_adds_missing_tags(
+        self, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch
+    ):
+        """Test seeding: new tickers get set_tags, existing tickers get add_tag."""
+        warehouse, presets = self._setup_workspace(tmp_path, monkeypatch)
+        # Pre-seed registry with sp500 tickers so they have no movement,
+        # but are missing from registry → exercises the set_tags seeding path
+        # Also pre-seed AAPL with only sp500 tag so ndx100 add_tag fires
+        reg = TagRegistry(warehouse / "registry.json")
+        reg.set_tags("AAPL", {"sp500"}, status="active")
+        # Seed presets with full live data so there are no movements for sp500
+        sp500_tickers = sorted(set(f"T{i}" for i in range(500)) | {"AAPL"})
+        (presets / "sp500.json").write_text(
+            json.dumps(
+                {
+                    "name": "sp500",
+                    "tickers": sp500_tickers,
+                    "pairs": [],
+                    "groups": {},
+                    "source": "test",
+                }
+            )
+        )
+        ndx100_tickers = sorted(set(f"N{i}" for i in range(100)) | {"AAPL"})
+        (presets / "ndx100.json").write_text(
+            json.dumps(
+                {
+                    "name": "ndx100",
+                    "tickers": ndx100_tickers,
+                    "pairs": [],
+                    "groups": {},
+                    "source": "test",
+                }
+            )
+        )
+        r2k_tickers = sorted(set(f"R{i}" for i in range(1900)))
+        (presets / "r2k.json").write_text(
+            json.dumps(
+                {
+                    "name": "r2k",
+                    "tickers": r2k_tickers,
+                    "pairs": [],
+                    "groups": {},
+                    "source": "test",
+                }
+            )
+        )
+        reg.save()
+        main([])
+        reg2 = TagRegistry(warehouse / "registry.json")
+        # AAPL should have both tags (ndx100 added via seeding add_tag)
+        entry = reg2.get("AAPL")
+        assert "sp500" in entry.tags
+        assert "ndx100" in entry.tags
+        # T0 should be in registry via set_tags seeding (not a movement)
+        assert reg2.get("T0") is not None
 
     @patch(
         "livewire_scripts.universe_sync.fetch_sp500",

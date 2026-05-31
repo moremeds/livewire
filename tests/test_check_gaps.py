@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
+from unittest.mock import MagicMock, patch
 
-from livewire_scripts.check_gaps import GapReport, compute_gaps
+from livewire_scripts.check_gaps import GapReport, compute_gaps, main
 
 
 class TestComputeGaps:
@@ -71,3 +73,131 @@ class TestComputeGaps:
         assert report.bronze_start == "2026-05-27"
         assert report.bronze_end == "2026-05-29"
         assert report.bronze_count == 2
+
+    def test_no_earliest_with_bronze_dates(self):
+        bronze_dates = {date(2026, 5, 27)}
+        report = compute_gaps("AAPL", None, bronze_dates, as_of=date(2026, 5, 29))
+        assert report.bronze_start == "2026-05-27"
+        assert report.bronze_end == "2026-05-27"
+        assert report.complete is False
+
+
+class TestMain:
+    def _setup(self, tmp_path, monkeypatch):
+        warehouse = tmp_path / "warehouse"
+        warehouse.mkdir()
+        bronze_dir = (
+            warehouse / "data-lake" / "bronze" / "asset_class=equity" / "symbol=AAPL"
+        )
+        bronze_dir.mkdir(parents=True)
+        monkeypatch.setattr("livewire_scripts.check_gaps._WAREHOUSE_DIR", warehouse)
+        return warehouse
+
+    def test_main_no_data(self, tmp_path, monkeypatch):
+        warehouse = self._setup(tmp_path, monkeypatch)
+        mock_bronze = MagicMock()
+        mock_bronze.get_trade_dates_by_symbol.return_value = {}
+        with patch(
+            "livewire_scripts.check_gaps.BronzeClient", return_value=mock_bronze
+        ):
+            main([])
+
+    def test_main_with_complete_ticker(self, tmp_path, monkeypatch):
+        warehouse = self._setup(tmp_path, monkeypatch)
+        from clients.tag_registry import TagRegistry
+
+        reg = TagRegistry(warehouse / "registry.json")
+        reg.set_tags("AAPL", {"sp500"}, status="active")
+        reg.set_earliest("AAPL", "2026-05-27", source="ib")
+        reg.save()
+
+        mock_bronze = MagicMock()
+        mock_bronze.get_trade_dates_by_symbol.return_value = {
+            "AAPL": [date(2026, 5, 27), date(2026, 5, 28), date(2026, 5, 29)],
+        }
+        with patch(
+            "livewire_scripts.check_gaps.BronzeClient", return_value=mock_bronze
+        ):
+            main([])
+
+    def test_main_with_gaps(self, tmp_path, monkeypatch):
+        warehouse = self._setup(tmp_path, monkeypatch)
+        from clients.tag_registry import TagRegistry
+
+        reg = TagRegistry(warehouse / "registry.json")
+        reg.set_tags("AAPL", {"sp500"}, status="active")
+        reg.set_earliest("AAPL", "2026-05-27", source="ib")
+        reg.save()
+
+        mock_bronze = MagicMock()
+        mock_bronze.get_trade_dates_by_symbol.return_value = {
+            "AAPL": [date(2026, 5, 27), date(2026, 5, 29)],
+        }
+        with patch(
+            "livewire_scripts.check_gaps.BronzeClient", return_value=mock_bronze
+        ):
+            main(["--show-gaps"])
+
+    def test_main_incomplete_only(self, tmp_path, monkeypatch):
+        warehouse = self._setup(tmp_path, monkeypatch)
+        from clients.tag_registry import TagRegistry
+
+        reg = TagRegistry(warehouse / "registry.json")
+        reg.set_tags("AAPL", {"sp500"}, status="active")
+        reg.set_earliest("AAPL", "2026-05-27", source="ib")
+        reg.save()
+
+        mock_bronze = MagicMock()
+        mock_bronze.get_trade_dates_by_symbol.return_value = {
+            "AAPL": [date(2026, 5, 27), date(2026, 5, 28), date(2026, 5, 29)],
+        }
+        with patch(
+            "livewire_scripts.check_gaps.BronzeClient", return_value=mock_bronze
+        ):
+            main(["--incomplete-only"])
+
+    def test_main_with_preset(self, tmp_path, monkeypatch):
+        warehouse = self._setup(tmp_path, monkeypatch)
+        preset_path = tmp_path / "test_preset.json"
+        preset_path.write_text(json.dumps({"tickers": ["AAPL"]}))
+
+        mock_bronze = MagicMock()
+        mock_bronze.get_trade_dates_by_symbol.return_value = {
+            "AAPL": [date(2026, 5, 29)],
+            "MSFT": [date(2026, 5, 29)],
+        }
+        with patch(
+            "livewire_scripts.check_gaps.BronzeClient", return_value=mock_bronze
+        ):
+            main(["--preset", str(preset_path)])
+
+    def test_main_unknown_ticker(self, tmp_path, monkeypatch):
+        """Ticker in bronze but not in registry — no earliest bounds."""
+        warehouse = self._setup(tmp_path, monkeypatch)
+        mock_bronze = MagicMock()
+        mock_bronze.get_trade_dates_by_symbol.return_value = {
+            "AAPL": [date(2026, 5, 29)],
+        }
+        with patch(
+            "livewire_scripts.check_gaps.BronzeClient", return_value=mock_bronze
+        ):
+            main([])
+
+    def test_main_show_gaps_many(self, tmp_path, monkeypatch):
+        """Test show-gaps with more than 20 missing dates (triggers truncation)."""
+        warehouse = self._setup(tmp_path, monkeypatch)
+        from clients.tag_registry import TagRegistry
+
+        reg = TagRegistry(warehouse / "registry.json")
+        reg.set_tags("AAPL", {"sp500"}, status="active")
+        reg.set_earliest("AAPL", "2026-01-01", source="ib")
+        reg.save()
+
+        mock_bronze = MagicMock()
+        mock_bronze.get_trade_dates_by_symbol.return_value = {
+            "AAPL": [date(2026, 5, 29)],
+        }
+        with patch(
+            "livewire_scripts.check_gaps.BronzeClient", return_value=mock_bronze
+        ):
+            main(["--show-gaps"])
