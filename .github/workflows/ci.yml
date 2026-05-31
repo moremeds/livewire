@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Check lockfile is up-to-date
+        run: uv lock --check
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Fetch base branch for diff
+        run: git fetch origin ${{ github.event.pull_request.base.ref }}
+
+      - name: Secrets scan
+        run: bash tools/pre-commit-secrets-scan.sh --ci ${{ github.event.pull_request.base.ref }}
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format
+        run: uv run ruff format --check .
+
+      - name: Pyright
+        run: uv run pyright
+
+      - name: Pytest
+        run: uv run pytest tests/ -m "not integration and not postgres_live" --cov --cov-fail-under=95 -W error::RuntimeWarning
