@@ -13,6 +13,7 @@ from clients.intraday_bronze_client import (
 from clients.massive_client import MassiveClient
 from clients.massive_flatfile_client import MassiveFlatfileClient
 from clients.postgres_client import PostgresClient
+from clients.tag_registry import TagRegistry
 from clients.timeframe_aggregator import VALID_ROLLUPS, aggregate_bars
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "INTRADAY_MAX_REQUEST_DURATION",
     "INTRADAY_MAX_DEPTH",
     "INTRADAY_IB_BAR_SIZE",
+    "TagRegistry",
     "VALID_ROLLUPS",
     "aggregate_bars",
 ]

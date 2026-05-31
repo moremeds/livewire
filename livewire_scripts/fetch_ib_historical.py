@@ -432,7 +432,7 @@ async def fetch_all_tickers(
     semaphore = asyncio.Semaphore(max_concurrent)
     results: dict[str, list] = {}
 
-    async def _safe_fetch(ticker: str) -> tuple[str, list]:
+    async def _safe_fetch(ticker: str) -> tuple[str, list | None]:
         try:
             edt = end_dt_overrides.get(ticker) if end_dt_overrides else None
             exch = (exchange_map or {}).get(ticker)
@@ -447,7 +447,7 @@ async def fetch_all_tickers(
             )
         except (IBError, Exception) as exc:
             console.print(f"    [red]{ticker}: {type(exc).__name__} — {exc}[/red]")
-            return (ticker, [])
+            return (ticker, None)
 
     gathered = await asyncio.gather(*[_safe_fetch(t) for t in tickers])
     for ticker, bars in gathered:
@@ -928,7 +928,14 @@ def _run_backfill(
 
             for ticker in batch:
                 progress.update(task, description=f"Backfilling {ticker}...")
-                bars = ticker_bars.get(ticker, [])
+                bars = ticker_bars.get(ticker)
+                if bars is None:
+                    console.print(
+                        f"  [yellow]{ticker}[/yellow]: fetch error (will retry)"
+                    )
+                    batch_fail += 1
+                    progress.advance(task)
+                    continue
                 count = backfill_ticker(ticker, bars, bronze, asset_class=asset_class)
 
                 if count > 0:
@@ -938,11 +945,16 @@ def _run_backfill(
                         f"  [green]{ticker}[/green]: {count:,} backfill rows inserted"
                     )
                     batch_ok += 1
+                elif not bars:
+                    mark_timeframe_done(completed, ticker, "1d")
+                    save_cursor(cursor_name, completed, started_at)
+                    console.print(f"  [dim]{ticker}[/dim]: no older history (done)")
+                    batch_ok += 1
                 else:
                     console.print(
-                        f"  [yellow]{ticker}[/yellow]: 0 backfill rows (will retry next run)"
+                        f"  [dim]{ticker}[/dim]: 0 new rows (already current)"
                     )
-                    batch_fail += 1
+                    batch_ok += 1
 
                 batch_rows += count
                 progress.advance(task)
@@ -1179,13 +1191,25 @@ def _run_normal(
 
             for ticker in batch:
                 progress.update(task, description=f"Inserting {ticker}...")
-                bars = ticker_bars.get(ticker, [])
+                bars = ticker_bars.get(ticker)
+                if bars is None:
+                    console.print(
+                        f"  [yellow]{ticker}[/yellow]: fetch error (will retry)"
+                    )
+                    batch_fail += 1
+                    progress.advance(task)
+                    continue
                 count = fetch_ticker(ticker, bars, bronze, asset_class=asset_class)
 
                 if count > 0:
                     mark_timeframe_done(completed, ticker, "1d")
                     save_cursor(cursor_name, completed, started_at)
                     console.print(f"  [green]{ticker}[/green]: {count:,} rows inserted")
+                    batch_ok += 1
+                elif not bars:
+                    mark_timeframe_done(completed, ticker, "1d")
+                    save_cursor(cursor_name, completed, started_at)
+                    console.print(f"  [dim]{ticker}[/dim]: no data available (done)")
                     batch_ok += 1
                 else:
                     console.print(

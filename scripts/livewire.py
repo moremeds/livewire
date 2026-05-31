@@ -39,6 +39,8 @@ CHECK_MODULES = {
     "weekly": "livewire_scripts.weekly_quality_summary",
     "watchdog": "livewire_scripts.check_daily_update_watchdog",
     "universe": "livewire_scripts.universe_screener",
+    "universe-sync": "livewire_scripts.universe_sync",
+    "gaps": "livewire_scripts.check_gaps",
 }
 
 PUBLISH_MODULES = {
@@ -277,6 +279,8 @@ def _dispatch_check(argv: list[str]) -> int:
     parser.add_argument("--report", action="store_true")
     parser.add_argument("--weekly", action="store_true")
     parser.add_argument("--universe", action="store_true")
+    parser.add_argument("--universe-sync", action="store_true")
+    parser.add_argument("--gaps", action="store_true")
     parser.add_argument("--health", action="store_true")
     args, rest = parser.parse_known_args(argv)
 
@@ -284,6 +288,10 @@ def _dispatch_check(argv: list[str]) -> int:
         mode = "report"
     elif args.weekly:
         mode = "weekly"
+    elif args.universe_sync:
+        mode = "universe-sync"
+    elif args.gaps:
+        mode = "gaps"
     elif args.universe:
         mode = "universe"
     elif args.health:

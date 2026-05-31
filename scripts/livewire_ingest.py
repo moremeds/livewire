@@ -22,6 +22,7 @@ COMMANDS = {
     "intraday-backfill": "livewire_scripts.backfill_intraday",
     "flatfile-ingest": "livewire_scripts.ingest_flatfiles",
     "universe": "livewire_scripts.universe_screener",
+    "universe-sync": "livewire_scripts.universe_sync",
 }
 
 # Commands that talk to IB Gateway. cboe-vol uses CBOE's public API.
