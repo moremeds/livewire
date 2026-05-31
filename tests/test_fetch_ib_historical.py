@@ -270,6 +270,31 @@ class TestCursorPath:
         assert path.name == "cursor_sp500.json"
 
 
+class TestFetchAllTickersReturnType:
+    def test_preserves_none_on_error(self, monkeypatch):
+        """fetch_all_tickers returns None (not []) for tickers that raise."""
+        import asyncio
+
+        from livewire_scripts.fetch_ib_historical import fetch_all_tickers
+
+        mock_ib = MagicMock()
+
+        async def _boom(ticker, ib, semaphore, **kw):
+            if ticker == "BAD":
+                raise RuntimeError("kaboom")
+            return (ticker, [MagicMock()])
+
+        monkeypatch.setattr(
+            "livewire_scripts.fetch_ib_historical.fetch_ticker_bars", _boom
+        )
+
+        result = asyncio.run(
+            fetch_all_tickers(["OK", "BAD"], mock_ib, max_concurrent=2)
+        )
+        assert result["OK"] is not None
+        assert result["BAD"] is None
+
+
 class TestStorageClient:
     def test_storage_client_defaults_to_bronze_client(self):
         from livewire_scripts import fetch_ib_historical as fetch_script

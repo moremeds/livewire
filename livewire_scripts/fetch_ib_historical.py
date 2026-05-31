@@ -411,14 +411,14 @@ async def fetch_all_tickers(
     end_dt_overrides: dict[str, datetime] | None = None,
     asset_class: str = "equity",
     exchange_map: dict[str, str] | None = None,
-) -> dict[str, list]:
+) -> dict[str, list | None]:
     """Fetch historical bars for all *tickers* concurrently.
 
     When *end_dt_overrides* is provided, each ticker uses its override as the
     end date (for backfill mode).
 
     Returns ``{ticker: bars}`` dict.  Per-ticker errors are logged and result
-    in empty bar lists (the run continues for remaining tickers).
+    in ``None`` values; successful fetches with no data return ``[]``.
     """
     t0 = time.monotonic()
     mode_label = (
@@ -430,7 +430,7 @@ async def fetch_all_tickers(
         f"  [bold]Fetching {len(tickers)} tickers (max {max_concurrent} concurrent{mode_label})...[/bold]"
     )
     semaphore = asyncio.Semaphore(max_concurrent)
-    results: dict[str, list] = {}
+    results: dict[str, list | None] = {}
 
     async def _safe_fetch(ticker: str) -> tuple[str, list | None]:
         try:
@@ -454,10 +454,11 @@ async def fetch_all_tickers(
         results[ticker] = bars
 
     elapsed = time.monotonic() - t0
-    ok = sum(1 for b in results.values() if b)
-    fail = len(results) - ok
+    ok = sum(1 for b in results.values() if b is not None and len(b) > 0)
+    empty = sum(1 for b in results.values() if b is not None and len(b) == 0)
+    errors = sum(1 for b in results.values() if b is None)
     console.print(
-        f"  [bold]Fetch complete:[/bold] {ok} succeeded, {fail} failed/empty in {elapsed:.1f}s"
+        f"  [bold]Fetch complete:[/bold] {ok} succeeded, {empty} empty, {errors} errors in {elapsed:.1f}s"
     )
     return results
 
