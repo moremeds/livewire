@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -59,15 +58,17 @@ def _dispatch_module(module_name: str, argv: Sequence[str], display_name: str) -
 
 
 def _dispatch_backfill_all(argv: Sequence[str]) -> int:
-    if argv:
-        raise SystemExit("backfill-all does not accept arguments")
-    return subprocess.call(["bash", str(REPO_ROOT / "tools" / "run_backfill_all.sh")])
+    return _dispatch_module(
+        "livewire_scripts.backfill_runner",
+        list(argv),
+        "livewire_ingest.py backfill-all",
+    )
 
 
 def _dispatch_daily_backfill(argv: Sequence[str]) -> int:
-    if argv:
-        raise SystemExit("daily-backfill does not accept arguments")
-    return subprocess.call(["bash", str(REPO_ROOT / "tools" / "run_daily_backfill.sh")])
+    return _dispatch_module(
+        "livewire_scripts.sync_runner", list(argv), "livewire_ingest.py daily-backfill"
+    )
 
 
 def _arg_value(argv: Sequence[str], flag: str, default: str) -> str:
@@ -122,7 +123,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _dispatch_backfill_all(rest)
     if args.command == "daily-backfill":
         return _dispatch_daily_backfill(rest)
-    return _dispatch_module(COMMANDS[args.command], rest, f"livewire_ingest.py {args.command}")
+    return _dispatch_module(
+        COMMANDS[args.command], rest, f"livewire_ingest.py {args.command}"
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

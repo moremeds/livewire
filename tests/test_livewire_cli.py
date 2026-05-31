@@ -474,6 +474,34 @@ class TestSyncForceFlag:
         assert "--force" in dispatched[0]
 
 
+class TestSyncFull:
+    def test_full_dispatches_sync_runner(self, monkeypatch):
+        dispatched = []
+
+        def capture(mod, argv, display):
+            dispatched.append(mod)
+            return 0
+
+        monkeypatch.setattr("scripts.livewire._dispatch_module", capture)
+        _dispatch_sync(["--full"])
+
+        assert dispatched == ["livewire_scripts.sync_runner"]
+
+
+class TestBackfillFull:
+    def test_full_dispatches_backfill_runner(self, monkeypatch):
+        dispatched = []
+
+        def capture(mod, argv, display):
+            dispatched.append(mod)
+            return 0
+
+        monkeypatch.setattr("scripts.livewire._dispatch_module", capture)
+        _dispatch_backfill(["--full"])
+
+        assert dispatched == ["livewire_scripts.backfill_runner"]
+
+
 class TestBackfillSkipExisting:
     def test_skip_existing_passed_through(self, monkeypatch):
         monkeypatch.delenv("MASSIVE_API_KEY", raising=False)

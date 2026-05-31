@@ -99,6 +99,11 @@ def _dispatch_sync(argv: list[str]) -> int:
         help="Run as scheduled job with retry + alerting",
     )
     parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Run daily-backfill orchestrator (Massive equity + FRED + CBOE + IB vol + Postgres)",
+    )
+    parser.add_argument(
         "--asset-class",
         choices=["equity", "volatility", "futures", "rates", "all"],
         default="all",
@@ -108,6 +113,11 @@ def _dispatch_sync(argv: list[str]) -> int:
     if args.scheduled:
         return _dispatch_module(
             "livewire_scripts.run_daily_update_job", rest, "livewire sync --scheduled"
+        )
+
+    if args.full:
+        return _dispatch_module(
+            "livewire_scripts.sync_runner", rest, "livewire sync --full"
         )
 
     if _needs_ib(args.asset_class if args.asset_class != "all" else "equity"):
@@ -181,7 +191,17 @@ def _dispatch_backfill(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--preset", type=str, default=None)
     parser.add_argument("--skip-existing", action="store_true")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Run full warehouse backfill orchestrator (all presets, all phases)",
+    )
     args, rest = parser.parse_known_args(argv)
+
+    if args.full:
+        return _dispatch_module(
+            "livewire_scripts.backfill_runner", rest, "livewire backfill --full"
+        )
 
     timeframes = (
         ["1d", "1h", "30m", "5m", "1m"] if "all" in args.timeframe else args.timeframe
