@@ -952,6 +952,8 @@ def _run_backfill(
                     console.print(f"  [dim]{ticker}[/dim]: no older history (done)")
                     batch_ok += 1
                 else:
+                    mark_timeframe_done(completed, ticker, "1d")
+                    save_cursor(cursor_name, completed, started_at)
                     console.print(
                         f"  [dim]{ticker}[/dim]: 0 new rows (already current)"
                     )
