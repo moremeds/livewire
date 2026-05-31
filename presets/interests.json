@@ -1,0 +1,6 @@
+{
+  "name": "interests",
+  "description": "Personal watchlist — tickers you want to track regardless of index membership",
+  "tickers": [],
+  "source": "manual"
+}

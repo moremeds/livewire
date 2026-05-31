@@ -212,6 +212,23 @@ def test_ingest_intraday_massive_non_equity_keeps_ib_preflight(monkeypatch) -> N
     assert preflight_calls == [True]
 
 
+def test_ingest_universe_sync_bypasses_ib_preflight(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_ingest.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=False),
+    )
+    monkeypatch.setattr(
+        ib_gateway_preflight,
+        "assert_gateway_up",
+        lambda: (_ for _ in ()).throw(AssertionError("preflight should not run")),
+    )
+
+    assert livewire_ingest.main(["universe-sync", "--dry-run"]) == 0
+    assert calls == [("livewire_scripts.universe_sync", [])]
+
+
 def test_ingest_preserves_nonzero_system_exit(monkeypatch) -> None:
     def fake_module(name):
         def main():

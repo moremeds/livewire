@@ -370,6 +370,30 @@ class TestDispatchCheck:
 
         assert dispatched == ["livewire_scripts.universe_screener"]
 
+    def test_universe_sync_flag(self, monkeypatch):
+        dispatched = []
+
+        def capture(mod, argv, display):
+            dispatched.append(mod)
+            return 0
+
+        monkeypatch.setattr("scripts.livewire._dispatch_module", capture)
+        _dispatch_check(["--universe-sync"])
+
+        assert dispatched == ["livewire_scripts.universe_sync"]
+
+    def test_gaps_flag(self, monkeypatch):
+        dispatched = []
+
+        def capture(mod, argv, display):
+            dispatched.append(mod)
+            return 0
+
+        monkeypatch.setattr("scripts.livewire._dispatch_module", capture)
+        _dispatch_check(["--gaps"])
+
+        assert dispatched == ["livewire_scripts.check_gaps"]
+
     def test_mode_flag(self, monkeypatch):
         dispatched = []
 
