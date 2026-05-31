@@ -16,6 +16,7 @@ from scripts.livewire import (
     _dispatch_publish,
     _dispatch_sync,
     _has_massive_key,
+    _has_s3_keys,
     _ib_reachable,
     _needs_ib,
     main,
@@ -534,3 +535,72 @@ class TestBackfillIntradayMassive:
         assert "massive" in argv
         assert "--years" in argv
         assert "2" in argv
+
+
+class TestHasS3Keys:
+    def test_returns_true_when_both_set(self, monkeypatch):
+        monkeypatch.setenv("MASSIVE_S3_ACCESS_KEY", "ak")
+        monkeypatch.setenv("MASSIVE_S3_SECRET_KEY", "sk")
+        assert _has_s3_keys() is True
+
+    def test_returns_false_when_access_key_missing(self, monkeypatch):
+        monkeypatch.delenv("MASSIVE_S3_ACCESS_KEY", raising=False)
+        monkeypatch.setenv("MASSIVE_S3_SECRET_KEY", "sk")
+        assert _has_s3_keys() is False
+
+    def test_returns_false_when_secret_key_missing(self, monkeypatch):
+        monkeypatch.setenv("MASSIVE_S3_ACCESS_KEY", "ak")
+        monkeypatch.delenv("MASSIVE_S3_SECRET_KEY", raising=False)
+        assert _has_s3_keys() is False
+
+    def test_returns_false_when_both_missing(self, monkeypatch):
+        monkeypatch.delenv("MASSIVE_S3_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("MASSIVE_S3_SECRET_KEY", raising=False)
+        assert _has_s3_keys() is False
+
+
+class TestBackfillSourceS3:
+    def test_s3_dispatches_flatfile_ingest(self, monkeypatch):
+        monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+        monkeypatch.delenv("MASSIVE_S3_ACCESS_KEY", raising=False)
+        dispatched = []
+
+        def capture(mod, argv, display):
+            dispatched.append((mod, display))
+            return 0
+
+        monkeypatch.setattr("scripts.livewire._dispatch_module", capture)
+        _dispatch_backfill(["--source", "s3", "--preset", "presets/sp500.json"])
+
+        assert len(dispatched) == 2  # 1d (daily) + s3 flat file
+        assert dispatched[1][0] == "livewire_scripts.ingest_flatfiles"
+        assert "s3" in dispatched[1][1]
+
+    def test_s3_auto_detected_with_keys(self, monkeypatch):
+        monkeypatch.setenv("MASSIVE_S3_ACCESS_KEY", "ak")
+        monkeypatch.setenv("MASSIVE_S3_SECRET_KEY", "sk")
+        monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+        dispatched = []
+
+        def capture(mod, argv, display):
+            dispatched.append((mod, display))
+            return 0
+
+        monkeypatch.setattr("scripts.livewire._dispatch_module", capture)
+        _dispatch_backfill(["--timeframe", "1m", "--preset", "presets/sp500.json"])
+
+        assert dispatched[0][0] == "livewire_scripts.ingest_flatfiles"
+
+    def test_s3_not_used_for_non_equity(self, monkeypatch):
+        monkeypatch.setenv("MASSIVE_S3_ACCESS_KEY", "ak")
+        monkeypatch.setenv("MASSIVE_S3_SECRET_KEY", "sk")
+        dispatched = []
+
+        def capture(mod, argv, display):
+            dispatched.append(mod)
+            return 0
+
+        monkeypatch.setattr("scripts.livewire._dispatch_module", capture)
+        _dispatch_backfill(["--timeframe", "5m", "--asset-class", "volatility"])
+
+        assert dispatched[0] == "livewire_scripts.backfill_intraday"

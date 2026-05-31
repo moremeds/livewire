@@ -51,6 +51,13 @@ def _has_massive_key() -> bool:
     return bool(os.environ.get("MASSIVE_API_KEY"))
 
 
+def _has_s3_keys() -> bool:
+    return bool(
+        os.environ.get("MASSIVE_S3_ACCESS_KEY")
+        and os.environ.get("MASSIVE_S3_SECRET_KEY")
+    )
+
+
 def _ib_reachable() -> bool:
     import socket
 
@@ -192,6 +199,12 @@ def _dispatch_backfill(argv: list[str]) -> int:
     parser.add_argument("--preset", type=str, default=None)
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument(
+        "--source",
+        choices=["auto", "ib", "massive", "s3"],
+        default="auto",
+        help="Data source (s3 = Polygon flat files for equity intraday)",
+    )
+    parser.add_argument(
         "--full",
         action="store_true",
         help="Run full warehouse backfill orchestrator (all presets, all phases)",
@@ -206,6 +219,8 @@ def _dispatch_backfill(argv: list[str]) -> int:
     timeframes = (
         ["1d", "1h", "30m", "5m", "1m"] if "all" in args.timeframe else args.timeframe
     )
+
+    use_s3 = args.source == "s3" or (args.source == "auto" and _has_s3_keys())
 
     results = []
     for tf in timeframes:
@@ -227,6 +242,17 @@ def _dispatch_backfill(argv: list[str]) -> int:
                     BACKFILL_MODULES["daily"], cmd_argv, f"livewire backfill {tf}"
                 )
             )
+        elif use_s3 and args.asset_class in ("equity", "all"):
+            if args.years is not None:
+                cmd_argv.extend(["--years", str(args.years)])
+            results.append(
+                _dispatch_module(
+                    "livewire_scripts.ingest_flatfiles",
+                    cmd_argv,
+                    f"livewire backfill {tf} (s3)",
+                )
+            )
+            break  # S3 flat files handle all intraday TFs in one pass
         else:
             cmd_argv.extend(["--timeframe", tf])
             if _has_massive_key() and args.asset_class in ("equity", "all"):

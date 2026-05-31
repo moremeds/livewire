@@ -20,6 +20,7 @@ COMMANDS = {
     "cboe-vol": "livewire_scripts.fetch_cboe_volatility",
     "fred-rates": "livewire_scripts.fetch_fred_rates",
     "intraday-backfill": "livewire_scripts.backfill_intraday",
+    "flatfile-ingest": "livewire_scripts.ingest_flatfiles",
     "universe": "livewire_scripts.universe_screener",
 }
 

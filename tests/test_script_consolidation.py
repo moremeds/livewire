@@ -48,6 +48,7 @@ def test_operator_entrypoints_render_subcommand_help() -> None:
             "cboe-vol",
             "fred-rates",
             "intraday-backfill",
+            "flatfile-ingest",
             "daily-backfill",
         ],
         "livewire_quality.py": ["health", "coverage", "report", "weekly", "watchdog"],
