@@ -97,6 +97,95 @@ def cursor_completed(cursor_file: Path) -> int:
         return 0
 
 
+def gap_aware_completed(
+    cursor_file: Path,
+    total: int,
+    preset_path: str | None,
+    warehouse_dir: Path | None = None,
+    bronze_dir: Path | None = None,
+) -> int:
+    """Count completed tickers, cross-checking with gap analysis when cursor is full.
+
+    Returns cursor count when below *total*. When cursor count >= total,
+    validates against bronze parquet dates and TagRegistry.earliest_available.
+    Falls back to cursor count if registry is unavailable.
+    """
+    cursor_count = cursor_completed(cursor_file)
+    if cursor_count < total:
+        return cursor_count
+
+    wh = warehouse_dir or Path(
+        os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))
+    )
+    registry_path = wh / "registry.json"
+    if not registry_path.exists():
+        logger.debug("No registry at %s — falling back to cursor count", registry_path)
+        return cursor_count
+
+    try:
+        import clients.bronze_client as _bc
+        from clients.tag_registry import TagRegistry
+        from livewire_scripts.check_gaps import compute_gaps
+
+        registry = TagRegistry(registry_path)
+        bdir = bronze_dir or (wh / "data-lake" / "bronze" / "asset_class=equity")
+        bronze = _bc.BronzeClient(bronze_dir=bdir)
+        all_dates = bronze.get_trade_dates_by_symbol()
+
+        tickers: list[str]
+        if preset_path:
+            with open(preset_path, encoding="utf-8") as fh:
+                tickers = json.load(fh).get("tickers", [])
+        else:
+            tickers = sorted(all_dates.keys())
+
+        n_no_bounds = 0
+        n_with_gaps = 0
+        for ticker in tickers:
+            entry = registry.get(ticker)
+            earliest = entry.earliest_available if entry else None
+            if earliest is None:
+                n_no_bounds += 1
+                continue
+            bronze_dates = set(all_dates.get(ticker, []))
+            report = compute_gaps(ticker, earliest, bronze_dates)
+            if not report.complete:
+                n_with_gaps += 1
+
+        if n_no_bounds > 0:
+            logger.warning(
+                "Gap check: %d/%d tickers lack earliest_available bounds",
+                n_no_bounds,
+                len(tickers),
+            )
+        if n_with_gaps > 0:
+            logger.info(
+                "Gap check: %d/%d tickers still have data gaps despite cursor completion",
+                n_with_gaps,
+                len(tickers),
+            )
+            return total - n_with_gaps
+
+    except Exception:
+        logger.warning(
+            "Gap analysis failed — falling back to cursor count", exc_info=True
+        )
+
+    return cursor_count
+
+
+def make_gap_completed_fn(
+    total: int,
+    preset_path: str | None,
+) -> callable:
+    """Return a completed_fn that wraps cursor_completed with gap analysis."""
+
+    def _fn(cursor_file: Path) -> int:
+        return gap_aware_completed(cursor_file, total, preset_path)
+
+    return _fn
+
+
 def _file_mtime(path: Path) -> float:
     try:
         return path.stat().st_mtime
@@ -309,6 +398,7 @@ def _run_equity_intraday(
         for preset_path in config.equity_presets:
             name, total = preset_info(preset_path)
             cursor_file = config.cursor_dir / f"cursor_intraday_{tf}_{name}.json"
+            gap_fn = make_gap_completed_fn(total, preset_path)
             run_until_done(
                 f"intraday_{tf}_{name}",
                 cursor_file,
@@ -330,7 +420,7 @@ def _run_equity_intraday(
                     "--skip-existing",
                 ],
                 config,
-                **inject,
+                **{**inject, "completed_fn": gap_fn},
             )
     return 0
 
@@ -410,6 +500,7 @@ def _run_volatility_lanes(
     name, total = preset_info(config.vol_preset)
     for tf in VOL_INTRADAY_TIMEFRAMES:
         cursor_file = config.cursor_dir / f"cursor_intraday_{tf}_{name}.json"
+        gap_fn = make_gap_completed_fn(total, config.vol_preset)
         run_until_done(
             f"intraday_{tf}_{name}",
             cursor_file,
@@ -429,7 +520,7 @@ def _run_volatility_lanes(
                 "--skip-existing",
             ],
             config,
-            **inject,
+            **{**inject, "completed_fn": gap_fn},
         )
 
     # Phase 8b: Derive 1h from 30m locally
@@ -475,6 +566,7 @@ def run_backfill(
         name, total = preset_info(preset_path)
         cursor_file = config.log_dir / f"cursor_{name}.json"
         logger.info("── PHASE 1: Normal fetch %s (%d tickers) ──", name, total)
+        gap_fn = make_gap_completed_fn(total, preset_path)
         run_until_done(
             f"normal_{name}",
             cursor_file,
@@ -494,7 +586,7 @@ def run_backfill(
                 str(config.max_concurrent),
             ],
             config,
-            **inject,
+            **{**inject, "completed_fn": gap_fn},
         )
 
     # Phase 2: Backfill older data for each preset
@@ -502,6 +594,7 @@ def run_backfill(
         name, total = preset_info(preset_path)
         cursor_file = config.log_dir / f"cursor_backfill_{name}.json"
         logger.info("── PHASE 2: Backfill %s (%d tickers) ──", name, total)
+        gap_fn = make_gap_completed_fn(total, preset_path)
         run_until_done(
             f"backfill_{name}",
             cursor_file,
@@ -521,7 +614,7 @@ def run_backfill(
                 str(config.max_concurrent),
             ],
             config,
-            **inject,
+            **{**inject, "completed_fn": gap_fn},
         )
 
     # Phase 3: FRED Treasury rates

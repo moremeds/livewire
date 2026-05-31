@@ -270,6 +270,31 @@ class TestCursorPath:
         assert path.name == "cursor_sp500.json"
 
 
+class TestFetchAllTickersReturnType:
+    def test_preserves_none_on_error(self, monkeypatch):
+        """fetch_all_tickers returns None (not []) for tickers that raise."""
+        import asyncio
+
+        from livewire_scripts.fetch_ib_historical import fetch_all_tickers
+
+        mock_ib = MagicMock()
+
+        async def _boom(ticker, ib, semaphore, **kw):
+            if ticker == "BAD":
+                raise RuntimeError("kaboom")
+            return (ticker, [MagicMock()])
+
+        monkeypatch.setattr(
+            "livewire_scripts.fetch_ib_historical.fetch_ticker_bars", _boom
+        )
+
+        result = asyncio.run(
+            fetch_all_tickers(["OK", "BAD"], mock_ib, max_concurrent=2)
+        )
+        assert result["OK"] is not None
+        assert result["BAD"] is None
+
+
 class TestStorageClient:
     def test_storage_client_defaults_to_bronze_client(self):
         from livewire_scripts import fetch_ib_historical as fetch_script
@@ -1107,6 +1132,72 @@ class TestBackfillTicker:
         assert inserted == 1
         assert rows[0]["close"] == pytest.approx(1 / 1.28)
         assert rows[0]["volume"] == 0
+
+
+class TestRunBackfillZeroNewRows:
+    def test_zero_new_rows_marks_cursor_done(self, tmp_path, monkeypatch):
+        """When IB backfill returns bars that are all duplicates (0 new rows),
+        the ticker should be marked cursor-complete to prevent infinite retries."""
+        import asyncio
+        from argparse import Namespace
+
+        from livewire_scripts.fetch_ib_historical import (
+            _run_backfill,
+            is_ticker_complete,
+        )
+
+        cursor_dir = tmp_path / "cursors"
+        cursor_dir.mkdir()
+        monkeypatch.setattr(
+            "livewire_scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir
+        )
+
+        mock_bronze = MagicMock()
+        mock_ib = MagicMock()
+        mock_ib.ib.run = lambda coro: asyncio.run(coro)
+
+        monkeypatch.setattr(
+            "livewire_scripts.fetch_ib_historical.get_oldest_dates",
+            lambda b: {"AAPL": "2020-01-02"},
+        )
+
+        bar = MagicMock()
+        bar.date = "2019-12-31"
+        bar.open = bar.high = bar.low = bar.close = 100.0
+        bar.volume = 1000
+
+        async def fake_fetch(tickers, ib, **kw):
+            return {t: [bar] for t in tickers}
+
+        monkeypatch.setattr(
+            "livewire_scripts.fetch_ib_historical.fetch_all_tickers", fake_fetch
+        )
+        monkeypatch.setattr(
+            "livewire_scripts.fetch_ib_historical.backfill_ticker",
+            lambda *a, **kw: 0,
+        )
+
+        args = Namespace(
+            max_concurrent=1,
+            batch_size=10,
+            years=0,
+            source="ib",
+        )
+        completed: dict[str, list[str]] = {}
+        started_at = "2026-05-31T00:00:00"
+
+        _run_backfill(
+            args,
+            mock_ib,
+            mock_bronze,
+            all_tickers=["AAPL"],
+            remaining=["AAPL"],
+            completed=completed,
+            cursor_name="backfill_test",
+            started_at=started_at,
+        )
+
+        assert is_ticker_complete(completed, "AAPL", ("1d",))
 
 
 class TestQualityHookIntegration:
