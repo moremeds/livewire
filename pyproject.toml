@@ -68,3 +68,17 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["clients", "livewire_scripts"]
+
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "basic"
+include = ["clients", "livewire_scripts"]
+exclude = ["tests", "scripts"]
+reportMissingTypeStubs = false
+reportCallIssue = false
+reportArgumentType = false
+reportGeneralTypeIssues = false
+reportOptionalMemberAccess = "warning"
+reportOptionalOperand = "warning"
+reportOperatorIssue = "warning"
+reportAttributeAccessIssue = "warning"
