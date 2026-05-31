@@ -195,16 +195,19 @@ Current fetch behavior:
 - Uses separate cursor JSON: `cursor_backfill_{name}.json`
 - Skips tickers not in bronze parquet (use normal fetch first)
 
-### Auto-restarting runner
+### Orchestrated runners
 
 ```bash
-python scripts/livewire_ingest.py backfill-all   # Runs default warehouse build
-python scripts/livewire_ingest.py daily-backfill # Runs lightweight daily catch-up
+python scripts/livewire_ingest.py backfill-all   # Full warehouse build (Python orchestrator)
+python scripts/livewire_ingest.py daily-backfill # Lightweight daily catch-up (Python orchestrator)
+# Or via unified CLI:
+python scripts/livewire.py backfill --full       # Same as backfill-all
+python scripts/livewire.py sync --full           # Same as daily-backfill
 ```
 
-`backfill-all` is the default warehouse build, not just daily equity. It runs equity daily seed/backfill for `sp500`, `ndx100`, and `r2k`; the older-history backfill phase remains IB-backed through `--source auto`. It then syncs FRED Treasury yield rates, then runs Massive equity intraday (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed `VIX`/`SPX` intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility.
+`backfill-all` (`livewire_scripts/backfill_runner.py`) is the default warehouse build. It runs equity daily seed/backfill for `sp500`, `ndx100`, and `r2k`; the older-history backfill phase remains IB-backed through `--source auto`. It then syncs FRED Treasury yield rates, then runs Massive equity intraday (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed `VIX`/`SPX` intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility. Features activity-based stall detection and retry-until-done logic.
 
-`daily-backfill` is the routine catch-up runner. It uses Massive for recent equity daily gaps and recent-window equity intraday (`1m`, `5m`, `1h`; default 7 calendar days via `MDW_DAILY_BACKFILL_INTRADAY_DAYS`) across the full `sp500` + `ndx100` + `r2k` union, so it forward-populates intraday coverage instead of only maintaining already-existing symbols. Massive intraday concurrency defaults to `MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT=20`. Side lanes stay on their existing sources: FRED rates, CBOE daily volatility, IB `VIX`/`SPX` volatility intraday, and optional Postgres rebuild.
+`daily-backfill` (`livewire_scripts/sync_runner.py`) is the routine catch-up runner. It uses Massive for recent equity daily gaps and recent-window equity intraday (`1m`, `5m`, `1h`; default 7 calendar days via `MDW_DAILY_BACKFILL_INTRADAY_DAYS`) across the full `sp500` + `ndx100` + `r2k` union, so it forward-populates intraday coverage instead of only maintaining already-existing symbols. Massive intraday concurrency defaults to `MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT=20`. Side lanes stay on their existing sources: FRED rates, CBOE daily volatility, IB `VIX`/`SPX` volatility intraday, and optional Postgres rebuild.
 
 Output: per-ticker bronze Parquet at `data-lake/bronze/asset_class=equity/symbol=<ticker>/{1d,1m,5m,1h}.parquet` and volatility/index bronze Parquet under `data-lake/bronze/asset_class=volatility/symbol=<ticker>/`. Postgres is rebuilt only when `MDW_POSTGRES_DSN` is configured.
 

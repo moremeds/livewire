@@ -157,8 +157,7 @@ def generate_expected_intraday_timestamps(
     * **5m**: bars every 5 minutes from 9:30 ET up to ``close - 5min``.
     * **1h**: first bar at 9:30 ET (covers 9:30-10:00), then on the hour
       (10:00, 11:00, …) up to ``close - 1h``. This matches IB's actual
-      US-equity RTH 1h grid as verified empirically by
-      ``scripts/probe_ib_intraday.py``.
+      US-equity RTH 1h grid as verified empirically.
     """
     if timeframe not in _BAR_SIZE_MINUTES:
         raise ValueError(f"unsupported intraday timeframe: {timeframe!r}")

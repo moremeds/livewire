@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import importlib
 import inspect
-import subprocess
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -21,8 +20,6 @@ COMMANDS = {
     "cboe-vol": "livewire_scripts.fetch_cboe_volatility",
     "fred-rates": "livewire_scripts.fetch_fred_rates",
     "intraday-backfill": "livewire_scripts.backfill_intraday",
-    "intraday-status": "livewire_scripts.intraday_update",
-    "probe-intraday": "livewire_scripts.probe_ib_intraday",
     "universe": "livewire_scripts.universe_screener",
 }
 
@@ -32,8 +29,6 @@ IB_COMMANDS = {
     "historical",
     "robust",
     "intraday-backfill",
-    "intraday-status",
-    "probe-intraday",
     "universe",
     "backfill-all",
     "daily-backfill",

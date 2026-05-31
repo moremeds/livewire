@@ -17,7 +17,6 @@ omit = [
     "tests/*",
     "clients/ib_client.py",
     "clients/historical_provider.py",
-    "livewire_scripts/probe_ib_intraday.py",
 ]
 
 [tool.coverage.report]
