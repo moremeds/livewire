@@ -30,7 +30,7 @@ EQUITY_PRESETS = ("presets/sp500.json", "presets/ndx100.json", "presets/r2k.json
 VOL_PRESET = "presets/volatility-intraday.json"
 VOL_DAILY_PRESET = "presets/volatility.json"
 EQUITY_INTRADAY_TIMEFRAMES = ("1m", "5m", "1h")
-VOL_INTRADAY_TIMEFRAMES = ("5m", "1h")
+VOL_INTRADAY_TIMEFRAMES = ("30m",)
 
 
 @dataclass(frozen=True)
@@ -335,6 +335,39 @@ def _run_equity_intraday(
     return 0
 
 
+def _derive_vol_1h(
+    vol_preset: str,
+    *,
+    warehouse_dir: Path | None = None,
+) -> int:
+    """Derive 1h bars from 30m for all tickers in the vol preset."""
+    from clients.intraday_bronze_client import IntradayBronzeClient
+    from clients.timeframe_aggregator import aggregate_bars
+
+    with open(vol_preset, encoding="utf-8") as fh:
+        tickers = json.load(fh).get("tickers", [])
+
+    wh = warehouse_dir or Path(
+        os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))
+    )
+    bronze_dir = wh / "data-lake" / "bronze" / "asset_class=volatility"
+    derived = 0
+
+    for ticker in tickers:
+        bronze_30m = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe="30m")
+        rows = bronze_30m.read_symbol_rows(ticker)
+        if not rows:
+            continue
+        agg = aggregate_bars(rows, source_tf="30m", target_tf="1h")
+        if agg:
+            bronze_1h = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe="1h")
+            bronze_1h.merge_ticker_rows(ticker, agg, overwrite_existing=True)
+            derived += 1
+
+    logger.info("Derived 1h from 30m for %d/%d vol tickers", derived, len(tickers))
+    return derived
+
+
 def _run_volatility_lanes(
     config: BackfillConfig,
     *,
@@ -398,6 +431,9 @@ def _run_volatility_lanes(
             config,
             **inject,
         )
+
+    # Phase 8b: Derive 1h from 30m locally
+    _derive_vol_1h(config.vol_preset)
     return 0
 
 

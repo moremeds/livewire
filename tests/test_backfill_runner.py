@@ -13,6 +13,7 @@ from livewire_scripts.backfill_runner import (
     EQUITY_INTRADAY_TIMEFRAMES,
     VOL_INTRADAY_TIMEFRAMES,
     BackfillConfig,
+    _derive_vol_1h,
     _file_mtime,
     _kill_process,
     _run_equity_intraday,
@@ -34,7 +35,14 @@ def _make_config(tmp_path: Path) -> BackfillConfig:
         preset.write_text(json.dumps({"name": name, "tickers": tickers[name]}))
 
     vol = tmp_path / "vol.json"
-    vol.write_text(json.dumps({"name": "vol-intraday", "tickers": ["VIX", "SPX"]}))
+    vol.write_text(
+        json.dumps(
+            {
+                "name": "vol-intraday",
+                "tickers": ["VIX", "SPX", "NDX", "RUT", "VXN", "RVX"],
+            }
+        )
+    )
     vol_daily = tmp_path / "vol_daily.json"
     vol_daily.write_text(json.dumps({"name": "volatility", "tickers": ["VIX"]}))
 
@@ -472,6 +480,59 @@ class TestRunEquityIntraday:
         assert len(commands) == 0  # all already complete
 
 
+class TestDeriveVol1h:
+    def test_no_30m_data_returns_zero(self, tmp_path):
+        preset = tmp_path / "vol.json"
+        preset.write_text(json.dumps({"tickers": ["VIX", "SPX"]}))
+        warehouse = tmp_path / "warehouse"
+        (warehouse / "data-lake" / "bronze" / "asset_class=volatility").mkdir(
+            parents=True
+        )
+        result = _derive_vol_1h(str(preset), warehouse_dir=warehouse)
+        assert result == 0
+
+    def test_derives_1h_from_30m(self, tmp_path):
+        from datetime import datetime, timezone
+
+        from clients.intraday_bronze_client import IntradayBronzeClient
+
+        preset = tmp_path / "vol.json"
+        preset.write_text(json.dumps({"tickers": ["VIX"]}))
+        warehouse = tmp_path / "warehouse"
+        bronze_dir = warehouse / "data-lake" / "bronze" / "asset_class=volatility"
+        bronze_dir.mkdir(parents=True)
+
+        bronze_30m = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe="30m")
+        rows = [
+            {
+                "bar_timestamp": datetime(2026, 5, 28, 14, 0, tzinfo=timezone.utc),
+                "symbol_id": 1,
+                "open": 20.0,
+                "high": 22.0,
+                "low": 19.0,
+                "close": 21.0,
+                "volume": 1000,
+            },
+            {
+                "bar_timestamp": datetime(2026, 5, 28, 14, 30, tzinfo=timezone.utc),
+                "symbol_id": 1,
+                "open": 21.0,
+                "high": 23.0,
+                "low": 20.0,
+                "close": 22.0,
+                "volume": 2000,
+            },
+        ]
+        bronze_30m.replace_ticker_rows("VIX", rows)
+
+        result = _derive_vol_1h(str(preset), warehouse_dir=warehouse)
+        assert result == 1
+        bronze_1h = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe="1h")
+        h_rows = bronze_1h.read_symbol_rows("VIX")
+        assert len(h_rows) == 1
+        assert h_rows[0]["volume"] == 3000
+
+
 class TestRunVolatilityLanes:
     def test_runs_cboe_and_ib_intraday(self, tmp_path):
         config = _make_config(tmp_path)
@@ -488,16 +549,17 @@ class TestRunVolatilityLanes:
             run_commands.append(command)
             return CompletedProcess(args=command, returncode=0)
 
-        _run_volatility_lanes(
-            config,
-            runner=mock_runner,
-            popen_fn=lambda *a, **kw: _MockProc(poll_count=0),
-            sleep_fn=lambda s: None,
-            clock_fn=lambda: 0,
-            mtime_fn=lambda p: 0,
-            completed_fn=cursor_completed,
-            kill_fn=lambda p: None,
-        )
+        with patch("livewire_scripts.backfill_runner._derive_vol_1h", return_value=0):
+            _run_volatility_lanes(
+                config,
+                runner=mock_runner,
+                popen_fn=lambda *a, **kw: _MockProc(poll_count=0),
+                sleep_fn=lambda s: None,
+                clock_fn=lambda: 0,
+                mtime_fn=lambda p: 0,
+                completed_fn=cursor_completed,
+                kill_fn=lambda p: None,
+            )
         assert len(run_commands) == 1  # just the CBOE cboe-vol command
         assert "cboe-vol" in run_commands[0]
 
@@ -550,7 +612,8 @@ class TestRunBackfill:
             )
 
         commands, inject = self._inject(tmp_path)
-        rc = run_backfill(config, **inject)
+        with patch("livewire_scripts.backfill_runner._derive_vol_1h", return_value=0):
+            rc = run_backfill(config, **inject)
         assert rc == 0
 
         run_cmds = [c for kind, c in commands if kind == "run"]
@@ -583,7 +646,8 @@ class TestRunBackfill:
             )
 
         commands, inject = self._inject(tmp_path)
-        rc = run_backfill(config, **inject)
+        with patch("livewire_scripts.backfill_runner._derive_vol_1h", return_value=0):
+            rc = run_backfill(config, **inject)
         assert rc == 0
 
         run_cmds = [" ".join(c) for kind, c in commands if kind == "run"]
@@ -621,8 +685,9 @@ class TestRunBackfill:
 
         _, inject = self._inject(tmp_path)
         inject["runner"] = fail_fred
-        rc = run_backfill(config, **inject)
-        assert rc == 0  # FRED failure is logged but doesn't fail the run
+        with patch("livewire_scripts.backfill_runner._derive_vol_1h", return_value=0):
+            rc = run_backfill(config, **inject)
+        assert rc == 0
 
     def test_cboe_failure_logged(self, tmp_path, monkeypatch):
         monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
@@ -636,7 +701,8 @@ class TestRunBackfill:
 
         _, inject = self._inject(tmp_path)
         inject["runner"] = fail_cboe
-        rc = run_backfill(config, **inject)
+        with patch("livewire_scripts.backfill_runner._derive_vol_1h", return_value=0):
+            rc = run_backfill(config, **inject)
         assert rc == 0
 
     def test_parallel_lane_failure(self, tmp_path, monkeypatch):
@@ -648,7 +714,10 @@ class TestRunBackfill:
         with patch(
             "livewire_scripts.backfill_runner._run_equity_intraday", return_value=1
         ):
-            rc = run_backfill(config, **inject)
+            with patch(
+                "livewire_scripts.backfill_runner._derive_vol_1h", return_value=0
+            ):
+                rc = run_backfill(config, **inject)
         assert rc == 1
 
     def test_postgres_failure_logged(self, tmp_path, monkeypatch):
@@ -663,7 +732,8 @@ class TestRunBackfill:
 
         _, inject = self._inject(tmp_path)
         inject["runner"] = fail_postgres
-        rc = run_backfill(config, **inject)
+        with patch("livewire_scripts.backfill_runner._derive_vol_1h", return_value=0):
+            rc = run_backfill(config, **inject)
         assert rc == 0
 
 

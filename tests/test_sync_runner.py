@@ -13,6 +13,7 @@ from livewire_scripts.sync_runner import (
     EQUITY_INTRADAY_TIMEFRAMES,
     VOL_INTRADAY_TIMEFRAMES,
     SyncConfig,
+    _derive_vol_1h,
     _format_command,
     build_config,
     latest_complete_trading_day,
@@ -36,7 +37,12 @@ def _make_config(tmp_path: Path) -> SyncConfig:
 
     vol = tmp_path / "vol.json"
     vol.write_text(
-        json.dumps({"name": "volatility-intraday", "tickers": ["VIX", "SPX"]})
+        json.dumps(
+            {
+                "name": "volatility-intraday",
+                "tickers": ["VIX", "SPX", "NDX", "RUT", "VXN", "RVX"],
+            }
+        )
     )
     vol_daily = tmp_path / "vol_daily.json"
     vol_daily.write_text(json.dumps({"name": "volatility", "tickers": ["VIX"]}))
@@ -266,6 +272,55 @@ class TestRunPhase:
         assert rc == 1
 
 
+class TestDeriveVol1h:
+    def test_no_30m_data_returns_zero(self, tmp_path):
+        preset = tmp_path / "vol.json"
+        preset.write_text(json.dumps({"tickers": ["VIX"]}))
+        warehouse = tmp_path / "warehouse"
+        (warehouse / "data-lake" / "bronze" / "asset_class=volatility").mkdir(
+            parents=True
+        )
+        result = _derive_vol_1h(str(preset), warehouse_dir=warehouse)
+        assert result == 0
+
+    def test_derives_1h_from_30m(self, tmp_path):
+        from datetime import datetime, timezone
+
+        from clients.intraday_bronze_client import IntradayBronzeClient
+
+        preset = tmp_path / "vol.json"
+        preset.write_text(json.dumps({"tickers": ["VIX"]}))
+        warehouse = tmp_path / "warehouse"
+        bronze_dir = warehouse / "data-lake" / "bronze" / "asset_class=volatility"
+        bronze_dir.mkdir(parents=True)
+
+        bronze_30m = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe="30m")
+        rows = [
+            {
+                "bar_timestamp": datetime(2026, 5, 28, 14, 0, tzinfo=timezone.utc),
+                "symbol_id": 1,
+                "open": 20.0,
+                "high": 22.0,
+                "low": 19.0,
+                "close": 21.0,
+                "volume": 1000,
+            },
+            {
+                "bar_timestamp": datetime(2026, 5, 28, 14, 30, tzinfo=timezone.utc),
+                "symbol_id": 1,
+                "open": 21.0,
+                "high": 23.0,
+                "low": 20.0,
+                "close": 22.0,
+                "volume": 2000,
+            },
+        ]
+        bronze_30m.replace_ticker_rows("VIX", rows)
+
+        result = _derive_vol_1h(str(preset), warehouse_dir=warehouse)
+        assert result == 1
+
+
 class TestRunSync:
     def test_all_phases_succeed(self, tmp_path):
         config = _make_config(tmp_path)
@@ -275,7 +330,8 @@ class TestRunSync:
             commands.append(command)
             return CompletedProcess(args=command, returncode=0)
 
-        rc = run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+            rc = run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
         assert rc == 0
 
         joined = [" ".join(c) for c in commands]
@@ -285,8 +341,7 @@ class TestRunSync:
         assert any("--timeframe 1m" in c for c in joined)
         assert any("--timeframe 5m" in c and "equity" in c for c in joined)
         assert any("--timeframe 1h" in c and "equity" in c for c in joined)
-        assert any("--timeframe 5m" in c and "volatility" in c for c in joined)
-        assert any("--timeframe 1h" in c and "volatility" in c for c in joined)
+        assert any("--timeframe 30m" in c and "volatility" in c for c in joined)
 
     def test_uses_target_date_from_config(self, tmp_path):
         config = _make_config(tmp_path)
@@ -296,7 +351,8 @@ class TestRunSync:
             commands.append(command)
             return CompletedProcess(args=command, returncode=0)
 
-        run_sync(config, runner=capture, trading_day_fn=lambda: "should-not-use")
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+            run_sync(config, runner=capture, trading_day_fn=lambda: "should-not-use")
         assert any("2026-05-28" in c for c in commands[0])
 
     def test_auto_detects_trading_day(self, tmp_path):
@@ -308,12 +364,16 @@ class TestRunSync:
             commands.append(command)
             return CompletedProcess(args=command, returncode=0)
 
-        run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-27")
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+            run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-27")
         assert any("2026-05-27" in c for c in commands[0])
 
     def test_phase_failure_returns_nonzero(self, tmp_path):
         config = _make_config(tmp_path)
-        rc = run_sync(config, runner=_fail_runner, trading_day_fn=lambda: "2026-05-28")
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+            rc = run_sync(
+                config, runner=_fail_runner, trading_day_fn=lambda: "2026-05-28"
+            )
         assert rc == 1
 
     def test_postgres_rebuild_when_dsn_set(self, tmp_path, monkeypatch):
@@ -325,7 +385,8 @@ class TestRunSync:
             commands.append(command)
             return CompletedProcess(args=command, returncode=0)
 
-        run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+            run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
         joined = [" ".join(c) for c in commands]
         assert any("rebuild-postgres" in c and "equity" in c for c in joined)
         assert any("rebuild-postgres" in c and "volatility" in c for c in joined)
@@ -339,9 +400,10 @@ class TestRunSync:
                 return CompletedProcess(args=command, returncode=1)
             return CompletedProcess(args=command, returncode=0)
 
-        rc = run_sync(
-            config, runner=selective_runner, trading_day_fn=lambda: "2026-05-28"
-        )
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+            rc = run_sync(
+                config, runner=selective_runner, trading_day_fn=lambda: "2026-05-28"
+            )
         assert rc == 1
 
     def test_postgres_skipped_when_dsn_unset(self, tmp_path, monkeypatch):
@@ -353,7 +415,8 @@ class TestRunSync:
             commands.append(command)
             return CompletedProcess(args=command, returncode=0)
 
-        run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+            run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
         joined = [" ".join(c) for c in commands]
         assert not any("rebuild-postgres" in c for c in joined)
 
@@ -366,9 +429,10 @@ class TestRunSync:
             commands.append(command)
             return CompletedProcess(args=command, returncode=0)
 
-        run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
-        # 1 equity daily + 1 FRED + 1 CBOE + 3 equity intraday + 2 vol intraday = 8
-        assert len(commands) == 8
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+            run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
+        # 1 equity daily + 1 FRED + 1 CBOE + 3 equity intraday + 1 vol intraday (30m) = 7
+        assert len(commands) == 7
 
 
 class TestMain:
