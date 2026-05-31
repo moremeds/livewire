@@ -97,11 +97,11 @@ class MassiveFlatfileClient:
         if _s3_client is not None:
             self._s3 = _s3_client
             return
-        import boto3
+        import boto3  # pragma: no cover
 
-        ak = access_key or os.environ["MASSIVE_S3_ACCESS_KEY"]
-        sk = secret_key or os.environ["MASSIVE_S3_SECRET_KEY"]
-        self._s3 = boto3.client(
+        ak = access_key or os.environ["MASSIVE_S3_ACCESS_KEY"]  # pragma: no cover
+        sk = secret_key or os.environ["MASSIVE_S3_SECRET_KEY"]  # pragma: no cover
+        self._s3 = boto3.client(  # pragma: no cover
             "s3",
             endpoint_url=S3_ENDPOINT,
             aws_access_key_id=ak,

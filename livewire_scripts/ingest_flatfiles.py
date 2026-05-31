@@ -83,14 +83,12 @@ def ingest_range(
     end: date,
     target_tickers: set[str],
     bronze_dir: Path,
-    skip_existing: bool = False,
 ) -> dict[str, Any]:
     """Download and ingest a date range of flat files."""
     dates = trading_dates_between(start, end)
     stats: dict[str, Any] = {
         "dates_total": len(dates),
         "dates_processed": 0,
-        "dates_skipped": 0,
         "total_tickers": 0,
         "total_bars_1m": 0,
     }

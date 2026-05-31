@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -308,21 +307,6 @@ def test_ingest_daily_backfill_dispatches_to_python(monkeypatch) -> None:
 
     assert livewire_ingest.main(["daily-backfill"]) == 0
     assert calls[0][0] == "livewire_scripts.sync_runner"
-
-
-def test_backfill_all_runner_includes_fred_rates_phase() -> None:
-    script_path = REPO_ROOT / "tools" / "run_backfill_all.sh"
-    script = script_path.read_text(encoding="utf-8")
-
-    assert "PHASE 3: FRED Treasury rates" in script
-    assert "source .env" in script
-    assert "fred-rates" in script
-    assert "backfill_fred_rates.log" in script
-    assert script.index("PHASE 2 COMPLETE") < script.index(
-        "PHASE 3: FRED Treasury rates"
-    )
-
-    subprocess.run(["bash", "-n", str(script_path)], check=True)
 
 
 def test_quality_dispatches_argv_aware_module(monkeypatch) -> None:

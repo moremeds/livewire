@@ -591,6 +591,25 @@ class TestBackfillSourceS3:
 
         assert dispatched[0][0] == "livewire_scripts.ingest_flatfiles"
 
+    def test_s3_passes_years_through(self, monkeypatch):
+        monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+        monkeypatch.delenv("MASSIVE_S3_ACCESS_KEY", raising=False)
+        dispatched = []
+
+        def capture(mod, argv, display):
+            dispatched.append((mod, argv))
+            return 0
+
+        monkeypatch.setattr("scripts.livewire._dispatch_module", capture)
+        _dispatch_backfill(
+            ["--source", "s3", "--preset", "presets/sp500.json", "--years", "3"]
+        )
+
+        s3_call = [d for d in dispatched if d[0] == "livewire_scripts.ingest_flatfiles"]
+        assert len(s3_call) == 1
+        assert "--years" in s3_call[0][1]
+        assert "3" in s3_call[0][1]
+
     def test_s3_not_used_for_non_equity(self, monkeypatch):
         monkeypatch.setenv("MASSIVE_S3_ACCESS_KEY", "ak")
         monkeypatch.setenv("MASSIVE_S3_SECRET_KEY", "sk")

@@ -113,7 +113,7 @@ class TestIngestRange:
         )
         assert stats["dates_processed"] >= 1
 
-    def test_skip_existing_flag_accepted(self, tmp_path):
+    def test_empty_download_returns_zero_stats(self, tmp_path):
         bronze_dir = tmp_path / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
 
@@ -126,9 +126,9 @@ class TestIngestRange:
             end=date(2026, 5, 29),
             target_tickers={"AAPL"},
             bronze_dir=bronze_dir,
-            skip_existing=True,
         )
-        assert stats["dates_skipped"] >= 0
+        assert stats["dates_processed"] == 1
+        assert stats["total_bars_1m"] == 0
 
 
 class TestMain:
