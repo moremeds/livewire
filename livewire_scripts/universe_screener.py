@@ -67,9 +67,7 @@ log = logging.getLogger(__name__)
 # ── Pure helper functions ───────────────────────────────────────────────────
 
 
-def compare_universes(
-    current: set[str], scanned: set[str]
-) -> tuple[set[str], set[str]]:
+def compare_universes(current: set[str], scanned: set[str]) -> tuple[set[str], set[str]]:
     """Compare current bronze universe against newly scanned universe.
 
     Returns:
@@ -132,9 +130,7 @@ def update_absent_counts(
     return result
 
 
-def get_removals_after_grace(
-    absent_counts: dict[str, int], grace_days: int = GRACE_DAYS
-) -> set[str]:
+def get_removals_after_grace(absent_counts: dict[str, int], grace_days: int = GRACE_DAYS) -> set[str]:
     """Return tickers that have been absent for >= grace_days consecutive days."""
     return {ticker for ticker, count in absent_counts.items() if count >= grace_days}
 
@@ -144,10 +140,7 @@ def write_universe_preset(path: Path, tickers: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "name": "screened-universe",
-        "description": (
-            "IB Scanner-based U.S. equity universe (~1000 tickers) "
-            "by market cap, volume, and turnover."
-        ),
+        "description": ("IB Scanner-based U.S. equity universe (~1000 tickers) by market cap, volume, and turnover."),
         "generated_at": datetime.now(UTC).isoformat(),
         "tickers": sorted(tickers),
     }
@@ -190,11 +183,11 @@ async def run_scanner_sweeps(ib) -> set[str]:
     from ib_async import ScannerSubscription  # lazy import
 
     scan_codes = [
-        "MOST_ACTIVE",       # Share volume — broad coverage
-        "MOST_ACTIVE_USD",   # Dollar volume — large-cap biased
-        "TOP_TRADE_COUNT",   # Trade frequency — high turnover
-        "HOT_BY_VOLUME",     # Volume vs avg — momentum / news-driven
-        "TOP_PERC_GAIN",     # Price movers — captures unusual activity
+        "MOST_ACTIVE",  # Share volume — broad coverage
+        "MOST_ACTIVE_USD",  # Dollar volume — large-cap biased
+        "TOP_TRADE_COUNT",  # Trade frequency — high turnover
+        "HOT_BY_VOLUME",  # Volume vs avg — momentum / news-driven
+        "TOP_PERC_GAIN",  # Price movers — captures unusual activity
     ]
 
     # Tight price bands prevent overlap within each scan type
@@ -245,17 +238,20 @@ def _send_screener_alert(
 ) -> None:
     """Send an email alert via the existing Nodemailer CLI."""
     error_summary = (
-        f"universe_screener: {len(additions)} additions, {len(removals)} removals "
-        f"on {run_date.isoformat()}."
+        f"universe_screener: {len(additions)} additions, {len(removals)} removals on {run_date.isoformat()}."
     )
     cmd = [
         sys.executable,
         str(_OPS_SCRIPT),
         "send-alert",
-        "--run-date", run_date.isoformat(),
-        "--error-summary", error_summary,
-        "--repo-root", str(PROJECT_ROOT),
-        "--job-name", "universe_screener",
+        "--run-date",
+        run_date.isoformat(),
+        "--error-summary",
+        error_summary,
+        "--repo-root",
+        str(PROJECT_ROOT),
+        "--job-name",
+        "universe_screener",
     ]
     subprocess.run(cmd, check=False)
 
@@ -266,12 +262,8 @@ def _send_screener_alert(
 def main(argv: list[str] | None = None) -> None:
     """CLI entry point for the universe screener."""
     parser = argparse.ArgumentParser(description="IB Scanner universe screener")
-    parser.add_argument(
-        "--dry-run", action="store_true", help="Report changes without modifying anything"
-    )
-    parser.add_argument(
-        "--force", action="store_true", help="Run even if already ran today or not a trading day"
-    )
+    parser.add_argument("--dry-run", action="store_true", help="Report changes without modifying anything")
+    parser.add_argument("--force", action="store_true", help="Run even if already ran today or not a trading day")
     parser.add_argument(
         "--host",
         type=str,
@@ -407,7 +399,8 @@ def main(argv: list[str] | None = None) -> None:
             "historical",
             "--tickers",
             *sorted(additions),
-            "--years", "0",
+            "--years",
+            "0",
         ]
         log.info("Triggering backfill for %d new tickers: %s", len(additions), sorted(additions))
         subprocess.run(cmd, check=False)

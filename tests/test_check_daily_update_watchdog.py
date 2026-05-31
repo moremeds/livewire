@@ -44,14 +44,8 @@ class TestHelpers:
         assert args.run_date == "2026-03-11"
         assert parse_args([]).run_date is None
 
-        assert (
-            build_daily_log_file(tmp_path, "2026-03-11")
-            == tmp_path / "daily_update_2026-03-11.log"
-        )
-        assert (
-            build_watchdog_log_file(tmp_path, "2026-03-11")
-            == tmp_path / "daily_update_watchdog_2026-03-11.log"
-        )
+        assert build_daily_log_file(tmp_path, "2026-03-11") == tmp_path / "daily_update_2026-03-11.log"
+        assert build_watchdog_log_file(tmp_path, "2026-03-11") == tmp_path / "daily_update_watchdog_2026-03-11.log"
         assert (
             build_watchdog_marker_file(tmp_path, "2026-03-11")
             == tmp_path / "state" / "daily-update-watchdog" / "2026-03-11.alerted"
@@ -63,9 +57,7 @@ class TestHelpers:
 
         incomplete_log = tmp_path / "daily.log"
         incomplete_log.write_text("=== Daily Update 2026-03-11T20:05:07Z ===\n", encoding="utf-8")
-        assert "did not complete successfully" in determine_watchdog_error(
-            incomplete_log, "2026-03-11"
-        )
+        assert "did not complete successfully" in determine_watchdog_error(incomplete_log, "2026-03-11")
 
         marker_file = build_watchdog_marker_file(tmp_path, "2026-03-11")
         record_alert_marker(marker_file, "sent")
@@ -95,9 +87,7 @@ class TestRunWatchdog:
 
         assert rc == WATCHDOG_ALERT_SENT_EXIT_CODE
         watchdog_log = build_watchdog_log_file(config.log_dir, "2026-03-11")
-        assert "skipping duplicate failure email" in watchdog_log.read_text(
-            encoding="utf-8"
-        )
+        assert "skipping duplicate failure email" in watchdog_log.read_text(encoding="utf-8")
 
     def test_sends_alert_for_incomplete_log(self, tmp_path):
         config = _config(tmp_path)
@@ -127,9 +117,7 @@ class TestRunWatchdog:
         marker_file = build_watchdog_marker_file(config.warehouse_dir, "2026-03-11")
         assert marker_file.exists() is True
         watchdog_log = build_watchdog_log_file(config.log_dir, "2026-03-11")
-        assert "Watchdog failure alert sent successfully. sent" in watchdog_log.read_text(
-            encoding="utf-8"
-        )
+        assert "Watchdog failure alert sent successfully. sent" in watchdog_log.read_text(encoding="utf-8")
 
     def test_returns_failed_exit_code_when_alert_cannot_be_sent(self, tmp_path):
         config = _config(tmp_path)
@@ -139,9 +127,7 @@ class TestRunWatchdog:
 
         assert rc == WATCHDOG_ALERT_FAILED_EXIT_CODE
         watchdog_log = build_watchdog_log_file(config.log_dir, "2026-03-11")
-        assert "could not send a failure alert" in watchdog_log.read_text(
-            encoding="utf-8"
-        )
+        assert "could not send a failure alert" in watchdog_log.read_text(encoding="utf-8")
 
     def test_returns_failed_exit_code_when_alert_command_fails(self, tmp_path):
         config = _config(tmp_path)

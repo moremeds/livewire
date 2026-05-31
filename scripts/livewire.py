@@ -15,8 +15,8 @@ import importlib
 import inspect
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -54,10 +54,7 @@ def _has_massive_key() -> bool:
 
 
 def _has_s3_keys() -> bool:
-    return bool(
-        os.environ.get("MASSIVE_S3_ACCESS_KEY")
-        and os.environ.get("MASSIVE_S3_SECRET_KEY")
-    )
+    return bool(os.environ.get("MASSIVE_S3_ACCESS_KEY") and os.environ.get("MASSIVE_S3_SECRET_KEY"))
 
 
 def _ib_reachable() -> bool:
@@ -75,9 +72,7 @@ def _needs_ib(asset_class: str) -> bool:
         return True
     if asset_class == "volatility":
         return True
-    if asset_class == "equity" and not _has_massive_key():
-        return True
-    return False
+    return bool(asset_class == "equity" and not _has_massive_key())
 
 
 def _dispatch_module(module_name: str, argv: list[str], display: str) -> int:
@@ -120,14 +115,10 @@ def _dispatch_sync(argv: list[str]) -> int:
     args, rest = parser.parse_known_args(argv)
 
     if args.scheduled:
-        return _dispatch_module(
-            "livewire_scripts.run_daily_update_job", rest, "livewire sync --scheduled"
-        )
+        return _dispatch_module("livewire_scripts.run_daily_update_job", rest, "livewire sync --scheduled")
 
     if args.full:
-        return _dispatch_module(
-            "livewire_scripts.sync_runner", rest, "livewire sync --full"
-        )
+        return _dispatch_module("livewire_scripts.sync_runner", rest, "livewire sync --full")
 
     if _needs_ib(args.asset_class if args.asset_class != "all" else "equity"):
         if args.asset_class in ("futures", "all"):
@@ -136,11 +127,7 @@ def _dispatch_sync(argv: list[str]) -> int:
             assert_gateway_up()
 
     results = []
-    classes = (
-        ["equity", "volatility", "futures", "rates"]
-        if args.asset_class == "all"
-        else [args.asset_class]
-    )
+    classes = ["equity", "volatility", "futures", "rates"] if args.asset_class == "all" else [args.asset_class]
 
     for ac in classes:
         cmd_argv = list(rest)
@@ -153,31 +140,17 @@ def _dispatch_sync(argv: list[str]) -> int:
             if _has_massive_key():
                 cmd_argv.extend(["--source", "massive"])
             cmd_argv.extend(["--asset-class", "equity"])
-            results.append(
-                _dispatch_module(
-                    SYNC_MODULES["equity"], cmd_argv, "livewire sync equity"
-                )
-            )
+            results.append(_dispatch_module(SYNC_MODULES["equity"], cmd_argv, "livewire sync equity"))
 
         elif ac == "volatility":
-            results.append(
-                _dispatch_module(
-                    SYNC_MODULES["volatility"], cmd_argv, "livewire sync volatility"
-                )
-            )
+            results.append(_dispatch_module(SYNC_MODULES["volatility"], cmd_argv, "livewire sync volatility"))
 
         elif ac == "futures":
             cmd_argv.extend(["--asset-class", "futures"])
-            results.append(
-                _dispatch_module(
-                    SYNC_MODULES["equity"], cmd_argv, "livewire sync futures"
-                )
-            )
+            results.append(_dispatch_module(SYNC_MODULES["equity"], cmd_argv, "livewire sync futures"))
 
         elif ac == "rates":
-            results.append(
-                _dispatch_module(SYNC_MODULES["rates"], cmd_argv, "livewire sync rates")
-            )
+            results.append(_dispatch_module(SYNC_MODULES["rates"], cmd_argv, "livewire sync rates"))
 
     return max(results) if results else 0
 
@@ -214,13 +187,9 @@ def _dispatch_backfill(argv: list[str]) -> int:
     args, rest = parser.parse_known_args(argv)
 
     if args.full:
-        return _dispatch_module(
-            "livewire_scripts.backfill_runner", rest, "livewire backfill --full"
-        )
+        return _dispatch_module("livewire_scripts.backfill_runner", rest, "livewire backfill --full")
 
-    timeframes = (
-        ["1d", "1h", "30m", "5m", "1m"] if "all" in args.timeframe else args.timeframe
-    )
+    timeframes = ["1d", "1h", "30m", "5m", "1m"] if "all" in args.timeframe else args.timeframe
 
     use_s3 = args.source == "s3" or (args.source == "auto" and _has_s3_keys())
 
@@ -239,11 +208,7 @@ def _dispatch_backfill(argv: list[str]) -> int:
                 cmd_argv.extend(["--source", "massive"])
             if args.years is not None:
                 cmd_argv.extend(["--years", str(args.years)])
-            results.append(
-                _dispatch_module(
-                    BACKFILL_MODULES["daily"], cmd_argv, f"livewire backfill {tf}"
-                )
-            )
+            results.append(_dispatch_module(BACKFILL_MODULES["daily"], cmd_argv, f"livewire backfill {tf}"))
         elif use_s3 and args.asset_class in ("equity", "all"):
             if args.years is not None:
                 cmd_argv.extend(["--years", str(args.years)])
@@ -261,11 +226,7 @@ def _dispatch_backfill(argv: list[str]) -> int:
                 cmd_argv.extend(["--source", "massive"])
             if args.years is not None:
                 cmd_argv.extend(["--years", str(args.years)])
-            results.append(
-                _dispatch_module(
-                    BACKFILL_MODULES["intraday"], cmd_argv, f"livewire backfill {tf}"
-                )
-            )
+            results.append(_dispatch_module(BACKFILL_MODULES["intraday"], cmd_argv, f"livewire backfill {tf}"))
 
     return max(results) if results else 0
 
@@ -273,9 +234,7 @@ def _dispatch_backfill(argv: list[str]) -> int:
 def _dispatch_check(argv: list[str]) -> int:
     """Quality, health, and coverage reporting."""
     parser = argparse.ArgumentParser(prog="livewire check")
-    parser.add_argument(
-        "--mode", choices=list(CHECK_MODULES.keys()), default="coverage"
-    )
+    parser.add_argument("--mode", choices=list(CHECK_MODULES.keys()), default="coverage")
     parser.add_argument("--report", action="store_true")
     parser.add_argument("--weekly", action="store_true")
     parser.add_argument("--universe", action="store_true")
@@ -311,9 +270,7 @@ def _dispatch_publish(argv: list[str]) -> int:
         action="store_true",
         help="Run smoke test instead of full rebuild (postgres only)",
     )
-    parser.add_argument(
-        "--migrate", action="store_true", help="Run parquet schema migration"
-    )
+    parser.add_argument("--migrate", action="store_true", help="Run parquet schema migration")
     args, rest = parser.parse_known_args(argv)
 
     if args.migrate:
@@ -333,9 +290,7 @@ def _dispatch_publish(argv: list[str]) -> int:
                 rest,
                 "livewire publish postgres --smoke",
             )
-        return _dispatch_module(
-            PUBLISH_MODULES["postgres"], rest, "livewire publish postgres"
-        )
+        return _dispatch_module(PUBLISH_MODULES["postgres"], rest, "livewire publish postgres")
 
     return _dispatch_module(PUBLISH_MODULES["r2"], rest, "livewire publish r2")
 

@@ -132,10 +132,7 @@ class TestGetDailyBar:
         responses.add(
             responses.GET,
             "https://stooq.com/q/d/l/",
-            body=(
-                "Date,Open,High,Low,Close,Volume\n"
-                "2026-03-09,76.62,78.07,76.53,77.80,18554043\n"
-            ),
+            body=("Date,Open,High,Low,Close,Volume\n2026-03-09,76.62,78.07,76.53,77.80,18554043\n"),
             status=200,
         )
 

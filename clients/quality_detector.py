@@ -2,13 +2,14 @@
 
 See: docs/superpowers/specs/2026-05-17-mdw-reliability-foundation-design.md
 """
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any
 
 try:
     from clients.trading_calendar import is_trading_day as _default_is_trading_day
@@ -21,7 +22,7 @@ _logger = logging.getLogger("livewire.quality")
 
 
 def _utc_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @dataclass(frozen=True)
@@ -35,8 +36,8 @@ class QualityFlag:
 def detect_range_shortfall(
     expected_start: date,
     actual_start: date,
-    ib_head_timestamp: Optional[date],
-) -> Optional[QualityFlag]:
+    ib_head_timestamp: date | None,
+) -> QualityFlag | None:
     """Flag when actual_start is materially later than expected_start.
 
     If ib_head_timestamp equals actual_start, treat as "IB has no older data" (clean).
@@ -96,7 +97,7 @@ def _normalize_bars_for_detection(bars: list) -> list:
 def detect_interior_gaps(
     bars: list,
     trading_calendar=None,
-) -> Optional[QualityFlag]:
+) -> QualityFlag | None:
     """Find missing trading days inside the bar range."""
     if not bars or len(bars) < 2:
         return None
@@ -152,7 +153,7 @@ _FETCH_TAINT_WARNING_COUNT = 1
 _FETCH_TAINT_CRITICAL_COUNT = 5
 
 
-def detect_fetch_tainting(errors_during_fetch: list[dict]) -> Optional[QualityFlag]:
+def detect_fetch_tainting(errors_during_fetch: list[dict]) -> QualityFlag | None:
     if not errors_during_fetch:
         return None
     total = sum(int(e.get("count", 1)) for e in errors_during_fetch)
@@ -173,7 +174,7 @@ def detect_fetch_tainting(errors_during_fetch: list[dict]) -> Optional[QualityFl
 def detect_row_count_anomaly(
     bars: list,
     reference_source=None,
-) -> Optional[QualityFlag]:
+) -> QualityFlag | None:
     """Flag material count differences against a supplied second-source reference."""
     if reference_source is None:
         return None
@@ -229,11 +230,13 @@ def detect_all(
             return fn(*args, **kwargs)
         except Exception as exc:
             _logger.warning("detector %s raised: %s", name, exc)
-            flags.append(QualityFlag(
-                category="detector_error",
-                severity="warning",
-                detail={"detector": name, "error": str(exc)},
-            ))
+            flags.append(
+                QualityFlag(
+                    category="detector_error",
+                    severity="warning",
+                    detail={"detector": name, "error": str(exc)},
+                )
+            )
             return None
 
     expected_start = metadata.get("expected_start")

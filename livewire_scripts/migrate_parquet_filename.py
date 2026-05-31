@@ -51,12 +51,8 @@ def migrate_parquet_files(
 
 def main():
     default_warehouse = Path.home() / "market-warehouse" / "data-lake"
-    parser = argparse.ArgumentParser(
-        description="Migrate parquet filenames from data.parquet to 1d.parquet"
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true", help="Preview renames without executing"
-    )
+    parser = argparse.ArgumentParser(description="Migrate parquet filenames from data.parquet to 1d.parquet")
+    parser.add_argument("--dry-run", action="store_true", help="Preview renames without executing")
     parser.add_argument(
         "--dir",
         type=Path,

@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 import requests
 from lxml import html
@@ -36,11 +35,11 @@ class UniverseFetchError(Exception):
 class TickerStatus:
     ticker: str
     active: bool
-    delisted_utc: Optional[str] = None
-    name: Optional[str] = None
-    type: Optional[str] = None
-    market: Optional[str] = None
-    list_date: Optional[str] = None
+    delisted_utc: str | None = None
+    name: str | None = None
+    type: str | None = None
+    market: str | None = None
+    list_date: str | None = None
 
 
 _BROWSER_UA = (
@@ -115,7 +114,7 @@ def fetch_r2k() -> set[str]:
 
 def check_ticker_status(
     ticker: str,
-    api_key: Optional[str] = None,
+    api_key: str | None = None,
 ) -> TickerStatus:
     key = api_key or os.environ.get("MASSIVE_API_KEY")
     if not key:
@@ -124,17 +123,13 @@ def check_ticker_status(
     try:
         resp = requests.get(url, params={"apiKey": key}, timeout=_TIMEOUT)
     except requests.RequestException as exc:
-        raise UniverseFetchError(
-            f"Polygon status check failed for {ticker}: {exc}"
-        ) from exc
+        raise UniverseFetchError(f"Polygon status check failed for {ticker}: {exc}") from exc
     if resp.status_code == 404:
         return TickerStatus(ticker=ticker.upper(), active=False)
     try:
         resp.raise_for_status()
     except requests.RequestException as exc:
-        raise UniverseFetchError(
-            f"Polygon status check failed for {ticker}: {exc}"
-        ) from exc
+        raise UniverseFetchError(f"Polygon status check failed for {ticker}: {exc}") from exc
     data = resp.json().get("results", {})
     return TickerStatus(
         ticker=ticker.upper(),
@@ -152,7 +147,7 @@ _POLYGON_THROTTLE_SECONDS = 0.25
 
 def check_tickers_bulk(
     tickers: list[str],
-    api_key: Optional[str] = None,
+    api_key: str | None = None,
     throttle: float = _POLYGON_THROTTLE_SECONDS,
 ) -> dict[str, TickerStatus]:
     import time

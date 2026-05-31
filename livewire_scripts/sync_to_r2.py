@@ -160,30 +160,20 @@ def download(bronze_dir: Path, prefix: str = "bronze", dry_run: bool = False) ->
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Sync bronze Parquet to/from Cloudflare R2"
-    )
+    parser = argparse.ArgumentParser(description="Sync bronze Parquet to/from Cloudflare R2")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--upload", action="store_true", help="Push local bronze → R2")
     group.add_argument("--download", action="store_true", help="Pull R2 → local bronze")
-    parser.add_argument(
-        "--dry-run", action="store_true", help="Show what would be synced"
-    )
+    parser.add_argument("--dry-run", action="store_true", help="Show what would be synced")
     parser.add_argument(
         "--data-lake",
         type=Path,
-        default=Path(
-            os.getenv(
-                "MDW_DATA_LAKE", str(Path.home() / "market-warehouse" / "data-lake")
-            )
-        ),
+        default=Path(os.getenv("MDW_DATA_LAKE", str(Path.home() / "market-warehouse" / "data-lake"))),
         help="Data lake root directory",
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     bronze_dir = args.data_lake / "bronze"
 

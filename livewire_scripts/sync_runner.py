@@ -13,10 +13,10 @@ import logging
 import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Sequence
 from zoneinfo import ZoneInfo
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -48,9 +48,7 @@ class SyncConfig:
 
 def build_config(repo_root: Path | None = None) -> SyncConfig:
     root = repo_root or _PROJECT_ROOT
-    warehouse = Path(
-        os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))
-    )
+    warehouse = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
     return SyncConfig(
         python_bin=os.getenv("MDW_PYTHON_BIN", sys.executable),
         ingest_script=root / "scripts" / "livewire_ingest.py",
@@ -60,9 +58,7 @@ def build_config(repo_root: Path | None = None) -> SyncConfig:
         vol_preset=str(root / VOL_PRESET),
         vol_daily_preset=str(root / VOL_DAILY_PRESET),
         intraday_days=int(os.getenv("MDW_DAILY_BACKFILL_INTRADAY_DAYS", "7")),
-        intraday_concurrent=int(
-            os.getenv("MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT", "20")
-        ),
+        intraday_concurrent=int(os.getenv("MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT", "20")),
         target_date=os.getenv("MDW_DAILY_BACKFILL_TARGET_DATE") or None,
     )
 
@@ -159,9 +155,7 @@ def _derive_vol_1h(
     from clients.timeframe_aggregator import aggregate_bars
 
     tickers = load_tickers(vol_preset)
-    wh = warehouse_dir or Path(
-        os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))
-    )
+    wh = warehouse_dir or Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
     bronze_dir = wh / "data-lake" / "bronze" / "asset_class=volatility"
     derived = 0
 
@@ -342,9 +336,7 @@ def run_sync(
 def main(argv: Sequence[str] | None = None) -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Daily sync runner — routine warehouse catch-up"
-    )
+    parser = argparse.ArgumentParser(description="Daily sync runner — routine warehouse catch-up")
     parser.add_argument("--target-date", type=str, default=None)
     parser.add_argument("--intraday-days", type=int, default=None)
     parser.add_argument("--intraday-concurrent", type=int, default=None)

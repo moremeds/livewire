@@ -4,21 +4,18 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, time, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
-import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 
 from clients.intraday_bronze_client import IntradayBronzeClient
 from livewire_scripts import backfill_intraday
 from livewire_scripts.backfill_intraday import (
     TickerOutcome,
-    _BarRow,
     _is_regular_trading_timestamp,
     _resolve_tickers,
     backfill_ticker,
@@ -35,7 +32,7 @@ from livewire_scripts.backfill_intraday import (
 )
 
 _ET = ZoneInfo("America/New_York")
-_UTC = timezone.utc
+_UTC = UTC
 
 
 def _make_ib_bar(dt_et_naive: datetime, *, open_=1.0) -> SimpleNamespace:
@@ -55,9 +52,7 @@ def _make_ib_bar(dt_et_naive: datetime, *, open_=1.0) -> SimpleNamespace:
 
 class TestIbBarToRow:
     def test_naive_datetime_attached_as_et_then_utc(self):
-        bar = _make_ib_bar(
-            datetime(2026, 4, 6, 9, 30)
-        )  # Mon 09:30 ET → 13:30 UTC (EDT)
+        bar = _make_ib_bar(datetime(2026, 4, 6, 9, 30))  # Mon 09:30 ET → 13:30 UTC (EDT)
         row = ib_bar_to_row(bar, symbol_id=42)
         assert row["bar_timestamp"].tzinfo == _UTC
         assert row["bar_timestamp"] == datetime(2026, 4, 6, 13, 30, tzinfo=_UTC)
@@ -108,10 +103,7 @@ class TestMassiveIntradayBarToRow:
 
     def test_regular_trading_timestamp_rejects_naive_and_non_trading_days(self):
         assert _is_regular_trading_timestamp(datetime(2026, 4, 6, 13, 30)) is False
-        assert (
-            _is_regular_trading_timestamp(datetime(2026, 4, 4, 13, 30, tzinfo=_UTC))
-            is False
-        )
+        assert _is_regular_trading_timestamp(datetime(2026, 4, 4, 13, 30, tzinfo=_UTC)) is False
 
 
 # ── load/save cursor ──────────────────────────────────────────────────────────
@@ -263,9 +255,7 @@ class TestBackfillTicker:
                 "livewire_scripts.backfill_intraday._make_contract",
                 return_value=contract,
             ) as m_contract:
-                with patch(
-                    "livewire_scripts.backfill_intraday._run_quality_detection"
-                ) as m_quality:
+                with patch("livewire_scripts.backfill_intraday._run_quality_detection") as m_quality:
                     outcome = backfill_ticker(
                         "VIX",
                         "5m",
@@ -333,9 +323,7 @@ class TestBackfillTickerMassive:
                 (datetime(2026, 4, 6).date(), datetime(2026, 4, 6).date()),
             ],
         ):
-            outcome = backfill_ticker_massive(
-                "AAPL", "1m", years=5, massive=massive, bronze=bronze
-            )
+            outcome = backfill_ticker_massive("AAPL", "1m", years=5, massive=massive, bronze=bronze)
         assert outcome.bars_inserted == 1
         assert len(outcome.errors) == 1
 
@@ -356,9 +344,7 @@ class TestBackfillTickerMassive:
             "livewire_scripts.backfill_intraday.compute_intraday_date_windows",
             return_value=[(datetime(2026, 4, 6).date(), datetime(2026, 4, 6).date())],
         ):
-            outcome = backfill_ticker_massive(
-                "AAPL", "1m", years=5, massive=massive, bronze=bronze
-            )
+            outcome = backfill_ticker_massive("AAPL", "1m", years=5, massive=massive, bronze=bronze)
         assert outcome.bars_inserted == 0
         assert outcome.rejected == 1
 
@@ -379,9 +365,7 @@ class TestBackfillTickerMassive:
             "livewire_scripts.backfill_intraday.compute_intraday_date_windows",
             return_value=[(datetime(2026, 4, 6).date(), datetime(2026, 4, 6).date())],
         ):
-            outcome = backfill_ticker_massive(
-                "AAPL", "1m", years=5, massive=massive, bronze=bronze
-            )
+            outcome = backfill_ticker_massive("AAPL", "1m", years=5, massive=massive, bronze=bronze)
         assert outcome.bars_inserted == 0
         assert outcome.rejected == 0
 
@@ -405,9 +389,7 @@ class TestBackfillTickerMassive:
             ):
                 with patch(
                     "livewire_scripts.backfill_intraday.compute_intraday_date_windows",
-                    return_value=[
-                        (datetime(2026, 4, 6).date(), datetime(2026, 4, 6).date())
-                    ],
+                    return_value=[(datetime(2026, 4, 6).date(), datetime(2026, 4, 6).date())],
                 ):
                     with patch.object(
                         sys,
@@ -430,9 +412,7 @@ class TestBackfillTickerMassive:
 
 
 class TestQualityHookIntegration:
-    def test_quality_hook_suppresses_bulk_email_alerts_by_default(
-        self, tmp_path, monkeypatch
-    ):
+    def test_quality_hook_suppresses_bulk_email_alerts_by_default(self, tmp_path, monkeypatch):
         from clients.quality_detector import QualityFlag
         from livewire_scripts.backfill_intraday import _run_quality_detection
 
@@ -469,9 +449,7 @@ class TestQualityHookIntegration:
         append_audit.assert_called_once()
         alert_on_flag.assert_not_called()
 
-    def test_quality_hook_fires_with_outcome_errors_when_enabled(
-        self, tmp_path, monkeypatch
-    ):
+    def test_quality_hook_fires_with_outcome_errors_when_enabled(self, tmp_path, monkeypatch):
         from clients.quality_detector import QualityFlag
         from livewire_scripts.backfill_intraday import _run_quality_detection
 
@@ -492,15 +470,9 @@ class TestQualityHookIntegration:
                 "livewire_scripts.backfill_intraday.detect_all",
                 return_value=[fake_flag],
             ) as m_detect,
-            patch(
-                "livewire_scripts.backfill_intraday.write_sidecar", return_value=True
-            ) as m_sidecar,
-            patch(
-                "livewire_scripts.backfill_intraday.append_audit", return_value=True
-            ) as m_audit,
-            patch(
-                "livewire_scripts.backfill_intraday.alert_on_flag", return_value=True
-            ) as m_alert,
+            patch("livewire_scripts.backfill_intraday.write_sidecar", return_value=True) as m_sidecar,
+            patch("livewire_scripts.backfill_intraday.append_audit", return_value=True) as m_audit,
+            patch("livewire_scripts.backfill_intraday.alert_on_flag", return_value=True) as m_alert,
         ):
             _run_quality_detection(
                 ticker="AAPL",
@@ -620,9 +592,7 @@ class TestMain:
             main()
         assert not (tmp_path / "logs").exists()
 
-    def test_1m_massive_dry_run_defaults_to_five_years(
-        self, tmp_path, monkeypatch, capsys
-    ):
+    def test_1m_massive_dry_run_defaults_to_five_years(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
         monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
         monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
@@ -651,9 +621,7 @@ class TestMain:
         assert "tf=1m" in out
         assert "years=5" in out
 
-    def test_massive_source_rejected_for_non_equity_intraday(
-        self, tmp_path, monkeypatch
-    ):
+    def test_massive_source_rejected_for_non_equity_intraday(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
         monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
         monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
@@ -680,9 +648,7 @@ class TestMain:
             ):
                 main()
 
-    def test_non_equity_intraday_defaults_to_ib_source(
-        self, tmp_path, monkeypatch, capsys
-    ):
+    def test_non_equity_intraday_defaults_to_ib_source(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
         monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
         monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
@@ -711,9 +677,7 @@ class TestMain:
         assert "asset_class=futures" in out
         assert "source=ib" in out
 
-    def test_volatility_intraday_vix_spx_preset_dry_run(
-        self, tmp_path, monkeypatch, capsys
-    ):
+    def test_volatility_intraday_vix_spx_preset_dry_run(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
         monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
         monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
@@ -1019,19 +983,10 @@ class TestMain:
                     main()
         # --tickers does not write the cursor; verify bronze parquet instead
         assert load_cursor("5m", "custom") == set()
-        bronze_path = (
-            tmp_path
-            / "lake"
-            / "bronze"
-            / "asset_class=equity"
-            / "symbol=AAPL"
-            / "5m.parquet"
-        )
+        bronze_path = tmp_path / "lake" / "bronze" / "asset_class=equity" / "symbol=AAPL" / "5m.parquet"
         assert bronze_path.exists()
 
-    def test_full_volatility_run_inserts_vix_under_volatility_asset_class(
-        self, tmp_path, monkeypatch
-    ):
+    def test_full_volatility_run_inserts_vix_under_volatility_asset_class(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
         monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
         monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
@@ -1062,19 +1017,10 @@ class TestMain:
                 ):
                     main()
 
-        bronze_path = (
-            tmp_path
-            / "lake"
-            / "bronze"
-            / "asset_class=volatility"
-            / "symbol=VIX"
-            / "5m.parquet"
-        )
+        bronze_path = tmp_path / "lake" / "bronze" / "asset_class=volatility" / "symbol=VIX" / "5m.parquet"
         assert bronze_path.exists()
 
-    def test_full_1m_massive_run_inserts_via_mocked_massive(
-        self, tmp_path, monkeypatch
-    ):
+    def test_full_1m_massive_run_inserts_via_mocked_massive(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
         monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
         monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
@@ -1098,9 +1044,7 @@ class TestMain:
         ):
             with patch(
                 "livewire_scripts.backfill_intraday.compute_intraday_date_windows",
-                return_value=[
-                    (datetime(2026, 4, 6).date(), datetime(2026, 4, 6).date())
-                ],
+                return_value=[(datetime(2026, 4, 6).date(), datetime(2026, 4, 6).date())],
             ):
                 with patch.object(
                     sys,
@@ -1120,19 +1064,10 @@ class TestMain:
                     main()
 
         fake_massive.get_intraday_bars.assert_called_once()
-        bronze_path = (
-            tmp_path
-            / "lake"
-            / "bronze"
-            / "asset_class=equity"
-            / "symbol=AAPL"
-            / "1m.parquet"
-        )
+        bronze_path = tmp_path / "lake" / "bronze" / "asset_class=equity" / "symbol=AAPL" / "1m.parquet"
         assert bronze_path.exists()
 
-    def test_massive_run_can_process_tickers_concurrently(
-        self, tmp_path, monkeypatch, capsys
-    ):
+    def test_massive_run_can_process_tickers_concurrently(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
         monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
         monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
@@ -1205,9 +1140,7 @@ class TestMain:
             with pytest.raises(SystemExit, match="--max-concurrent must be >= 1"):
                 main()
 
-    def test_massive_concurrent_worker_errors_are_reported_per_ticker(
-        self, tmp_path, monkeypatch
-    ):
+    def test_massive_concurrent_worker_errors_are_reported_per_ticker(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
         monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
         monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
@@ -1339,7 +1272,7 @@ class TestExistingOnlyFilter:
         bronze_dir = tmp_path / "lake" / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
         client = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe="5m")
-        ts = datetime.now(timezone.utc) - timedelta(days=1)
+        ts = datetime.now(UTC) - timedelta(days=1)
         client.replace_ticker_rows(
             "AAPL",
             [
@@ -1382,7 +1315,7 @@ class TestSkipExistingWithPreset:
         bronze_dir = tmp_path / "lake" / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
         client = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe="5m")
-        old = datetime.now(timezone.utc) - timedelta(days=400)
+        old = datetime.now(UTC) - timedelta(days=400)
         client.replace_ticker_rows(
             "AAPL",
             [

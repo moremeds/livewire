@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import json
+import os
 from collections.abc import Callable
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -82,10 +82,9 @@ class PostgresClient:
 
     def ensure_schema(self) -> None:
         """Create the analytical schema and tables if they do not exist."""
-        with self._conn.transaction():
-            with self._conn.cursor() as cur:
-                for stmt in iter_schema_statements(self.schema):
-                    cur.execute(stmt)
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            for stmt in iter_schema_statements(self.schema):
+                cur.execute(stmt)
 
     def replace_equities_from_parquet(
         self,
@@ -105,10 +104,9 @@ class PostgresClient:
             if first_symbol_id is not None:
                 symbol_rows.append((symbol, first_symbol_id, asset_class, venue))
 
-        with self._conn.transaction():
-            with self._conn.cursor() as cur:
-                cur.execute(
-                    """
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute(
+                """
                     CREATE TEMP TABLE _lw_symbols_stage (
                         symbol text NOT NULL,
                         symbol_id bigint NOT NULL,
@@ -116,9 +114,9 @@ class PostgresClient:
                         venue text NOT NULL
                     ) ON COMMIT DROP
                     """
-                )
-                cur.execute(
-                    """
+            )
+            cur.execute(
+                """
                     CREATE TEMP TABLE _lw_equities_daily_stage (
                         trade_date date NOT NULL,
                         symbol_id bigint NOT NULL,
@@ -130,16 +128,16 @@ class PostgresClient:
                         volume bigint NOT NULL
                     ) ON COMMIT DROP
                     """
-                )
-                copied_symbols = _copy_rows(
-                    cur,
-                    "_lw_symbols_stage",
-                    ["symbol", "symbol_id", "asset_class", "venue"],
-                    symbol_rows,
-                )
-                copied_rows = _copy_rows(cur, "_lw_equities_daily_stage", _DAILY_COLUMNS, _daily_rows(parquet_files))
-                cur.execute(
-                    f"""
+            )
+            copied_symbols = _copy_rows(
+                cur,
+                "_lw_symbols_stage",
+                ["symbol", "symbol_id", "asset_class", "venue"],
+                symbol_rows,
+            )
+            copied_rows = _copy_rows(cur, "_lw_equities_daily_stage", _DAILY_COLUMNS, _daily_rows(parquet_files))
+            cur.execute(
+                f"""
                     INSERT INTO {self.schema}.symbols (symbol_id, symbol, asset_class, venue)
                     SELECT DISTINCT symbol_id, symbol, asset_class, venue
                     FROM _lw_symbols_stage
@@ -148,23 +146,23 @@ class PostgresClient:
                         asset_class = EXCLUDED.asset_class,
                         venue = EXCLUDED.venue
                     """
-                )
-                cur.execute(
-                    f"""
+            )
+            cur.execute(
+                f"""
                     DELETE FROM {self.schema}.equities_daily d
                     USING {self.schema}.symbols s
                     WHERE d.symbol_id = s.symbol_id AND s.asset_class = %s
                     """,
-                    (asset_class,),
-                )
-                cur.execute(
-                    f"""
+                (asset_class,),
+            )
+            cur.execute(
+                f"""
                     INSERT INTO {self.schema}.equities_daily
                         (trade_date, symbol_id, open, high, low, close, adj_close, volume)
                     SELECT trade_date, symbol_id, open, high, low, close, adj_close, volume
                     FROM _lw_equities_daily_stage
                     """
-                )
+            )
         return {"symbols": copied_symbols, "rows": copied_rows}
 
     def replace_futures_from_parquet(self, bronze_dir: str | Path) -> dict[str, int]:
@@ -173,10 +171,9 @@ class PostgresClient:
         if not parquet_files:
             return {"rows": 0}
 
-        with self._conn.transaction():
-            with self._conn.cursor() as cur:
-                cur.execute(
-                    """
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute(
+                """
                     CREATE TEMP TABLE _lw_futures_daily_stage (
                         trade_date date NOT NULL,
                         contract_id bigint NOT NULL,
@@ -191,11 +188,11 @@ class PostgresClient:
                         open_interest bigint NOT NULL
                     ) ON COMMIT DROP
                     """
-                )
-                copied_rows = _copy_rows(cur, "_lw_futures_daily_stage", _FUTURES_COLUMNS, _futures_rows(parquet_files))
-                cur.execute(f"DELETE FROM {self.schema}.futures_daily")
-                cur.execute(
-                    f"""
+            )
+            copied_rows = _copy_rows(cur, "_lw_futures_daily_stage", _FUTURES_COLUMNS, _futures_rows(parquet_files))
+            cur.execute(f"DELETE FROM {self.schema}.futures_daily")
+            cur.execute(
+                f"""
                     INSERT INTO {self.schema}.futures_daily
                         (trade_date, contract_id, root_symbol, expiry_date,
                          open, high, low, close, settlement, volume, open_interest)
@@ -203,7 +200,7 @@ class PostgresClient:
                            open, high, low, close, settlement, volume, open_interest
                     FROM _lw_futures_daily_stage
                     """
-                )
+            )
         return {"rows": copied_rows}
 
     def replace_equities_intraday_from_parquet(
@@ -226,10 +223,9 @@ class PostgresClient:
             if first_symbol_id is not None:
                 symbol_rows.append((symbol, first_symbol_id, "equity", "SMART"))
 
-        with self._conn.transaction():
-            with self._conn.cursor() as cur:
-                cur.execute(
-                    """
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute(
+                """
                     CREATE TEMP TABLE _lw_symbols_stage (
                         symbol text NOT NULL,
                         symbol_id bigint NOT NULL,
@@ -237,9 +233,9 @@ class PostgresClient:
                         venue text NOT NULL
                     ) ON COMMIT DROP
                     """
-                )
-                cur.execute(
-                    """
+            )
+            cur.execute(
+                """
                     CREATE TEMP TABLE _lw_intraday_stage (
                         bar_timestamp timestamptz NOT NULL,
                         symbol_id bigint NOT NULL,
@@ -250,16 +246,16 @@ class PostgresClient:
                         volume bigint NOT NULL
                     ) ON COMMIT DROP
                     """
-                )
-                copied_symbols = _copy_rows(
-                    cur,
-                    "_lw_symbols_stage",
-                    ["symbol", "symbol_id", "asset_class", "venue"],
-                    symbol_rows,
-                )
-                copied_rows = _copy_rows(cur, "_lw_intraday_stage", _INTRADAY_COLUMNS, _intraday_rows(parquet_files))
-                cur.execute(
-                    f"""
+            )
+            copied_symbols = _copy_rows(
+                cur,
+                "_lw_symbols_stage",
+                ["symbol", "symbol_id", "asset_class", "venue"],
+                symbol_rows,
+            )
+            copied_rows = _copy_rows(cur, "_lw_intraday_stage", _INTRADAY_COLUMNS, _intraday_rows(parquet_files))
+            cur.execute(
+                f"""
                     INSERT INTO {self.schema}.symbols (symbol_id, symbol, asset_class, venue)
                     SELECT DISTINCT symbol_id, symbol, asset_class, venue
                     FROM _lw_symbols_stage
@@ -268,22 +264,22 @@ class PostgresClient:
                         asset_class = EXCLUDED.asset_class,
                         venue = EXCLUDED.venue
                     """
-                )
-                cur.execute(
-                    f"""
+            )
+            cur.execute(
+                f"""
                     DELETE FROM {self.schema}.{table} d
                     USING _lw_symbols_stage s
                     WHERE d.symbol_id = s.symbol_id
                     """
-                )
-                cur.execute(
-                    f"""
+            )
+            cur.execute(
+                f"""
                     INSERT INTO {self.schema}.{table}
                         (bar_timestamp, symbol_id, open, high, low, close, volume)
                     SELECT bar_timestamp, symbol_id, open, high, low, close, volume
                     FROM _lw_intraday_stage
                     """
-                )
+            )
         return {"symbols": copied_symbols, "rows": copied_rows}
 
     def replace_telemetry_from_jsonl(self, path: str | Path) -> dict[str, int]:
@@ -291,10 +287,9 @@ class PostgresClient:
         rows, skipped = _telemetry_rows(path)
         if rows == [] and skipped == 0 and not Path(path).exists():
             return {"rows": 0, "skipped": 0}
-        with self._conn.transaction():
-            with self._conn.cursor() as cur:
-                cur.execute(
-                    """
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute(
+                """
                     CREATE TEMP TABLE _lw_telemetry_stage (
                         ts timestamptz NOT NULL,
                         source text NOT NULL,
@@ -307,22 +302,22 @@ class PostgresClient:
                         payload jsonb NOT NULL
                     ) ON COMMIT DROP
                     """
-                )
-                copied = _copy_rows(
-                    cur,
-                    "_lw_telemetry_stage",
-                    ["ts", "source", "event", "farm", "state", "code", "req_id", "message", "payload"],
-                    rows,
-                )
-                cur.execute(f"DELETE FROM {self.schema}.telemetry_events")
-                cur.execute(
-                    f"""
+            )
+            copied = _copy_rows(
+                cur,
+                "_lw_telemetry_stage",
+                ["ts", "source", "event", "farm", "state", "code", "req_id", "message", "payload"],
+                rows,
+            )
+            cur.execute(f"DELETE FROM {self.schema}.telemetry_events")
+            cur.execute(
+                f"""
                     INSERT INTO {self.schema}.telemetry_events
                         (ts, source, event, farm, state, code, req_id, message, payload)
                     SELECT ts, source, event, farm, state, code, req_id, message, payload
                     FROM _lw_telemetry_stage
                     """
-                )
+            )
         return {"rows": copied, "skipped": skipped}
 
     def replace_quality_flags_from_jsonl(self, path: str | Path) -> dict[str, int]:
@@ -330,10 +325,9 @@ class PostgresClient:
         rows, skipped = _quality_rows(path)
         if rows == [] and skipped == 0 and not Path(path).exists():
             return {"rows": 0, "skipped": 0}
-        with self._conn.transaction():
-            with self._conn.cursor() as cur:
-                cur.execute(
-                    """
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute(
+                """
                     CREATE TEMP TABLE _lw_quality_flags_stage (
                         ts timestamptz NOT NULL,
                         source text NOT NULL,
@@ -346,26 +340,26 @@ class PostgresClient:
                         payload jsonb NOT NULL
                     ) ON COMMIT DROP
                     """
-                )
-                copied = _copy_rows(
-                    cur,
-                    "_lw_quality_flags_stage",
-                    [
-                        "ts",
-                        "source",
-                        "ticker",
-                        "timeframe",
-                        "parquet_path",
-                        "category",
-                        "severity",
-                        "detail",
-                        "payload",
-                    ],
-                    rows,
-                )
-                cur.execute(f"DELETE FROM {self.schema}.quality_flags")
-                cur.execute(
-                    f"""
+            )
+            copied = _copy_rows(
+                cur,
+                "_lw_quality_flags_stage",
+                [
+                    "ts",
+                    "source",
+                    "ticker",
+                    "timeframe",
+                    "parquet_path",
+                    "category",
+                    "severity",
+                    "detail",
+                    "payload",
+                ],
+                rows,
+            )
+            cur.execute(f"DELETE FROM {self.schema}.quality_flags")
+            cur.execute(
+                f"""
                     INSERT INTO {self.schema}.quality_flags
                         (ts, source, ticker, timeframe, parquet_path,
                          category, severity, detail, payload)
@@ -373,7 +367,7 @@ class PostgresClient:
                            category, severity, detail, payload
                     FROM _lw_quality_flags_stage
                     """
-                )
+            )
         return {"rows": copied, "skipped": skipped}
 
 
@@ -471,7 +465,7 @@ def _intraday_row(row: dict[str, Any]) -> tuple:
     if ts.tzinfo is None or ts.tzinfo.utcoffset(ts) is None:
         raise ValueError(f"bar_timestamp must be tz-aware, got {ts!r}")
     return (
-        ts.astimezone(timezone.utc),
+        ts.astimezone(UTC),
         int(row["symbol_id"]),
         float(row["open"]),
         float(row["high"]),
@@ -495,8 +489,8 @@ def _parse_ts(value: Any) -> datetime:
     else:
         ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     if ts.tzinfo is None or ts.tzinfo.utcoffset(ts) is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    return ts.astimezone(timezone.utc)
+        ts = ts.replace(tzinfo=UTC)
+    return ts.astimezone(UTC)
 
 
 def _json_ready(value: Any) -> Any:

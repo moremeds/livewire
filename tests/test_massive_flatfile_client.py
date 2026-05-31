@@ -5,15 +5,13 @@ from __future__ import annotations
 import csv
 import gzip
 import io
-from datetime import date, datetime, timezone
+from datetime import UTC, date
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from clients.massive_flatfile_client import (
-    S3_BUCKET,
-    S3_ENDPOINT,
     MassiveFlatfileClient,
     _s3_key_for_date,
     parse_flatfile_csv,
@@ -158,7 +156,7 @@ class TestParseFlatfileCsv:
         )
         result = parse_flatfile_csv(csv_gz, target_tickers={"AAPL"})
         ts = result["AAPL"][0]["bar_timestamp"]
-        assert ts.tzinfo == timezone.utc
+        assert ts.tzinfo == UTC
 
 
 class TestMassiveFlatfileClient:

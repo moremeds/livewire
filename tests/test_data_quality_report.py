@@ -104,15 +104,17 @@ def test_compute_summary_flap_count():
     for i, state in enumerate(["ok", "broken", "ok", "broken", "ok"]):
         code = 2106 if state == "ok" else 2105
         ts = base + timedelta(minutes=i * 2)
-        rows.append({
-            "ts": ts.isoformat().replace("+00:00", "Z"),
-            "_ts": ts,
-            "source": "ib",
-            "event": "farm_state",
-            "code": code,
-            "state": state,
-            "farm": "ushmds",
-        })
+        rows.append(
+            {
+                "ts": ts.isoformat().replace("+00:00", "Z"),
+                "_ts": ts,
+                "source": "ib",
+                "event": "farm_state",
+                "code": code,
+                "state": state,
+                "farm": "ushmds",
+            }
+        )
     summary = compute_summary(rows, [], window_start=base, window_end=base + timedelta(hours=1))
     ib = next(s for s in summary["sources"] if s["source"] == "ib")
     farm = next(f for f in ib["farms"] if f["farm"] == "ushmds")
@@ -124,14 +126,16 @@ def test_compute_summary_no_flap_when_transitions_are_spaced_out():
     base = _utc("2026-05-17T00:00:00Z")
     for i, state in enumerate(["ok", "broken", "ok"]):
         ts = base + timedelta(minutes=i * 20)
-        rows.append({
-            "ts": ts.isoformat().replace("+00:00", "Z"),
-            "_ts": ts,
-            "source": "ib",
-            "event": "farm_state",
-            "state": state,
-            "farm": "ushmds",
-        })
+        rows.append(
+            {
+                "ts": ts.isoformat().replace("+00:00", "Z"),
+                "_ts": ts,
+                "source": "ib",
+                "event": "farm_state",
+                "state": state,
+                "farm": "ushmds",
+            }
+        )
     summary = compute_summary(rows, [], window_start=base, window_end=base + timedelta(hours=1))
     ib = next(s for s in summary["sources"] if s["source"] == "ib")
     farm = next(f for f in ib["farms"] if f["farm"] == "ushmds")
@@ -160,20 +164,24 @@ def test_compute_summary_counts_multiple_flap_bursts_and_sources():
     rows = []
     for minute in [0, 1, 2, 30, 31, 32]:
         ts = base + timedelta(minutes=minute)
-        rows.append({
-            "ts": ts.isoformat().replace("+00:00", "Z"),
-            "_ts": ts,
-            "source": "ib",
-            "event": "farm_state",
-            "state": "ok" if minute % 2 == 0 else "broken",
-            "farm": "ushmds",
-        })
-    rows.append({
-        "ts": base.isoformat().replace("+00:00", "Z"),
-        "_ts": base,
-        "source": "uw",
-        "event": "connected",
-    })
+        rows.append(
+            {
+                "ts": ts.isoformat().replace("+00:00", "Z"),
+                "_ts": ts,
+                "source": "ib",
+                "event": "farm_state",
+                "state": "ok" if minute % 2 == 0 else "broken",
+                "farm": "ushmds",
+            }
+        )
+    rows.append(
+        {
+            "ts": base.isoformat().replace("+00:00", "Z"),
+            "_ts": base,
+            "source": "uw",
+            "event": "connected",
+        }
+    )
     summary = compute_summary(rows, [], window_start=base, window_end=base + timedelta(hours=1))
     ib = next(s for s in summary["sources"] if s["source"] == "ib")
     uw = next(s for s in summary["sources"] if s["source"] == "uw")
@@ -273,13 +281,15 @@ def test_render_quality_view_severity_filter():
 def test_render_quality_view_defaults_timeframe():
     from livewire_scripts.data_quality_report import render_quality_view
 
-    audit = [{
-        "_ts": _utc("2026-05-17T00:00:00Z"),
-        "source": "ib",
-        "ticker": "SMH",
-        "category": "range_shortfall",
-        "severity": "critical",
-    }]
+    audit = [
+        {
+            "_ts": _utc("2026-05-17T00:00:00Z"),
+            "source": "ib",
+            "ticker": "SMH",
+            "category": "range_shortfall",
+            "severity": "critical",
+        }
+    ]
     assert "ib/SMH/1d" in render_quality_view(audit)
 
 
@@ -287,23 +297,30 @@ def test_main_dispatch_summary(tmp_path, capsys):
     from livewire_scripts.data_quality_report import main
 
     t = tmp_path / "telemetry.jsonl"
-    t.write_text(json.dumps({
-        "ts": "2026-05-17T00:00:00Z",
-        "source": "ib",
-        "event": "connected",
-    }) + "\n")
+    t.write_text(
+        json.dumps(
+            {
+                "ts": "2026-05-17T00:00:00Z",
+                "source": "ib",
+                "event": "connected",
+            }
+        )
+        + "\n"
+    )
     a = tmp_path / "audit.jsonl"
     a.write_text("")
-    rc = main([
-        "--view",
-        "summary",
-        "--since",
-        "30d",
-        "--telemetry-path",
-        str(t),
-        "--audit-path",
-        str(a),
-    ])
+    rc = main(
+        [
+            "--view",
+            "summary",
+            "--since",
+            "30d",
+            "--telemetry-path",
+            str(t),
+            "--audit-path",
+            str(a),
+        ]
+    )
     captured = capsys.readouterr()
     assert rc == 0
     assert "Livewire Data Quality Summary" in captured.out
@@ -314,33 +331,41 @@ def test_main_dispatch_flap_with_source_filter(tmp_path, capsys):
 
     t = tmp_path / "telemetry.jsonl"
     t.write_text(
-        json.dumps({
-            "ts": "2026-05-17T00:00:00Z",
-            "source": "ib",
-            "event": "farm_state",
-            "state": "ok",
-            "farm": "ushmds",
-        }) + "\n" +
-        json.dumps({
-            "ts": "2026-05-17T00:00:00Z",
-            "source": "uw",
-            "event": "farm_state",
-            "state": "broken",
-            "farm": "uw-api",
-        }) + "\n"
+        json.dumps(
+            {
+                "ts": "2026-05-17T00:00:00Z",
+                "source": "ib",
+                "event": "farm_state",
+                "state": "ok",
+                "farm": "ushmds",
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "ts": "2026-05-17T00:00:00Z",
+                "source": "uw",
+                "event": "farm_state",
+                "state": "broken",
+                "farm": "uw-api",
+            }
+        )
+        + "\n"
     )
-    rc = main([
-        "--view",
-        "flap",
-        "--since",
-        "30d",
-        "--source",
-        "ib",
-        "--telemetry-path",
-        str(t),
-        "--audit-path",
-        str(tmp_path / "missing-audit.jsonl"),
-    ])
+    rc = main(
+        [
+            "--view",
+            "flap",
+            "--since",
+            "30d",
+            "--source",
+            "ib",
+            "--telemetry-path",
+            str(t),
+            "--audit-path",
+            str(tmp_path / "missing-audit.jsonl"),
+        ]
+    )
     out = capsys.readouterr().out
     assert rc == 0
     assert "ushmds" in out
@@ -351,25 +376,32 @@ def test_main_dispatch_quality_with_filter(tmp_path, capsys):
     from livewire_scripts.data_quality_report import main
 
     a = tmp_path / "audit.jsonl"
-    a.write_text(json.dumps({
-        "ts": "2026-05-17T00:00:00Z",
-        "source": "ib",
-        "ticker": "SMH",
-        "severity": "critical",
-        "category": "range_shortfall",
-    }) + "\n")
-    rc = main([
-        "--view",
-        "quality",
-        "--since",
-        "30d",
-        "--severity",
-        "critical",
-        "--telemetry-path",
-        str(tmp_path / "missing-telemetry.jsonl"),
-        "--audit-path",
-        str(a),
-    ])
+    a.write_text(
+        json.dumps(
+            {
+                "ts": "2026-05-17T00:00:00Z",
+                "source": "ib",
+                "ticker": "SMH",
+                "severity": "critical",
+                "category": "range_shortfall",
+            }
+        )
+        + "\n"
+    )
+    rc = main(
+        [
+            "--view",
+            "quality",
+            "--since",
+            "30d",
+            "--severity",
+            "critical",
+            "--telemetry-path",
+            str(tmp_path / "missing-telemetry.jsonl"),
+            "--audit-path",
+            str(a),
+        ]
+    )
     out = capsys.readouterr().out
     assert rc == 0
     assert "SMH" in out
@@ -395,17 +427,19 @@ def test_email_mode_spawns_nodemailer_and_writes_marker(tmp_path, monkeypatch):
 
     monkeypatch.setattr("subprocess.run", fake_run)
 
-    rc = main([
-        "--view",
-        "summary",
-        "--since",
-        "1h",
-        "--email",
-        "--telemetry-path",
-        str(t),
-        "--audit-path",
-        str(a),
-    ])
+    rc = main(
+        [
+            "--view",
+            "summary",
+            "--since",
+            "1h",
+            "--email",
+            "--telemetry-path",
+            str(t),
+            "--audit-path",
+            str(a),
+        ]
+    )
     assert rc == 0
     assert spawned, "Nodemailer should be invoked"
     cmd = spawned[0][0]
@@ -426,8 +460,9 @@ def test_send_email_failure_returns_false(monkeypatch, capsys):
 
 
 def test_send_email_nonzero_returns_false(monkeypatch, capsys):
-    from livewire_scripts.data_quality_report import _send_email
     from subprocess import CompletedProcess
+
+    from livewire_scripts.data_quality_report import _send_email
 
     monkeypatch.setattr(
         "subprocess.run",

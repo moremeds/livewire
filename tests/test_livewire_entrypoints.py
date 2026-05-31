@@ -366,9 +366,7 @@ def test_ops_send_alert_delegates_to_node(monkeypatch) -> None:
     assert seen["cmd"][2:] == ["--mode", "failure"]
 
 
-def test_ops_run_daily_job_loads_env_files_and_dispatches(
-    monkeypatch, tmp_path
-) -> None:
+def test_ops_run_daily_job_loads_env_files_and_dispatches(monkeypatch, tmp_path) -> None:
     calls: list[tuple[str, list[str]]] = []
     repo_env = tmp_path / ".env"
     warehouse = tmp_path / "warehouse"

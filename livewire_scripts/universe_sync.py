@@ -17,7 +17,6 @@ import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from rich.console import Console
 from rich.table import Table
@@ -27,7 +26,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients.tag_registry import TagRegistry
 from clients.universe_client import (
-    TickerStatus,
     UniverseFetchError,
     check_tickers_bulk,
     fetch_ndx100,
@@ -38,9 +36,7 @@ from clients.universe_client import (
 log = logging.getLogger(__name__)
 console = Console()
 
-_WAREHOUSE_DIR = Path(
-    os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))
-)
+_WAREHOUSE_DIR = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
 _DATA_LAKE = _WAREHOUSE_DIR / "data-lake"
 _PRESET_DIR = PROJECT_ROOT / "presets"
 
@@ -99,9 +95,7 @@ def compute_movements(
                 move_type = "promotion" if live_best < was_best else "demotion"
             else:  # pragma: no cover
                 move_type = "move"
-            movements.append(
-                Movement(move_type, ticker, from_tags=was_in, to_tags=live_in)
-            )
+            movements.append(Movement(move_type, ticker, from_tags=was_in, to_tags=live_in))
 
     return movements
 
@@ -118,8 +112,8 @@ def apply_sync(registry: TagRegistry, movements: list[Movement]) -> None:
 def update_preset_tickers(
     path: Path,
     tickers: set[str],
-    name: Optional[str] = None,
-    description: Optional[str] = None,
+    name: str | None = None,
+    description: str | None = None,
 ) -> None:
     if path.exists():
         with path.open() as f:
@@ -151,15 +145,9 @@ def _archive_delisted(ticker: str, data_lake: Path) -> bool:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
-        description="Sync index constituents and update registry"
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true", help="Report changes without modifying"
-    )
-    parser.add_argument(
-        "--skip-dead", action="store_true", help="Skip Polygon dead-ticker check"
-    )
+    parser = argparse.ArgumentParser(description="Sync index constituents and update registry")
+    parser.add_argument("--dry-run", action="store_true", help="Report changes without modifying")
+    parser.add_argument("--skip-dead", action="store_true", help="Skip Polygon dead-ticker check")
     parser.add_argument(
         "--interests",
         nargs="*",
@@ -168,9 +156,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     registry_path = _WAREHOUSE_DIR / "registry.json"
     registry = TagRegistry(registry_path)
@@ -196,8 +182,7 @@ def main(argv: list[str] | None = None) -> None:
         min_expected = MIN_EXPECTED_CONSTITUENTS.get(idx, 0)
         if len(tickers) < min_expected:
             log.error(
-                "SAFETY: %s returned only %d tickers (expected >= %d). "
-                "Aborting to prevent mass removal.",
+                "SAFETY: %s returned only %d tickers (expected >= %d). Aborting to prevent mass removal.",
                 idx,
                 len(tickers),
                 min_expected,
@@ -271,9 +256,7 @@ def main(argv: list[str] | None = None) -> None:
         orphan_tickers = [
             t
             for t in registry.all_tickers()
-            if registry.get(t)
-            and not registry.get(t).tags & set(INDEX_TAGS)
-            and registry.get(t).status == "active"
+            if registry.get(t) and not registry.get(t).tags & set(INDEX_TAGS) and registry.get(t).status == "active"
         ]
         check_list = list(set(removed_tickers + orphan_tickers))
         if check_list:
@@ -286,9 +269,7 @@ def main(argv: list[str] | None = None) -> None:
                 if status.list_date:
                     registry.set_earliest(ticker, status.list_date, source="polygon")
                 if not status.active:
-                    log.info(
-                        "DELISTED: %s (delisted_utc=%s)", ticker, status.delisted_utc
-                    )
+                    log.info("DELISTED: %s (delisted_utc=%s)", ticker, status.delisted_utc)
                     registry.mark_delisted(ticker, delisted_at=status.delisted_utc)
                     _archive_delisted(ticker, _DATA_LAKE)
     elif not args.skip_dead:

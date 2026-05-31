@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -17,9 +17,7 @@ log = logging.getLogger(__name__)
 
 PARQUET_FILENAME = "1d.parquet"
 
-_DEFAULT_BRONZE_DIR = (
-    Path.home() / "market-warehouse" / "data-lake" / "bronze" / "asset_class=equity"
-)
+_DEFAULT_BRONZE_DIR = Path.home() / "market-warehouse" / "data-lake" / "bronze" / "asset_class=equity"
 
 _BASE_COLUMNS = (
     "trade_date",
@@ -106,7 +104,7 @@ _SCHEMA_PROFILES = {
 class BronzeClient:
     """Manage canonical per-ticker bronze parquet snapshots."""
 
-    def __init__(self, bronze_dir: Optional[str | Path] = None, asset_class: str = "equity"):
+    def __init__(self, bronze_dir: str | Path | None = None, asset_class: str = "equity"):
         if asset_class not in _SCHEMA_PROFILES:
             raise ValueError(f"unsupported asset_class: {asset_class!r}")
         self._bronze_dir = Path(bronze_dir or _DEFAULT_BRONZE_DIR)
@@ -116,7 +114,7 @@ class BronzeClient:
     def close(self) -> None:
         return None
 
-    def __enter__(self) -> "BronzeClient":
+    def __enter__(self) -> BronzeClient:
         return self
 
     def __exit__(self, *exc) -> None:
@@ -140,19 +138,11 @@ class BronzeClient:
 
     def get_latest_dates(self) -> dict[str, str]:
         """Return ``{symbol: latest_trade_date}`` from the bronze layer."""
-        return {
-            symbol: max(dates).isoformat()
-            for symbol, dates in self.get_trade_dates_by_symbol().items()
-            if dates
-        }
+        return {symbol: max(dates).isoformat() for symbol, dates in self.get_trade_dates_by_symbol().items() if dates}
 
     def get_oldest_dates(self) -> dict[str, str]:
         """Return ``{symbol: oldest_trade_date}`` from the bronze layer."""
-        return {
-            symbol: min(dates).isoformat()
-            for symbol, dates in self.get_trade_dates_by_symbol().items()
-            if dates
-        }
+        return {symbol: min(dates).isoformat() for symbol, dates in self.get_trade_dates_by_symbol().items() if dates}
 
     def get_summary(self) -> list[dict[str, Any]]:
         """Return row counts and date coverage for each symbol in bronze."""
@@ -234,10 +224,7 @@ class BronzeClient:
         for row in incoming:
             merged[row["trade_date"]] = row
 
-        inserted = sum(
-            1 for trade_date in {row["trade_date"] for row in incoming}
-            if trade_date not in existing_dates
-        )
+        inserted = sum(1 for trade_date in {row["trade_date"] for row in incoming} if trade_date not in existing_dates)
         ordered = [merged[trade_date] for trade_date in sorted(merged)]
         self._publish_symbol_rows(symbol, ordered)
         return inserted

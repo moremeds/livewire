@@ -17,9 +17,7 @@ EXPECTED_SCRIPT_FILES = {
 
 
 def test_scripts_directory_exposes_only_five_operator_entrypoints() -> None:
-    script_files = {
-        path.name for path in (REPO_ROOT / "scripts").iterdir() if path.is_file()
-    }
+    script_files = {path.name for path in (REPO_ROOT / "scripts").iterdir() if path.is_file()}
 
     assert script_files == EXPECTED_SCRIPT_FILES
 

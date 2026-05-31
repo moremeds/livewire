@@ -2,6 +2,7 @@
 
 Three independent emit paths; any failing alone does not sink the others.
 """
+
 from __future__ import annotations
 
 import json
@@ -12,8 +13,8 @@ import sys
 import tempfile
 import time
 from dataclasses import asdict
+from datetime import UTC
 from pathlib import Path
-from typing import Optional
 
 from clients.quality_detector import QualityFlag
 
@@ -33,9 +34,7 @@ def write_sidecar(parquet_path: Path, flags: list[QualityFlag], metadata: dict) 
     payload["parquet_path"] = str(parquet_path)
     payload["flags"] = [asdict(f) for f in flags]
     try:
-        fd, tmp_path = tempfile.mkstemp(
-            prefix=".sidecar_", suffix=".tmp", dir=str(sidecar.parent)
-        )
+        fd, tmp_path = tempfile.mkstemp(prefix=".sidecar_", suffix=".tmp", dir=str(sidecar.parent))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh, indent=2, sort_keys=True, default=str)
@@ -53,9 +52,9 @@ def write_sidecar(parquet_path: Path, flags: list[QualityFlag], metadata: dict) 
 
 
 def _utc_iso() -> str:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _resolve_audit_path() -> Path:
@@ -144,7 +143,7 @@ def alert_on_flag(
     *,
     source: str,
     ticker: str,
-    severity_threshold: Optional[str] = None,
+    severity_threshold: str | None = None,
 ) -> bool:
     """Spawn Nodemailer email if severity meets threshold. Returns True if email sent."""
     threshold = (severity_threshold or _resolve_threshold()).lower()

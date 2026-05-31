@@ -7,8 +7,8 @@ import argparse
 import importlib
 import inspect
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -63,9 +63,7 @@ def _dispatch_backfill_all(argv: Sequence[str]) -> int:
 
 
 def _dispatch_daily_backfill(argv: Sequence[str]) -> int:
-    return _dispatch_module(
-        "livewire_scripts.sync_runner", list(argv), "livewire_ingest.py daily-backfill"
-    )
+    return _dispatch_module("livewire_scripts.sync_runner", list(argv), "livewire_ingest.py daily-backfill")
 
 
 def _arg_value(argv: Sequence[str], flag: str, default: str) -> str:
@@ -86,10 +84,7 @@ def _requires_ib_preflight(command: str, rest: Sequence[str]) -> bool:
     if command == "historical":
         source = _arg_value(rest, "--source", "auto")
         asset_class = _arg_value(rest, "--asset-class", "equity")
-        is_backfill = "--backfill" in rest
-        if source == "massive" and asset_class == "equity":
-            return False
-        return True
+        return not (source == "massive" and asset_class == "equity")
     if command == "intraday-backfill":
         source = _arg_value(rest, "--source", "ib")
         asset_class = _arg_value(rest, "--asset-class", "equity")
@@ -120,9 +115,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _dispatch_backfill_all(rest)
     if args.command == "daily-backfill":
         return _dispatch_daily_backfill(rest)
-    return _dispatch_module(
-        COMMANDS[args.command], rest, f"livewire_ingest.py {args.command}"
-    )
+    return _dispatch_module(COMMANDS[args.command], rest, f"livewire_ingest.py {args.command}")
 
 
 if __name__ == "__main__":  # pragma: no cover

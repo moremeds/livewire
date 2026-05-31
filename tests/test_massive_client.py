@@ -5,9 +5,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 import responses
-from requests.exceptions import ConnectionError as ReqConnectionError, Timeout as ReqTimeout
+from requests.exceptions import ConnectionError as ReqConnectionError
+from requests.exceptions import Timeout as ReqTimeout
 
 from clients.massive_client import (
+    _DEFAULT_BASE_URL,
     MassiveAPIError,
     MassiveAuthError,
     MassiveClient,
@@ -17,7 +19,6 @@ from clients.massive_client import (
     MassiveRateLimitError,
     MassiveServerError,
     MassiveValidationError,
-    _DEFAULT_BASE_URL,
 )
 
 

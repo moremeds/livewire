@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
-from pathlib import Path
+from datetime import UTC, date, datetime
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from livewire_scripts.ingest_flatfiles import (
     DERIVED_TIMEFRAMES,
@@ -21,7 +18,7 @@ def _make_rows(ticker: str, n: int = 60) -> list[dict]:
     """Build n 1m rows starting at 14:00 UTC (10:00 ET) on 2026-05-28."""
     from datetime import timedelta
 
-    base = datetime(2026, 5, 28, 14, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 5, 28, 14, 0, tzinfo=UTC)
     return [
         {
             "bar_timestamp": base + timedelta(minutes=i),

@@ -9,11 +9,10 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Sequence
-
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -47,7 +46,7 @@ class AlertRequest:
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _read_positive_int_env(name: str, default: int) -> int:
@@ -62,20 +61,14 @@ def _read_positive_int_env(name: str, default: int) -> int:
 
 
 def build_config() -> RunnerConfig:
-    warehouse_dir = Path(
-        os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))
-    ).expanduser()
-    log_dir = Path(
-        os.getenv("MDW_DAILY_UPDATE_LOG_DIR", str(warehouse_dir / "logs"))
-    ).expanduser()
+    warehouse_dir = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))).expanduser()
+    log_dir = Path(os.getenv("MDW_DAILY_UPDATE_LOG_DIR", str(warehouse_dir / "logs"))).expanduser()
     node_bin = os.getenv("MDW_NODE_BIN") or shutil.which("node") or "/opt/homebrew/bin/node"
 
     return RunnerConfig(
         warehouse_dir=warehouse_dir,
         log_dir=log_dir,
-        daily_update_script=Path(
-            os.getenv("MDW_DAILY_UPDATE_SCRIPT", str(INGEST_SCRIPT))
-        ).expanduser(),
+        daily_update_script=Path(os.getenv("MDW_DAILY_UPDATE_SCRIPT", str(INGEST_SCRIPT))).expanduser(),
         alert_script=Path(
             os.getenv(
                 "MDW_DAILY_UPDATE_ALERT_SCRIPT",
@@ -85,9 +78,7 @@ def build_config() -> RunnerConfig:
         python_bin=os.getenv("MDW_DAILY_UPDATE_PYTHON_BIN", sys.executable),
         node_bin=node_bin,
         max_attempts=_read_positive_int_env("MDW_DAILY_UPDATE_MAX_ATTEMPTS", 3),
-        retry_delay_seconds=_read_positive_int_env(
-            "MDW_DAILY_UPDATE_RETRY_DELAY_SECONDS", 300
-        ),
+        retry_delay_seconds=_read_positive_int_env("MDW_DAILY_UPDATE_RETRY_DELAY_SECONDS", 300),
     )
 
 
@@ -104,9 +95,7 @@ def append_log(log_file: Path, message: str) -> None:
             handle.write("\n")
 
 
-def build_daily_update_command(
-    config: RunnerConfig, daily_update_args: Sequence[str]
-) -> list[str]:
+def build_daily_update_command(config: RunnerConfig, daily_update_args: Sequence[str]) -> list[str]:
     return [config.python_bin, str(config.daily_update_script), "daily", *daily_update_args]
 
 
@@ -253,11 +242,7 @@ def run_with_retries(
         if result.returncode == 0:
             append_log(
                 log_file,
-                (
-                    "=== Done "
-                    f"{now_fn():%Y-%m-%dT%H:%M:%SZ} "
-                    f"(attempt {attempt}/{config.max_attempts}) ==="
-                ),
+                (f"=== Done {now_fn():%Y-%m-%dT%H:%M:%SZ} (attempt {attempt}/{config.max_attempts}) ==="),
             )
             try:
                 report_result = runner(
@@ -278,10 +263,7 @@ def run_with_retries(
                 if report_result.returncode != 0:
                     append_log(
                         log_file,
-                        (
-                            "WARNING: end-of-day quality report failed: "
-                            f"exit_code={report_result.returncode}"
-                        ),
+                        (f"WARNING: end-of-day quality report failed: exit_code={report_result.returncode}"),
                     )
             except Exception as exc:  # pragma: no cover - logged but tolerated
                 append_log(log_file, f"WARNING: end-of-day quality report failed: {exc}")
@@ -305,11 +287,7 @@ def run_with_retries(
 
     append_log(
         log_file,
-        (
-            "=== Failed "
-            f"{now_fn():%Y-%m-%dT%H:%M:%SZ} "
-            f"after {config.max_attempts} attempt(s) ==="
-        ),
+        (f"=== Failed {now_fn():%Y-%m-%dT%H:%M:%SZ} after {config.max_attempts} attempt(s) ==="),
     )
 
     alert_request = AlertRequest(
@@ -336,10 +314,7 @@ def run_with_retries(
     else:
         append_log(
             log_file,
-            (
-                "WARNING: failure alert returned non-zero exit code "
-                f"{alert_result.returncode}. {alert_output}"
-            ).strip(),
+            (f"WARNING: failure alert returned non-zero exit code {alert_result.returncode}. {alert_output}").strip(),
         )
 
     return final_exit_code
@@ -390,9 +365,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Otherwise, run all asset classes sequentially.
     final_code = 0
     for asset_class in ASSET_CLASSES:
-        code = run_with_retries(
-            config, args + ["--asset-class", asset_class], env=env
-        )
+        code = run_with_retries(config, args + ["--asset-class", asset_class], env=env)
         if code != 0:
             final_code = code
 

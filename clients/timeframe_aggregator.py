@@ -36,10 +36,7 @@ def aggregate_bars(
     Input bars must be sorted by bar_timestamp ascending.
     """
     if (source_tf, target_tf) not in VALID_ROLLUPS:
-        raise ValueError(
-            f"unsupported rollup: {source_tf} -> {target_tf}. "
-            f"Valid: {sorted(VALID_ROLLUPS)}"
-        )
+        raise ValueError(f"unsupported rollup: {source_tf} -> {target_tf}. Valid: {sorted(VALID_ROLLUPS)}")
     if not bars:
         return []
 

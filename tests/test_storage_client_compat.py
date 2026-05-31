@@ -96,10 +96,14 @@ class TestDailyScriptCompat:
         monkeypatch.setattr(daily_script, "is_trading_day", lambda d: True)
         monkeypatch.setattr(daily_script, "IBClient", lambda: mock_ib)
         monkeypatch.setattr(daily_script, "DATA_LAKE", tmp_path)
-        monkeypatch.setattr(daily_script, "date", SimpleNamespace(
-            today=lambda: date(2025, 1, 3),
-            fromisoformat=date.fromisoformat,
-        ))
+        monkeypatch.setattr(
+            daily_script,
+            "date",
+            SimpleNamespace(
+                today=lambda: date(2025, 1, 3),
+                fromisoformat=date.fromisoformat,
+            ),
+        )
 
         daily_script.main()
 

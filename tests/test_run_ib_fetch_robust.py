@@ -3,12 +3,12 @@ import subprocess
 from unittest.mock import MagicMock
 
 from livewire_scripts.run_ib_fetch_robust import (
+    OutcomeCategory,
+    TickerOutcome,
     _bronze_path_for,
     _build_worker_cmd,
     _count_rows,
     _is_already_done,
-    OutcomeCategory,
-    TickerOutcome,
     format_summary,
     load_tickers,
     main,
@@ -58,8 +58,10 @@ def test_load_tickers_no_source_returns_empty():
 
 
 def test_bronze_path_for_daily_equity():
-    assert _bronze_path_for("/tmp/bronze", "equity", "AAPL").as_posix().endswith(
-        "/asset_class=equity/symbol=AAPL/1d.parquet"
+    assert (
+        _bronze_path_for("/tmp/bronze", "equity", "AAPL")
+        .as_posix()
+        .endswith("/asset_class=equity/symbol=AAPL/1d.parquet")
     )
 
 
@@ -316,17 +318,19 @@ def test_main_writes_summary_and_returns_fail_status(tmp_path, monkeypatch, caps
         "livewire_scripts.run_ib_fetch_robust.run_one_ticker",
         fake_run_one_ticker,
     )
-    rc = main([
-        "--tickers",
-        "AAPL",
-        "HOOD",
-        "--mode",
-        "seed",
-        "--log-dir",
-        str(tmp_path),
-        "--bronze-dir",
-        str(tmp_path / "bronze"),
-    ])
+    rc = main(
+        [
+            "--tickers",
+            "AAPL",
+            "HOOD",
+            "--mode",
+            "seed",
+            "--log-dir",
+            str(tmp_path),
+            "--bronze-dir",
+            str(tmp_path / "bronze"),
+        ]
+    )
 
     assert rc == 1
     out = capsys.readouterr().out
@@ -350,16 +354,18 @@ def test_main_returns_fail_status_for_timeout(tmp_path, monkeypatch, capsys):
         fake_run_one_ticker,
     )
 
-    rc = main([
-        "--tickers",
-        "HOOD",
-        "--mode",
-        "seed",
-        "--log-dir",
-        str(tmp_path),
-        "--bronze-dir",
-        str(tmp_path / "bronze"),
-    ])
+    rc = main(
+        [
+            "--tickers",
+            "HOOD",
+            "--mode",
+            "seed",
+            "--log-dir",
+            str(tmp_path),
+            "--bronze-dir",
+            str(tmp_path / "bronze"),
+        ]
+    )
 
     assert rc == 1
     assert "[1/1 timeout] HOOD" in capsys.readouterr().out

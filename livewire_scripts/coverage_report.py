@@ -16,10 +16,10 @@ import logging
 import os
 import subprocess
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
@@ -78,10 +78,7 @@ def _list_symbols(tf: str, bronze_root: Path) -> set[str]:
     if not bronze_dir.exists():
         return set()
     fname = _filename_for(tf)
-    return {
-        p.parent.name.split("=", 1)[1]
-        for p in bronze_dir.glob(f"symbol=*/{fname}")
-    }
+    return {p.parent.name.split("=", 1)[1] for p in bronze_dir.glob(f"symbol=*/{fname}")}
 
 
 def _symbol_from_parquet_path(path: Path) -> str:
@@ -93,10 +90,7 @@ def _latest_date_in_parquet(path: Path, column_name: str) -> date | None:
     values = table.column(column_name).to_pylist()
     if not values:
         return None
-    dates = [
-        value if isinstance(value, date) and not hasattr(value, "date") else value.date()
-        for value in values
-    ]
+    dates = [value if isinstance(value, date) and not hasattr(value, "date") else value.date() for value in values]
     return max(dates)
 
 
@@ -116,9 +110,7 @@ def compute_coverage(
     universe_size = len(universe)
 
     for tf in TIMEFRAMES:
-        parquet_paths = sorted(
-            (bronze_root / "asset_class=equity").glob(f"symbol=*/{_filename_for(tf)}")
-        )
+        parquet_paths = sorted((bronze_root / "asset_class=equity").glob(f"symbol=*/{_filename_for(tf)}"))
         if not parquet_paths:
             results[tf] = CoverageResult(
                 timeframe=tf,
@@ -134,9 +126,7 @@ def compute_coverage(
             for path in parquet_paths
             if (latest := _latest_date_in_parquet(path, column_name)) is not None
         }
-        present_symbols = {
-            symbol for symbol, latest in latest_by_symbol.items() if latest >= target_date
-        }
+        present_symbols = {symbol for symbol, latest in latest_by_symbol.items() if latest >= target_date}
         missing = sorted(universe - present_symbols)
         results[tf] = CoverageResult(
             timeframe=tf,
@@ -208,25 +198,29 @@ def auto_recover(
             sys.executable,
             str(_INGEST_SCRIPT),
             "daily",
-            "--source", "massive",
+            "--source",
+            "massive",
             "--force",
-            "--target-date", (target_date or date.today()).isoformat(),
-            "--tickers", *missing_symbols,
+            "--target-date",
+            (target_date or date.today()).isoformat(),
+            "--tickers",
+            *missing_symbols,
         ]
     else:
         cmd = [
             sys.executable,
             str(_INGEST_SCRIPT),
             "intraday-backfill",
-            "--timeframe", timeframe,
-            "--source", "massive",
-            "--asset-class", "equity",
-            "--tickers", *missing_symbols,
+            "--timeframe",
+            timeframe,
+            "--source",
+            "massive",
+            "--asset-class",
+            "equity",
+            "--tickers",
+            *missing_symbols,
         ]
-    console.print(
-        f"[cyan]Auto-recover {timeframe}: launching backfill for "
-        f"{len(missing_symbols)} symbols[/cyan]"
-    )
+    console.print(f"[cyan]Auto-recover {timeframe}: launching backfill for {len(missing_symbols)} symbols[/cyan]")
     subprocess.run(cmd, check=False)
 
     target = target_date or date.today()
@@ -250,24 +244,26 @@ def _send_alert(
     summary_lines = []
     for o in outcomes:
         if o.aborted:
-            summary_lines.append(
-                f"{o.timeframe}: ABORTED — {o.reason}; {len(o.still_missing)} missing"
-            )
+            summary_lines.append(f"{o.timeframe}: ABORTED — {o.reason}; {len(o.still_missing)} missing")
         else:
             summary_lines.append(
-                f"{o.timeframe}: recovered {o.recovered}/{len(o.attempted)}, "
-                f"{len(o.still_missing)} still missing"
+                f"{o.timeframe}: recovered {o.recovered}/{len(o.attempted)}, {len(o.still_missing)} still missing"
             )
     error_summary = "coverage_report: " + "; ".join(summary_lines)
     cmd = [
         sys.executable,
         str(_OPS_SCRIPT),
         "send-alert",
-        "--run-date", target_date.isoformat(),
-        "--log-file", str(log_path),
-        "--error-summary", error_summary,
-        "--repo-root", str(_REPO_ROOT),
-        "--job-name", "coverage_report",
+        "--run-date",
+        target_date.isoformat(),
+        "--log-file",
+        str(log_path),
+        "--error-summary",
+        error_summary,
+        "--repo-root",
+        str(_REPO_ROOT),
+        "--job-name",
+        "coverage_report",
     ]
     subprocess.run(cmd, check=False)
 
@@ -310,9 +306,7 @@ def main() -> None:
 
     target = _resolve_target_date(args.force, args.target_date)
     if target is None:
-        console.print(
-            f"[yellow]{date.today()} is not a trading day. Use --force or --target-date.[/yellow]"
-        )
+        console.print(f"[yellow]{date.today()} is not a trading day. Use --force or --target-date.[/yellow]")
         return
 
     console.print(f"\n[bold]Coverage Report[/bold]  target_date={target}")

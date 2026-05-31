@@ -8,7 +8,6 @@ from typing import Any
 
 import httpx
 
-
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
 FRED_FREQUENCIES = {
     "d",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from subprocess import CompletedProcess
 from types import SimpleNamespace
@@ -13,9 +13,9 @@ import pytest
 
 from livewire_scripts.run_daily_update_job import (
     ASSET_CLASSES,
-    _utc_now,
     AlertRequest,
     RunnerConfig,
+    _utc_now,
     append_log,
     build_alert_command,
     build_cboe_volatility_command,
@@ -102,14 +102,11 @@ class TestBuildConfig:
 
 class TestHelpers:
     def test_utc_now_returns_utc_datetime(self):
-        assert _utc_now().tzinfo == timezone.utc
+        assert _utc_now().tzinfo == UTC
 
     def test_build_log_file(self, tmp_path):
-        current = datetime(2026, 3, 11, 13, 5, tzinfo=timezone.utc)
-        assert (
-            build_log_file(tmp_path, current)
-            == tmp_path / "daily_update_2026-03-11.log"
-        )
+        current = datetime(2026, 3, 11, 13, 5, tzinfo=UTC)
+        assert build_log_file(tmp_path, current) == tmp_path / "daily_update_2026-03-11.log"
 
     def test_append_log_adds_newline(self, tmp_path):
         log_file = tmp_path / "logs" / "daily.log"
@@ -159,20 +156,14 @@ class TestHelpers:
 
     def test_extract_error_summary_handles_missing_and_empty_logs(self, tmp_path):
         missing_log = tmp_path / "missing.log"
-        assert (
-            extract_error_summary(missing_log)
-            == "Daily update failed, and the log file was not found."
-        )
+        assert extract_error_summary(missing_log) == "Daily update failed, and the log file was not found."
 
         empty_log = tmp_path / "empty.log"
         empty_log.write_text(
             "=== Daily Update 2026-03-11T20:05:07Z ===\n=== Failed 2026-03-11T20:05:10Z ===\n",
             encoding="utf-8",
         )
-        assert (
-            extract_error_summary(empty_log)
-            == "Daily update failed with no error summary captured in the log."
-        )
+        assert extract_error_summary(empty_log) == "Daily update failed with no error summary captured in the log."
 
     def test_extract_error_summary_and_completion_marker(self, tmp_path):
         log_file = tmp_path / "daily.log"
@@ -247,7 +238,7 @@ class TestEndOfDayQualityReport:
             daily_update_args=[],
             runner=fake_runner,
             sleep_fn=lambda s: None,
-            now_fn=lambda: datetime(2026, 5, 18, 20, 0, tzinfo=timezone.utc),
+            now_fn=lambda: datetime(2026, 5, 18, 20, 0, tzinfo=UTC),
         )
         assert rc == 0
         assert len(calls) >= 2
@@ -270,16 +261,14 @@ class TestEndOfDayQualityReport:
             daily_update_args=[],
             runner=fake_runner,
             sleep_fn=lambda s: None,
-            now_fn=lambda: datetime(2026, 5, 18, 20, 0, tzinfo=timezone.utc),
+            now_fn=lambda: datetime(2026, 5, 18, 20, 0, tzinfo=UTC),
         )
         assert rc == 0
         log_file = build_log_file(
             config.log_dir,
-            datetime(2026, 5, 18, 20, 0, tzinfo=timezone.utc),
+            datetime(2026, 5, 18, 20, 0, tzinfo=UTC),
         )
-        assert "WARNING: end-of-day quality report failed" in log_file.read_text(
-            encoding="utf-8"
-        )
+        assert "WARNING: end-of-day quality report failed" in log_file.read_text(encoding="utf-8")
 
     def test_send_failure_alert_skips_when_node_missing(self, tmp_path):
         config = _config(tmp_path, node_bin="/missing/node")
@@ -347,9 +336,7 @@ class TestEndOfDayQualityReport:
             )
 
         assert result.returncode == 0
-        assert "Triggering failure alert via:" in request.log_file.read_text(
-            encoding="utf-8"
-        )
+        assert "Triggering failure alert via:" in request.log_file.read_text(encoding="utf-8")
 
 
 class TestRunWithRetries:
@@ -357,9 +344,9 @@ class TestRunWithRetries:
         config = _config(tmp_path)
         timestamps = iter(
             [
-                datetime(2026, 3, 11, 20, 5, 7, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 8, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 9, tzinfo=timezone.utc),
+                datetime(2026, 3, 11, 20, 5, 7, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 8, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 9, tzinfo=UTC),
             ]
         )
 
@@ -377,23 +364,19 @@ class TestRunWithRetries:
             )
 
         assert rc == 0
-        log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(
-            encoding="utf-8"
-        )
+        log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(encoding="utf-8")
         assert "Runner config: attempts=3 retry_delay_seconds=300 hostname=warehouse.local" in log_text
         assert "=== Done 2026-03-11T20:05:09Z (attempt 1/3) ===" in log_text
 
     def test_retry_then_success(self, tmp_path):
-        config = RunnerConfig(
-            **(_config(tmp_path).__dict__ | {"max_attempts": 2, "retry_delay_seconds": 7})
-        )
+        config = RunnerConfig(**(_config(tmp_path).__dict__ | {"max_attempts": 2, "retry_delay_seconds": 7}))
         timestamps = iter(
             [
-                datetime(2026, 3, 11, 20, 5, 7, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 8, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 9, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 10, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 11, tzinfo=timezone.utc),
+                datetime(2026, 3, 11, 20, 5, 7, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 8, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 9, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 10, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 11, tzinfo=UTC),
             ]
         )
         results = iter(
@@ -421,24 +404,20 @@ class TestRunWithRetries:
 
         assert rc == 0
         assert sleep_calls == [7]
-        log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(
-            encoding="utf-8"
-        )
+        log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(encoding="utf-8")
         assert "Retrying in 7 seconds..." in log_text
         assert "attempt 2/2" in log_text
 
     def test_terminal_failure_sends_alert(self, tmp_path):
-        config = RunnerConfig(
-            **(_config(tmp_path).__dict__ | {"max_attempts": 2, "retry_delay_seconds": 5})
-        )
+        config = RunnerConfig(**(_config(tmp_path).__dict__ | {"max_attempts": 2, "retry_delay_seconds": 5}))
         timestamps = iter(
             [
-                datetime(2026, 3, 11, 20, 5, 7, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 8, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 9, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 10, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 11, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 12, tzinfo=timezone.utc),
+                datetime(2026, 3, 11, 20, 5, 7, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 8, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 9, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 10, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 11, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 12, tzinfo=UTC),
             ]
         )
         results = iter(
@@ -470,9 +449,7 @@ class TestRunWithRetries:
 
         assert rc == 4
         assert sleep_calls == [5]
-        log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(
-            encoding="utf-8"
-        )
+        log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(encoding="utf-8")
         assert "Failure alert sent successfully. alert sent" in log_text
         assert "=== Failed 2026-03-11T20:05:12Z after 2 attempt(s) ===" in log_text
 
@@ -480,10 +457,10 @@ class TestRunWithRetries:
         config = RunnerConfig(**(_config(tmp_path, node_bin="/missing/node").__dict__ | {"max_attempts": 1}))
         timestamps = iter(
             [
-                datetime(2026, 3, 11, 20, 5, 7, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 8, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 9, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 10, tzinfo=timezone.utc),
+                datetime(2026, 3, 11, 20, 5, 7, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 8, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 9, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 10, tzinfo=UTC),
             ]
         )
 
@@ -501,19 +478,17 @@ class TestRunWithRetries:
             )
 
         assert rc == 6
-        log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(
-            encoding="utf-8"
-        )
+        log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(encoding="utf-8")
         assert "skipping failure email" in log_text
 
     def test_terminal_failure_alert_non_zero(self, tmp_path):
         config = RunnerConfig(**(_config(tmp_path).__dict__ | {"max_attempts": 1}))
         timestamps = iter(
             [
-                datetime(2026, 3, 11, 20, 5, 7, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 8, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 9, tzinfo=timezone.utc),
-                datetime(2026, 3, 11, 20, 5, 10, tzinfo=timezone.utc),
+                datetime(2026, 3, 11, 20, 5, 7, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 8, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 9, tzinfo=UTC),
+                datetime(2026, 3, 11, 20, 5, 10, tzinfo=UTC),
             ]
         )
         results = iter(
@@ -541,13 +516,8 @@ class TestRunWithRetries:
             )
 
         assert rc == 3
-        log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(
-            encoding="utf-8"
-        )
-        assert (
-            "WARNING: failure alert returned non-zero exit code 2. smtp down"
-            in log_text
-        )
+        log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(encoding="utf-8")
+        assert "WARNING: failure alert returned non-zero exit code 2. smtp down" in log_text
 
 
 class TestCboeVolatilitySync:
@@ -563,8 +533,8 @@ class TestCboeVolatilitySync:
         config = _config(tmp_path)
         timestamps = iter(
             [
-                datetime(2026, 3, 18, 20, 5, 7, tzinfo=timezone.utc),
-                datetime(2026, 3, 18, 20, 5, 8, tzinfo=timezone.utc),
+                datetime(2026, 3, 18, 20, 5, 7, tzinfo=UTC),
+                datetime(2026, 3, 18, 20, 5, 8, tzinfo=UTC),
             ]
         )
 
@@ -588,8 +558,8 @@ class TestCboeVolatilitySync:
         config = _config(tmp_path)
         timestamps = iter(
             [
-                datetime(2026, 3, 18, 20, 5, 7, tzinfo=timezone.utc),
-                datetime(2026, 3, 18, 20, 5, 8, tzinfo=timezone.utc),
+                datetime(2026, 3, 18, 20, 5, 7, tzinfo=UTC),
+                datetime(2026, 3, 18, 20, 5, 8, tzinfo=UTC),
             ]
         )
 
@@ -629,9 +599,7 @@ class TestMain:
                     assert main(["--dry-run"]) == 0
 
         # IB syncs equity and futures; volatility via CBOE
-        assert ib_calls == [
-            ["--dry-run", "--asset-class", ac] for ac in ASSET_CLASSES
-        ]
+        assert ib_calls == [["--dry-run", "--asset-class", ac] for ac in ASSET_CLASSES]
         assert cboe_called == [True]
 
     def test_main_explicit_asset_class_skips_cboe(self):
@@ -642,9 +610,7 @@ class TestMain:
                 with patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync") as cboe_mock:
                     assert main(["--dry-run", "--asset-class", "equity"]) == 0
 
-        run_mock.assert_called_once_with(
-            config, ["--dry-run", "--asset-class", "equity"], env=os.environ.copy()
-        )
+        run_mock.assert_called_once_with(config, ["--dry-run", "--asset-class", "equity"], env=os.environ.copy())
         cboe_mock.assert_not_called()
 
     def test_main_returns_nonzero_if_any_asset_class_fails(self):

@@ -24,9 +24,7 @@ from clients.trading_calendar import is_trading_day
 log = logging.getLogger(__name__)
 console = Console()
 
-_WAREHOUSE_DIR = Path(
-    os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))
-)
+_WAREHOUSE_DIR = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
 
 
 @dataclass
@@ -91,12 +89,8 @@ def compute_gaps(
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Gap detection for bronze parquet")
-    parser.add_argument(
-        "--preset", type=str, default=None, help="Limit to preset tickers"
-    )
-    parser.add_argument(
-        "--show-gaps", action="store_true", help="Show individual missing dates"
-    )
+    parser.add_argument("--preset", type=str, default=None, help="Limit to preset tickers")
+    parser.add_argument("--show-gaps", action="store_true", help="Show individual missing dates")
     parser.add_argument(
         "--incomplete-only",
         action="store_true",
@@ -167,9 +161,7 @@ def main(argv: list[str] | None = None) -> None:
                 )
 
     console.print(table)
-    console.print(
-        f"\n[bold]{n_complete} complete, {n_gaps} with gaps, {n_unknown} no bounds[/bold]"
-    )
+    console.print(f"\n[bold]{n_complete} complete, {n_gaps} with gaps, {n_unknown} no bounds[/bold]")
 
 
 if __name__ == "__main__":  # pragma: no cover

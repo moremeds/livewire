@@ -12,7 +12,6 @@ import os
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -23,11 +22,11 @@ _CHANGELOG_CAP = 500
 class RegistryEntry:
     tags: set[str] = field(default_factory=set)
     status: str = "active"
-    added_at: Optional[str] = None
-    last_verified: Optional[str] = None
-    delisted_at: Optional[str] = None
-    earliest_available: Optional[str] = None
-    earliest_source: Optional[str] = None
+    added_at: str | None = None
+    last_verified: str | None = None
+    delisted_at: str | None = None
+    earliest_available: str | None = None
+    earliest_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -121,7 +120,7 @@ class TagRegistry:
             raise
         self.changelog = trimmed
 
-    def get(self, ticker: str) -> Optional[RegistryEntry]:
+    def get(self, ticker: str) -> RegistryEntry | None:
         return self._entries.get(ticker)
 
     def all_tickers(self) -> set[str]:
@@ -170,7 +169,7 @@ class TagRegistry:
                 result.add(ticker)
         return result
 
-    def mark_delisted(self, ticker: str, delisted_at: Optional[str] = None) -> None:
+    def mark_delisted(self, ticker: str, delisted_at: str | None = None) -> None:
         entry = self._entries.get(ticker)
         if entry:
             entry.status = "delisted"
@@ -182,9 +181,7 @@ class TagRegistry:
             entry.earliest_available = date_str
             entry.earliest_source = source
 
-    def log_change(
-        self, type_: str, ticker: str, from_tags: list[str], to_tags: list[str]
-    ) -> None:
+    def log_change(self, type_: str, ticker: str, from_tags: list[str], to_tags: list[str]) -> None:
         self.changelog.append(
             ChangelogEntry(
                 date=date.today().isoformat(),

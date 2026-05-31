@@ -1,12 +1,9 @@
 import json
-from datetime import date
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from clients.quality_detector import QualityFlag
-from clients.quality_flags import alert_on_flag, append_audit, _resolve_audit_path, write_sidecar
+from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
 
 
 def _flag(category="range_shortfall", severity="critical"):
@@ -95,7 +92,7 @@ def test_alert_below_threshold_skipped(tmp_path, monkeypatch):
     monkeypatch.setattr("subprocess.run", lambda *a, **kw: called.append(a) or _ok())
     ok = alert_on_flag(_flag(severity="warning"), source="ib", ticker="SMH")
     assert ok is False
-    assert called == []    # below threshold -> never spawned
+    assert called == []  # below threshold -> never spawned
 
 
 def test_alert_above_threshold_spawns(tmp_path, monkeypatch):
@@ -127,9 +124,9 @@ def test_alert_rate_limit_dedupes_within_window(tmp_path, monkeypatch):
     monkeypatch.setattr("subprocess.run", fake_run)
     from clients import quality_flags
 
-    quality_flags._RATE_LIMIT_CACHE.clear()    # ensure clean state
+    quality_flags._RATE_LIMIT_CACHE.clear()  # ensure clean state
     alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
-    alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")    # duplicate
+    alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")  # duplicate
     assert counts[0] == 1
 
 

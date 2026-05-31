@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import date, datetime, time, timezone
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,7 +15,6 @@ import pytest
 
 from livewire_scripts.coverage_report import (
     CoverageResult,
-    DEFAULT_THRESHOLD,
     RecoveryOutcome,
     _resolve_target_date,
     _send_alert,
@@ -62,8 +61,12 @@ def _write_daily(bronze_root: Path, symbol: str, dates: list[date]) -> None:
         {
             "trade_date": d,
             "symbol_id": 1,
-            "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5,
-            "adj_close": 1.5, "volume": 1000,
+            "open": 1.0,
+            "high": 2.0,
+            "low": 0.5,
+            "close": 1.5,
+            "adj_close": 1.5,
+            "volume": 1000,
         }
         for d in dates
     ]
@@ -74,20 +77,23 @@ def _write_daily(bronze_root: Path, symbol: str, dates: list[date]) -> None:
     )
 
 
-def _write_intraday(
-    bronze_root: Path, symbol: str, timeframe: str, days: list[date]
-) -> None:
+def _write_intraday(bronze_root: Path, symbol: str, timeframe: str, days: list[date]) -> None:
     sym_dir = bronze_root / "asset_class=equity" / f"symbol={symbol}"
     sym_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     for d in days:
         ts_et = datetime.combine(d, time(15, 0), tzinfo=_ET)
-        rows.append({
-            "bar_timestamp": ts_et.astimezone(timezone.utc),
-            "symbol_id": 1,
-            "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5,
-            "volume": 1000,
-        })
+        rows.append(
+            {
+                "bar_timestamp": ts_et.astimezone(UTC),
+                "symbol_id": 1,
+                "open": 1.0,
+                "high": 2.0,
+                "low": 0.5,
+                "close": 1.5,
+                "volume": 1000,
+            }
+        )
     pq.write_table(
         pa.Table.from_pylist(rows, schema=_INTRADAY_SCHEMA),
         sym_dir / f"{timeframe}.parquet",
@@ -239,9 +245,7 @@ class TestAutoRecover:
             return SimpleNamespace(returncode=0)
 
         with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run):
-            outcome = auto_recover(
-                "5m", ["AAPL"], bronze_root=seeded_bronze, target_date=target
-            )
+            outcome = auto_recover("5m", ["AAPL"], bronze_root=seeded_bronze, target_date=target)
         assert outcome.recovered == 1
         assert outcome.still_missing == []
 
@@ -254,9 +258,7 @@ class TestAutoRecover:
             return SimpleNamespace(returncode=0)
 
         with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
-            outcome = auto_recover(
-                "1d", ["AAPL"], bronze_root=seeded_bronze, target_date=target
-            )
+            outcome = auto_recover("1d", ["AAPL"], bronze_root=seeded_bronze, target_date=target)
         assert outcome.recovered == 1
         cmd = mock_run.call_args[0][0]
         assert "livewire_ingest.py" in cmd[1]
@@ -277,9 +279,7 @@ class TestAutoRecover:
             return SimpleNamespace(returncode=0)
 
         with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run):
-            outcome = auto_recover(
-                "5m", ["AAPL", "MSFT"], bronze_root=seeded_bronze, target_date=target
-            )
+            outcome = auto_recover("5m", ["AAPL", "MSFT"], bronze_root=seeded_bronze, target_date=target)
         assert outcome.recovered == 1
         assert outcome.still_missing == ["MSFT"]
 
@@ -365,7 +365,8 @@ class TestMain:
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
                 with patch.object(
-                    sys, "argv",
+                    sys,
+                    "argv",
                     ["coverage_report.py", "--target-date", "2026-04-06", "--no-recover"],
                 ):
                     main()
@@ -379,7 +380,8 @@ class TestMain:
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
                 with patch.object(
-                    sys, "argv",
+                    sys,
+                    "argv",
                     ["coverage_report.py", "--target-date", "2026-04-06"],
                 ):
                     main()
@@ -406,7 +408,8 @@ class TestMain:
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
                 with patch.object(
-                    sys, "argv",
+                    sys,
+                    "argv",
                     ["coverage_report.py", "--target-date", "2026-04-06", "--threshold", "0.99"],
                 ):
                     main()
@@ -435,7 +438,8 @@ class TestMain:
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
                 with patch.object(
-                    sys, "argv",
+                    sys,
+                    "argv",
                     ["coverage_report.py", "--target-date", "2026-04-06", "--threshold", "0.99"],
                 ):
                     main()
@@ -458,7 +462,8 @@ class TestMain:
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
                 with patch.object(
-                    sys, "argv",
+                    sys,
+                    "argv",
                     ["coverage_report.py", "--target-date", "2026-04-06"],
                 ):
                     main()

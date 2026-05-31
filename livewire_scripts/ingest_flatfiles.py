@@ -15,9 +15,10 @@ import argparse
 import logging
 import os
 import sys
+from collections.abc import Sequence
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
@@ -32,9 +33,7 @@ log = logging.getLogger("livewire.ingest_flatfiles")
 
 DERIVED_TIMEFRAMES = ("5m", "30m", "1h")
 
-_WAREHOUSE_DIR = Path(
-    os.environ.get("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))
-)
+_WAREHOUSE_DIR = Path(os.environ.get("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
 _DATA_LAKE = _WAREHOUSE_DIR / "data-lake"
 
 
@@ -68,9 +67,7 @@ def ingest_date(
         for target_tf in DERIVED_TIMEFRAMES:
             agg_rows = aggregate_bars(rows, source_tf="1m", target_tf=target_tf)
             if agg_rows:
-                bronze_tf = IntradayBronzeClient(
-                    bronze_dir=bronze_dir, timeframe=target_tf
-                )
+                bronze_tf = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe=target_tf)
                 bronze_tf.merge_ticker_rows(ticker, agg_rows, overwrite_existing=False)
 
     return stats
@@ -100,9 +97,7 @@ def ingest_range(
             stats["dates_processed"] + 1,
             len(dates),
         )
-        day_stats = ingest_date(
-            client, d, target_tickers=target_tickers, bronze_dir=bronze_dir
-        )
+        day_stats = ingest_date(client, d, target_tickers=target_tickers, bronze_dir=bronze_dir)
         stats["dates_processed"] += 1
         stats["total_tickers"] += day_stats["tickers_written"]
         stats["total_bars_1m"] += day_stats["bars_1m"]
@@ -111,23 +106,15 @@ def ingest_range(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Bulk ingest Polygon S3 minute flat files"
-    )
+    parser = argparse.ArgumentParser(description="Bulk ingest Polygon S3 minute flat files")
     grp = parser.add_mutually_exclusive_group(required=True)
     grp.add_argument("--tickers", nargs="+", help="Explicit ticker list")
     grp.add_argument("--preset", type=str, help="Preset JSON path")
-    parser.add_argument(
-        "--years", type=int, default=5, help="Years of history (default: 5)"
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true", help="Show plan without downloading"
-    )
+    parser.add_argument("--years", type=int, default=5, help="Years of history (default: 5)")
+    parser.add_argument("--dry-run", action="store_true", help="Show plan without downloading")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     if args.preset:
         _, tickers, _ = load_preset(args.preset)

@@ -5,14 +5,15 @@ All HTTP calls are mocked via the `responses` library. No real network I/O.
 
 from __future__ import annotations
 
-import os
 from unittest.mock import patch
 
 import pytest
 import responses
-from requests.exceptions import ConnectionError as ReqConnectionError, Timeout as ReqTimeout
+from requests.exceptions import ConnectionError as ReqConnectionError
+from requests.exceptions import Timeout as ReqTimeout
 
 from clients.uw_client import (
+    _DEFAULT_BASE_URL,
     UWAPIError,
     UWAuthError,
     UWClient,
@@ -20,11 +21,10 @@ from clients.uw_client import (
     UWRateLimitError,
     UWServerError,
     UWValidationError,
-    _DEFAULT_BASE_URL,
 )
 
-
 # ── Helpers ────────────────────────────────────────────────────────────
+
 
 def _make_client(**kwargs) -> UWClient:
     """Create a UWClient with zero retries and no backoff for fast tests."""

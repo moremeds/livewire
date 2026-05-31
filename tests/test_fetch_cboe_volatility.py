@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-import json
 from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-import pytest
 
 from livewire_scripts.fetch_cboe_volatility import (
     _symbol_id,
     append_official_backup_bars,
     bars_to_table,
-    fetch_cboe_official_csv_backup,
     fetch_cboe_historical,
+    fetch_cboe_official_csv_backup,
     load_preset,
     main,
     write_bronze_parquet,
@@ -27,14 +25,14 @@ class TestLoadPreset:
     def test_loads_tickers_from_preset(self, tmp_path):
         preset = tmp_path / "test.json"
         preset.write_text('{"tickers": ["VIX", "VVIX", "VXHYG"]}')
-        
+
         symbols = load_preset(preset)
         assert symbols == ["VIX", "VVIX", "VXHYG"]
 
     def test_returns_empty_list_if_no_tickers(self, tmp_path):
         preset = tmp_path / "test.json"
         preset.write_text('{"name": "test"}')
-        
+
         symbols = load_preset(preset)
         assert symbols == []
 
@@ -83,10 +81,7 @@ class TestFetchCboeHistorical:
 class TestOfficialCsvBackup:
     def test_fetches_vix_ohlc_csv_backup(self):
         mock_response = MagicMock()
-        mock_response.text = (
-            "DATE,OPEN,HIGH,LOW,CLOSE\n"
-            "05/19/2026,18.010000,18.360000,17.660000,18.060000\n"
-        )
+        mock_response.text = "DATE,OPEN,HIGH,LOW,CLOSE\n05/19/2026,18.010000,18.360000,17.660000,18.060000\n"
         mock_response.raise_for_status = MagicMock()
 
         with patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=mock_response):
@@ -161,8 +156,14 @@ class TestBarsToTable:
         assert table.num_rows == 2
         # asset_class and symbol are in hive partition path, not in parquet
         assert set(table.column_names) == {
-            "trade_date", "symbol_id", "open", "high", "low",
-            "close", "adj_close", "volume"
+            "trade_date",
+            "symbol_id",
+            "open",
+            "high",
+            "low",
+            "close",
+            "adj_close",
+            "volume",
         }
         assert table.column("close")[0].as_py() == 10.5
 
@@ -183,9 +184,9 @@ class TestWriteBronzeParquet:
             {"date": "2025-01-02", "open": "10.0", "high": "11.0", "low": "9.0", "close": "10.5", "volume": "0.0"},
         ]
         table = bars_to_table("VXHYG", bars)
-        
+
         path = write_bronze_parquet(table, "VXHYG", tmp_path)
-        
+
         assert path.exists()
         read_table = _read_single_parquet(path)
         assert read_table.num_rows == 1
@@ -201,8 +202,22 @@ class TestWriteBronzeParquet:
 
         # Write overlapping + new data
         bars2 = [
-            {"date": "2025-01-02", "open": "10.0", "high": "11.0", "low": "9.0", "close": "10.5", "volume": "0.0"},  # duplicate
-            {"date": "2025-01-03", "open": "10.5", "high": "12.0", "low": "10.0", "close": "11.0", "volume": "0.0"},  # new
+            {
+                "date": "2025-01-02",
+                "open": "10.0",
+                "high": "11.0",
+                "low": "9.0",
+                "close": "10.5",
+                "volume": "0.0",
+            },  # duplicate
+            {
+                "date": "2025-01-03",
+                "open": "10.5",
+                "high": "12.0",
+                "low": "10.0",
+                "close": "11.0",
+                "volume": "0.0",
+            },  # new
         ]
         table2 = bars_to_table("VXHYG", bars2)
         path = write_bronze_parquet(table2, "VXHYG", tmp_path)
@@ -227,26 +242,33 @@ class TestWriteBronzeParquet:
     def test_normalizes_existing_schema_with_extra_columns(self, tmp_path):
         """Existing parquet with extra columns is normalized before merge."""
         # Simulate old-schema parquet with asset_class and symbol columns
-        old_schema = pa.schema([
-            ("trade_date", pa.date32()),
-            ("symbol_id", pa.int64()),
-            ("open", pa.float64()),
-            ("high", pa.float64()),
-            ("low", pa.float64()),
-            ("close", pa.float64()),
-            ("adj_close", pa.float64()),
-            ("volume", pa.int64()),
-            ("asset_class", pa.string()),
-            ("symbol", pa.string()),
-        ])
+        old_schema = pa.schema(
+            [
+                ("trade_date", pa.date32()),
+                ("symbol_id", pa.int64()),
+                ("open", pa.float64()),
+                ("high", pa.float64()),
+                ("low", pa.float64()),
+                ("close", pa.float64()),
+                ("adj_close", pa.float64()),
+                ("volume", pa.int64()),
+                ("asset_class", pa.string()),
+                ("symbol", pa.string()),
+            ]
+        )
         old_table = pa.Table.from_pylist(
             [
                 {
                     "trade_date": date(2025, 1, 2),
                     "symbol_id": _symbol_id("VXHYG"),
-                    "open": 10.0, "high": 11.0, "low": 9.0,
-                    "close": 10.5, "adj_close": 10.5, "volume": 0,
-                    "asset_class": "volatility", "symbol": "VXHYG",
+                    "open": 10.0,
+                    "high": 11.0,
+                    "low": 9.0,
+                    "close": 10.5,
+                    "adj_close": 10.5,
+                    "volume": 0,
+                    "asset_class": "volatility",
+                    "symbol": "VXHYG",
                 },
             ],
             schema=old_schema,
@@ -265,34 +287,47 @@ class TestWriteBronzeParquet:
         result = _read_single_parquet(path)
         assert result.num_rows == 2
         assert set(result.column_names) == {
-            "trade_date", "symbol_id", "open", "high", "low",
-            "close", "adj_close", "volume",
+            "trade_date",
+            "symbol_id",
+            "open",
+            "high",
+            "low",
+            "close",
+            "adj_close",
+            "volume",
         }
         assert "asset_class" not in result.column_names
         assert "symbol" not in result.column_names
 
     def test_rewrites_stale_schema_even_without_new_rows(self, tmp_path):
         """Existing parquet with stale schema is rewritten even when no new data."""
-        old_schema = pa.schema([
-            ("trade_date", pa.date32()),
-            ("symbol_id", pa.int64()),
-            ("open", pa.float64()),
-            ("high", pa.float64()),
-            ("low", pa.float64()),
-            ("close", pa.float64()),
-            ("adj_close", pa.float64()),
-            ("volume", pa.int64()),
-            ("asset_class", pa.string()),
-            ("symbol", pa.string()),
-        ])
+        old_schema = pa.schema(
+            [
+                ("trade_date", pa.date32()),
+                ("symbol_id", pa.int64()),
+                ("open", pa.float64()),
+                ("high", pa.float64()),
+                ("low", pa.float64()),
+                ("close", pa.float64()),
+                ("adj_close", pa.float64()),
+                ("volume", pa.int64()),
+                ("asset_class", pa.string()),
+                ("symbol", pa.string()),
+            ]
+        )
         old_table = pa.Table.from_pylist(
             [
                 {
                     "trade_date": date(2025, 1, 2),
                     "symbol_id": _symbol_id("VXHYG"),
-                    "open": 10.0, "high": 11.0, "low": 9.0,
-                    "close": 10.5, "adj_close": 10.5, "volume": 0,
-                    "asset_class": "volatility", "symbol": "VXHYG",
+                    "open": 10.0,
+                    "high": 11.0,
+                    "low": 9.0,
+                    "close": 10.5,
+                    "adj_close": 10.5,
+                    "volume": 0,
+                    "asset_class": "volatility",
+                    "symbol": "VXHYG",
                 },
             ],
             schema=old_schema,

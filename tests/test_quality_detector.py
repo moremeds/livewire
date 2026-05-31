@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -163,13 +163,15 @@ def test_extracted_trading_calendar_sunday_observed_and_ranges():
 
 
 def test_normalize_bars_for_detection_accepts_common_shapes():
-    rows = _normalize_bars_for_detection([
-        SimpleNamespace(trade_date="2026-04-01"),
-        SimpleNamespace(date=date(2026, 4, 2)),
-        {"bar_timestamp": datetime(2026, 4, 3, tzinfo=timezone.utc)},
-        {"trade_date": "2026-04-06"},
-        object(),
-    ])
+    rows = _normalize_bars_for_detection(
+        [
+            SimpleNamespace(trade_date="2026-04-01"),
+            SimpleNamespace(date=date(2026, 4, 2)),
+            {"bar_timestamp": datetime(2026, 4, 3, tzinfo=UTC)},
+            {"trade_date": "2026-04-06"},
+            object(),
+        ]
+    )
     assert [r.trade_date for r in rows] == [
         "2026-04-01",
         "2026-04-02",
@@ -190,19 +192,23 @@ def test_fetch_tainting_one_error_warning():
 
 
 def test_fetch_tainting_aggregated_count_critical():
-    flag = detect_fetch_tainting([
-        {"code": 162, "count": 4},
-        {"code": 2105, "count": 2},
-    ])
+    flag = detect_fetch_tainting(
+        [
+            {"code": 162, "count": 4},
+            {"code": 2105, "count": 2},
+        ]
+    )
     assert flag.severity == "critical"
     assert flag.detail["error_count"] == 6
 
 
 def test_fetch_tainting_codes_recorded():
-    flag = detect_fetch_tainting([
-        {"code": 162, "count": 2},
-        {"code": 2105, "count": 1},
-    ])
+    flag = detect_fetch_tainting(
+        [
+            {"code": 162, "count": 2},
+            {"code": 2105, "count": 1},
+        ]
+    )
     assert set(flag.detail["codes"]) == {162, 2105}
 
 
@@ -281,7 +287,7 @@ def test_detect_all_clean_returns_empty():
 
 
 def test_detect_all_returns_multiple_flags():
-    bars = [_Bar("2020-01-10"), _Bar("2020-01-11")]    # actual_start 2020-01-10
+    bars = [_Bar("2020-01-10"), _Bar("2020-01-11")]  # actual_start 2020-01-10
     flags = detect_all(
         bars=bars,
         metadata={
@@ -316,7 +322,7 @@ def test_detect_all_handles_missing_metadata_keys():
         metadata={},
         trading_calendar=lambda d: True,
     )
-    assert flags == []    # No expected_start -> can't compute range_shortfall
+    assert flags == []  # No expected_start -> can't compute range_shortfall
 
 
 def test_detect_all_isolates_detector_failures(monkeypatch):

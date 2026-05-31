@@ -2,15 +2,15 @@
 
 See: docs/superpowers/specs/2026-05-17-mdw-reliability-foundation-design.md
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 _VALID_SOURCES = {"ib", "uw", "massive"}
 
@@ -18,10 +18,10 @@ _logger = logging.getLogger("livewire.telemetry")
 
 
 def _utc_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _resolve_default_path() -> Optional[Path]:
+def _resolve_default_path() -> Path | None:
     raw = os.environ.get(
         "MDW_TELEMETRY_PATH",
         str(Path.home() / "market-warehouse" / "logs" / "telemetry.jsonl"),
@@ -36,7 +36,7 @@ class BaseTelemetry:
 
     _WARN_RATE_LIMIT_SECONDS = 60
 
-    def __init__(self, source: str, jsonl_path: Optional[Path]):
+    def __init__(self, source: str, jsonl_path: Path | None):
         if source not in _VALID_SOURCES:
             raise ValueError(f"source must be one of {_VALID_SOURCES}, got {source!r}")
         self.source = source
@@ -99,7 +99,7 @@ _FARM_STATE_BY_CODE = {
 }
 
 
-def _parse_farm_name(error_string: str) -> Optional[str]:
+def _parse_farm_name(error_string: str) -> str | None:
     """Extract trailing ':farmname' suffix if present."""
     if not error_string or ":" not in error_string:
         return None
@@ -112,7 +112,7 @@ def _parse_farm_name(error_string: str) -> Optional[str]:
 class ConnectionTelemetry(BaseTelemetry):
     """IB-specific telemetry: subscribes to ib_async error/connected/disconnected events."""
 
-    def __init__(self, *, ib, jsonl_path: Optional[Path], source: str = "ib"):
+    def __init__(self, *, ib, jsonl_path: Path | None, source: str = "ib"):
         super().__init__(source=source, jsonl_path=jsonl_path)
         self._ib = ib
         self._attached = False
@@ -141,20 +141,24 @@ class ConnectionTelemetry(BaseTelemetry):
 
     def _on_error(self, reqId, errorCode, errorString, contract):
         if errorCode in _FARM_STATE_BY_CODE:
-            self._emit({
-                "event": "farm_state",
-                "code": int(errorCode),
-                "state": _FARM_STATE_BY_CODE[errorCode],
-                "farm": _parse_farm_name(errorString),
-                "message": str(errorString),
-            })
+            self._emit(
+                {
+                    "event": "farm_state",
+                    "code": int(errorCode),
+                    "state": _FARM_STATE_BY_CODE[errorCode],
+                    "farm": _parse_farm_name(errorString),
+                    "message": str(errorString),
+                }
+            )
         else:
-            self._emit({
-                "event": "ib_error",
-                "code": int(errorCode),
-                "req_id": int(reqId),
-                "message": str(errorString),
-            })
+            self._emit(
+                {
+                    "event": "ib_error",
+                    "code": int(errorCode),
+                    "req_id": int(reqId),
+                    "message": str(errorString),
+                }
+            )
 
     def _on_connected(self):
         self.record_connected()
@@ -179,7 +183,7 @@ class ConnectionTelemetry(BaseTelemetry):
 class UWTelemetry(BaseTelemetry):
     """Unusual Whales telemetry. Stub interface for Sub-A."""
 
-    def __init__(self, *, jsonl_path: Optional[Path], source: str = "uw"):
+    def __init__(self, *, jsonl_path: Path | None, source: str = "uw"):
         super().__init__(source=source, jsonl_path=jsonl_path)
 
     def start(self) -> None:
@@ -188,25 +192,29 @@ class UWTelemetry(BaseTelemetry):
             _logger.info("UWTelemetry started (stub; Sub-C activates record_request)")
 
     def record_request(self, endpoint: str, status: int, dt_ms: int) -> None:
-        self._emit({
-            "event": "uw_request",
-            "endpoint": endpoint,
-            "status": int(status),
-            "dt_ms": int(dt_ms),
-        })
+        self._emit(
+            {
+                "event": "uw_request",
+                "endpoint": endpoint,
+                "status": int(status),
+                "dt_ms": int(dt_ms),
+            }
+        )
 
     def record_rate_limit(self, remaining: int, reset_at: int) -> None:
-        self._emit({
-            "event": "uw_rate_limit",
-            "remaining": int(remaining),
-            "reset_at": int(reset_at),
-        })
+        self._emit(
+            {
+                "event": "uw_rate_limit",
+                "remaining": int(remaining),
+                "reset_at": int(reset_at),
+            }
+        )
 
 
 class MassiveTelemetry(BaseTelemetry):
     """Massive.io telemetry. Stub interface for Sub-A."""
 
-    def __init__(self, *, jsonl_path: Optional[Path], source: str = "massive"):
+    def __init__(self, *, jsonl_path: Path | None, source: str = "massive"):
         super().__init__(source=source, jsonl_path=jsonl_path)
 
     def start(self) -> None:
@@ -215,16 +223,20 @@ class MassiveTelemetry(BaseTelemetry):
             _logger.info("MassiveTelemetry started (stub; Sub-C activates record_request)")
 
     def record_request(self, endpoint: str, status: int, dt_ms: int) -> None:
-        self._emit({
-            "event": "massive_request",
-            "endpoint": endpoint,
-            "status": int(status),
-            "dt_ms": int(dt_ms),
-        })
+        self._emit(
+            {
+                "event": "massive_request",
+                "endpoint": endpoint,
+                "status": int(status),
+                "dt_ms": int(dt_ms),
+            }
+        )
 
     def record_rate_limit(self, remaining: int, reset_at: int) -> None:
-        self._emit({
-            "event": "massive_rate_limit",
-            "remaining": int(remaining),
-            "reset_at": int(reset_at),
-        })
+        self._emit(
+            {
+                "event": "massive_rate_limit",
+                "remaining": int(remaining),
+                "reset_at": int(reset_at),
+            }
+        )

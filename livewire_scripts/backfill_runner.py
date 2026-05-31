@@ -8,6 +8,7 @@ Includes activity-based stall detection and retry-until-done logic.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -15,11 +16,11 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
-from typing import Sequence
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
@@ -56,9 +57,7 @@ class BackfillConfig:
 
 def build_config(repo_root: Path | None = None) -> BackfillConfig:
     root = repo_root or _PROJECT_ROOT
-    warehouse = Path(
-        os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))
-    )
+    warehouse = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
     return BackfillConfig(
         python_bin=os.getenv("MDW_PYTHON_BIN", sys.executable),
         ingest_script=root / "scripts" / "livewire_ingest.py",
@@ -116,9 +115,7 @@ def gap_aware_completed(
     if cursor_count < total:
         return cursor_count
 
-    wh = warehouse_dir or Path(
-        os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))
-    )
+    wh = warehouse_dir or Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
     registry_path = wh / "registry.json"
     if not registry_path.exists():
         logger.debug("No registry at %s — falling back to cursor count", registry_path)
@@ -169,9 +166,7 @@ def gap_aware_completed(
             return total - n_with_gaps
 
     except Exception:
-        logger.warning(
-            "Gap analysis failed — falling back to cursor count", exc_info=True
-        )
+        logger.warning("Gap analysis failed — falling back to cursor count", exc_info=True)
 
     return cursor_count
 
@@ -196,17 +191,13 @@ def _file_mtime(path: Path) -> float:
 
 
 def _kill_process(proc: subprocess.Popen) -> None:
-    try:
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
     try:
         proc.wait(timeout=3)
     except subprocess.TimeoutExpired:
-        try:
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
         proc.wait()
 
 
@@ -439,9 +430,7 @@ def _derive_vol_1h(
     with open(vol_preset, encoding="utf-8") as fh:
         tickers = json.load(fh).get("tickers", [])
 
-    wh = warehouse_dir or Path(
-        os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))
-    )
+    wh = warehouse_dir or Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
     bronze_dir = wh / "data-lake" / "bronze" / "asset_class=volatility"
     derived = 0
 
@@ -674,9 +663,7 @@ def run_backfill(
                     check=False,
                 )
             if pg_result.returncode != 0:
-                logger.warning(
-                    "Postgres %s rebuild exited %d", ac, pg_result.returncode
-                )
+                logger.warning("Postgres %s rebuild exited %d", ac, pg_result.returncode)
     else:
         logger.info("Postgres rebuild skipped — MDW_POSTGRES_DSN not set")
 

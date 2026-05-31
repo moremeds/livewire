@@ -1,13 +1,9 @@
 import json
-import os
-from pathlib import Path
-import types
 from unittest.mock import MagicMock
 
 import pytest
 
-from clients.telemetry import BaseTelemetry, ConnectionTelemetry, _parse_farm_name
-from clients.telemetry import UWTelemetry, MassiveTelemetry
+from clients.telemetry import BaseTelemetry, ConnectionTelemetry, MassiveTelemetry, UWTelemetry, _parse_farm_name
 
 
 def test_base_telemetry_emits_jsonl_line(tmp_path):
@@ -67,7 +63,7 @@ def test_stop_is_idempotent(tmp_path):
     t = BaseTelemetry(source="ib", jsonl_path=path)
     t.start()
     t.stop()
-    t.stop()    # second call must not raise
+    t.stop()  # second call must not raise
 
 
 def test_start_is_idempotent(tmp_path):
@@ -133,18 +129,21 @@ def test_connection_telemetry_disabled_does_not_attach():
     ib.errorEvent.connect.assert_not_called()
 
 
-@pytest.mark.parametrize("code,state", [
-    (2104, "ok"),
-    (2105, "broken"),
-    (2106, "ok"),
-    (2107, "inactive"),
-    (2158, "ok"),
-])
+@pytest.mark.parametrize(
+    "code,state",
+    [
+        (2104, "ok"),
+        (2105, "broken"),
+        (2106, "ok"),
+        (2107, "inactive"),
+        (2158, "ok"),
+    ],
+)
 def test_connection_telemetry_parses_farm_codes(tmp_path, code, state):
     ib = _fake_ib()
     t = ConnectionTelemetry(ib=ib, jsonl_path=tmp_path / "t.jsonl")
     t.start()
-    t._on_error(reqId=-1, errorCode=code, errorString=f"All connections OK:usfarm", contract=None)
+    t._on_error(reqId=-1, errorCode=code, errorString="All connections OK:usfarm", contract=None)
     t.stop()
     records = [json.loads(l) for l in (tmp_path / "t.jsonl").read_text().splitlines()]
     farm_records = [r for r in records if r["event"] == "farm_state"]
@@ -232,10 +231,7 @@ def test_massive_telemetry_stub_no_op(tmp_path):
     records = [json.loads(l) for l in (tmp_path / "t.jsonl").read_text().splitlines()]
     assert any(r["source"] == "massive" for r in records)
     assert any(
-        r["event"] == "massive_rate_limit"
-        and r["remaining"] == 12
-        and r["reset_at"] == 1778875200
-        for r in records
+        r["event"] == "massive_rate_limit" and r["remaining"] == 12 and r["reset_at"] == 1778875200 for r in records
     )
 
 

@@ -15,15 +15,17 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 import requests
-from requests.exceptions import ConnectionError as ReqConnectionError, Timeout as ReqTimeout
+from requests.exceptions import ConnectionError as ReqConnectionError
+from requests.exceptions import Timeout as ReqTimeout
 
 log = logging.getLogger(__name__)
 
 
 # ── Exceptions ─────────────────────────────────────────────────────────
+
 
 class UWAPIError(Exception):
     """Base exception for all UW API errors."""
@@ -31,8 +33,8 @@ class UWAPIError(Exception):
     def __init__(
         self,
         message: str,
-        status_code: Optional[int] = None,
-        response_body: Optional[dict] = None,
+        status_code: int | None = None,
+        response_body: dict | None = None,
     ):
         self.status_code = status_code
         self.response_body = response_body
@@ -81,7 +83,7 @@ class UWClient:
 
     def __init__(
         self,
-        token: Optional[str] = None,
+        token: str | None = None,
         base_url: str = _DEFAULT_BASE_URL,
         timeout: int = _DEFAULT_TIMEOUT,
         max_retries: int = _DEFAULT_MAX_RETRIES,
@@ -90,10 +92,7 @@ class UWClient:
     ):
         self._token = token or os.environ.get("UW_TOKEN")
         if not self._token:
-            raise UWAuthError(
-                "UW_TOKEN environment variable is not set. "
-                "Export it via: export UW_TOKEN='your-api-key'"
-            )
+            raise UWAuthError("UW_TOKEN environment variable is not set. Export it via: export UW_TOKEN='your-api-key'")
 
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
@@ -113,7 +112,7 @@ class UWClient:
     def close(self) -> None:
         self._session.close()
 
-    def __enter__(self) -> "UWClient":
+    def __enter__(self) -> UWClient:
         if self._telemetry is not None:
             self._telemetry.start()
         return self
@@ -125,11 +124,11 @@ class UWClient:
 
     # ── internal request layer ─────────────────────────────────────
 
-    def _get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> dict:
+    def _get(self, endpoint: str, params: dict[str, Any] | None = None) -> dict:
         endpoint = endpoint.lstrip("/")
         url = f"{self._base_url}/{endpoint}"
 
-        last_exc: Optional[Exception] = None
+        last_exc: Exception | None = None
 
         for attempt in range(1 + self._max_retries):
             started = time.monotonic()
@@ -178,7 +177,7 @@ class UWClient:
         raise last_exc  # type: ignore[misc]
 
     def _sleep_backoff(self, attempt: int) -> None:
-        delay = self._backoff_factor * (2 ** attempt)
+        delay = self._backoff_factor * (2**attempt)
         time.sleep(delay)
 
     @staticmethod
@@ -189,7 +188,7 @@ class UWClient:
                 return max(float(retry_after), 1.0)
             except (ValueError, TypeError):
                 pass
-        return 1.0 * (2 ** attempt)
+        return 1.0 * (2**attempt)
 
     @staticmethod
     def _safe_json(resp: requests.Response) -> dict:
@@ -217,7 +216,7 @@ class UWClient:
             return
 
     @staticmethod
-    def _build_params(**kwargs: Any) -> Dict[str, Any]:
+    def _build_params(**kwargs: Any) -> dict[str, Any]:
         return {k: v for k, v in kwargs.items() if v is not None}
 
     # ── Stock OHLC ─────────────────────────────────────────────────
