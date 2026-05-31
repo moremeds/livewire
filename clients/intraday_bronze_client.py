@@ -27,12 +27,13 @@ _DEFAULT_BRONZE_DIR = (
     Path.home() / "market-warehouse" / "data-lake" / "bronze" / "asset_class=equity"
 )
 
-INTRADAY_TIMEFRAMES = ("1m", "1h", "5m")
+INTRADAY_TIMEFRAMES = ("1m", "1h", "5m", "30m")
 
 INTRADAY_PARQUET_FILENAME = {
     "1m": "1m.parquet",
     "1h": "1h.parquet",
     "5m": "5m.parquet",
+    "30m": "30m.parquet",
 }
 
 # IB historical request limits per timeframe
@@ -40,13 +41,15 @@ INTRADAY_MAX_REQUEST_DURATION = {
     "1m": "1 D",
     "1h": "1 M",
     "5m": "1 W",
+    "30m": "1 M",
 }
 
-# Realistic IB data depth per timeframe
+# Realistic IB data depth per timeframe (Massive Starter = 5yr all timeframes)
 INTRADAY_MAX_DEPTH = {
     "1m": "5 Y",
-    "1h": "2 Y",
-    "5m": "1 Y",
+    "1h": "5 Y",
+    "5m": "5 Y",
+    "30m": "5 Y",
 }
 
 # IB barSizeSetting strings
@@ -54,6 +57,7 @@ INTRADAY_IB_BAR_SIZE = {
     "1m": "1 min",
     "1h": "1 hour",
     "5m": "5 mins",
+    "30m": "30 mins",
 }
 
 _INTRADAY_COLUMNS = (
@@ -66,15 +70,17 @@ _INTRADAY_COLUMNS = (
     "volume",
 )
 
-_INTRADAY_SCHEMA = pa.schema([
-    ("bar_timestamp", pa.timestamp("us", tz="UTC")),
-    ("symbol_id", pa.int64()),
-    ("open", pa.float64()),
-    ("high", pa.float64()),
-    ("low", pa.float64()),
-    ("close", pa.float64()),
-    ("volume", pa.int64()),
-])
+_INTRADAY_SCHEMA = pa.schema(
+    [
+        ("bar_timestamp", pa.timestamp("us", tz="UTC")),
+        ("symbol_id", pa.int64()),
+        ("open", pa.float64()),
+        ("high", pa.float64()),
+        ("low", pa.float64()),
+        ("close", pa.float64()),
+        ("volume", pa.int64()),
+    ]
+)
 
 
 class IntradayBronzeClient:
@@ -193,7 +199,9 @@ class IntradayBronzeClient:
         for row in incoming:
             merged[row["bar_timestamp"]] = row
 
-        inserted = sum(1 for row in incoming if row["bar_timestamp"] not in existing_keys)
+        inserted = sum(
+            1 for row in incoming if row["bar_timestamp"] not in existing_keys
+        )
         ordered = [merged[ts] for ts in sorted(merged)]
         self._publish(symbol, ordered)
         return inserted

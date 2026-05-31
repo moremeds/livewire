@@ -18,12 +18,17 @@ Livewire is a market data warehouse designed for storing and analyzing historica
 
 * Daily ingestion for:
 
-  * **Equities (IB)**
-  * **Futures (IB)**
-  * **Volatility indices (CBOE API)**
-  * **Spot commodities (IB CMDTY MIDPOINT)**
-  * **FX pairs (IB Forex MIDPOINT, with reverse-pair inversion when needed)**
-  * **Treasury yields (FRED API)**
+  * **Equities** (IB or Massive)
+  * **Futures** (IB)
+  * **Volatility indices** (CBOE API)
+  * **Spot commodities** (IB CMDTY MIDPOINT)
+  * **FX pairs** (IB Forex MIDPOINT, with reverse-pair inversion when needed)
+  * **Treasury yields** (FRED API)
+* Intraday bars for:
+
+  * **Equities** (Massive REST or Polygon S3 flat files for 1m, with local derivation to 5m/30m/1h)
+  * **Volatility/Index** (IB 30m bars, with local 1h derivation)
+  * **Futures** (IB)
 * Per-ticker **bronze Parquet snapshots**
 * **Atomic writes + validation**
 * **Fallback recovery pipeline** for missing data
@@ -36,10 +41,10 @@ Livewire is a market data warehouse designed for storing and analyzing historica
 
 ## Goals
 
-* ⚡ High-performance **local quant research environment**
-* 🧱 Scalable **multi-asset data model**
-* 🔁 Clean **local → production transition**
-* 🌐 **Polyglot workflows** (Python, Rust, Node.js)
+* High-performance **local quant research environment**
+* Scalable **multi-asset data model**
+* Clean **local → production transition**
+* **Polyglot workflows** (Python, Rust, Node.js)
 
 ---
 
@@ -73,8 +78,8 @@ Live ingestion writes bronze Parquet only. Postgres is the replayable analytical
 ├── data-lake/
 │   ├── raw/
 │   ├── bronze/
-│   │   ├── asset_class=equity/symbol=AAPL/1d.parquet
-│   │   ├── asset_class=volatility/symbol=VIX/1d.parquet
+│   │   ├── asset_class=equity/symbol=AAPL/{1d,1m,5m,30m,1h}.parquet
+│   │   ├── asset_class=volatility/symbol=VIX/{1d,30m,1h}.parquet
 │   │   ├── asset_class=futures/symbol=ES_202506/1d.parquet
 │   │   ├── asset_class=cmdty/symbol=XAUUSD/1d.parquet
 │   │   ├── asset_class=fx/symbol=USDEUR/1d.parquet
@@ -84,6 +89,7 @@ Live ingestion writes bronze Parquet only. Postgres is the replayable analytical
 ├── logs/
 │   ├── telemetry.jsonl
 │   └── quality_audit.jsonl
+├── cursors/           # Intraday backfill cursor JSON files
 ├── scripts/
 └── .venv/
 ```
@@ -122,34 +128,76 @@ scripts/setup_market_warehouse.sh \
 
 ---
 
-## Operator Scripts
+## CLI Reference
 
-Livewire keeps the operator-facing command surface to five files:
+Livewire has two CLI layers: the **unified CLI** (`scripts/livewire.py`) for streamlined workflows, and five **operator scripts** for granular control.
+
+### Unified CLI
+
+The unified CLI groups all operations under four commands with automatic source selection:
+
+```bash
+source ~/market-warehouse/.venv/bin/activate
+
+# Daily sync — catch up all asset classes
+python scripts/livewire.py sync                         # Equity + volatility + futures + rates
+python scripts/livewire.py sync --asset-class equity    # Equity only
+python scripts/livewire.py sync --full                  # Full daily-backfill orchestrator
+python scripts/livewire.py sync --scheduled             # Scheduled job with retry + alerting
+
+# Deep historical backfill
+python scripts/livewire.py backfill --full              # Full warehouse build (all presets, all phases)
+python scripts/livewire.py backfill --timeframe 1d      # Daily bars only
+python scripts/livewire.py backfill --timeframe 1m 5m   # Specific intraday timeframes
+python scripts/livewire.py backfill --source s3         # Polygon S3 flat files (equity intraday)
+python scripts/livewire.py backfill --preset presets/sp500.json --skip-existing
+
+# Quality and health
+python scripts/livewire.py check                        # Default: coverage report
+python scripts/livewire.py check --health               # Bronze health check
+python scripts/livewire.py check --report               # Quality rollup
+python scripts/livewire.py check --weekly               # Weekly summary
+python scripts/livewire.py check --universe             # Universe screener
+
+# Publish to external targets
+python scripts/livewire.py publish postgres             # Rebuild Postgres
+python scripts/livewire.py publish postgres --smoke     # Smoke test only
+python scripts/livewire.py publish r2                   # Sync to R2
+python scripts/livewire.py publish --migrate            # Parquet schema migration
+```
+
+**Source auto-selection** — the unified CLI detects available API keys and picks the best source:
+- `MASSIVE_API_KEY` set → equity daily/intraday uses Massive
+- `MASSIVE_S3_ACCESS_KEY` + `MASSIVE_S3_SECRET_KEY` set → equity intraday prefers S3 flat files
+- Neither set → falls back to IB
+
+### Operator Scripts
+
+For granular control, use the five operator scripts directly:
 
 | Script | Function | Typical usage |
 | --- | --- | --- |
-| `scripts/setup_market_warehouse.sh` | One-time local warehouse bootstrap | Create `~/market-warehouse/`, venv, directories, optional ClickHouse helpers, optional sample data |
-| `scripts/livewire_ingest.py` | Data ingestion | Historical seeds, daily updates, robust IB runs, CBOE volatility, intraday backfill, universe checks |
+| `scripts/livewire_ingest.py` | Data ingestion | Historical seeds, daily updates, robust IB runs, CBOE volatility, intraday backfill, S3 flat files |
 | `scripts/livewire_quality.py` | Quality and health reporting | Bronze health checks, coverage reports, daily rollup, weekly summary, watchdog alerts |
 | `scripts/livewire_ops.py` | Operations | Scheduled daily job, alert sending |
 | `scripts/livewire_store.py` | Storage maintenance | Postgres rebuilds, Postgres smoke checks, R2 sync, parquet filename migration |
+| `scripts/setup_market_warehouse.sh` | One-time bootstrap | Create `~/market-warehouse/`, venv, directories, optional ClickHouse helpers |
 
-Use `--help` at the top level or after a subcommand to inspect exact flags:
+Use `--help` at the top level or after a subcommand:
 
 ```bash
 python scripts/livewire_ingest.py --help
 python scripts/livewire_ingest.py historical --help
-python scripts/livewire_quality.py --help
-python scripts/livewire_ops.py --help
-python scripts/livewire_store.py --help
 ```
 
-Top-level subcommands:
+Subcommand map:
 
 ```text
-livewire_ingest.py   daily | historical | robust | cboe-vol | fred-rates | intraday-backfill | intraday-status | probe-intraday | universe | backfill-all | daily-backfill
+livewire_ingest.py   daily | historical | robust | cboe-vol | fred-rates |
+                     intraday-backfill | flatfile-ingest | universe |
+                     backfill-all | daily-backfill
 livewire_quality.py  health | coverage | report | weekly | watchdog
-livewire_ops.py      run-daily-job | ibc-install | ibc-start | send-alert
+livewire_ops.py      run-daily-job | send-alert
 livewire_store.py    rebuild-postgres | smoke-postgres | sync-r2 | migrate-parquet
 ```
 
@@ -157,15 +205,9 @@ livewire_store.py    rebuild-postgres | smoke-postgres | sync-r2 | migrate-parqu
 
 ## [Interactive Brokers](https://ibkr.com/referral/joseph5632) Gateway
 
-You need a running IB Gateway for ingestion.
-
----
-
-### Native macOS (IBC)
+You need a running IB Gateway for ingestion of non-Massive data.
 
 IB Gateway and IBC are owned by the separate **trading-stack** project at `~/trading-stack/` — livewire only consumes the API on `127.0.0.1:4001`. The full setup runbook lives at `~/runbooks/trading-stack/ib-gateway-ibc.md`.
-
-#### Day-to-day commands
 
 ```bash
 ~/trading-stack/scripts/ibc_gateway_status.sh   # health + watchdog state
@@ -182,33 +224,13 @@ nc -z 127.0.0.1 4001
 
 ### Prerequisites
 
-* IB Gateway running (`127.0.0.1:4001` by default)
-* Configurable via:
-
-  * CLI flags (`--host`, `--port`)
-  * Env vars (`MDW_IB_HOST`, `MDW_IB_PORT`)
+* IB Gateway running (`127.0.0.1:4001` by default) — only needed for non-Massive data
+* Configurable via CLI flags (`--host`, `--port`) or env vars (`MDW_IB_HOST`, `MDW_IB_PORT`)
 
 Activate the project environment before running Python commands:
 
 ```bash
 source ~/market-warehouse/.venv/bin/activate
-```
-
-Check the IB API endpoint without fetching account/order startup data:
-
-```bash
-python - <<'PY'
-from ib_async import IB
-from ib_async.ib import StartupFetch
-
-ib = IB()
-try:
-    ib.connect("127.0.0.1", 4001, clientId=38, timeout=8, readonly=True, fetchFields=StartupFetch(0))
-    print(f"connected={ib.isConnected()} serverVersion={ib.client.serverVersion()}")
-finally:
-    if ib.isConnected():
-        ib.disconnect()
-PY
 ```
 
 ---
@@ -227,9 +249,6 @@ python scripts/livewire_ingest.py historical --preset presets/sp500.json
 
 # Futures by preset
 python scripts/livewire_ingest.py historical --preset presets/futures-index.json --asset-class futures
-python scripts/livewire_ingest.py historical --preset presets/futures-energy.json --asset-class futures
-python scripts/livewire_ingest.py historical --preset presets/futures-metals.json --asset-class futures
-python scripts/livewire_ingest.py historical --preset presets/futures-treasuries.json --asset-class futures
 
 # Spot commodities via IB CMDTY MIDPOINT
 python scripts/livewire_ingest.py historical --preset presets/cmdty-metals.json --asset-class cmdty
@@ -237,138 +256,132 @@ python scripts/livewire_ingest.py historical --preset presets/cmdty-metals.json 
 # FX via IB Forex MIDPOINT
 python scripts/livewire_ingest.py historical --preset presets/fx-pairs.json --asset-class fx
 
-# Volatility (CBOE direct)
+# Volatility (CBOE direct — authoritative daily source)
 python scripts/livewire_ingest.py cboe-vol
 
-# Treasury yields from FRED (DGS3, DGS5, DGS10, DGS30)
+# Treasury yields from FRED
 FRED_API_KEY=... python scripts/livewire_ingest.py fred-rates
 
-# Volatility historical backfill through IB Index contracts, when needed
+# Volatility historical backfill through IB Index contracts
 python scripts/livewire_ingest.py historical --preset presets/volatility.json --asset-class volatility
 ```
 
-For bulk IB runs over more than a few tickers, prefer the robust orchestrator. It retries per ticker, records outcomes, and reports `ok`, `ok-noop`, `skip`, `fail`, or `timeout`:
+For bulk IB runs (>5 tickers), use the robust orchestrator with per-ticker retry:
 
 ```bash
 python scripts/livewire_ingest.py robust --preset presets/sp500.json --mode seed
 python scripts/livewire_ingest.py robust --preset presets/sp500.json --mode backfill
-python scripts/livewire_ingest.py robust --preset presets/futures-index.json --asset-class futures --mode seed
 ```
-
-Run all documented daily seed groups manually:
-
-```bash
-python scripts/livewire_ingest.py historical --preset presets/sp500.json
-python scripts/livewire_ingest.py historical --preset presets/futures-index.json --asset-class futures
-python scripts/livewire_ingest.py historical --preset presets/futures-energy.json --asset-class futures
-python scripts/livewire_ingest.py historical --preset presets/futures-metals.json --asset-class futures
-python scripts/livewire_ingest.py historical --preset presets/futures-treasuries.json --asset-class futures
-python scripts/livewire_ingest.py historical --preset presets/cmdty-metals.json --asset-class cmdty
-python scripts/livewire_ingest.py historical --preset presets/fx-pairs.json --asset-class fx
-python scripts/livewire_ingest.py cboe-vol
-FRED_API_KEY=... python scripts/livewire_ingest.py fred-rates
-```
-
-Notes:
-
-* `cmdty` and `fx` use IB `MIDPOINT` daily bars and store volume as `0`.
-* FX pairs are six-letter local symbols. If IB supports only the reverse cross, the fetcher requests the supported pair and stores inverted OHLC rows. Example: `USDEUR` fetches `EURUSD`, then stores inverted `USDEUR`.
-* CBOE direct sync is the authoritative daily source for volatility indices. For `VIX` and `SPX`, `cboe-vol` uses CBOE's official daily-price CSV as a backup for dates newer than the chart JSON feed.
-* FRED rates sync writes Treasury constant-maturity yields as percent values to `asset_class=rates` with columns `trade_date`, `symbol_id`, `tenor_years`, `yield_pct`, and `source`. Native FRED frequency is daily; `--frequency` can request lower-frequency aggregation such as `w`, `m`, `q`, or `a`.
 
 ---
 
 ### Default Warehouse Backfill
 
-The consolidated default warehouse backfill entrypoint runs `sp500`, `ndx100`, and `r2k` daily-bar normal fetches, then older-history backfills, with stall detection and cursor resume. Deep older-history backfill remains IB-backed because live Massive validation showed it can return only a partial historical range on long requests. Recent equity target-date recovery uses Massive through `daily --source massive`. After daily backfill, the runner syncs FRED Treasury yield rates, then runs the Massive equity intraday lane (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed `VIX`/`SPX` intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility, including equity `1m`.
+The full warehouse build runs all presets through daily seed, older-history backfill, intraday backfill, CBOE volatility, FRED rates, and optional Postgres rebuild:
 
 ```bash
+# Python orchestrator (recommended)
 python scripts/livewire_ingest.py backfill-all
+# Or via unified CLI
+python scripts/livewire.py backfill --full
 ```
 
-For a long local run, use `tmux` and keep logs under `~/market-warehouse/logs/`:
+Features:
+- Equity daily seed/backfill for `sp500`, `ndx100`, `r2k`
+- FRED Treasury yield rates
+- Massive equity intraday (`1m`, `5m`, `1h`, 5 years) in parallel with volatility/index lane
+- CBOE daily volatility sync followed by IB-backed VIX/SPX/NDX/RUT/VXN/RVX intraday (`30m` bars, 1h derived locally)
+- Optional Postgres analytical rebuild when `MDW_POSTGRES_DSN` is set
+- Activity-based stall detection and retry-until-done logic
+
+For long runs, use `tmux`:
 
 ```bash
-tmux new-session -s livewire_backfill 'cd /Users/chenxi/projects/livewire && source ~/market-warehouse/.venv/bin/activate && python scripts/livewire_ingest.py backfill-all'
+tmux new-session -s livewire_backfill \
+  'cd /path/to/livewire && source ~/market-warehouse/.venv/bin/activate && python scripts/livewire_ingest.py backfill-all'
 ```
 
 ### Daily Backfill
 
-Use `daily-backfill` for the routine daily warehouse run. It avoids deep IB historical backfill, but it does **not** limit intraday to already-existing parquet symbols: the Massive intraday lanes run across the full `sp500` + `ndx100` + `r2k` union so the warehouse is forward-populated even before the 5-year seed is complete.
-
-- Massive equity daily repair for `sp500`, `ndx100`, and `r2k`
-- FRED Treasury rates
-- CBOE daily volatility
-- Massive equity intraday recent-window catch-up for `1m`, `5m`, and `1h` across the full equity universe
-- IB `VIX`/`SPX` volatility intraday recent-window catch-up for `5m` and `1h`
-- Optional Postgres rebuild when `MDW_POSTGRES_DSN` is set
+Routine daily catch-up. Uses Massive for equity daily gaps and recent intraday windows across the full `sp500` + `ndx100` + `r2k` union:
 
 ```bash
 python scripts/livewire_ingest.py daily-backfill
-MDW_DAILY_BACKFILL_INTRADAY_DAYS=3 python scripts/livewire_ingest.py daily-backfill
-MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT=30 python scripts/livewire_ingest.py daily-backfill
+# Or via unified CLI
+python scripts/livewire.py sync --full
 ```
 
-Default intraday lookback is 7 calendar days. Default Massive intraday concurrency is 20.
+Default intraday lookback: 7 calendar days (`MDW_DAILY_BACKFILL_INTRADAY_DAYS`). Default Massive concurrency: 20 (`MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT`).
 
 ---
 
 ### Backfill Missing Data
 
 ```bash
-# Equity backfill
+# Equity — auto picks IB for deep history, Massive for recent
 python scripts/livewire_ingest.py historical --preset presets/sp500.json --backfill --source auto
-python scripts/livewire_ingest.py historical --preset presets/sp500.json --backfill --source ib       # force IB
-python scripts/livewire_ingest.py historical --preset presets/sp500.json --backfill --source massive  # force Massive; partial long-history ranges do not complete the cursor
 
-# Futures backfill
+# Force IB or Massive
+python scripts/livewire_ingest.py historical --preset presets/sp500.json --backfill --source ib
+python scripts/livewire_ingest.py historical --preset presets/sp500.json --backfill --source massive
+
+# Futures, commodities, FX, volatility
 python scripts/livewire_ingest.py historical --preset presets/futures-index.json --asset-class futures --backfill
-
-# Spot commodity backfill
 python scripts/livewire_ingest.py historical --preset presets/cmdty-metals.json --asset-class cmdty --backfill
-
-# FX backfill
 python scripts/livewire_ingest.py historical --preset presets/fx-pairs.json --asset-class fx --backfill
-
-# Volatility IB historical backfill, if CBOE direct history is not enough
-python scripts/livewire_ingest.py historical --preset presets/volatility.json --asset-class volatility --backfill
 ```
-
-* Fills only missing history
-* Preserves existing data
-* Independent cursor tracking
 
 ---
 
 ### Intraday Data
 
-Intraday bars are fetched through the ingest entrypoint. `historical` is daily-only; use `intraday-backfill` for intraday bars. The default equity warehouse build now uses **Massive 1m, 5 years**. Non-equity intraday data stays IB-backed; volatility intraday is explicitly scoped to `VIX` and `SPX`.
+Three data paths for intraday bars, depending on asset class and source:
+
+#### 1. Polygon S3 flat files (equity, fastest)
+
+Downloads per-day gzipped CSVs from Polygon S3. One download per trading day covers ALL tickers. Writes 1m bronze parquet, then derives 5m/30m/1h via lossless OHLCV aggregation locally. CSV temp files are deleted after processing.
 
 ```bash
-# Probe IB intraday timestamp behavior for the built-in AAPL fixture
-python scripts/livewire_ingest.py probe-intraday
+# Full 5-year equity intraday build via S3
+python scripts/livewire_ingest.py flatfile-ingest --preset presets/sp500.json --years 5
 
-# Report intraday session state
-python scripts/livewire_ingest.py intraday-status --timeframe 5m
+# Specific tickers
+python scripts/livewire_ingest.py flatfile-ingest --tickers AAPL MSFT --years 2
 
-# Backfill one symbol
-python scripts/livewire_ingest.py intraday-backfill --tickers AAPL --timeframe 5m --years 1
+# Dry run
+python scripts/livewire_ingest.py flatfile-ingest --preset presets/sp500.json --years 5 --dry-run
 
-# Default equity intraday warehouse build input
+# Via unified CLI (auto-detects S3 keys)
+python scripts/livewire.py backfill --source s3 --preset presets/sp500.json --years 5
+```
+
+Requires `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY` environment variables. These are Polygon S3 credentials from the Polygon dashboard, separate from `MASSIVE_API_KEY`.
+
+#### 2. Massive REST API (equity)
+
+```bash
+# Default equity intraday build
 python scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json --timeframe 1m --source massive --years 5 --skip-existing
 
-# Recent-window intraday catch-up, used by daily-backfill
+# Recent-window catch-up (used by daily-backfill)
 python scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json --timeframe 1m --source massive --days 7 --max-concurrent 20
-
-# Non-equity intraday remains IB-backed
-python scripts/livewire_ingest.py intraday-backfill --preset presets/futures-index.json --asset-class futures --timeframe 1m --source ib --years 5
-
-# VIX/SPX volatility-index intraday
-python scripts/livewire_ingest.py intraday-backfill --preset presets/volatility-intraday.json --asset-class volatility --timeframe 5m --source ib --skip-existing
-
-# Backfill a preset and skip files already present
-python scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json --timeframe 1h --skip-existing
 ```
+
+#### 3. IB (volatility/index, futures)
+
+Volatility/index intraday covers VIX, SPX, NDX, RUT, VXN, and RVX via `presets/volatility-intraday.json`. IB fetches 30m bars only; 1h is derived locally via lossless aggregation from 30m.
+
+```bash
+# Volatility/index intraday
+python scripts/livewire_ingest.py intraday-backfill --preset presets/volatility-intraday.json --asset-class volatility --timeframe 30m --source ib --skip-existing
+
+# Futures intraday
+python scripts/livewire_ingest.py intraday-backfill --preset presets/futures-index.json --asset-class futures --timeframe 1m --source ib --years 5
+```
+
+#### Timeframe aggregation
+
+Lossless OHLCV rollup supports: `1m→5m`, `1m→30m`, `1m→1h`, `30m→1h`. Aggregation uses clock-aligned windows (`open=first, high=max, low=min, close=last, volume=sum`). Both the S3 flat file ingestion and the vol/index IB pipeline apply aggregation automatically — derived timeframes don't require separate backfill runs.
 
 ---
 
@@ -378,9 +391,8 @@ python scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json 
 # Equity daily update
 python scripts/livewire_ingest.py daily
 
-# Equity daily update through Massive instead of IB
+# Equity via Massive instead of IB
 python scripts/livewire_ingest.py daily --asset-class equity --source massive
-python scripts/livewire_ingest.py daily --asset-class equity --source massive --target-date 2026-04-06 --force --tickers AAPL MSFT
 
 # Futures daily update
 python scripts/livewire_ingest.py daily --asset-class futures
@@ -391,17 +403,7 @@ python scripts/livewire_ingest.py daily --asset-class cmdty --preset presets/cmd
 # FX daily update
 python scripts/livewire_ingest.py daily --asset-class fx --preset presets/fx-pairs.json
 
-# Volatility daily update, authoritative CBOE direct source
-python scripts/livewire_ingest.py cboe-vol
-```
-
-Run the full manual daily cycle:
-
-```bash
-python scripts/livewire_ingest.py daily --asset-class equity
-python scripts/livewire_ingest.py daily --asset-class futures
-python scripts/livewire_ingest.py daily --asset-class cmdty --preset presets/cmdty-metals.json
-python scripts/livewire_ingest.py daily --asset-class fx --preset presets/fx-pairs.json
+# Volatility (CBOE direct — authoritative)
 python scripts/livewire_ingest.py cboe-vol
 ```
 
@@ -414,95 +416,82 @@ Common flags:
 --preset presets/sp500.json
 --asset-class {equity|volatility|futures|cmdty|fx}
 --source {ib|massive}
---host 127.0.0.1
---port 4001
 ```
 
-#### Key Behavior
-
-* Detects missing trading days
+Key behavior:
+* Detects missing trading days automatically
 * Fetches only gaps
-* Validates OHLCV
+* Validates OHLCV integrity
 * Atomic snapshot updates
-* Fallback recovery if IB fails
+* Fallback recovery if IB fails (Nasdaq stocks/ETF, then Stooq)
+
+### Scheduled Daily Runs
+
+The scheduled runner handles equities, futures, and CBOE volatility:
+
+```bash
+python scripts/livewire_ops.py run-daily-job
+```
+
+**macOS launchd scheduling:**
+
+```bash
+sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.daily-update.plist.example > ~/Library/LaunchAgents/com.livewire.daily-update.plist
+sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.daily-update-watchdog.plist.example > ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
+launchctl load ~/Library/LaunchAgents/com.livewire.daily-update.plist
+launchctl load ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
+```
+
+* **Daily sync**: 13:05 PT (4:05 PM ET)
+* **Watchdog**: 18:30 PT
+
+---
 
 ### Reliability / Data Quality
 
-Sub-A of the Livewire reliability roadmap adds source-tagged telemetry, quality-flag sidecars, a central `quality_audit.jsonl`, a per-ticker IB orchestrator, and a daily rollup email marker. Design details live in `docs/superpowers/specs/2026-05-17-mdw-reliability-foundation-design.md`; the execution plan is `docs/superpowers/plans/2026-05-18-reliability-foundation-plan.md`.
-
-Common quality commands:
-
 ```bash
-# Data-lake health report
+# Bronze health report
 python scripts/livewire_quality.py health
 
-# Include intraday checks
+# Include intraday gap detection
 python scripts/livewire_quality.py health --intraday --timeframe 5m
 
-# Daily coverage report with auto-recovery enabled
+# Daily coverage report with auto-recovery
 python scripts/livewire_quality.py coverage
 
-# Report-only coverage check
-python scripts/livewire_quality.py coverage --no-recover
-
-# Quality rollup for the last 24 hours
+# Quality rollup
 python scripts/livewire_quality.py report --view summary --since 24h
 
-# Send the quality rollup by email
+# Send quality rollup by email
 python scripts/livewire_quality.py report --view summary --since 24h --email
 
-# Weekly summary, self-skips on non-Sunday
+# Weekly summary (self-skips on non-Sunday)
 python scripts/livewire_quality.py weekly
 
 # Scheduled-job watchdog
 python scripts/livewire_quality.py watchdog
 ```
 
-The scheduled runner executes equities, futures, and CBOE volatility:
-
-```bash
-python scripts/livewire_ops.py run-daily-job
-```
-
-Run `cmdty` and `fx` daily updates explicitly until they are added to the scheduled runner:
-
-```bash
-python scripts/livewire_ingest.py daily --asset-class cmdty --preset presets/cmdty-metals.json
-python scripts/livewire_ingest.py daily --asset-class fx --preset presets/fx-pairs.json
-```
-
----
-
-### Other storage commands
-
-```bash
-# Sync lake files to R2 when R2 env vars are configured
-python scripts/livewire_store.py sync-r2
-
-# Migrate old parquet filenames to the current layout
-python scripts/livewire_store.py migrate-parquet
-```
-
 ---
 
 ### Rebuild Postgres
 
-Postgres is optional and replayable. It is not the ingestion source of truth, and live ingestion scripts do not write to it.
+Postgres is optional and replayable. It is not the ingestion source of truth.
 
 ```bash
 export MDW_POSTGRES_DSN="postgresql://user:password@localhost:5432/livewire"
 export MDW_POSTGRES_SCHEMA="md"
 
-# Connectivity and table-count smoke check
+# Smoke check
 python scripts/livewire_store.py smoke-postgres --ensure-schema
 
-# Rebuild equity daily rows
+# Rebuild equity daily
 python scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe 1d
 
-# Rebuild all available equity timeframes; missing optional 1m/1h/5m data is skipped
+# Rebuild all equity timeframes (missing optional intraday data is skipped)
 python scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe all
 
-# Rebuild futures and volatility when their bronze parquet exists
+# Rebuild futures and volatility
 python scripts/livewire_store.py rebuild-postgres --asset-class futures
 python scripts/livewire_store.py rebuild-postgres --asset-class volatility
 
@@ -510,58 +499,76 @@ python scripts/livewire_store.py rebuild-postgres --asset-class volatility
 python scripts/livewire_store.py rebuild-postgres --include-reliability
 ```
 
-The Postgres schema contains `md.symbols`, `md.equities_daily`, `md.futures_daily`, `md.equities_1m`, `md.equities_1h`, `md.equities_5m`, `md.telemetry_events`, and `md.quality_flags`. The rebuild command streams local parquet/JSONL through Python and `psycopg`; it does not require server-side parquet extensions or database access to the local filesystem.
-
-Rollback is to drop or truncate the target schema and replay from canonical bronze Parquet and JSONL artifacts:
-
-```sql
-DROP SCHEMA IF EXISTS md CASCADE;
-```
-
-Then rerun the smoke and rebuild commands above. Futures and intraday commands are conditional on corresponding bronze parquet existing under `~/market-warehouse/data-lake/bronze/asset_class=futures` or `asset_class=equity/symbol=*/{1h,5m}.parquet`.
+Rollback: `DROP SCHEMA IF EXISTS md CASCADE;` then rerun rebuilds from bronze parquet.
 
 ---
 
-## Scheduling
-
-### macOS (`launchd`)
+### Other Storage Commands
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.livewire.daily-update.plist
+# Sync lake files to R2
+python scripts/livewire_store.py sync-r2
+
+# Migrate old parquet filenames
+python scripts/livewire_store.py migrate-parquet
 ```
-
-### Schedule
-
-* **Daily sync**: 13:05 PT (4:05 PM ET)
-* **Watchdog**: 18:30 PT
 
 ---
 
-## Alerts & Monitoring
+## Environment Variables
 
-* Automatic retries
-* Email alerts on failure
-* Optional AI-generated summaries
+### Data sources
 
-### Setup
+| Variable | Purpose |
+| --- | --- |
+| `MASSIVE_API_KEY` | Polygon REST API key for equity daily/intraday |
+| `MASSIVE_S3_ACCESS_KEY` | Polygon S3 access key for flat file downloads |
+| `MASSIVE_S3_SECRET_KEY` | Polygon S3 secret key for flat file downloads |
+| `FRED_API_KEY` | FRED API key for Treasury yield rates |
 
-```bash
-npm install
-```
+### IB Gateway
 
-Example config:
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MDW_IB_HOST` | `127.0.0.1` | IB Gateway host |
+| `MDW_IB_PORT` | `4001` | IB Gateway port |
 
-```bash
-MDW_ALERT_EMAIL_TO="you@example.com"
-MDW_ALERT_SMTP_URL="smtp://user:pass@mail.example.com:587"
-```
+### Reliability / alerting
 
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MDW_TELEMETRY_PATH` | `~/market-warehouse/logs/telemetry.jsonl` | Telemetry JSONL append path |
+| `MDW_QUALITY_AUDIT_PATH` | `~/market-warehouse/logs/quality_audit.jsonl` | Quality-flag audit JSONL |
+| `MDW_ALERT_SEVERITY_THRESHOLD` | `warning` | Min severity that triggers per-flag email |
+| `MDW_ALERT_RATE_LIMIT_SECONDS` | `300` | De-dup window for identical alerts |
+| `MDW_LOG_LEVEL` | `INFO` | Logger root level |
+
+### Postgres
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MDW_POSTGRES_DSN` | — | Postgres DSN for analytical rebuilds |
+| `MDW_POSTGRES_SCHEMA` | `md` | Target analytical schema |
+| `MDW_TEST_POSTGRES_DSN` | — | Disposable DSN for integration tests |
+
+### Orchestrators
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MDW_ORCHESTRATOR_TIMEOUT_SECONDS` | `300` | Per-ticker hard timeout for robust IB runs |
+| `MDW_ORCHESTRATOR_MAX_ATTEMPTS` | `3` | Per-ticker retry budget |
+| `MDW_ORCHESTRATOR_COOLDOWN_SECONDS` | `60` | Sleep between retry attempts |
+| `MDW_DAILY_BACKFILL_INTRADAY_DAYS` | `7` | Intraday recent-window lookback (calendar days) |
+| `MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT` | `20` | Massive intraday concurrency cap |
+
+---
 
 ## Testing
 
 ### Run Tests
 
 ```bash
+source ~/market-warehouse/.venv/bin/activate
 python -m pytest tests/ -v
 ```
 
@@ -571,20 +578,15 @@ python -m pytest tests/ -v
 python -m pytest tests -q --cov=clients --cov=livewire_scripts --cov=scripts --cov-report=term-missing
 ```
 
-* ✅ **100% coverage enforced**
+* **100% coverage enforced** (`fail_under = 100` in `pyproject.toml`)
+* `clients/ib_client.py` and `clients/historical_provider.py` excluded from coverage gate
 
 ### RuntimeWarning Gate
 
-Run this after changes that touch async script runners or tests that mock `ib.ib.run(...)`:
+Run after changes that touch async script runners or tests that mock `ib.ib.run(...)`:
 
 ```bash
 python -m pytest tests -q -W error::RuntimeWarning
-```
-
-### Focused Asset-Class Tests
-
-```bash
-python -m pytest tests/test_bronze_client.py tests/test_daily_update.py tests/test_fetch_ib_historical.py -q
 ```
 
 ---
@@ -597,12 +599,7 @@ python -m pytest tests/test_bronze_client.py tests/test_daily_update.py tests/te
 ln -sf ../../tools/pre-commit-secrets-scan.sh .git/hooks/pre-commit
 ```
 
-Detects:
-
-* API keys
-* credentials
-* private keys
-* `.env` leaks
+Detects API keys, credentials, private keys, and `.env` leaks.
 
 ---
 
@@ -612,17 +609,18 @@ Detects:
 
 All volume is **split-adjusted** to ensure consistency across time.
 
+### Timeframe Aggregation
+
+Lossless OHLCV rollup (pure function, no I/O):
+- Supported: `1m→5m`, `1m→30m`, `1m→1h`, `30m→1h`
+- Clock-aligned windows: `open=first, high=max, low=min, close=last, volume=sum`
+- Partial windows at end of data are dropped
+
 ---
 
 ## ClickHouse (Optional)
 
-Used for:
-
-* Benchmarking
-* Concurrency
-* Production simulation
-
-### Commands
+Used for benchmarking, concurrency testing, and production simulation.
 
 ```bash
 ~/market-warehouse/scripts/start_clickhouse.sh
@@ -636,42 +634,7 @@ Used for:
 
 ```bash
 scripts/setup_market_warehouse.sh --with-sample-data
-
-# After setup, the generated helper is available under the warehouse tree:
 python ~/market-warehouse/scripts/write_sample_parquet.py
-```
-
----
-
-## Recommended Workflow
-
-1. Store all data in **Parquet (bronze)**
-2. Use **Postgres** for replayable local SQL queries when needed
-3. Use **ClickHouse** for:
-
-   * large-scale queries
-   * production-like workloads
-
----
-
-## Troubleshooting
-
-### ClickHouse Issues
-
-```bash
-clickhouse-client --query "SELECT version()"
-```
-
----
-
-## Recommended Command
-
-```bash
-scripts/setup_market_warehouse.sh \
-  --start-clickhouse \
-  --init-clickhouse \
-  --with-sample-data \
-  --smoke-test
 ```
 
 ---

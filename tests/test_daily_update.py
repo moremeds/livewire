@@ -6,13 +6,13 @@ async fetch helpers, and main() entrypoint.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import date, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from ib_async import Contract, Forex, Future, Index, Stock
 
 from clients.bronze_client import BronzeClient
@@ -28,9 +28,9 @@ from livewire_scripts.daily_update import (
     bars_to_rows,
     classify_gaps,
     compute_ib_duration,
+    fetch_batch,
     fetch_fallback_bars,
     fetch_massive_bars,
-    fetch_batch,
     fetch_ticker_update,
     get_missing_trading_dates,
     get_nyse_holidays,
@@ -42,9 +42,6 @@ from livewire_scripts.daily_update import (
     trading_days_between,
     validate_bars,
 )
-
-import asyncio
-
 
 # ── helpers ───────────────────────────────────────────────────────────
 
@@ -208,7 +205,9 @@ class TestTradingDaysBetween:
 
 class TestResolveTargetDate:
     def test_returns_requested_trading_day(self):
-        assert resolve_target_date(date(2025, 1, 6), "2025-01-03", False) == date(2025, 1, 3)
+        assert resolve_target_date(date(2025, 1, 6), "2025-01-03", False) == date(
+            2025, 1, 3
+        )
 
     def test_rejects_requested_non_trading_day_without_force(self):
         assert resolve_target_date(date(2025, 1, 6), "2025-01-04", False) is None
@@ -228,27 +227,21 @@ class TestResolveTargetDate:
 class TestClassifyGaps:
     def test_up_to_date(self):
         # Target is 2025-01-03 (Fri), latest is also 2025-01-03
-        up, single, multi = classify_gaps(
-            {"AAPL": "2025-01-03"}, date(2025, 1, 3)
-        )
+        up, single, multi = classify_gaps({"AAPL": "2025-01-03"}, date(2025, 1, 3))
         assert up == ["AAPL"]
         assert single == []
         assert multi == []
 
     def test_single_day_gap(self):
         # Target is 2025-01-03 (Fri), latest is 2025-01-02 (Thu)
-        up, single, multi = classify_gaps(
-            {"AAPL": "2025-01-02"}, date(2025, 1, 3)
-        )
+        up, single, multi = classify_gaps({"AAPL": "2025-01-02"}, date(2025, 1, 3))
         assert up == []
         assert single == ["AAPL"]
         assert multi == []
 
     def test_multi_day_gap(self):
         # Target is 2025-01-06 (Mon), latest is 2025-01-02 (Thu)
-        up, single, multi = classify_gaps(
-            {"AAPL": "2025-01-02"}, date(2025, 1, 6)
-        )
+        up, single, multi = classify_gaps({"AAPL": "2025-01-02"}, date(2025, 1, 6))
         assert up == []
         assert single == []
         assert multi == ["AAPL"]
@@ -362,8 +355,12 @@ class TestValidateBars:
 
     def test_null_field(self):
         bar = SimpleNamespace(
-            date="2025-01-02", open=None, high=155.0, low=149.0,
-            close=153.0, volume=1000000
+            date="2025-01-02",
+            open=None,
+            high=155.0,
+            low=149.0,
+            close=153.0,
+            volume=1000000,
         )
         valid, issues = validate_bars([bar], "AAPL")
         assert len(valid) == 0
@@ -441,8 +438,17 @@ class TestBarsToRows:
 
 class TestBarsToFuturesRows:
     def test_converts_single_bar(self):
-        bar = _make_bar(date="2025-01-02", open=5100.0, high=5150.0, low=5050.0, close=5120.0, volume=50000)
-        rows = bars_to_futures_rows([bar], contract_id=99, root_symbol="ES", expiry_date="2025-06-01")
+        bar = _make_bar(
+            date="2025-01-02",
+            open=5100.0,
+            high=5150.0,
+            low=5050.0,
+            close=5120.0,
+            volume=50000,
+        )
+        rows = bars_to_futures_rows(
+            [bar], contract_id=99, root_symbol="ES", expiry_date="2025-06-01"
+        )
         assert len(rows) == 1
         row = rows[0]
         assert row["trade_date"] == "2025-01-02"
@@ -539,7 +545,9 @@ class TestFallbackClientSelection:
 
     def test_uses_patched_daily_bar_fallback_client(self, monkeypatch):
         sentinel = _mock_fallback_instance()
-        monkeypatch.setattr("livewire_scripts.daily_update.DailyBarFallbackClient", lambda: sentinel)
+        monkeypatch.setattr(
+            "livewire_scripts.daily_update.DailyBarFallbackClient", lambda: sentinel
+        )
         assert _fallback_client() is sentinel
 
 
@@ -623,9 +631,10 @@ class TestLoadPreset:
         preset = {"name": "test-preset", "tickers": ["AAPL", "MSFT"]}
         preset_file = tmp_path / "test.json"
         preset_file.write_text(json.dumps(preset))
-        name, tickers = load_preset(preset_file)
+        name, tickers, exchange_map = load_preset(preset_file)
         assert name == "test-preset"
         assert tickers == ["AAPL", "MSFT"]
+        assert exchange_map == {}
 
     def test_loads_futures_preset_with_contracts(self, tmp_path):
         preset = {
@@ -637,9 +646,10 @@ class TestLoadPreset:
         }
         preset_file = tmp_path / "futures.json"
         preset_file.write_text(json.dumps(preset))
-        name, tickers = load_preset(preset_file)
+        name, tickers, exchange_map = load_preset(preset_file)
         assert name == "futures-test"
         assert tickers == ["ES_202506", "NQ_202509"]
+        assert "ES_202506" in exchange_map
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -651,21 +661,19 @@ class TestFetchTickerUpdate:
     def test_fetches_bars(self):
         mock_ib = MagicMock()
         mock_ib.ib.qualifyContractsAsync = AsyncMock(return_value=[])
-        mock_ib.get_historical_data_async = AsyncMock(
-            return_value=[_make_bar()]
-        )
+        mock_ib.get_historical_data_async = AsyncMock(return_value=[_make_bar()])
 
         sem = asyncio.Semaphore(6)
-        ticker, bars = asyncio.run(
-            fetch_ticker_update("AAPL", "5 D", mock_ib, sem)
-        )
+        ticker, bars = asyncio.run(fetch_ticker_update("AAPL", "5 D", mock_ib, sem))
         assert ticker == "AAPL"
         assert len(bars) == 1
 
     def test_cmdty_fetch_uses_midpoint_bars(self):
         mock_ib = MagicMock()
         mock_ib.ib.qualifyContractsAsync = AsyncMock(return_value=[])
-        mock_ib.get_historical_data_async = AsyncMock(return_value=[_make_bar(volume=0)])
+        mock_ib.get_historical_data_async = AsyncMock(
+            return_value=[_make_bar(volume=0)]
+        )
 
         sem = asyncio.Semaphore(6)
         ticker, bars = asyncio.run(
@@ -674,12 +682,17 @@ class TestFetchTickerUpdate:
 
         assert ticker == "XAUUSD"
         assert len(bars) == 1
-        assert mock_ib.get_historical_data_async.await_args.kwargs["what_to_show"] == "MIDPOINT"
+        assert (
+            mock_ib.get_historical_data_async.await_args.kwargs["what_to_show"]
+            == "MIDPOINT"
+        )
 
     def test_fx_fetch_uses_midpoint_bars(self):
         mock_ib = MagicMock()
         mock_ib.ib.qualifyContractsAsync = AsyncMock(return_value=[])
-        mock_ib.get_historical_data_async = AsyncMock(return_value=[_make_bar(volume=0)])
+        mock_ib.get_historical_data_async = AsyncMock(
+            return_value=[_make_bar(volume=0)]
+        )
 
         sem = asyncio.Semaphore(6)
         ticker, bars = asyncio.run(
@@ -688,7 +701,10 @@ class TestFetchTickerUpdate:
 
         assert ticker == "USDEUR"
         assert len(bars) == 1
-        assert mock_ib.get_historical_data_async.await_args.kwargs["what_to_show"] == "MIDPOINT"
+        assert (
+            mock_ib.get_historical_data_async.await_args.kwargs["what_to_show"]
+            == "MIDPOINT"
+        )
 
     def test_returns_empty_on_none(self):
         mock_ib = MagicMock()
@@ -696,9 +712,7 @@ class TestFetchTickerUpdate:
         mock_ib.get_historical_data_async = AsyncMock(return_value=None)
 
         sem = asyncio.Semaphore(6)
-        ticker, bars = asyncio.run(
-            fetch_ticker_update("AAPL", "5 D", mock_ib, sem)
-        )
+        ticker, bars = asyncio.run(fetch_ticker_update("AAPL", "5 D", mock_ib, sem))
         assert bars == []
 
 
@@ -706,9 +720,7 @@ class TestFetchBatch:
     def test_fetches_multiple_tickers(self):
         mock_ib = MagicMock()
         mock_ib.ib.qualifyContractsAsync = AsyncMock(return_value=[])
-        mock_ib.get_historical_data_async = AsyncMock(
-            return_value=[_make_bar()]
-        )
+        mock_ib.get_historical_data_async = AsyncMock(return_value=[_make_bar()])
 
         result = asyncio.run(
             fetch_batch([("AAPL", "5 D"), ("NVDA", "3 D")], mock_ib, max_concurrent=6)
@@ -718,13 +730,9 @@ class TestFetchBatch:
 
     def test_handles_error(self):
         mock_ib = MagicMock()
-        mock_ib.ib.qualifyContractsAsync = AsyncMock(
-            side_effect=Exception("fail")
-        )
+        mock_ib.ib.qualifyContractsAsync = AsyncMock(side_effect=Exception("fail"))
 
-        result = asyncio.run(
-            fetch_batch([("FAIL", "5 D")], mock_ib, max_concurrent=6)
-        )
+        result = asyncio.run(fetch_batch([("FAIL", "5 D")], mock_ib, max_concurrent=6))
         assert result["FAIL"] == []
 
 
@@ -744,10 +752,20 @@ class TestQualityHookIntegration:
             ts="2026-05-17T00:00:00Z",
         )
 
-        with patch("livewire_scripts.daily_update.detect_all", return_value=[fake_flag]) as m_detect, \
-             patch("livewire_scripts.daily_update.write_sidecar", return_value=True) as m_sidecar, \
-             patch("livewire_scripts.daily_update.append_audit", return_value=True) as m_audit, \
-             patch("livewire_scripts.daily_update.alert_on_flag", return_value=True) as m_alert:
+        with (
+            patch(
+                "livewire_scripts.daily_update.detect_all", return_value=[fake_flag]
+            ) as m_detect,
+            patch(
+                "livewire_scripts.daily_update.write_sidecar", return_value=True
+            ) as m_sidecar,
+            patch(
+                "livewire_scripts.daily_update.append_audit", return_value=True
+            ) as m_audit,
+            patch(
+                "livewire_scripts.daily_update.alert_on_flag", return_value=True
+            ) as m_alert,
+        ):
             _run_quality_detection(
                 ticker="AAPL",
                 asset_class="equity",
@@ -783,6 +801,7 @@ class TestQualityHookIntegration:
 
 def _mock_ib_instance(ticker_bars):
     """Create a mock IBClient context manager returning *ticker_bars*."""
+
     def _run(awaitable):
         awaitable.close()
         return ticker_bars
@@ -812,7 +831,9 @@ def _mock_massive_instance(ticker_bars=None):
     mock = MagicMock()
     mock.__enter__ = MagicMock(return_value=mock)
     mock.__exit__ = MagicMock(return_value=False)
-    mock.get_daily_bars.side_effect = lambda ticker, start, end: ticker_bars.get(ticker, [])
+    mock.get_daily_bars.side_effect = lambda ticker, start, end: ticker_bars.get(
+        ticker, []
+    )
     return mock
 
 
@@ -842,20 +863,39 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
             ],
         )
         mock_massive = _mock_massive_instance(
-            {"AAPL": [_make_bar(date="2025-01-03", open=154.0, high=158.0, low=152.0, close=156.0)]}
+            {
+                "AAPL": [
+                    _make_bar(
+                        date="2025-01-03",
+                        open=154.0,
+                        high=158.0,
+                        low=152.0,
+                        close=156.0,
+                    )
+                ]
+            }
         )
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
-            patch("livewire_scripts.daily_update.IBClient", side_effect=AssertionError("IB should not open")),
-            patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
+            patch(
+                "livewire_scripts.daily_update.IBClient",
+                side_effect=AssertionError("IB should not open"),
+            ),
+            patch(
+                "livewire_scripts.daily_update.MassiveClient", return_value=mock_massive
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -870,11 +910,15 @@ class TestMain:
         with BronzeClient(bronze_dir=bronze_dir) as bronze:
             rows = bronze.read_symbol_rows("AAPL")
         assert [row["trade_date"] for row in rows] == ["2025-01-02", "2025-01-03"]
-        mock_massive.get_daily_bars.assert_called_once_with("AAPL", date(2025, 1, 3), date(2025, 1, 3))
+        mock_massive.get_daily_bars.assert_called_once_with(
+            "AAPL", date(2025, 1, 3), date(2025, 1, 3)
+        )
 
     @pytest.mark.integration
     def test_massive_source_can_limit_to_explicit_tickers(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "massive", "--tickers", "AAPL"])
+        monkeypatch.setattr(
+            "sys.argv", ["daily_update.py", "--source", "massive", "--tickers", "AAPL"]
+        )
         bronze_dir = tmp_path / "bronze"
         for symbol in ("AAPL", "MSFT"):
             _seed_bronze(
@@ -884,19 +928,35 @@ class TestMain:
                     {
                         "trade_date": "2025-01-02",
                         "symbol_id": 1,
-                        "open": 150.0, "high": 155.0, "low": 149.0,
-                        "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                        "open": 150.0,
+                        "high": 155.0,
+                        "low": 149.0,
+                        "close": 153.0,
+                        "adj_close": 153.0,
+                        "volume": 1000000,
                     }
                 ],
             )
         mock_massive = _mock_massive_instance(
-            {"AAPL": [_make_bar(date="2025-01-03", open=154.0, high=158.0, low=152.0, close=156.0)]}
+            {
+                "AAPL": [
+                    _make_bar(
+                        date="2025-01-03",
+                        open=154.0,
+                        high=158.0,
+                        low=152.0,
+                        close=156.0,
+                    )
+                ]
+            }
         )
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
-            patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
+            patch(
+                "livewire_scripts.daily_update.MassiveClient", return_value=mock_massive
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -909,21 +969,42 @@ class TestMain:
             assert main() == 0
 
         assert mock_massive.get_daily_bars.call_count == 1
-        mock_massive.get_daily_bars.assert_called_once_with("AAPL", date(2025, 1, 3), date(2025, 1, 3))
+        mock_massive.get_daily_bars.assert_called_once_with(
+            "AAPL", date(2025, 1, 3), date(2025, 1, 3)
+        )
 
     @pytest.mark.integration
-    def test_massive_source_can_recover_explicit_ticker_missing_bronze(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "massive", "--tickers", "AAPL"])
+    def test_massive_source_can_recover_explicit_ticker_missing_bronze(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "sys.argv", ["daily_update.py", "--source", "massive", "--tickers", "AAPL"]
+        )
         bronze_dir = tmp_path / "bronze"
         mock_massive = _mock_massive_instance(
-            {"AAPL": [_make_bar(date="2025-01-03", open=154.0, high=158.0, low=152.0, close=156.0)]}
+            {
+                "AAPL": [
+                    _make_bar(
+                        date="2025-01-03",
+                        open=154.0,
+                        high=158.0,
+                        low=152.0,
+                        close=156.0,
+                    )
+                ]
+            }
         )
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.previous_trading_day", return_value=date(2025, 1, 2)),
+            patch(
+                "livewire_scripts.daily_update.previous_trading_day",
+                return_value=date(2025, 1, 2),
+            ),
             patch("livewire_scripts.daily_update.date") as mock_date,
-            patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
+            patch(
+                "livewire_scripts.daily_update.MassiveClient", return_value=mock_massive
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -938,7 +1019,9 @@ class TestMain:
         with BronzeClient(bronze_dir=bronze_dir) as bronze:
             rows = bronze.read_symbol_rows("AAPL")
         assert [row["trade_date"] for row in rows] == ["2025-01-03"]
-        mock_massive.get_daily_bars.assert_called_once_with("AAPL", date(2025, 1, 3), date(2025, 1, 3))
+        mock_massive.get_daily_bars.assert_called_once_with(
+            "AAPL", date(2025, 1, 3), date(2025, 1, 3)
+        )
 
     @pytest.mark.integration
     def test_massive_source_returns_failure_when_no_bars(self, tmp_path, monkeypatch):
@@ -951,8 +1034,12 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
             ],
         )
@@ -961,7 +1048,9 @@ class TestMain:
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
-            patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
+            patch(
+                "livewire_scripts.daily_update.MassiveClient", return_value=mock_massive
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -974,7 +1063,9 @@ class TestMain:
             assert main() == 1
 
     @pytest.mark.integration
-    def test_massive_source_reports_remaining_missing_dates(self, tmp_path, monkeypatch):
+    def test_massive_source_reports_remaining_missing_dates(
+        self, tmp_path, monkeypatch
+    ):
         monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "massive"])
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
@@ -984,19 +1075,35 @@ class TestMain:
                 {
                     "trade_date": "2025-01-01",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
             ],
         )
         mock_massive = _mock_massive_instance(
-            {"AAPL": [_make_bar(date="2025-01-02", open=154.0, high=158.0, low=152.0, close=156.0)]}
+            {
+                "AAPL": [
+                    _make_bar(
+                        date="2025-01-02",
+                        open=154.0,
+                        high=158.0,
+                        low=152.0,
+                        close=156.0,
+                    )
+                ]
+            }
         )
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
-            patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
+            patch(
+                "livewire_scripts.daily_update.MassiveClient", return_value=mock_massive
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -1040,7 +1147,9 @@ class TestMain:
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
-            patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
+            patch(
+                "livewire_scripts.daily_update.MassiveClient", return_value=mock_massive
+            ),
             patch("livewire_scripts.daily_update.BronzeClient", CompatStorage),
         ):
             mock_date.today.return_value = date(2025, 1, 3)
@@ -1051,11 +1160,20 @@ class TestMain:
 
     @pytest.mark.integration
     def test_massive_source_is_equity_only(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "massive", "--asset-class", "futures"])
+        monkeypatch.setattr(
+            "sys.argv",
+            ["daily_update.py", "--source", "massive", "--asset-class", "futures"],
+        )
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.MassiveClient", side_effect=AssertionError("Massive should not open")),
-            patch("livewire_scripts.daily_update.IBClient", side_effect=AssertionError("IB should not open")),
+            patch(
+                "livewire_scripts.daily_update.MassiveClient",
+                side_effect=AssertionError("Massive should not open"),
+            ),
+            patch(
+                "livewire_scripts.daily_update.IBClient",
+                side_effect=AssertionError("IB should not open"),
+            ),
         ):
             assert main() == 2
 
@@ -1071,14 +1189,28 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
             ],
         )
         mock_ib = _mock_ib_instance({"AAPL": []})
         mock_massive = _mock_massive_instance(
-            {"AAPL": [_make_bar(date="2025-01-03", open=154.0, high=158.0, low=152.0, close=156.0)]}
+            {
+                "AAPL": [
+                    _make_bar(
+                        date="2025-01-03",
+                        open=154.0,
+                        high=158.0,
+                        low=152.0,
+                        close=156.0,
+                    )
+                ]
+            }
         )
         mock_fallback = _mock_fallback_instance(
             {
@@ -1098,8 +1230,13 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.MassiveClient", return_value=mock_massive
+            ),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -1117,7 +1254,9 @@ class TestMain:
         assert rows[-1]["close"] == 156.0
 
     @pytest.mark.integration
-    def test_quality_hook_receives_massive_reference_source(self, tmp_path, monkeypatch):
+    def test_quality_hook_receives_massive_reference_source(
+        self, tmp_path, monkeypatch
+    ):
         monkeypatch.setattr("sys.argv", ["daily_update.py"])
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
@@ -1127,8 +1266,12 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
             ],
         )
@@ -1140,9 +1283,16 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
-            patch("livewire_scripts.daily_update._run_quality_detection") as quality_mock,
+            patch(
+                "livewire_scripts.daily_update.MassiveClient", return_value=mock_massive
+            ),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
+            patch(
+                "livewire_scripts.daily_update._run_quality_detection"
+            ) as quality_mock,
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -1174,7 +1324,10 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=False),
-            patch("livewire_scripts.daily_update.previous_trading_day", return_value=date(2025, 1, 3)),
+            patch(
+                "livewire_scripts.daily_update.previous_trading_day",
+                return_value=date(2025, 1, 3),
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
@@ -1262,8 +1415,12 @@ class TestMain:
                 {
                     "trade_date": "2025-01-03",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
             ],
         )
@@ -1283,7 +1440,9 @@ class TestMain:
             mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
-        printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
+        printed = "\n".join(
+            str(call.args[0]) for call in print_mock.call_args_list if call.args
+        )
         assert "target_date=2025-01-03" in printed
         assert "All tickers up to date." in printed
 
@@ -1303,8 +1462,12 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
             ],
         )
@@ -1323,7 +1486,10 @@ class TestMain:
         with (
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -1351,15 +1517,29 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
-            ]
+            ],
         )
 
         today = date(2025, 1, 3)
         mock_ib = _mock_ib_instance(
-            {"AAPL": [_make_bar(date="2025-01-03", open=154.0, high=158.0, low=152.0, close=156.0)]}
+            {
+                "AAPL": [
+                    _make_bar(
+                        date="2025-01-03",
+                        open=154.0,
+                        high=158.0,
+                        low=152.0,
+                        close=156.0,
+                    )
+                ]
+            }
         )
         mock_fallback = _mock_fallback_instance()
 
@@ -1367,7 +1547,10 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -1385,8 +1568,11 @@ class TestMain:
         assert [row["trade_date"] for row in rows] == ["2025-01-02", "2025-01-03"]
 
     @pytest.mark.integration
-    def test_main_calls_write_ticker_parquet_for_compat_storage(self, tmp_path, monkeypatch):
+    def test_main_calls_write_ticker_parquet_for_compat_storage(
+        self, tmp_path, monkeypatch
+    ):
         """Compatibility storage clients still receive the legacy parquet write hook."""
+
         class CompatStorage:
             def __init__(self):
                 self.write_calls = []
@@ -1419,7 +1605,10 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch("livewire_scripts.daily_update.StorageClient", lambda **kw: storage),
             patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path),
         ):
@@ -1457,7 +1646,18 @@ class TestMain:
 
         today = date(2025, 1, 3)
         mock_ib = _mock_ib_instance(
-            {"USDEUR": [_make_bar(date="2025-01-03", open=1.25, high=1.30, low=1.20, close=1.28, volume=-1)]}
+            {
+                "USDEUR": [
+                    _make_bar(
+                        date="2025-01-03",
+                        open=1.25,
+                        high=1.30,
+                        low=1.20,
+                        close=1.28,
+                        volume=-1,
+                    )
+                ]
+            }
         )
         mock_fallback = _mock_fallback_instance()
 
@@ -1465,10 +1665,15 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
-                lambda **kw: BronzeClient(bronze_dir=bronze_dir, asset_class=kw.get("asset_class", "fx")),
+                lambda **kw: BronzeClient(
+                    bronze_dir=bronze_dir, asset_class=kw.get("asset_class", "fx")
+                ),
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
@@ -1496,10 +1701,14 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
-            ]
+            ],
         )
 
         today = date(2025, 1, 3)
@@ -1513,7 +1722,10 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -1542,10 +1754,14 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
-            ]
+            ],
         )
 
         today = date(2025, 1, 3)
@@ -1556,7 +1772,10 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -1585,10 +1804,14 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
-            ]
+            ],
         )
 
         today = date(2025, 1, 3)
@@ -1611,7 +1834,10 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -1641,10 +1867,14 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
-            ]
+            ],
         )
 
         today = date(2025, 1, 3)
@@ -1657,7 +1887,10 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -1686,10 +1919,14 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
-            ]
+            ],
         )
 
         today = date(2025, 1, 3)
@@ -1712,7 +1949,10 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -1729,7 +1969,9 @@ class TestMain:
         assert [row["trade_date"] for row in rows] == ["2025-01-02", "2025-01-03"]
 
     @pytest.mark.integration
-    def test_fallback_fills_only_missing_dates_after_partial_ib_recovery(self, tmp_path, monkeypatch):
+    def test_fallback_fills_only_missing_dates_after_partial_ib_recovery(
+        self, tmp_path, monkeypatch
+    ):
         """Fallback complements IB when a multi-day gap is only partially recovered."""
         monkeypatch.setattr("sys.argv", ["daily_update.py"])
         bronze_dir = tmp_path / "bronze"
@@ -1740,14 +1982,20 @@ class TestMain:
                 {
                     "trade_date": "2025-01-01",
                     "symbol_id": 1,
-                    "open": 149.0, "high": 151.0, "low": 148.0,
-                    "close": 150.0, "adj_close": 150.0, "volume": 1000000,
+                    "open": 149.0,
+                    "high": 151.0,
+                    "low": 148.0,
+                    "close": 150.0,
+                    "adj_close": 150.0,
+                    "volume": 1000000,
                 }
-            ]
+            ],
         )
 
         today = date(2025, 1, 3)
-        mock_ib = _mock_ib_instance({"AAPL": [_make_bar(date="2025-01-02", close=153.0)]})
+        mock_ib = _mock_ib_instance(
+            {"AAPL": [_make_bar(date="2025-01-02", close=153.0)]}
+        )
         mock_fallback = _mock_fallback_instance(
             {
                 "2025-01-03": SimpleNamespace(
@@ -1766,7 +2014,10 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -1787,7 +2038,9 @@ class TestMain:
         ]
 
     @pytest.mark.integration
-    def test_partial_fallback_leaves_symbol_failed_when_target_still_missing(self, tmp_path, monkeypatch):
+    def test_partial_fallback_leaves_symbol_failed_when_target_still_missing(
+        self, tmp_path, monkeypatch
+    ):
         """main() publishes what it can but fails the ticker if dates still remain unresolved."""
         monkeypatch.setattr("sys.argv", ["daily_update.py"])
         bronze_dir = tmp_path / "bronze"
@@ -1798,10 +2051,14 @@ class TestMain:
                 {
                     "trade_date": "2025-01-01",
                     "symbol_id": 1,
-                    "open": 149.0, "high": 151.0, "low": 148.0,
-                    "close": 150.0, "adj_close": 150.0, "volume": 1000000,
+                    "open": 149.0,
+                    "high": 151.0,
+                    "low": 148.0,
+                    "close": 150.0,
+                    "adj_close": 150.0,
+                    "volume": 1000000,
                 }
-            ]
+            ],
         )
 
         today = date(2025, 1, 3)
@@ -1824,7 +2081,10 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -1862,8 +2122,12 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
             ],
         )
@@ -1874,8 +2138,12 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 2,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
             ],
         )
@@ -1914,10 +2182,14 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
-            ]
+            ],
         )
 
         today = date(2025, 1, 3)
@@ -1938,9 +2210,7 @@ class TestMain:
     @pytest.mark.integration
     def test_batching(self, tmp_path, monkeypatch):
         """main() splits tickers into batches."""
-        monkeypatch.setattr(
-            "sys.argv", ["daily_update.py", "--batch-size", "1"]
-        )
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--batch-size", "1"])
 
         bronze_dir = tmp_path / "bronze"
         for idx, sym in enumerate(["AAPL", "MSFT"], start=1):
@@ -1951,8 +2221,12 @@ class TestMain:
                     {
                         "trade_date": "2025-01-02",
                         "symbol_id": idx,
-                        "open": 150.0, "high": 155.0, "low": 149.0,
-                        "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                        "open": 150.0,
+                        "high": 155.0,
+                        "low": 149.0,
+                        "close": 153.0,
+                        "adj_close": 153.0,
+                        "volume": 1000000,
                     }
                 ],
             )
@@ -1970,7 +2244,10 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -1997,15 +2274,21 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
-            ]
+            ],
         )
 
         today = date(2025, 1, 3)
         # Mix of good and bad bars
-        good_bar = _make_bar(date="2025-01-03", open=154.0, high=158.0, low=152.0, close=156.0)
+        good_bar = _make_bar(
+            date="2025-01-03", open=154.0, high=158.0, low=152.0, close=156.0
+        )
         bad_bar = _make_bar(date="2025-01-06", high=1.0, low=999.0)  # bad OHLC
         mock_ib = _mock_ib_instance({"AAPL": [good_bar, bad_bar]})
         mock_fallback = _mock_fallback_instance()
@@ -2014,7 +2297,10 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -2041,15 +2327,30 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 18.0, "high": 20.0, "low": 17.0,
-                    "close": 19.0, "adj_close": 19.0, "volume": 0,
+                    "open": 18.0,
+                    "high": 20.0,
+                    "low": 17.0,
+                    "close": 19.0,
+                    "adj_close": 19.0,
+                    "volume": 0,
                 }
             ],
         )
 
         today = date(2025, 1, 3)
         mock_ib = _mock_ib_instance(
-            {"VIX": [_make_bar(date="2025-01-03", open=19.5, high=21.0, low=18.0, close=20.0, volume=0)]}
+            {
+                "VIX": [
+                    _make_bar(
+                        date="2025-01-03",
+                        open=19.5,
+                        high=21.0,
+                        low=18.0,
+                        close=20.0,
+                        volume=0,
+                    )
+                ]
+            }
         )
         mock_fallback = _mock_fallback_instance()
 
@@ -2057,10 +2358,15 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
-                lambda **kw: BronzeClient(bronze_dir=kw.get("bronze_dir", vol_bronze_dir)),
+                lambda **kw: BronzeClient(
+                    bronze_dir=kw.get("bronze_dir", vol_bronze_dir)
+                ),
             ),
             patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path / "data-lake"),
         ):
@@ -2128,7 +2434,10 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(
@@ -2168,15 +2477,29 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
             ],
         )
 
         today = date(2025, 1, 3)
         mock_ib = _mock_ib_instance(
-            {"AAPL": [_make_bar(date="2025-01-03", open=154.0, high=158.0, low=152.0, close=156.0)]}
+            {
+                "AAPL": [
+                    _make_bar(
+                        date="2025-01-03",
+                        open=154.0,
+                        high=158.0,
+                        low=152.0,
+                        close=156.0,
+                    )
+                ]
+            }
         )
         mock_fallback = _mock_fallback_instance()
 
@@ -2184,7 +2507,10 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -2212,15 +2538,29 @@ class TestMain:
                 {
                     "trade_date": "2025-01-02",
                     "symbol_id": 1,
-                    "open": 150.0, "high": 155.0, "low": 149.0,
-                    "close": 153.0, "adj_close": 153.0, "volume": 1000000,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
                 }
             ],
         )
 
         today = date(2025, 1, 3)
         mock_ib = _mock_ib_instance(
-            {"AAPL": [_make_bar(date="2025-01-03", open=154.0, high=158.0, low=152.0, close=156.0)]}
+            {
+                "AAPL": [
+                    _make_bar(
+                        date="2025-01-03",
+                        open=154.0,
+                        high=158.0,
+                        low=152.0,
+                        close=156.0,
+                    )
+                ]
+            }
         )
         mock_fallback = _mock_fallback_instance()
 
@@ -2228,7 +2568,10 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update.date") as mock_date,
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
-            patch("livewire_scripts.daily_update.FallbackClient", return_value=mock_fallback),
+            patch(
+                "livewire_scripts.daily_update.FallbackClient",
+                return_value=mock_fallback,
+            ),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -2294,7 +2637,6 @@ from zoneinfo import ZoneInfo
 
 from livewire_scripts.daily_update import validate_intraday_bar
 
-
 _UTC = timezone.utc
 _ET = ZoneInfo("America/New_York")
 
@@ -2302,7 +2644,10 @@ _ET = ZoneInfo("America/New_York")
 class TestValidateIntradayBar:
     def _bar(self, ts):
         from types import SimpleNamespace
-        return SimpleNamespace(bar_timestamp=ts, open=1.0, high=2.0, low=0.5, close=1.5, volume=100)
+
+        return SimpleNamespace(
+            bar_timestamp=ts, open=1.0, high=2.0, low=0.5, close=1.5, volume=100
+        )
 
     def test_valid_5m_bar_at_open(self):
         # 9:30 ET on a Tuesday (April 7, 2026)
@@ -2391,6 +2736,14 @@ class TestValidateIntradayBar:
 
     def test_non_datetime_bar_timestamp_rejected(self):
         from types import SimpleNamespace
-        bar = SimpleNamespace(bar_timestamp="not a datetime", open=1.0, high=2.0, low=0.5, close=1.5, volume=100)
+
+        bar = SimpleNamespace(
+            bar_timestamp="not a datetime",
+            open=1.0,
+            high=2.0,
+            low=0.5,
+            close=1.5,
+            volume=100,
+        )
         issues = validate_intraday_bar(bar, "AAPL", "5m")
         assert any("must be datetime" in i for i in issues)

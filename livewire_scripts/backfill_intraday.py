@@ -34,6 +34,8 @@ if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
 
 from rich.console import Console
 
+from clients.ingestion_common import load_preset
+from clients.ingestion_common import make_contract as _make_contract
 from clients.intraday_bronze_client import (
     INTRADAY_IB_BAR_SIZE,
     INTRADAY_TIMEFRAMES,
@@ -43,17 +45,18 @@ from clients.massive_client import MassiveClient
 from clients.quality_detector import _normalize_bars_for_detection, detect_all
 from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
 from livewire_scripts.daily_update import (
-    _make_contract,
     is_trading_day,
     session_close_time,
     validate_intraday_bar,
 )
-from livewire_scripts.fetch_ib_historical import compute_intraday_chunks, load_preset
+from livewire_scripts.fetch_ib_historical import compute_intraday_chunks
 
 log = logging.getLogger("backfill_intraday")
 console = Console()
 
-_WAREHOUSE_DIR = Path(os.environ.get("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
+_WAREHOUSE_DIR = Path(
+    os.environ.get("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))
+)
 _DATA_LAKE = _WAREHOUSE_DIR / "data-lake"
 _LOG_DIR = _WAREHOUSE_DIR / "logs"
 _CURSOR_DIR = _WAREHOUSE_DIR / "cursors"
@@ -61,7 +64,7 @@ _CURSOR_DIR = _WAREHOUSE_DIR / "cursors"
 # IB error codes that mean "skip ticker, do not retry"
 _NO_DATA_ERRORS = {162, 200}
 
-_DEFAULT_YEARS = {"1m": 5, "1h": 2, "5m": 1}
+_DEFAULT_YEARS = {"1m": 5, "1h": 5, "5m": 5, "30m": 5}
 _ET = ZoneInfo("America/New_York")
 _UTC = timezone.utc
 
@@ -163,14 +166,20 @@ def massive_intraday_bar_to_row(bar: Any, symbol_id: int) -> dict[str, Any]:
 
 def _is_regular_trading_timestamp(ts: datetime) -> bool:
     """Return True when a UTC timestamp falls inside the U.S. equity RTH window."""
-    if ts.tzinfo is None or ts.tzinfo.utcoffset(ts) is None or ts.utcoffset() != timedelta(0):
+    if (
+        ts.tzinfo is None
+        or ts.tzinfo.utcoffset(ts) is None
+        or ts.utcoffset() != timedelta(0)
+    ):
         return False
     et = ts.astimezone(_ET)
     if not is_trading_day(et.date()):
         return False
     rth_start = et.replace(hour=9, minute=30, second=0, microsecond=0)
     close_t = session_close_time(et.date())
-    rth_end = et.replace(hour=close_t.hour, minute=close_t.minute, second=0, microsecond=0)
+    rth_end = et.replace(
+        hour=close_t.hour, minute=close_t.minute, second=0, microsecond=0
+    )
     return rth_start <= et < rth_end
 
 
@@ -229,9 +238,7 @@ def _intraday_backfill_alerts_enabled() -> bool:
     }
 
 
-def should_skip_existing(
-    bronze: IntradayBronzeClient, ticker: str, years: int
-) -> bool:
+def should_skip_existing(bronze: IntradayBronzeClient, ticker: str, years: int) -> bool:
     """Return True if the bronze parquet already covers ``today - years``."""
     rows = bronze.read_symbol_rows(ticker)
     if not rows:
@@ -360,7 +367,9 @@ def backfill_ticker_massive(
             row = massive_intraday_bar_to_row(bar, symbol_id)
             if not _is_regular_trading_timestamp(row["bar_timestamp"]):
                 continue
-            issues = validate_intraday_bar(_BarRow(row["bar_timestamp"]), ticker, timeframe)
+            issues = validate_intraday_bar(
+                _BarRow(row["bar_timestamp"]), ticker, timeframe
+            )
             if issues:
                 outcome.rejected += 1
                 for issue in issues:
@@ -387,11 +396,13 @@ def backfill_ticker_massive(
     return outcome
 
 
-def compute_intraday_chunks_for_days(timeframe: str, days_back: int) -> list[tuple[str, str]]:
+def compute_intraday_chunks_for_days(
+    timeframe: str, days_back: int
+) -> list[tuple[str, str]]:
     """Generate IB chunks for a recent-day intraday catch-up."""
     if days_back < 1:
         raise ValueError("days_back must be >= 1")
-    step_days = {"1m": 1, "5m": 7, "1h": 30}
+    step_days = {"1m": 1, "5m": 7, "30m": 30, "1h": 30}
     if timeframe not in step_days:
         raise ValueError(f"unsupported intraday timeframe: {timeframe!r}")
     chunks = compute_intraday_chunks(timeframe, 1)
@@ -455,24 +466,44 @@ def main() -> None:
     grp.add_argument("--tickers", nargs="+", help="Explicit ticker list")
     grp.add_argument("--preset", type=str, help="Preset JSON path")
     parser.add_argument(
-        "--years", type=int, default=None,
+        "--years",
+        type=int,
+        default=None,
         help="Years of history (default: 2 for 1h, 1 for 5m)",
     )
     parser.add_argument(
-        "--days", type=int, default=None,
+        "--days",
+        type=int,
+        default=None,
         help="Recent calendar days to fetch instead of a full-year backfill",
     )
     parser.add_argument("--dry-run", action="store_true", help="Print plan only")
-    parser.add_argument("--skip-existing", action="store_true",
-                        help="Skip tickers whose bronze covers the requested depth")
-    parser.add_argument("--existing-only", action="store_true",
-                        help="Only process tickers that already have parquet for this timeframe")
-    parser.add_argument("--max-tickers", type=int, default=None,
-                        help="Cap the number of tickers processed this run")
-    parser.add_argument("--max-concurrent", type=int, default=1,
-                        help="Maximum concurrent Massive ticker fetches (default: 1)")
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip tickers whose bronze covers the requested depth",
+    )
+    parser.add_argument(
+        "--existing-only",
+        action="store_true",
+        help="Only process tickers that already have parquet for this timeframe",
+    )
+    parser.add_argument(
+        "--max-tickers",
+        type=int,
+        default=None,
+        help="Cap the number of tickers processed this run",
+    )
+    parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=1,
+        help="Maximum concurrent Massive ticker fetches (default: 1)",
+    )
     parser.add_argument("--host", default=os.getenv("MDW_IB_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.getenv("MDW_IB_PORT", "4001")))
+    parser.add_argument(
+        "--port", type=int, default=int(os.getenv("MDW_IB_PORT", "4001"))
+    )
     args = parser.parse_args()
 
     years = args.years if args.years is not None else _DEFAULT_YEARS[args.timeframe]
@@ -489,7 +520,9 @@ def main() -> None:
     # When --tickers is passed explicitly, the operator knows what they want;
     # always refetch and skip cursor bookkeeping.
     use_cursor = bool(args.preset)
-    completed: set[str] = load_cursor(args.timeframe, cursor_name) if use_cursor else set()
+    completed: set[str] = (
+        load_cursor(args.timeframe, cursor_name) if use_cursor else set()
+    )
 
     pending = [t for t in tickers if t not in completed]
     if args.max_tickers is not None:
@@ -526,7 +559,9 @@ def main() -> None:
         return
 
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = _LOG_DIR / f"backfill_intraday_{args.timeframe}_{date.today():%Y-%m-%d}.log"
+    log_path = (
+        _LOG_DIR / f"backfill_intraday_{args.timeframe}_{date.today():%Y-%m-%d}.log"
+    )
     log_handler = logging.FileHandler(log_path)
     log_handler.setLevel(logging.INFO)
     log.addHandler(log_handler)
@@ -552,8 +587,11 @@ def main() -> None:
         total_rejected += outcome.rejected
         log.info(
             "%s: chunks=%d inserted=%d rejected=%d errors=%d",
-            ticker, outcome.chunks_fetched, outcome.bars_inserted,
-            outcome.rejected, len(outcome.errors),
+            ticker,
+            outcome.chunks_fetched,
+            outcome.bars_inserted,
+            outcome.rejected,
+            len(outcome.errors),
         )
         if outcome.errors:
             failed.append(ticker)
@@ -571,6 +609,7 @@ def main() -> None:
             save_cursor(args.timeframe, cursor_name, completed)
 
     if args.source == "massive" and args.max_concurrent > 1:
+
         def fetch_massive(ticker: str) -> tuple[str, TickerOutcome]:
             with MassiveClient() as provider:
                 outcome = backfill_ticker_massive(
@@ -584,7 +623,9 @@ def main() -> None:
             return ticker, outcome
 
         with ThreadPoolExecutor(max_workers=args.max_concurrent) as executor:
-            futures = {executor.submit(fetch_massive, ticker): ticker for ticker in pending}
+            futures = {
+                executor.submit(fetch_massive, ticker): ticker for ticker in pending
+            }
             for future in as_completed(futures):
                 ticker = futures[future]
                 try:
@@ -607,19 +648,26 @@ def main() -> None:
     else:
         # Lazy IB import keeps Massive-only and tests free of the dependency until needed.
         from clients.ib_client import IBClient  # noqa: PLC0415
+
         provider_context = IBClient()
         with provider_context as provider:
             provider.connect(host=args.host, port=args.port)
             for ticker in pending:
                 if args.skip_existing and should_skip_existing(bronze, ticker, years):
-                    console.print(f"  [dim]{ticker}: bronze already covers {years}y — skip[/dim]")
+                    console.print(
+                        f"  [dim]{ticker}: bronze already covers {years}y — skip[/dim]"
+                    )
                     if use_cursor:
                         completed.add(ticker)
                         save_cursor(args.timeframe, cursor_name, completed)
                     continue
 
                 outcome = backfill_ticker(
-                    ticker, args.timeframe, years, provider, bronze,
+                    ticker,
+                    args.timeframe,
+                    years,
+                    provider,
+                    bronze,
                     asset_class=args.asset_class,
                     lookback_days=args.days,
                 )

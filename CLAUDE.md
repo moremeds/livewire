@@ -9,17 +9,19 @@ Two directory trees: this **git repo** and the **data warehouse** at `~/market-w
 ```
 livewire/                           # Git repo
 ├── clients/
-│   ├── __init__.py                 # Exports BronzeClient, DailyBarFallbackClient, IBClient, PostgresClient
+│   ├── __init__.py                 # Exports BronzeClient, DailyBarFallbackClient, IBClient, PostgresClient, MassiveFlatfileClient, aggregate_bars
 │   ├── bronze_client.py            # Canonical per-ticker bronze parquet client
 │   ├── daily_bar_fallback.py       # Public daily-bar fallback chain for U.S. equities/ETFs
 │   ├── ib_client.py                # Interactive Brokers API client (ib_async)
 │   ├── historical_provider.py       # HistoricalProvider abstraction (IBProvider, contract spec helpers)
+│   ├── massive_flatfile_client.py  # Polygon S3 flat file bulk download client
+│   ├── timeframe_aggregator.py     # Lossless OHLCV rollup (1m→5m/30m/1h, 30m→1h)
 │   ├── uw_client.py                # Unusual Whales REST API client (kept, not used for historical)
 │   ├── postgres_client.py          # Postgres analytical publish client
 │   └── postgres_schema.py          # Postgres md.* schema definitions
 ├── presets/
 │   ├── volatility.json             # CBOE Volatility Indices (VIX, VVIX, etc.)
-│   ├── volatility-intraday.json    # VIX/SPX IB-backed intraday index bars
+│   ├── volatility-intraday.json    # VIX/SPX/NDX/RUT/VXN/RVX IB-backed intraday (30m, 1h derived)
 │   ├── futures-index.json          # CME/CBOT Index Futures (ES, NQ, RTY, YM)
 │   ├── futures-energy.json         # NYMEX Energy Futures (CL, NG)
 │   ├── futures-metals.json         # COMEX Metals Futures (GC, SI)
@@ -173,6 +175,10 @@ Reliability foundation environment variables:
 - `MDW_UNDELIVERED_DIR` (default `~/market-warehouse/logs/quality_alerts_undelivered/`): where failed per-flag alert HTML bodies are preserved.
 - `MDW_LOG_DIR` (default `~/market-warehouse/logs/`): where `scripts/livewire_quality.py report --email` writes `quality_summary_YYYY-MM-DD.marker`.
 
+Polygon S3 flat file environment variables:
+- `MASSIVE_S3_ACCESS_KEY`: Polygon S3 access key for flat file downloads (from Polygon dashboard, separate from REST API key).
+- `MASSIVE_S3_SECRET_KEY`: Polygon S3 secret key for flat file downloads.
+
 Postgres analytical publish environment variables:
 - `MDW_POSTGRES_DSN`: Postgres DSN for `scripts/livewire_store.py rebuild-postgres` and `scripts/livewire_store.py smoke-postgres`.
 - `MDW_POSTGRES_SCHEMA` (default `md`): target analytical schema.
@@ -195,16 +201,19 @@ Current fetch behavior:
 - Uses separate cursor JSON: `cursor_backfill_{name}.json`
 - Skips tickers not in bronze parquet (use normal fetch first)
 
-### Auto-restarting runner
+### Orchestrated runners
 
 ```bash
-python scripts/livewire_ingest.py backfill-all   # Runs default warehouse build
-python scripts/livewire_ingest.py daily-backfill # Runs lightweight daily catch-up
+python scripts/livewire_ingest.py backfill-all   # Full warehouse build (Python orchestrator)
+python scripts/livewire_ingest.py daily-backfill # Lightweight daily catch-up (Python orchestrator)
+# Or via unified CLI:
+python scripts/livewire.py backfill --full       # Same as backfill-all
+python scripts/livewire.py sync --full           # Same as daily-backfill
 ```
 
-`backfill-all` is the default warehouse build, not just daily equity. It runs equity daily seed/backfill for `sp500`, `ndx100`, and `r2k`; the older-history backfill phase remains IB-backed through `--source auto`. It then syncs FRED Treasury yield rates, then runs Massive equity intraday (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed `VIX`/`SPX` intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility.
+`backfill-all` (`livewire_scripts/backfill_runner.py`) is the default warehouse build. It runs equity daily seed/backfill for `sp500`, `ndx100`, and `r2k`; the older-history backfill phase remains IB-backed through `--source auto`. It then syncs FRED Treasury yield rates, then runs Massive equity intraday (`1m`, `5m`, `1h`, 5 years) in parallel with the volatility/index lane: CBOE daily volatility sync followed by IB-backed `VIX`/`SPX` intraday (`5m`, `1h`). If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables for equity and volatility. Features activity-based stall detection and retry-until-done logic.
 
-`daily-backfill` is the routine catch-up runner. It uses Massive for recent equity daily gaps and recent-window equity intraday (`1m`, `5m`, `1h`; default 7 calendar days via `MDW_DAILY_BACKFILL_INTRADAY_DAYS`) across the full `sp500` + `ndx100` + `r2k` union, so it forward-populates intraday coverage instead of only maintaining already-existing symbols. Massive intraday concurrency defaults to `MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT=20`. Side lanes stay on their existing sources: FRED rates, CBOE daily volatility, IB `VIX`/`SPX` volatility intraday, and optional Postgres rebuild.
+`daily-backfill` (`livewire_scripts/sync_runner.py`) is the routine catch-up runner. It uses Massive for recent equity daily gaps and recent-window equity intraday (`1m`, `5m`, `1h`; default 7 calendar days via `MDW_DAILY_BACKFILL_INTRADAY_DAYS`) across the full `sp500` + `ndx100` + `r2k` union, so it forward-populates intraday coverage instead of only maintaining already-existing symbols. Massive intraday concurrency defaults to `MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT=20`. Side lanes stay on their existing sources: FRED rates, CBOE daily volatility, IB `VIX`/`SPX` volatility intraday, and optional Postgres rebuild.
 
 Output: per-ticker bronze Parquet at `data-lake/bronze/asset_class=equity/symbol=<ticker>/{1d,1m,5m,1h}.parquet` and volatility/index bronze Parquet under `data-lake/bronze/asset_class=volatility/symbol=<ticker>/`. Postgres is rebuilt only when `MDW_POSTGRES_DSN` is configured.
 
@@ -304,7 +313,7 @@ Views are `summary`, `flap`, and `quality`; `--source` accepts `all`, `ib`, `uw`
 
 ### Intraday backfill (1m / 1h / 5m)
 
-`scripts/livewire_ingest.py intraday-backfill` is the canonical entry point for full historical intraday backfills. The default equity warehouse intraday build is Massive `1m` for 5 years. Non-equity intraday data remains IB-backed; volatility intraday is scoped to `VIX` and `SPX` through `presets/volatility-intraday.json`. `scripts/livewire_ingest.py historical` is daily-only and `scripts/livewire_ingest.py intraday-status` is a session-state classifier. Reuses `compute_intraday_chunks` for IB chunks (1 D for 1m, 1 W for 5m, 1 M for 1h) and `validate_intraday_bar`; rejected bars are logged but never written to bronze.
+`scripts/livewire_ingest.py intraday-backfill` is the canonical entry point for full historical intraday backfills. The default equity warehouse intraday build is Massive `1m` for 5 years. Non-equity intraday data remains IB-backed; volatility intraday is scoped to `VIX`, `SPX`, `NDX`, `RUT`, `VXN`, and `RVX` through `presets/volatility-intraday.json`. IB fetches 30m bars only; 1h is derived locally via lossless OHLCV aggregation from 30m. `scripts/livewire_ingest.py historical` is daily-only and `scripts/livewire_ingest.py intraday-status` is a session-state classifier. Reuses `compute_intraday_chunks` for IB chunks (1 D for 1m, 1 W for 5m, 1 M for 1h) and `validate_intraday_bar`; rejected bars are logged but never written to bronze.
 
 ```bash
 source ~/market-warehouse/.venv/bin/activate
@@ -327,6 +336,19 @@ python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --preset pres
 - `--skip-existing` consults `min(bar_timestamp)` in the existing per-ticker parquet and skips if it already covers the requested depth.
 - IB BarData with `formatDate=1` returns naive ET datetimes; the script attaches `America/New_York` and converts to UTC before validation/merge.
 - Logs to `~/market-warehouse/logs/backfill_intraday_{1m,1h,5m}_YYYY-MM-DD.log`.
+
+### S3 flat file ingestion (equity intraday)
+
+`scripts/livewire_ingest.py flatfile-ingest` downloads Polygon S3 minute aggregate flat files and derives all intraday timeframes locally. This is dramatically faster than REST API calls — one S3 download per trading day covers ALL tickers.
+
+```bash
+source ~/market-warehouse/.venv/bin/activate
+python scripts/livewire_ingest.py flatfile-ingest --preset presets/sp500.json --years 5
+python scripts/livewire_ingest.py flatfile-ingest --tickers AAPL MSFT --years 2
+python scripts/livewire_ingest.py flatfile-ingest --preset presets/sp500.json --years 5 --dry-run
+```
+
+Requires `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY` environment variables (separate from `MASSIVE_API_KEY`). Downloads per-day gzipped CSVs from `s3://flatfiles/us_stocks_sip/minute_aggs_v1/`, writes 1m bronze parquet, then derives 5m/30m/1h via lossless OHLCV aggregation. Downloaded CSV temp files are deleted after successful parse. The orchestrators (`backfill-all`, `daily-backfill`) auto-detect S3 credentials and prefer flat files over REST when available. The unified CLI also supports `livewire backfill --source s3`.
 
 ### Coverage tracking + auto-recovery
 
