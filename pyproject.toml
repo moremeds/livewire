@@ -2,6 +2,25 @@
 name = "livewire"
 version = "0.2.0"
 requires-python = ">=3.13"
+dependencies = [
+    "boto3>=1.42",
+    "httpx>=0.28",
+    "ib-async>=2.1",
+    "lxml[cssselect]>=6.1",
+    "psycopg[binary]>=3.3",
+    "pyarrow>=23.0",
+    "requests>=2.33",
+    "rich>=14.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+    "pytest-cov>=7.0",
+    "responses>=0.26",
+    "ruff>=0.12",
+    "pyright>=1.1",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

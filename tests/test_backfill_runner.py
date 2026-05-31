@@ -836,6 +836,7 @@ class TestGapAwareCompleted:
                 preset_path=None,
                 warehouse_dir=tmp_path,
                 bronze_dir=bronze_dir,
+                as_of=date(2026, 5, 29),
             )
         assert result == 2
 
@@ -889,6 +890,7 @@ class TestGapAwareCompleted:
                 preset_path=None,
                 warehouse_dir=tmp_path,
                 bronze_dir=bronze_dir,
+                as_of=date(2026, 5, 29),
             )
         assert result == 1
 
@@ -950,6 +952,7 @@ class TestGapAwareCompleted:
                 preset_path=str(preset_path),
                 warehouse_dir=tmp_path,
                 bronze_dir=bronze_dir,
+                as_of=date(2026, 5, 29),
             )
         assert result == 2
 
@@ -1002,6 +1005,7 @@ class TestGapAwareCompleted:
                 preset_path=None,
                 warehouse_dir=tmp_path,
                 bronze_dir=bronze_dir,
+                as_of=date(2026, 5, 29),
             )
         # MSFT has no earliest_available so it's skipped; AAPL is complete
         assert result == 2

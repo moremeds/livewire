@@ -17,6 +17,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
+from datetime import date
 from pathlib import Path
 from typing import Sequence
 
@@ -103,6 +104,7 @@ def gap_aware_completed(
     preset_path: str | None,
     warehouse_dir: Path | None = None,
     bronze_dir: Path | None = None,
+    as_of: date | None = None,
 ) -> int:
     """Count completed tickers, cross-checking with gap analysis when cursor is full.
 
@@ -148,7 +150,7 @@ def gap_aware_completed(
                 n_no_bounds += 1
                 continue
             bronze_dates = set(all_dates.get(ticker, []))
-            report = compute_gaps(ticker, earliest, bronze_dates)
+            report = compute_gaps(ticker, earliest, bronze_dates, as_of=as_of)
             if not report.complete:
                 n_with_gaps += 1
 
