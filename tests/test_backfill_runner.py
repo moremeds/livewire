@@ -952,3 +952,98 @@ class TestGapAwareCompleted:
                 bronze_dir=bronze_dir,
             )
         assert result == 2
+
+    def test_tickers_without_earliest_are_skipped(self, tmp_path):
+        """Tickers in registry but without earliest_available are skipped."""
+        from datetime import date
+
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text(
+            json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}})
+        )
+        registry_path = tmp_path / "registry.json"
+        registry_data = {
+            "version": 1,
+            "updated_at": "2026-05-31T00:00:00",
+            "tickers": {
+                "AAPL": {
+                    "tags": ["sp500"],
+                    "status": "active",
+                    "added_at": "2026-01-01",
+                    "last_verified": "2026-01-01",
+                    "earliest_available": "2026-05-29",
+                },
+                "MSFT": {
+                    "tags": ["sp500"],
+                    "status": "active",
+                    "added_at": "2026-01-01",
+                    "last_verified": "2026-01-01",
+                },
+            },
+            "changelog": [],
+        }
+        registry_path.write_text(json.dumps(registry_data))
+
+        bronze_dir = tmp_path / "data-lake" / "bronze" / "asset_class=equity"
+        bronze_dir.mkdir(parents=True)
+
+        mock_bronze = MagicMock()
+        mock_bronze.get_trade_dates_by_symbol.return_value = {
+            "AAPL": [date(2026, 5, 29)],
+            "MSFT": [date(2026, 5, 29)],
+        }
+        with patch(
+            "clients.bronze_client.BronzeClient",
+            return_value=mock_bronze,
+        ):
+            result = gap_aware_completed(
+                cursor_file,
+                total=2,
+                preset_path=None,
+                warehouse_dir=tmp_path,
+                bronze_dir=bronze_dir,
+            )
+        # MSFT has no earliest_available so it's skipped; AAPL is complete
+        assert result == 2
+
+    def test_exception_falls_back_to_cursor_count(self, tmp_path):
+        """If gap analysis raises, fall back to cursor count."""
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text(
+            json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}})
+        )
+        registry_path = tmp_path / "registry.json"
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "updated_at": "2026-05-31T00:00:00",
+                    "tickers": {
+                        "AAPL": {
+                            "tags": ["sp500"],
+                            "status": "active",
+                            "added_at": "2026-01-01",
+                            "last_verified": "2026-01-01",
+                            "earliest_available": "2026-05-29",
+                        },
+                    },
+                    "changelog": [],
+                }
+            )
+        )
+
+        bronze_dir = tmp_path / "data-lake" / "bronze" / "asset_class=equity"
+        bronze_dir.mkdir(parents=True)
+
+        with patch(
+            "clients.bronze_client.BronzeClient",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = gap_aware_completed(
+                cursor_file,
+                total=2,
+                preset_path=None,
+                warehouse_dir=tmp_path,
+                bronze_dir=bronze_dir,
+            )
+        assert result == 2
