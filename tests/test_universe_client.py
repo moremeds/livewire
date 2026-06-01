@@ -6,7 +6,6 @@ import pytest
 import responses
 
 from clients.universe_client import (
-    TickerStatus,
     UniverseFetchError,
     check_ticker_status,
     check_tickers_bulk,

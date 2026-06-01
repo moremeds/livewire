@@ -1,4 +1,5 @@
 """NYSE trading calendar helpers shared by ingestion and quality checks."""
+
 from __future__ import annotations
 
 from datetime import date, timedelta

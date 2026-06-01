@@ -77,8 +77,7 @@ def _rebuild_equity_timeframes(db: PostgresClient, bronze_dir: Path, timeframe: 
         if _has_parquet(bronze_dir, "1d.parquet"):
             counts = db.replace_equities_from_parquet(bronze_dir, asset_class="equity", venue="SMART")
             console.print(
-                f"[green]Rebuilt[/green] equity daily with "
-                f"{counts['symbols']:,} symbols and {counts['rows']:,} rows"
+                f"[green]Rebuilt[/green] equity daily with {counts['symbols']:,} symbols and {counts['rows']:,} rows"
             )
         else:
             console.print("Skipping 1d: no parquet snapshots found")

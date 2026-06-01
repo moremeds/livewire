@@ -7,7 +7,7 @@ import logging
 import os
 import subprocess
 import sys
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -19,7 +19,6 @@ from rich.console import Console
 
 from clients import BronzeClient
 from clients.intraday_bronze_client import (
-    INTRADAY_PARQUET_FILENAME,
     INTRADAY_TIMEFRAMES,
     IntradayBronzeClient,
 )
@@ -38,9 +37,7 @@ _BAR_SIZE_MINUTES = {"1m": 1, "1h": 60, "5m": 5, "30m": 30}
 log = logging.getLogger(__name__)
 
 console = Console()
-_WAREHOUSE_DIR = Path(
-    os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))
-)
+_WAREHOUSE_DIR = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
 _DATA_LAKE = _WAREHOUSE_DIR / "data-lake"
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -54,9 +51,7 @@ def _resolve_bronze_dir(asset_class: str) -> Path:
     return _DATA_LAKE / "bronze" / f"asset_class={asset_class}"
 
 
-def find_interior_gaps(
-    actual_dates: list[date], asset_class: str = "equity"
-) -> list[date]:
+def find_interior_gaps(actual_dates: list[date], asset_class: str = "equity") -> list[date]:
     """Return trading/weekday dates missing between the min and max of *actual_dates*.
 
     For equity/volatility asset classes the NYSE calendar is used to determine
@@ -146,9 +141,7 @@ def get_all_trade_dates(bronze: BronzeClient) -> dict[str, list[date]]:
     return bronze.get_trade_dates_by_symbol()
 
 
-def generate_expected_intraday_timestamps(
-    trading_days: list[date], timeframe: str
-) -> set[datetime]:
+def generate_expected_intraday_timestamps(trading_days: list[date], timeframe: str) -> set[datetime]:
     """Return the set of expected RTH bar timestamps (UTC) for *trading_days*.
 
     For each trading day:
@@ -172,18 +165,18 @@ def generate_expected_intraday_timestamps(
 
         if timeframe == "1h":
             # First bar: 9:30 (partial 30-min open)
-            expected.add(rth_open.astimezone(timezone.utc))
+            expected.add(rth_open.astimezone(UTC))
             # Subsequent bars on the hour, last bar's start strictly before close
             current = datetime.combine(d, time(10, 0), tzinfo=_ET)
             step = timedelta(hours=1)
             while current + step <= rth_close:
-                expected.add(current.astimezone(timezone.utc))
+                expected.add(current.astimezone(UTC))
                 current += step
         else:  # 1m / 5m
             current = rth_open
             step = timedelta(minutes=_BAR_SIZE_MINUTES[timeframe])
             while current + step <= rth_close:
-                expected.add(current.astimezone(timezone.utc))
+                expected.add(current.astimezone(UTC))
                 current += step
     return expected
 
@@ -203,7 +196,7 @@ def find_intraday_gaps(
     if len(actual_timestamps) < 2:
         return [], []
 
-    actual = {ts.astimezone(timezone.utc) for ts in actual_timestamps}
+    actual = {ts.astimezone(UTC) for ts in actual_timestamps}
     days = sorted({ts.astimezone(_ET).date() for ts in actual})
     expected = generate_expected_intraday_timestamps(days, timeframe)
 
@@ -269,18 +262,13 @@ def report_intraday_health(
                 "halts": len(halts),
             }
             console.print(
-                f"  [red]{symbol}[/red] {timeframe}: "
-                f"{len(missing)} missing bars, {len(halts)} suspected halts"
+                f"  [red]{symbol}[/red] {timeframe}: {len(missing)} missing bars, {len(halts)} suspected halts"
             )
 
     if summary["symbols_scanned"] == 0:
-        console.print(
-            f"[yellow]No symbols found at {timeframe} under {bronze_dir}[/yellow]"
-        )
+        console.print(f"[yellow]No symbols found at {timeframe} under {bronze_dir}[/yellow]")
     elif summary["symbols_with_gaps"] == 0:
-        console.print(
-            f"[green]{summary['symbols_scanned']} symbols clean at {timeframe}[/green]"
-        )
+        console.print(f"[green]{summary['symbols_scanned']} symbols clean at {timeframe}[/green]")
     else:
         console.print(
             f"\n[bold]{summary['symbols_with_gaps']}/{summary['symbols_scanned']} symbols "
@@ -323,9 +311,7 @@ def repair_intraday_window(
         "--port",
         str(port),
     ]
-    console.print(
-        f"[cyan]Repairing {symbol} {timeframe} since {since} ({years}y)[/cyan]"
-    )
+    console.print(f"[cyan]Repairing {symbol} {timeframe} since {since} ({years}y)[/cyan]")
     result = subprocess.run(cmd, check=False)
     return result.returncode
 
@@ -338,10 +324,7 @@ def _send_alert(
     log_path: Path,
 ) -> None:
     """Send an email alert via the Node.js alert script."""
-    error_summary = (
-        f"health_check ({asset_class}): {total_gaps} interior gaps detected, "
-        f"{repaired} repaired."
-    )
+    error_summary = f"health_check ({asset_class}): {total_gaps} interior gaps detected, {repaired} repaired."
     cmd = [
         sys.executable,
         str(_OPS_SCRIPT),
@@ -363,12 +346,8 @@ def _send_alert(
 def main() -> None:
     """CLI entry point for the warehouse health check."""
     parser = argparse.ArgumentParser(description="Livewire health check")
-    parser.add_argument(
-        "--dry-run", action="store_true", help="Report gaps without backfilling"
-    )
-    parser.add_argument(
-        "--force", action="store_true", help="Run even if not a trading day"
-    )
+    parser.add_argument("--dry-run", action="store_true", help="Report gaps without backfilling")
+    parser.add_argument("--force", action="store_true", help="Run even if not a trading day")
     parser.add_argument(
         "--asset-class",
         choices=["equity", "volatility", "futures"],
@@ -406,8 +385,7 @@ def main() -> None:
     parser.add_argument(
         "--symbol",
         type=str,
-        help="Restrict intraday scan to a single symbol (and enable repair when "
-        "combined with --since)",
+        help="Restrict intraday scan to a single symbol (and enable repair when combined with --since)",
     )
     parser.add_argument(
         "--since",
@@ -445,16 +423,12 @@ def main() -> None:
             if rc != 0:
                 console.print(f"[red]Repair subprocess exited with code {rc}[/red]")
         elif args.symbol and not args.since:
-            console.print(
-                "[dim]Report-only: pass --since YYYY-MM-DD to enable repair[/dim]"
-            )
+            console.print("[dim]Report-only: pass --since YYYY-MM-DD to enable repair[/dim]")
         return
 
     # ── Trading day check ─────────────────────────────────────────────
     if not args.force and not is_trading_day(today):
-        console.print(
-            f"[yellow]{today} is not a trading day. Use --force to override.[/yellow]"
-        )
+        console.print(f"[yellow]{today} is not a trading day. Use --force to override.[/yellow]")
         return
 
     asset_class = args.asset_class
@@ -470,9 +444,7 @@ def main() -> None:
         all_dates = get_all_trade_dates(bronze)
 
         if not all_dates:
-            console.print(
-                "[yellow]No tickers found in bronze parquet. Run fetch_ib_historical.py first.[/yellow]"
-            )
+            console.print("[yellow]No tickers found in bronze parquet. Run fetch_ib_historical.py first.[/yellow]")
             return
 
         gaps_by_symbol: dict[str, list[date]] = {}
@@ -505,8 +477,7 @@ def main() -> None:
         # ── Backfill ───────────────────────────────────────────────────
         if asset_class == "volatility":
             console.print(
-                "[yellow]Backfill for volatility not yet implemented. "
-                "Use fetch_cboe_volatility.py instead.[/yellow]"
+                "[yellow]Backfill for volatility not yet implemented. Use fetch_cboe_volatility.py instead.[/yellow]"
             )
             return
 
@@ -521,9 +492,7 @@ def main() -> None:
         repaired = 0
         fallback_repaired = 0
 
-        console.print(
-            f"\n[bold]Backfilling {len(gaps_by_symbol)} symbols via IB...[/bold]"
-        )
+        console.print(f"\n[bold]Backfilling {len(gaps_by_symbol)} symbols via IB...[/bold]")
 
         with IBClient(host=args.host, port=args.port) as ib:
             ib.ib.run(ib.connect())
@@ -561,9 +530,7 @@ def main() -> None:
                         expiry_code = symbol.rsplit("_", 1)[1]
                         expiry_date = f"{expiry_code[:4]}-{expiry_code[4:6]}-01"
                         contract_id = bronze.get_symbol_id(symbol)
-                        rows = bars_to_futures_rows(
-                            valid_bars, contract_id, root_symbol, expiry_date
-                        )
+                        rows = bars_to_futures_rows(valid_bars, contract_id, root_symbol, expiry_date)
                     else:
                         symbol_id = bronze.get_symbol_id(symbol)
                         rows = bars_to_rows(valid_bars, symbol_id)
@@ -573,20 +540,13 @@ def main() -> None:
                 if symbol_rows:
                     inserted = bronze.merge_ticker_rows(symbol, symbol_rows)
                     repaired += inserted
-                    console.print(
-                        f"  [green]{symbol}: +{inserted} bars repaired via IB[/green]"
-                    )
+                    console.print(f"  [green]{symbol}: +{inserted} bars repaired via IB[/green]")
 
                 # Equity fallback for remaining gaps
                 if asset_class == "equity":
                     # Re-check which gaps remain after IB merge
-                    updated_dates = [
-                        date.fromisoformat(r["trade_date"])
-                        for r in bronze.read_symbol_rows(symbol)
-                    ]
-                    remaining = find_interior_gaps(
-                        updated_dates, asset_class=asset_class
-                    )
+                    updated_dates = [date.fromisoformat(r["trade_date"]) for r in bronze.read_symbol_rows(symbol)]
+                    remaining = find_interior_gaps(updated_dates, asset_class=asset_class)
                     remaining_set = set(remaining) & set(gaps)
 
                     if remaining_set:
@@ -595,17 +555,13 @@ def main() -> None:
                         )
 
                         fallback = DailyBarFallbackClient()
-                        fb_bars, _ = fetch_fallback_bars(
-                            symbol, sorted(remaining_set), fallback
-                        )
+                        fb_bars, _ = fetch_fallback_bars(symbol, sorted(remaining_set), fallback)
                         if fb_bars:
                             symbol_id = bronze.get_symbol_id(symbol)
                             fb_rows = bars_to_rows(fb_bars, symbol_id)
                             fb_inserted = bronze.merge_ticker_rows(symbol, fb_rows)
                             fallback_repaired += fb_inserted
-                            console.print(
-                                f"  [cyan]{symbol}: +{fb_inserted} bars repaired via fallback[/cyan]"
-                            )
+                            console.print(f"  [cyan]{symbol}: +{fb_inserted} bars repaired via fallback[/cyan]")
 
         total_repaired = repaired + fallback_repaired
         console.print(
@@ -616,8 +572,7 @@ def main() -> None:
         # Log to file
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(
-                f"{today} health_check: asset_class={asset_class} "
-                f"total_gaps={total_gaps} repaired={total_repaired}\n"
+                f"{today} health_check: asset_class={asset_class} total_gaps={total_gaps} repaired={total_repaired}\n"
             )
 
         # Alert if threshold exceeded

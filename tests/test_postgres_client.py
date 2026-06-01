@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import json
-import os
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pyarrow as pa
@@ -10,8 +9,8 @@ import pyarrow.parquet as pq
 import pytest
 
 from clients import postgres_client as postgres_client_module
-from clients.postgres_schema import POSTGRES_TABLES
 from clients.postgres_client import PostgresClient
+from clients.postgres_schema import POSTGRES_TABLES
 
 
 class FakeCursor:
@@ -288,9 +287,7 @@ def test_volatility_daily_uses_cboe_metadata(tmp_path: Path) -> None:
     )
     conn = FakeConnection()
 
-    counts = make_client(conn).replace_equities_from_parquet(
-        tmp_path, asset_class="volatility", venue="CBOE"
-    )
+    counts = make_client(conn).replace_equities_from_parquet(tmp_path, asset_class="volatility", venue="CBOE")
 
     assert counts == {"symbols": 1, "rows": 1}
     assert ("VIX", 22, "volatility", "CBOE") in conn.copied_rows
@@ -379,7 +376,7 @@ def test_empty_futures_bronze_returns_zero(tmp_path: Path) -> None:
 
 
 def test_intraday_replace_supports_1m_1h_and_5m(tmp_path: Path) -> None:
-    ts = datetime(2026, 1, 2, 14, 30, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 2, 14, 30, tzinfo=UTC)
     write_intraday_parquet(
         tmp_path,
         "AAPL",
@@ -435,12 +432,8 @@ def test_intraday_row_requires_datetime_and_timezone() -> None:
 def test_date_timestamp_and_json_normalization_helpers() -> None:
     assert postgres_client_module._as_date(datetime(2026, 1, 2, 3, 4)) == date(2026, 1, 2)
     assert postgres_client_module._as_date("2026-01-03") == date(2026, 1, 3)
-    assert postgres_client_module._parse_ts(datetime(2026, 1, 2, 3, 4)) == datetime(
-        2026, 1, 2, 3, 4, tzinfo=timezone.utc
-    )
-    payload = postgres_client_module._jsonb(
-        {"ts": datetime(2026, 1, 2, tzinfo=timezone.utc), "path": Path("/tmp/a.parquet")}
-    )
+    assert postgres_client_module._parse_ts(datetime(2026, 1, 2, 3, 4)) == datetime(2026, 1, 2, 3, 4, tzinfo=UTC)
+    payload = postgres_client_module._jsonb({"ts": datetime(2026, 1, 2, tzinfo=UTC), "path": Path("/tmp/a.parquet")})
     assert payload.obj == {"ts": "2026-01-02T00:00:00+00:00", "path": "/tmp/a.parquet"}
 
 
@@ -480,7 +473,7 @@ def test_telemetry_jsonl_import_maps_payload(tmp_path: Path) -> None:
     assert counts == {"rows": 1, "skipped": 1}
     row = conn.copied_rows[0]
     assert row[:8] == (
-        datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
         "ib",
         "farm_state",
         "usfarm",
@@ -525,7 +518,7 @@ def test_quality_jsonl_import_maps_detail_and_missing_file(tmp_path: Path) -> No
     assert counts == {"rows": 1, "skipped": 0}
     row = conn.copied_rows[0]
     assert row[:7] == (
-        datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
         "ib",
         "AAPL",
         "1h",

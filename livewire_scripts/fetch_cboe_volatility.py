@@ -53,10 +53,10 @@ def fetch_cboe_historical(symbol: str) -> list[dict[str, Any]]:
     """Fetch historical OHLCV data from CBOE's public API."""
     url = CBOE_HISTORICAL_URL.format(symbol=symbol)
     console.print(f"  Fetching {symbol} from {url}")
-    
+
     resp = httpx.get(url, timeout=30)
     resp.raise_for_status()
-    
+
     data = resp.json()
     bars = data.get("data", [])
     console.print(f"  {symbol}: received {len(bars)} bars")
@@ -87,14 +87,16 @@ def fetch_cboe_official_csv_backup(symbol: str) -> list[dict[str, Any]]:
             close_value = raw[symbol.upper()]
             open_value = high_value = low_value = close_value
 
-        rows.append({
-            "date": trade_date,
-            "open": open_value,
-            "high": high_value,
-            "low": low_value,
-            "close": close_value,
-            "volume": "0.0",
-        })
+        rows.append(
+            {
+                "date": trade_date,
+                "open": open_value,
+                "high": high_value,
+                "low": low_value,
+                "close": close_value,
+                "volume": "0.0",
+            }
+        )
 
     console.print(f"  {symbol}: received {len(rows)} official CSV backup rows")
     return rows
@@ -124,39 +126,43 @@ def append_official_backup_bars(
 
 def bars_to_table(symbol: str, bars: list[dict[str, Any]]) -> pa.Table:
     """Convert CBOE JSON bars to PyArrow table matching bronze schema.
-    
+
     Note: asset_class and symbol are NOT included in the parquet file;
     they're encoded in the hive partition path (asset_class=X/symbol=Y/).
     """
     if not bars:
         return None
-    
+
     symbol_id = _symbol_id(symbol)
-    
+
     records = []
     for bar in bars:
-        records.append({
-            "trade_date": date.fromisoformat(bar["date"]),
-            "symbol_id": symbol_id,
-            "open": float(bar["open"]),
-            "high": float(bar["high"]),
-            "low": float(bar["low"]),
-            "close": float(bar["close"]),
-            "adj_close": float(bar["close"]),  # No adjustment for indices
-            "volume": int(float(bar["volume"])),
-        })
-    
-    schema = pa.schema([
-        ("trade_date", pa.date32()),
-        ("symbol_id", pa.int64()),
-        ("open", pa.float64()),
-        ("high", pa.float64()),
-        ("low", pa.float64()),
-        ("close", pa.float64()),
-        ("adj_close", pa.float64()),
-        ("volume", pa.int64()),
-    ])
-    
+        records.append(
+            {
+                "trade_date": date.fromisoformat(bar["date"]),
+                "symbol_id": symbol_id,
+                "open": float(bar["open"]),
+                "high": float(bar["high"]),
+                "low": float(bar["low"]),
+                "close": float(bar["close"]),
+                "adj_close": float(bar["close"]),  # No adjustment for indices
+                "volume": int(float(bar["volume"])),
+            }
+        )
+
+    schema = pa.schema(
+        [
+            ("trade_date", pa.date32()),
+            ("symbol_id", pa.int64()),
+            ("open", pa.float64()),
+            ("high", pa.float64()),
+            ("low", pa.float64()),
+            ("close", pa.float64()),
+            ("adj_close", pa.float64()),
+            ("volume", pa.int64()),
+        ]
+    )
+
     return pa.Table.from_pylist(records, schema=schema)
 
 
@@ -169,7 +175,7 @@ def write_bronze_parquet(
     bronze_dir = warehouse_dir / "data-lake" / "bronze" / f"asset_class={ASSET_CLASS}" / f"symbol={symbol}"
     bronze_dir.mkdir(parents=True, exist_ok=True)
     parquet_path = bronze_dir / PARQUET_FILENAME
-    
+
     # Merge with existing data if present
     if parquet_path.exists():
         existing = pq.ParquetFile(parquet_path).read()
@@ -180,9 +186,7 @@ def write_bronze_parquet(
         if extra_cols:
             existing = existing.select(expected_columns)
 
-        existing_dates = set(
-            d.as_py() for d in existing.column("trade_date")
-        )
+        existing_dates = set(d.as_py() for d in existing.column("trade_date"))
 
         # Filter to only new dates
         new_dates_mask = pa.compute.invert(
@@ -203,11 +207,11 @@ def write_bronze_parquet(
         else:
             console.print(f"  {symbol}: no new rows to add")
             return parquet_path
-    
+
     # Sort by date
     indices = pa.compute.sort_indices(table, sort_keys=[("trade_date", "ascending")])
     table = table.take(indices)
-    
+
     pq.write_table(table, parquet_path)
     console.print(f"  {symbol}: wrote {table.num_rows} rows to {parquet_path}")
     return parquet_path
@@ -240,7 +244,7 @@ def main() -> None:
         help=f"Warehouse directory (default: {DEFAULT_WAREHOUSE})",
     )
     args = parser.parse_args()
-    
+
     # Determine symbols to fetch
     if args.symbols:
         symbols = args.symbols
@@ -250,34 +254,32 @@ def main() -> None:
         symbols = load_preset(DEFAULT_PRESET)
     else:
         symbols = ["VIX", "VVIX"]  # Minimal fallback
-    
+
     console.print(f"\n[bold]Fetching CBOE volatility indices: {symbols}[/bold]\n")
-    
+
     for symbol in symbols:
         try:
             bars = fetch_cboe_historical(symbol)
             try:
                 backup_bars = fetch_cboe_official_csv_backup(symbol)
             except Exception as backup_exc:
-                console.print(
-                    f"  [yellow]{symbol}: official CSV backup skipped - {backup_exc}[/yellow]"
-                )
+                console.print(f"  [yellow]{symbol}: official CSV backup skipped - {backup_exc}[/yellow]")
                 backup_bars = []
             bars = append_official_backup_bars(symbol, bars, backup_bars)
             if not bars:
                 console.print(f"  [yellow]{symbol}: no data returned[/yellow]")
                 continue
-            
+
             table = bars_to_table(symbol, bars)
             write_bronze_parquet(table, symbol, args.warehouse)
-            
+
             # Show date range
             dates = [date.fromisoformat(b["date"]) for b in bars]
             console.print(f"  {symbol}: {min(dates)} → {max(dates)}\n")
-            
+
         except Exception as e:
             console.print(f"  [red]{symbol}: error - {e}[/red]")
-    
+
     console.print("[bold green]Done.[/bold green]")
 
 

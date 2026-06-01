@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import pyarrow as pa
@@ -15,7 +15,7 @@ from clients.intraday_bronze_client import (
     IntradayBronzeClient,
 )
 
-_UTC = timezone.utc
+_UTC = UTC
 _ET = ZoneInfo("America/New_York")
 
 
@@ -255,9 +255,7 @@ class TestRowNormalization:
         assert loaded[1]["volume"] == 200
         client.close()
 
-    def test_merge_skips_publish_when_recent_rows_already_exist(
-        self, tmp_path, monkeypatch
-    ):
+    def test_merge_skips_publish_when_recent_rows_already_exist(self, tmp_path, monkeypatch):
         client = IntradayBronzeClient(bronze_dir=tmp_path, timeframe="5m")
         ts1 = datetime(2026, 4, 6, 13, 30, tzinfo=_UTC)
         client.replace_ticker_rows(
@@ -372,9 +370,7 @@ class TestDiscovery:
             assert client.get_existing_symbols() == {"MSFT"}
 
     def test_get_existing_symbols_empty_dir(self, tmp_path):
-        with IntradayBronzeClient(
-            bronze_dir=tmp_path / "nonexistent", timeframe="5m"
-        ) as client:
+        with IntradayBronzeClient(bronze_dir=tmp_path / "nonexistent", timeframe="5m") as client:
             assert client.get_existing_symbols() == set()
 
     def test_get_latest_timestamps(self, tmp_path):
@@ -415,9 +411,7 @@ class TestDiscovery:
         client.close()
 
     def test_get_latest_timestamps_empty(self, tmp_path):
-        with IntradayBronzeClient(
-            bronze_dir=tmp_path / "empty", timeframe="5m"
-        ) as client:
+        with IntradayBronzeClient(bronze_dir=tmp_path / "empty", timeframe="5m") as client:
             assert client.get_latest_timestamps() == {}
 
     def test_read_symbol_rows_missing_returns_empty(self, tmp_path):

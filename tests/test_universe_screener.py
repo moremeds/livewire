@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
-import sys
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -20,13 +18,12 @@ from livewire_scripts.universe_screener import (
     load_core_etfs,
     load_screener_state,
     log_changes,
+    main,
     run_scanner_sweeps,
     save_screener_state,
     update_absent_counts,
     write_universe_preset,
-    main,
 )
-
 
 # ══════════════════════════════════════════════════════════════════════
 # compare_universes
@@ -260,6 +257,7 @@ class TestRunScannerSweeps:
         ib.reqScannerDataAsync = failing_req_scanner
 
         import logging
+
         with caplog.at_level(logging.WARNING):
             result = asyncio.new_event_loop().run_until_complete(run_scanner_sweeps(ib))
         # No symbols returned, all sweeps failed silently
@@ -312,12 +310,10 @@ def _make_mock_ib_client(symbols=None):
     ib_raw = MagicMock()
 
     async def fake_req_scanner(sub):
-        return [
-            SimpleNamespace(contractDetails=SimpleNamespace(contract=SimpleNamespace(symbol=s)))
-            for s in symbols
-        ]
+        return [SimpleNamespace(contractDetails=SimpleNamespace(contract=SimpleNamespace(symbol=s))) for s in symbols]
 
     ib_raw.reqScannerDataAsync = fake_req_scanner
+
     def _run_coro(coro):
         loop = asyncio.new_event_loop()
         try:
@@ -365,11 +361,13 @@ class TestMain:
 
         mock_ib_client = _make_mock_ib_client(["AAPL", "MSFT"])
 
-        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=True), \
-             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client), \
-             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path), \
-             patch("livewire_scripts.universe_screener._STATE_PATH", state_path), \
-             patch("livewire_scripts.universe_screener._LOG_DIR", log_dir):
+        with (
+            patch("livewire_scripts.universe_screener.is_trading_day", return_value=True),
+            patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client),
+            patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
+            patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
+            patch("livewire_scripts.universe_screener._LOG_DIR", log_dir),
+        ):
             main(["--dry-run", "--force"])
 
         # dry run should not write preset or state
@@ -385,17 +383,34 @@ class TestMain:
         existing_sym_dir.mkdir(parents=True)
         import pyarrow as pa
         import pyarrow.parquet as pq
-        schema = pa.schema([
-            ("trade_date", pa.date32()), ("symbol_id", pa.int64()),
-            ("open", pa.float64()), ("high", pa.float64()),
-            ("low", pa.float64()), ("close", pa.float64()),
-            ("adj_close", pa.float64()), ("volume", pa.int64()),
-        ])
-        table = pa.Table.from_pylist([{
-            "trade_date": date(2026, 1, 2), "symbol_id": 1,
-            "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5,
-            "adj_close": 1.5, "volume": 1000,
-        }], schema=schema)
+
+        schema = pa.schema(
+            [
+                ("trade_date", pa.date32()),
+                ("symbol_id", pa.int64()),
+                ("open", pa.float64()),
+                ("high", pa.float64()),
+                ("low", pa.float64()),
+                ("close", pa.float64()),
+                ("adj_close", pa.float64()),
+                ("volume", pa.int64()),
+            ]
+        )
+        table = pa.Table.from_pylist(
+            [
+                {
+                    "trade_date": date(2026, 1, 2),
+                    "symbol_id": 1,
+                    "open": 1.0,
+                    "high": 2.0,
+                    "low": 0.5,
+                    "close": 1.5,
+                    "adj_close": 1.5,
+                    "volume": 1000,
+                }
+            ],
+            schema=schema,
+        )
         pq.write_table(table, existing_sym_dir / "1d.parquet")
 
         monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
@@ -413,13 +428,15 @@ class TestMain:
         def fake_archive(src, dst):
             archived.append(src)
 
-        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=True), \
-             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client), \
-             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path), \
-             patch("livewire_scripts.universe_screener._STATE_PATH", state_path), \
-             patch("livewire_scripts.universe_screener._LOG_DIR", log_dir), \
-             patch("shutil.move", fake_archive), \
-             patch("subprocess.run"):
+        with (
+            patch("livewire_scripts.universe_screener.is_trading_day", return_value=True),
+            patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client),
+            patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
+            patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
+            patch("livewire_scripts.universe_screener._LOG_DIR", log_dir),
+            patch("shutil.move", fake_archive),
+            patch("subprocess.run"),
+        ):
             main(["--force"])
 
         # No tickers should have been archived in bootstrap mode
@@ -434,23 +451,40 @@ class TestMain:
 
         import pyarrow as pa
         import pyarrow.parquet as pq
-        schema = pa.schema([
-            ("trade_date", pa.date32()), ("symbol_id", pa.int64()),
-            ("open", pa.float64()), ("high", pa.float64()),
-            ("low", pa.float64()), ("close", pa.float64()),
-            ("adj_close", pa.float64()), ("volume", pa.int64()),
-        ])
+
+        schema = pa.schema(
+            [
+                ("trade_date", pa.date32()),
+                ("symbol_id", pa.int64()),
+                ("open", pa.float64()),
+                ("high", pa.float64()),
+                ("low", pa.float64()),
+                ("close", pa.float64()),
+                ("adj_close", pa.float64()),
+                ("volume", pa.int64()),
+            ]
+        )
 
         # Create 60 tickers in bronze (enough to exceed MAX_REMOVALS=50)
         existing_tickers = [f"TICK{idx:02d}" for idx in range(60)]
         for sym_idx, ticker in enumerate(existing_tickers):
             sym_dir = bronze_dir / f"symbol={ticker}"
             sym_dir.mkdir(parents=True)
-            table = pa.Table.from_pylist([{
-                "trade_date": date(2026, 1, 2), "symbol_id": sym_idx,
-                "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5,
-                "adj_close": 1.5, "volume": 1000,
-            }], schema=schema)
+            table = pa.Table.from_pylist(
+                [
+                    {
+                        "trade_date": date(2026, 1, 2),
+                        "symbol_id": sym_idx,
+                        "open": 1.0,
+                        "high": 2.0,
+                        "low": 0.5,
+                        "close": 1.5,
+                        "adj_close": 1.5,
+                        "volume": 1000,
+                    }
+                ],
+                schema=schema,
+            )
             pq.write_table(table, sym_dir / "1d.parquet")
 
         # State with all 60 tickers absent for >GRACE_DAYS so they all pass grace
@@ -476,13 +510,15 @@ class TestMain:
         def fake_move(src, dst):
             archived.append(src)
 
-        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=True), \
-             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client), \
-             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path), \
-             patch("livewire_scripts.universe_screener._STATE_PATH", state_path), \
-             patch("livewire_scripts.universe_screener._LOG_DIR", log_dir), \
-             patch("shutil.move", fake_move), \
-             patch("subprocess.run"):
+        with (
+            patch("livewire_scripts.universe_screener.is_trading_day", return_value=True),
+            patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client),
+            patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
+            patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
+            patch("livewire_scripts.universe_screener._LOG_DIR", log_dir),
+            patch("shutil.move", fake_move),
+            patch("subprocess.run"),
+        ):
             main(["--force"])
 
         # No tickers should have been archived since removals capped
@@ -506,12 +542,14 @@ class TestMain:
 
         mock_ib_client = _make_mock_ib_client(["AAPL", "MSFT"])
 
-        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=True), \
-             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client), \
-             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path), \
-             patch("livewire_scripts.universe_screener._STATE_PATH", state_path), \
-             patch("livewire_scripts.universe_screener._LOG_DIR", log_dir), \
-             patch("subprocess.run"):
+        with (
+            patch("livewire_scripts.universe_screener.is_trading_day", return_value=True),
+            patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client),
+            patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
+            patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
+            patch("livewire_scripts.universe_screener._LOG_DIR", log_dir),
+            patch("subprocess.run"),
+        ):
             # Should not raise SystemExit — --force bypasses idempotency
             main(["--force"])
 
@@ -523,21 +561,38 @@ class TestMain:
         bronze_dir = data_lake / "bronze" / "asset_class=equity"
         import pyarrow as pa
         import pyarrow.parquet as pq
-        schema = pa.schema([
-            ("trade_date", pa.date32()), ("symbol_id", pa.int64()),
-            ("open", pa.float64()), ("high", pa.float64()),
-            ("low", pa.float64()), ("close", pa.float64()),
-            ("adj_close", pa.float64()), ("volume", pa.int64()),
-        ])
+
+        schema = pa.schema(
+            [
+                ("trade_date", pa.date32()),
+                ("symbol_id", pa.int64()),
+                ("open", pa.float64()),
+                ("high", pa.float64()),
+                ("low", pa.float64()),
+                ("close", pa.float64()),
+                ("adj_close", pa.float64()),
+                ("volume", pa.int64()),
+            ]
+        )
 
         # Create OLD ticker that will be removed
         old_sym_dir = bronze_dir / "symbol=OLDTICKER"
         old_sym_dir.mkdir(parents=True)
-        table = pa.Table.from_pylist([{
-            "trade_date": date(2026, 1, 2), "symbol_id": 99,
-            "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5,
-            "adj_close": 1.5, "volume": 1000,
-        }], schema=schema)
+        table = pa.Table.from_pylist(
+            [
+                {
+                    "trade_date": date(2026, 1, 2),
+                    "symbol_id": 99,
+                    "open": 1.0,
+                    "high": 2.0,
+                    "low": 0.5,
+                    "close": 1.5,
+                    "adj_close": 1.5,
+                    "volume": 1000,
+                }
+            ],
+            schema=schema,
+        )
         pq.write_table(table, old_sym_dir / "1d.parquet")
 
         monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
@@ -563,13 +618,15 @@ class TestMain:
         def fake_move(src, dst):
             moves.append((src, dst))
 
-        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=True), \
-             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client), \
-             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path), \
-             patch("livewire_scripts.universe_screener._STATE_PATH", state_path), \
-             patch("livewire_scripts.universe_screener._LOG_DIR", log_dir), \
-             patch("shutil.move", fake_move), \
-             patch("subprocess.run"):
+        with (
+            patch("livewire_scripts.universe_screener.is_trading_day", return_value=True),
+            patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client),
+            patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
+            patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
+            patch("livewire_scripts.universe_screener._LOG_DIR", log_dir),
+            patch("shutil.move", fake_move),
+            patch("subprocess.run"),
+        ):
             main(["--force"])
 
         # OLDTICKER should have been archived
@@ -593,9 +650,11 @@ class TestMain:
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
 
-        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=True), \
-             patch("livewire_scripts.universe_screener._STATE_PATH", state_path), \
-             patch("livewire_scripts.universe_screener._LOG_DIR", log_dir):
+        with (
+            patch("livewire_scripts.universe_screener.is_trading_day", return_value=True),
+            patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
+            patch("livewire_scripts.universe_screener._LOG_DIR", log_dir),
+        ):
             with pytest.raises(SystemExit) as exc_info:
                 main([])
             assert exc_info.value.code == 0
@@ -621,12 +680,14 @@ class TestMain:
             subprocess_calls.append(cmd)
             return MagicMock(returncode=0)
 
-        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=True), \
-             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client), \
-             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path), \
-             patch("livewire_scripts.universe_screener._STATE_PATH", state_path), \
-             patch("livewire_scripts.universe_screener._LOG_DIR", log_dir), \
-             patch("subprocess.run", fake_run):
+        with (
+            patch("livewire_scripts.universe_screener.is_trading_day", return_value=True),
+            patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client),
+            patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
+            patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
+            patch("livewire_scripts.universe_screener._LOG_DIR", log_dir),
+            patch("subprocess.run", fake_run),
+        ):
             main(["--force"])
 
         # At least one subprocess call should include livewire_ingest.py for backfill
@@ -636,6 +697,7 @@ class TestMain:
     def test_sends_alert_for_large_changes(self, tmp_path, monkeypatch):
         """Email alert sent when additions + removals exceed EMAIL_THRESHOLD."""
         from livewire_scripts.universe_screener import EMAIL_THRESHOLD
+
         data_lake = tmp_path / "data-lake"
         bronze_dir = data_lake / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
@@ -651,13 +713,15 @@ class TestMain:
         new_tickers = [f"NEW{i:03d}" for i in range(n)]
         mock_ib_client = _make_mock_ib_client(new_tickers)
 
-        with patch("livewire_scripts.universe_screener.is_trading_day", return_value=True), \
-             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client), \
-             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path), \
-             patch("livewire_scripts.universe_screener._STATE_PATH", state_path), \
-             patch("livewire_scripts.universe_screener._LOG_DIR", log_dir), \
-             patch("livewire_scripts.universe_screener._send_screener_alert") as mock_alert, \
-             patch("subprocess.run"):
+        with (
+            patch("livewire_scripts.universe_screener.is_trading_day", return_value=True),
+            patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client),
+            patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
+            patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
+            patch("livewire_scripts.universe_screener._LOG_DIR", log_dir),
+            patch("livewire_scripts.universe_screener._send_screener_alert") as mock_alert,
+            patch("subprocess.run"),
+        ):
             main(["--force"])
 
         mock_alert.assert_called_once()
@@ -728,11 +792,15 @@ class TestCoreEtfIntegration:
         (tmp_path / "core.json").write_text(json.dumps({"name": "core-etfs", "tickers": ["SPY"]}))
 
         # Pre-existing state from a previous run, not bootstrap
-        (tmp_path / "state.json").write_text(json.dumps({
-            "run_date": "2026-04-01",
-            "universe": ["SPY", "AAPL"],
-            "absent_counts": {},
-        }))
+        (tmp_path / "state.json").write_text(
+            json.dumps(
+                {
+                    "run_date": "2026-04-01",
+                    "universe": ["SPY", "AAPL"],
+                    "absent_counts": {},
+                }
+            )
+        )
 
         # Bronze contains SPY and AAPL
         for sym in ("SPY", "AAPL"):
@@ -767,11 +835,15 @@ class TestCoreEtfIntegration:
         (tmp_path / "core.json").write_text(json.dumps({"name": "core-etfs", "tickers": ["SPY"]}))
 
         # Buggy state: SPY has absent_count = 99 (way past grace, would be removed)
-        (tmp_path / "state.json").write_text(json.dumps({
-            "run_date": "2026-04-01",
-            "universe": ["SPY", "AAPL"],
-            "absent_counts": {"SPY": 99},
-        }))
+        (tmp_path / "state.json").write_text(
+            json.dumps(
+                {
+                    "run_date": "2026-04-01",
+                    "universe": ["SPY", "AAPL"],
+                    "absent_counts": {"SPY": 99},
+                }
+            )
+        )
 
         for sym in ("SPY", "AAPL"):
             sym_dir = tmp_path / "data-lake" / "bronze" / "asset_class=equity" / f"symbol={sym}"

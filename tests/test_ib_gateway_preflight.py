@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import socket
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,7 +19,7 @@ class TestTCPReachable:
             mock_conn.assert_called_once_with(("127.0.0.1", 4001), timeout=1.0)
 
     def test_returns_false_when_socket_raises(self):
-        with patch.object(pf.socket, "create_connection", side_effect=socket.timeout()):
+        with patch.object(pf.socket, "create_connection", side_effect=TimeoutError()):
             assert pf._tcp_reachable("127.0.0.1", 4001, 0.1) is False
 
 
@@ -55,9 +54,7 @@ class TestAssertGatewayUp:
             pf.assert_gateway_up(host="explicit", port=12345, timeout=2.5)
             mock_check.assert_called_once_with("explicit", 12345, 2.5)
 
-    def test_exits_with_diagnostics_when_status_script_present(
-        self, monkeypatch, capsys, tmp_path
-    ):
+    def test_exits_with_diagnostics_when_status_script_present(self, monkeypatch, capsys, tmp_path):
         monkeypatch.delenv("LIVEWIRE_SKIP_IB_PREFLIGHT", raising=False)
         script = tmp_path / "ibc_gateway_status.sh"
         script.write_text("#!/bin/bash\necho diag\n")
@@ -76,9 +73,7 @@ class TestAssertGatewayUp:
         assert str(script) in err
         assert "/fake/runbook.md" in err
 
-    def test_exits_without_subprocess_when_status_script_missing(
-        self, monkeypatch, capsys, tmp_path
-    ):
+    def test_exits_without_subprocess_when_status_script_missing(self, monkeypatch, capsys, tmp_path):
         monkeypatch.delenv("LIVEWIRE_SKIP_IB_PREFLIGHT", raising=False)
         missing = tmp_path / "does_not_exist.sh"
         with (

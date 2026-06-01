@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ACTIVE_RUNTIME_ROOTS = ("clients", "livewire_scripts", "scripts")
 
@@ -40,8 +39,6 @@ def test_storage_entrypoint_has_no_duckdb_rebuild_command() -> None:
 
 
 def test_bootstrap_script_does_not_install_or_initialize_duckdb() -> None:
-    setup_script = (REPO_ROOT / "scripts" / "setup_market_warehouse.sh").read_text(
-        encoding="utf-8"
-    )
+    setup_script = (REPO_ROOT / "scripts" / "setup_market_warehouse.sh").read_text(encoding="utf-8")
 
     assert "duckdb" not in setup_script.lower()

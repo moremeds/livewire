@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from rich.console import Console
 
@@ -17,7 +17,6 @@ if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
 from clients.bronze_client import BronzeClient
 from clients.fred_client import FRED_FREQUENCIES, FredClient, FredObservation
 from clients.symbol_ids import stable_symbol_id
-
 
 DEFAULT_WAREHOUSE = Path.home() / "market-warehouse"
 ASSET_CLASS = "rates"

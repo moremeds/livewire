@@ -10,12 +10,13 @@ import pytest
 
 from clients.parquet_io import publish_parquet, validate_parquet_file
 
-
-_SCHEMA = pa.schema([
-    ("trade_date", pa.date32()),
-    ("symbol_id", pa.int64()),
-    ("value", pa.float64()),
-])
+_SCHEMA = pa.schema(
+    [
+        ("trade_date", pa.date32()),
+        ("symbol_id", pa.int64()),
+        ("value", pa.float64()),
+    ]
+)
 
 
 def _table(rows: list[dict]) -> pa.Table:

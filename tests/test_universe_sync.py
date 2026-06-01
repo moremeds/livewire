@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -37,17 +36,13 @@ class TestComputeMovements:
         live = {"sp500": {"AAPL", "APP"}, "r2k": {"BETA"}}
         existing = {"sp500": {"AAPL"}, "r2k": {"APP", "BETA"}}
         moves = compute_movements(live, existing)
-        assert (
-            Movement("promotion", "APP", from_tags=["r2k"], to_tags=["sp500"]) in moves
-        )
+        assert Movement("promotion", "APP", from_tags=["r2k"], to_tags=["sp500"]) in moves
 
     def test_demotion_sp500_to_r2k(self):
         live = {"sp500": {"AAPL"}, "r2k": {"BETA", "OLD"}}
         existing = {"sp500": {"AAPL", "OLD"}, "r2k": {"BETA"}}
         moves = compute_movements(live, existing)
-        assert (
-            Movement("demotion", "OLD", from_tags=["sp500"], to_tags=["r2k"]) in moves
-        )
+        assert Movement("demotion", "OLD", from_tags=["sp500"], to_tags=["r2k"]) in moves
 
     def test_no_changes(self):
         live = {"sp500": {"AAPL"}}
@@ -176,13 +171,7 @@ class TestArchiveDelisted:
 
         assert _archive_delisted("TWTR", data_lake) is True
         assert not src.exists()
-        assert (
-            data_lake
-            / "bronze-delisted"
-            / "asset_class=equity"
-            / "symbol=TWTR"
-            / "1d.parquet"
-        ).exists()
+        assert (data_lake / "bronze-delisted" / "asset_class=equity" / "symbol=TWTR" / "1d.parquet").exists()
 
     def test_returns_false_if_no_bronze(self, tmp_path):
         assert _archive_delisted("FAKE", tmp_path) is False
@@ -212,9 +201,7 @@ class TestMain:
             )
         monkeypatch.setattr("livewire_scripts.universe_sync._WAREHOUSE_DIR", warehouse)
         monkeypatch.setattr("livewire_scripts.universe_sync._PRESET_DIR", presets)
-        monkeypatch.setattr(
-            "livewire_scripts.universe_sync._DATA_LAKE", warehouse / "data-lake"
-        )
+        monkeypatch.setattr("livewire_scripts.universe_sync._DATA_LAKE", warehouse / "data-lake")
         monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
         return warehouse, presets
 
@@ -230,9 +217,7 @@ class TestMain:
         "livewire_scripts.universe_sync.fetch_r2k",
         return_value=set(f"R{i}" for i in range(1900)),
     )
-    def test_full_sync_dry_run(
-        self, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch
-    ):
+    def test_full_sync_dry_run(self, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch):
         warehouse, _ = self._setup_workspace(tmp_path, monkeypatch)
         main(["--dry-run"])
         assert not (warehouse / "registry.json").exists()
@@ -249,9 +234,7 @@ class TestMain:
         "livewire_scripts.universe_sync.fetch_r2k",
         return_value=set(f"R{i}" for i in range(1900)),
     )
-    def test_full_sync_writes_registry(
-        self, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch
-    ):
+    def test_full_sync_writes_registry(self, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch):
         warehouse, _ = self._setup_workspace(tmp_path, monkeypatch)
         main([])
         assert (warehouse / "registry.json").exists()
@@ -261,9 +244,7 @@ class TestMain:
     @patch("livewire_scripts.universe_sync.fetch_sp500", return_value={"AAPL"})
     @patch("livewire_scripts.universe_sync.fetch_ndx100", return_value={"AAPL"})
     @patch("livewire_scripts.universe_sync.fetch_r2k", return_value={"ACME"})
-    def test_aborts_on_suspiciously_few_tickers(
-        self, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch
-    ):
+    def test_aborts_on_suspiciously_few_tickers(self, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch):
         self._setup_workspace(tmp_path, monkeypatch)
         with pytest.raises(SystemExit):
             main([])
@@ -301,9 +282,7 @@ class TestMain:
         "livewire_scripts.universe_sync.fetch_r2k",
         return_value=set(f"R{i}" for i in range(1900)),
     )
-    def test_no_changes_shows_current(
-        self, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch
-    ):
+    def test_no_changes_shows_current(self, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch):
         warehouse, presets = self._setup_workspace(tmp_path, monkeypatch)
         # First run: seed the registry
         main([])
@@ -325,9 +304,7 @@ class TestMain:
         return_value=set(f"R{i}" for i in range(1900)),
     )
     @patch("livewire_scripts.universe_sync.check_tickers_bulk")
-    def test_dead_ticker_check_with_polygon(
-        self, mock_bulk, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch
-    ):
+    def test_dead_ticker_check_with_polygon(self, mock_bulk, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch):
         warehouse, presets = self._setup_workspace(tmp_path, monkeypatch)
         monkeypatch.setenv("MASSIVE_API_KEY", "test-key")
         # Seed registry with AAPL in sp500 first
@@ -381,9 +358,7 @@ class TestMain:
         "livewire_scripts.universe_sync.fetch_r2k",
         return_value=set(f"R{i}" for i in range(1900)),
     )
-    def test_seeds_registry_and_adds_missing_tags(
-        self, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch
-    ):
+    def test_seeds_registry_and_adds_missing_tags(self, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch):
         """Test seeding: new tickers get set_tags, existing tickers get add_tag."""
         warehouse, presets = self._setup_workspace(tmp_path, monkeypatch)
         # Pre-seed registry with sp500 tickers so they have no movement,

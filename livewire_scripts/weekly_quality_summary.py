@@ -54,7 +54,7 @@ _TOTAL_SUFFIX_RE = re.compile(r",\s*\.\.\.\s*\((\d+) total\)\s*$")
 class CoverageEntry:
     day: date
     totals: dict[str, tuple[int, int]] = field(default_factory=dict)  # tf -> (present, total)
-    missing: dict[str, list[str]] = field(default_factory=dict)       # tf -> sorted symbols
+    missing: dict[str, list[str]] = field(default_factory=dict)  # tf -> sorted symbols
 
 
 def parse_coverage_log(path: Path) -> CoverageEntry | None:
@@ -196,10 +196,7 @@ def render_markdown(week_label: str, entries: list[CoverageEntry]) -> str:
         for tf in _TIMEFRAMES:
             present, total = entry.totals.get(tf, (0, 0))
             cells.append(f"{present}/{total}")
-        lines.append(
-            f"| {entry.day} | {cells[0]:9s} | {cells[1]:9s} | "
-            f"{cells[2]:9s} | {cells[3]:9s} |"
-        )
+        lines.append(f"| {entry.day} | {cells[0]:9s} | {cells[1]:9s} | {cells[2]:9s} | {cells[3]:9s} |")
     lines.append("")
 
     added, removed = detect_churn(entries)
@@ -222,9 +219,7 @@ def render_markdown(week_label: str, entries: list[CoverageEntry]) -> str:
             for tf in _TIMEFRAMES:
                 streak = persistent[sym].get(tf)
                 if streak:
-                    lines.append(
-                        f"- {sym} ({tf}): missing {streak} of last {len(entries)} days"
-                    )
+                    lines.append(f"- {sym} ({tf}): missing {streak} of last {len(entries)} days")
     lines.append("")
     return "\n".join(lines)
 
@@ -258,9 +253,7 @@ def main() -> None:
 
     today = date.today()
     if not args.force and today.isoweekday() != 7:
-        console.print(
-            f"[dim]{today} is not a Sunday — skipping. Pass --force to render anyway.[/dim]"
-        )
+        console.print(f"[dim]{today} is not a Sunday — skipping. Pass --force to render anyway.[/dim]")
         return
 
     if args.week:

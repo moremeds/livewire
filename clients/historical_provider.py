@@ -15,7 +15,6 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional
 
 logger = logging.getLogger("livewire.historical_provider")
 
@@ -24,9 +23,11 @@ logger = logging.getLogger("livewire.historical_provider")
 # Data types
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class BarRecord:
     """OHLCV bar record. Date is ISO format: YYYY-MM-DD for daily bars."""
+
     date: str
     open: float
     high: float
@@ -38,6 +39,7 @@ class BarRecord:
 # ---------------------------------------------------------------------------
 # Contract spec helpers
 # ---------------------------------------------------------------------------
+
 
 def ib_contract_to_spec(contract) -> dict:
     """Convert an ib_async contract to a JSON-safe spec dict."""
@@ -55,7 +57,7 @@ def ib_contract_to_spec(contract) -> dict:
 
 def spec_to_ib_contract(spec: dict):
     """Convert a spec dict to an ib_async contract."""
-    from ib_async import Stock, Future, Index
+    from ib_async import Future, Index, Stock
 
     sec_type = spec.get("sec_type", "STK")
     symbol = spec["symbol"]
@@ -75,6 +77,7 @@ def spec_to_ib_contract(spec: dict):
 # Abstract interface
 # ---------------------------------------------------------------------------
 
+
 class HistoricalProvider(ABC):
     """Interface for fetching IB historical data."""
 
@@ -85,7 +88,7 @@ class HistoricalProvider(ABC):
     @abstractmethod
     async def get_head_timestamp(
         self, contract_spec: dict, what_to_show: str = "TRADES", use_rth: bool = True
-    ) -> Optional[str]:
+    ) -> str | None:
         """Get earliest available data date. Returns ISO datetime string or None."""
 
     @abstractmethod
@@ -97,7 +100,7 @@ class HistoricalProvider(ABC):
         bar_size: str = "1 day",
         what_to_show: str = "TRADES",
         use_rth: bool = True,
-    ) -> List[BarRecord]:
+    ) -> list[BarRecord]:
         """Fetch historical OHLCV bars. Returns list of BarRecord with ISO dates."""
 
     @abstractmethod
@@ -109,11 +112,13 @@ class HistoricalProvider(ABC):
 # IBProvider — direct IB Gateway connection
 # ---------------------------------------------------------------------------
 
+
 class IBProvider(HistoricalProvider):
     """Fetches historical data via direct IB Gateway connection."""
 
     def __init__(self, host: str = "127.0.0.1", port: int = 4001):
         from clients.ib_client import IBClient
+
         self._client = IBClient()
         self._client.connect(host, port)
         self._host = host
@@ -121,9 +126,7 @@ class IBProvider(HistoricalProvider):
 
     async def qualify_contract(self, contract_spec: dict) -> dict:
         contract = spec_to_ib_contract(contract_spec)
-        qualified = await asyncio.to_thread(
-            self._client.qualify_contracts, contract
-        )
+        qualified = await asyncio.to_thread(self._client.qualify_contracts, contract)
         if qualified:
             c = qualified[0] if isinstance(qualified, list) else contract
             return {
@@ -138,16 +141,19 @@ class IBProvider(HistoricalProvider):
     async def get_head_timestamp(self, contract_spec, what_to_show="TRADES", use_rth=True):
         contract = spec_to_ib_contract(contract_spec)
         await asyncio.to_thread(self._client.qualify_contracts, contract)
-        ts = await self._client.get_head_timestamp_async(
-            contract, what_to_show=what_to_show, use_rth=use_rth
-        )
+        ts = await self._client.get_head_timestamp_async(contract, what_to_show=what_to_show, use_rth=use_rth)
         if not ts:
             return None
         return str(ts)
 
     async def get_historical_bars(
-        self, contract_spec, end_date_time="", duration="1 D",
-        bar_size="1 day", what_to_show="TRADES", use_rth=True,
+        self,
+        contract_spec,
+        end_date_time="",
+        duration="1 D",
+        bar_size="1 day",
+        what_to_show="TRADES",
+        use_rth=True,
     ):
         contract = spec_to_ib_contract(contract_spec)
         await asyncio.to_thread(self._client.qualify_contracts, contract)

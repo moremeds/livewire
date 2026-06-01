@@ -7,9 +7,9 @@ import argparse
 import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -24,14 +24,13 @@ from livewire_scripts.run_daily_update_job import (
     log_has_completion_marker,
     send_failure_alert,
 )
+
 WATCHDOG_ALERT_SENT_EXIT_CODE = 1
 WATCHDOG_ALERT_FAILED_EXIT_CODE = 2
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Alert if today's scheduled daily update did not complete."
-    )
+    parser = argparse.ArgumentParser(description="Alert if today's scheduled daily update did not complete.")
     parser.add_argument(
         "--run-date",
         help="Run date to inspect in YYYY-MM-DD format. Defaults to today in local time.",
@@ -128,8 +127,7 @@ def run_watchdog(
         append_log(
             watchdog_log_file,
             (
-                "WARNING: watchdog failure alert returned non-zero exit code "
-                f"{alert_result.returncode}. {alert_output}"
+                f"WARNING: watchdog failure alert returned non-zero exit code {alert_result.returncode}. {alert_output}"
             ).strip(),
         )
         return WATCHDOG_ALERT_FAILED_EXIT_CODE

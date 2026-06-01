@@ -184,8 +184,18 @@ class TestBronzeClient:
         mismatch_path = tmp_path / "mismatch.parquet"
         pq.write_table(
             pa.Table.from_pylist(
-                [{"trade_date": date(2025, 1, 2), "symbol_id": 1, "open": 1.0, "high": 2.0,
-                  "low": 0.5, "close": 1.5, "adj_close": 1.5, "volume": 100}],
+                [
+                    {
+                        "trade_date": date(2025, 1, 2),
+                        "symbol_id": 1,
+                        "open": 1.0,
+                        "high": 2.0,
+                        "low": 0.5,
+                        "close": 1.5,
+                        "adj_close": 1.5,
+                        "volume": 100,
+                    }
+                ],
             ),
             mismatch_path,
         )
@@ -308,21 +318,24 @@ class TestBronzeClientFutures:
         cmdty_bronze = BronzeClient(bronze_dir=tmp_bronze, asset_class="cmdty")
         try:
             sid = cmdty_bronze.get_symbol_id("XAUUSD")
-            assert cmdty_bronze.replace_ticker_rows(
-                "XAUUSD",
-                [
-                    {
-                        "trade_date": "2026-05-15",
-                        "symbol_id": sid,
-                        "open": 3775.0,
-                        "high": 3790.0,
-                        "low": 3760.0,
-                        "close": 3782.0,
-                        "adj_close": 3782.0,
-                        "volume": 0,
-                    }
-                ],
-            ) == 1
+            assert (
+                cmdty_bronze.replace_ticker_rows(
+                    "XAUUSD",
+                    [
+                        {
+                            "trade_date": "2026-05-15",
+                            "symbol_id": sid,
+                            "open": 3775.0,
+                            "high": 3790.0,
+                            "low": 3760.0,
+                            "close": 3782.0,
+                            "adj_close": 3782.0,
+                            "volume": 0,
+                        }
+                    ],
+                )
+                == 1
+            )
 
             rows = cmdty_bronze.read_symbol_rows("XAUUSD")
             assert rows[0]["symbol_id"] == sid
@@ -335,21 +348,24 @@ class TestBronzeClientFutures:
         fx_bronze = BronzeClient(bronze_dir=tmp_bronze, asset_class="fx")
         try:
             sid = fx_bronze.get_symbol_id("USDEUR")
-            assert fx_bronze.replace_ticker_rows(
-                "USDEUR",
-                [
-                    {
-                        "trade_date": "2026-05-15",
-                        "symbol_id": sid,
-                        "open": 0.861,
-                        "high": 0.865,
-                        "low": 0.859,
-                        "close": 0.862,
-                        "adj_close": 0.862,
-                        "volume": 0,
-                    }
-                ],
-            ) == 1
+            assert (
+                fx_bronze.replace_ticker_rows(
+                    "USDEUR",
+                    [
+                        {
+                            "trade_date": "2026-05-15",
+                            "symbol_id": sid,
+                            "open": 0.861,
+                            "high": 0.865,
+                            "low": 0.859,
+                            "close": 0.862,
+                            "adj_close": 0.862,
+                            "volume": 0,
+                        }
+                    ],
+                )
+                == 1
+            )
 
             rows = fx_bronze.read_symbol_rows("USDEUR")
             assert rows[0]["symbol_id"] == sid
@@ -381,9 +397,7 @@ class TestBronzeClientFutures:
     @pytest.mark.integration
     def test_futures_merge_counts_new_dates(self, futures_bronze):
         cid = futures_bronze.get_symbol_id("ESM5")
-        futures_bronze.replace_ticker_rows(
-            "ESM5", [_futures_row("2025-03-10", cid, 5200.0)]
-        )
+        futures_bronze.replace_ticker_rows("ESM5", [_futures_row("2025-03-10", cid, 5200.0)])
 
         inserted = futures_bronze.merge_ticker_rows(
             "ESM5",
@@ -401,9 +415,7 @@ class TestBronzeClientFutures:
     @pytest.mark.integration
     def test_futures_get_symbol_id_uses_contract_id(self, futures_bronze):
         cid = stable_symbol_id("ESM5")
-        futures_bronze.replace_ticker_rows(
-            "ESM5", [_futures_row("2025-03-10", cid, 5200.0)]
-        )
+        futures_bronze.replace_ticker_rows("ESM5", [_futures_row("2025-03-10", cid, 5200.0)])
 
         retrieved = futures_bronze.get_symbol_id("ESM5")
         assert retrieved == cid

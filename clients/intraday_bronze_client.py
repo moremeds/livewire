@@ -11,9 +11,9 @@ Naive datetimes are rejected at write time.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -23,9 +23,7 @@ from clients.symbol_ids import stable_symbol_id
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_BRONZE_DIR = (
-    Path.home() / "market-warehouse" / "data-lake" / "bronze" / "asset_class=equity"
-)
+_DEFAULT_BRONZE_DIR = Path.home() / "market-warehouse" / "data-lake" / "bronze" / "asset_class=equity"
 
 INTRADAY_TIMEFRAMES = ("1m", "1h", "5m", "30m")
 
@@ -91,13 +89,11 @@ class IntradayBronzeClient:
 
     def __init__(
         self,
-        bronze_dir: Optional[str | Path] = None,
+        bronze_dir: str | Path | None = None,
         timeframe: str = "5m",
     ):
         if timeframe not in INTRADAY_TIMEFRAMES:
-            raise ValueError(
-                f"unsupported timeframe: {timeframe!r}. Must be one of {INTRADAY_TIMEFRAMES}"
-            )
+            raise ValueError(f"unsupported timeframe: {timeframe!r}. Must be one of {INTRADAY_TIMEFRAMES}")
         self._bronze_dir = Path(bronze_dir or _DEFAULT_BRONZE_DIR)
         self._timeframe = timeframe
         self._filename = INTRADAY_PARQUET_FILENAME[timeframe]
@@ -113,7 +109,7 @@ class IntradayBronzeClient:
     def close(self) -> None:
         """No-op. Kept for API symmetry with BronzeClient."""
 
-    def __enter__(self) -> "IntradayBronzeClient":
+    def __enter__(self) -> IntradayBronzeClient:
         return self
 
     def __exit__(self, *exc) -> None:
@@ -184,24 +180,18 @@ class IntradayBronzeClient:
 
         if not overwrite_existing:
             existing_keys = self._read_symbol_timestamps(symbol)
-            new_rows = [
-                row for row in incoming if row["bar_timestamp"] not in existing_keys
-            ]
+            new_rows = [row for row in incoming if row["bar_timestamp"] not in existing_keys]
             if not new_rows:
                 return 0
             incoming = new_rows
 
         existing = self.read_symbol_rows(symbol)
-        merged: dict[datetime, dict[str, Any]] = {
-            row["bar_timestamp"]: row for row in existing
-        }
+        merged: dict[datetime, dict[str, Any]] = {row["bar_timestamp"]: row for row in existing}
         existing_keys = set(merged.keys())
         for row in incoming:
             merged[row["bar_timestamp"]] = row
 
-        inserted = sum(
-            1 for row in incoming if row["bar_timestamp"] not in existing_keys
-        )
+        inserted = sum(1 for row in incoming if row["bar_timestamp"] not in existing_keys)
         ordered = [merged[ts] for ts in sorted(merged)]
         self._publish(symbol, ordered)
         return inserted
@@ -215,17 +205,15 @@ class IntradayBronzeClient:
         keys: set[datetime] = set()
         for value in table.column("bar_timestamp").to_pylist():
             if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
-                keys.add(value.replace(tzinfo=timezone.utc))
+                keys.add(value.replace(tzinfo=UTC))
             else:
-                keys.add(value.astimezone(timezone.utc))
+                keys.add(value.astimezone(UTC))
         return keys
 
     def _symbol_path(self, symbol: str) -> Path:
         return self._bronze_dir / f"symbol={symbol}" / self._filename
 
-    def _normalize_rows(
-        self, rows: list[dict[str, Any]], symbol: str
-    ) -> list[dict[str, Any]]:
+    def _normalize_rows(self, rows: list[dict[str, Any]], symbol: str) -> list[dict[str, Any]]:
         # Use the row's own symbol_id if provided, otherwise derive a stable one.
         fallback_symbol_id = self.get_symbol_id(symbol)
         normalized: dict[datetime, dict[str, Any]] = {}
@@ -233,14 +221,10 @@ class IntradayBronzeClient:
         for row in rows:
             ts = row["bar_timestamp"]
             if not isinstance(ts, datetime):
-                raise ValueError(
-                    f"{symbol}: bar_timestamp must be a datetime, got {type(ts).__name__}"
-                )
+                raise ValueError(f"{symbol}: bar_timestamp must be a datetime, got {type(ts).__name__}")
             if ts.tzinfo is None or ts.tzinfo.utcoffset(ts) is None:
-                raise ValueError(
-                    f"{symbol}: bar_timestamp must be tz-aware (got naive {ts!r})"
-                )
-            ts_utc = ts.astimezone(timezone.utc)
+                raise ValueError(f"{symbol}: bar_timestamp must be tz-aware (got naive {ts!r})")
+            ts_utc = ts.astimezone(UTC)
             sid = int(row["symbol_id"]) if "symbol_id" in row else fallback_symbol_id
             normalized[ts_utc] = {
                 "bar_timestamp": ts_utc,

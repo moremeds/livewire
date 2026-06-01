@@ -6,7 +6,7 @@ import sys
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -131,8 +131,10 @@ class TestGroupContiguousDates:
     def test_two_separate_ranges(self):
         # Jan 5-6 and Jan 8-9 (gap at Jan 7)
         dates = [
-            date(2026, 1, 5), date(2026, 1, 6),
-            date(2026, 1, 8), date(2026, 1, 9),
+            date(2026, 1, 5),
+            date(2026, 1, 6),
+            date(2026, 1, 8),
+            date(2026, 1, 9),
         ]
         result = group_contiguous_dates(dates)
         assert result == [
@@ -371,10 +373,17 @@ class TestMain:
         bronze_dir.mkdir(parents=True)
 
         # Full week Mon-Fri, no gaps
-        _write_parquet(bronze_dir, "AAPL", [
-            date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7),
-            date(2026, 1, 8), date(2026, 1, 9),
-        ])
+        _write_parquet(
+            bronze_dir,
+            "AAPL",
+            [
+                date(2026, 1, 5),
+                date(2026, 1, 6),
+                date(2026, 1, 7),
+                date(2026, 1, 8),
+                date(2026, 1, 9),
+            ],
+        )
 
         with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
             with patch("sys.argv", ["health_check.py", "--force"]):
@@ -399,9 +408,15 @@ class TestMain:
         bronze_dir.mkdir(parents=True)
 
         # VIX with a gap: Jan 5, Jan 6, Jan 8 (missing Jan 7)
-        _write_parquet(bronze_dir, "VIX", [
-            date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 8),
-        ])
+        _write_parquet(
+            bronze_dir,
+            "VIX",
+            [
+                date(2026, 1, 5),
+                date(2026, 1, 6),
+                date(2026, 1, 8),
+            ],
+        )
 
         with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
             with patch("sys.argv", ["health_check.py", "--force", "--asset-class", "volatility"]):
@@ -416,9 +431,15 @@ class TestMain:
         bronze_dir.mkdir(parents=True)
 
         # AAPL with gap on Jan 7 (Wed)
-        _write_parquet(bronze_dir, "AAPL", [
-            date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 8),
-        ])
+        _write_parquet(
+            bronze_dir,
+            "AAPL",
+            [
+                date(2026, 1, 5),
+                date(2026, 1, 6),
+                date(2026, 1, 8),
+            ],
+        )
 
         # Build a fake IB bar for the missing date
         fake_bar = SimpleNamespace(
@@ -442,9 +463,15 @@ class TestMain:
 
         with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
             with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
-                with patch("sys.argv", [
-                    "health_check.py", "--force", "--alert-threshold", "100",
-                ]):
+                with patch(
+                    "sys.argv",
+                    [
+                        "health_check.py",
+                        "--force",
+                        "--alert-threshold",
+                        "100",
+                    ],
+                ):
                     with patch("livewire_scripts.health_check.subprocess.run") as mock_subprocess:
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm) as mock_ib_cls:
                             with patch("livewire_scripts.daily_update.fetch_fallback_bars", return_value=([], [])):
@@ -460,9 +487,15 @@ class TestMain:
         bronze_dir.mkdir(parents=True)
 
         # AAPL with a gap on Jan 7
-        _write_parquet(bronze_dir, "AAPL", [
-            date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 8),
-        ])
+        _write_parquet(
+            bronze_dir,
+            "AAPL",
+            [
+                date(2026, 1, 5),
+                date(2026, 1, 6),
+                date(2026, 1, 8),
+            ],
+        )
 
         fake_bar = SimpleNamespace(
             date=date(2026, 1, 7),
@@ -485,9 +518,15 @@ class TestMain:
 
         with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
             with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
-                with patch("sys.argv", [
-                    "health_check.py", "--force", "--alert-threshold", "1",
-                ]):
+                with patch(
+                    "sys.argv",
+                    [
+                        "health_check.py",
+                        "--force",
+                        "--alert-threshold",
+                        "1",
+                    ],
+                ):
                     with patch("livewire_scripts.health_check.subprocess.run") as mock_subprocess:
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm):
                             with patch("livewire_scripts.daily_update.fetch_fallback_bars", return_value=([], [])):
@@ -502,9 +541,15 @@ class TestMain:
         bronze_dir = tmp_path / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
 
-        _write_parquet(bronze_dir, "AAPL", [
-            date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 8),
-        ])
+        _write_parquet(
+            bronze_dir,
+            "AAPL",
+            [
+                date(2026, 1, 5),
+                date(2026, 1, 6),
+                date(2026, 1, 8),
+            ],
+        )
 
         mock_ib_instance = MagicMock()
         # First call to ib.run() is ib.connect() — returns None (success)
@@ -533,9 +578,15 @@ class TestMain:
         bronze_dir = tmp_path / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
 
-        _write_parquet(bronze_dir, "AAPL", [
-            date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 8),
-        ])
+        _write_parquet(
+            bronze_dir,
+            "AAPL",
+            [
+                date(2026, 1, 5),
+                date(2026, 1, 6),
+                date(2026, 1, 8),
+            ],
+        )
 
         mock_ib_instance = MagicMock()
         # Return empty list from ib.run (no bars)
@@ -561,9 +612,15 @@ class TestMain:
         bronze_dir = tmp_path / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
 
-        _write_parquet(bronze_dir, "AAPL", [
-            date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 8),
-        ])
+        _write_parquet(
+            bronze_dir,
+            "AAPL",
+            [
+                date(2026, 1, 5),
+                date(2026, 1, 6),
+                date(2026, 1, 8),
+            ],
+        )
 
         # A bar with high < low (invalid) so validate_bars returns an issue
         bad_bar = SimpleNamespace(
@@ -602,19 +659,21 @@ class TestMain:
         bronze_dir.mkdir(parents=True)
 
         # Use futures parquet schema
-        futures_schema = pa.schema([
-            ("trade_date", pa.date32()),
-            ("contract_id", pa.int64()),
-            ("root_symbol", pa.string()),
-            ("expiry_date", pa.date32()),
-            ("open", pa.float64()),
-            ("high", pa.float64()),
-            ("low", pa.float64()),
-            ("close", pa.float64()),
-            ("settlement", pa.float64()),
-            ("volume", pa.int64()),
-            ("open_interest", pa.int64()),
-        ])
+        futures_schema = pa.schema(
+            [
+                ("trade_date", pa.date32()),
+                ("contract_id", pa.int64()),
+                ("root_symbol", pa.string()),
+                ("expiry_date", pa.date32()),
+                ("open", pa.float64()),
+                ("high", pa.float64()),
+                ("low", pa.float64()),
+                ("close", pa.float64()),
+                ("settlement", pa.float64()),
+                ("volume", pa.int64()),
+                ("open_interest", pa.int64()),
+            ]
+        )
         sym_dir = bronze_dir / "symbol=ES_202506"
         sym_dir.mkdir(parents=True)
         rows = [
@@ -623,16 +682,26 @@ class TestMain:
                 "contract_id": 1,
                 "root_symbol": "ES",
                 "expiry_date": date(2026, 6, 1),
-                "open": 5000.0, "high": 5010.0, "low": 4990.0, "close": 5005.0,
-                "settlement": 5005.0, "volume": 100000, "open_interest": 0,
+                "open": 5000.0,
+                "high": 5010.0,
+                "low": 4990.0,
+                "close": 5005.0,
+                "settlement": 5005.0,
+                "volume": 100000,
+                "open_interest": 0,
             },
             {
                 "trade_date": date(2026, 1, 7),  # gap: missing Jan 6
                 "contract_id": 1,
                 "root_symbol": "ES",
                 "expiry_date": date(2026, 6, 1),
-                "open": 5010.0, "high": 5020.0, "low": 5000.0, "close": 5015.0,
-                "settlement": 5015.0, "volume": 110000, "open_interest": 0,
+                "open": 5010.0,
+                "high": 5020.0,
+                "low": 5000.0,
+                "close": 5015.0,
+                "settlement": 5015.0,
+                "volume": 110000,
+                "open_interest": 0,
             },
         ]
         table = pa.Table.from_pylist(rows, schema=futures_schema)
@@ -659,10 +728,17 @@ class TestMain:
 
         with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
             with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
-                with patch("sys.argv", [
-                    "health_check.py", "--force", "--asset-class", "futures",
-                    "--alert-threshold", "100",
-                ]):
+                with patch(
+                    "sys.argv",
+                    [
+                        "health_check.py",
+                        "--force",
+                        "--asset-class",
+                        "futures",
+                        "--alert-threshold",
+                        "100",
+                    ],
+                ):
                     with patch("livewire_scripts.health_check.subprocess.run"):
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm):
                             main()  # Should complete without error
@@ -672,9 +748,15 @@ class TestMain:
         bronze_dir = tmp_path / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
 
-        _write_parquet(bronze_dir, "AAPL", [
-            date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 8),
-        ])
+        _write_parquet(
+            bronze_dir,
+            "AAPL",
+            [
+                date(2026, 1, 5),
+                date(2026, 1, 6),
+                date(2026, 1, 8),
+            ],
+        )
 
         # IB returns empty bars — so gap remains unresolved after IB
         mock_ib_instance = MagicMock()
@@ -688,26 +770,39 @@ class TestMain:
         # Fallback returns a bar for the missing date
         fallback_bar = SimpleNamespace(
             date=date(2026, 1, 7),
-            open=150.0, high=152.0, low=149.0, close=151.0, volume=1_000_000,
+            open=150.0,
+            high=152.0,
+            low=149.0,
+            close=151.0,
+            volume=1_000_000,
         )
 
         warehouse_dir = tmp_path
 
         with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
             with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
-                with patch("sys.argv", [
-                    "health_check.py", "--force", "--alert-threshold", "100",
-                ]):
+                with patch(
+                    "sys.argv",
+                    [
+                        "health_check.py",
+                        "--force",
+                        "--alert-threshold",
+                        "100",
+                    ],
+                ):
                     with patch("livewire_scripts.health_check.subprocess.run"):
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm):
-                            with patch("livewire_scripts.daily_update.fetch_fallback_bars", return_value=([fallback_bar], ["fallback"])):
+                            with patch(
+                                "livewire_scripts.daily_update.fetch_fallback_bars",
+                                return_value=([fallback_bar], ["fallback"]),
+                            ):
                                 with patch("clients.daily_bar_fallback.DailyBarFallbackClient"):
                                     main()  # Should complete without error
 
 
 # ── Intraday helpers ──────────────────────────────────────────────────────────
 
-from datetime import datetime, time, timezone  # noqa: E402
+from datetime import UTC, datetime  # noqa: E402
 from zoneinfo import ZoneInfo  # noqa: E402
 
 import pyarrow as pa  # noqa: E402,F811
@@ -728,7 +823,7 @@ _ET = ZoneInfo("America/New_York")
 
 
 def _et_to_utc(d: date, h: int, m: int) -> datetime:
-    return datetime(d.year, d.month, d.day, h, m, tzinfo=_ET).astimezone(timezone.utc)
+    return datetime(d.year, d.month, d.day, h, m, tzinfo=_ET).astimezone(UTC)
 
 
 def _write_intraday_parquet(
@@ -741,7 +836,7 @@ def _write_intraday_parquet(
     sym_dir.mkdir(parents=True, exist_ok=True)
     rows = [
         {
-            "bar_timestamp": ts.astimezone(timezone.utc),
+            "bar_timestamp": ts.astimezone(UTC),
             "symbol_id": 1,
             "open": 1.0,
             "high": 2.0,
@@ -774,7 +869,13 @@ class TestGenerateExpectedIntradayTimestamps:
         assert len(ts) == 7
         et_minutes = sorted(t.astimezone(_ET).strftime("%H:%M") for t in ts)
         assert et_minutes == [
-            "09:30", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00",
+            "09:30",
+            "10:00",
+            "11:00",
+            "12:00",
+            "13:00",
+            "14:00",
+            "15:00",
         ]
 
     def test_5m_early_close(self):
@@ -937,12 +1038,11 @@ class TestMainIntradayBranch:
         d = date(2026, 4, 6)
         full = sorted(generate_expected_intraday_timestamps([d], "5m"))
         _write_intraday_parquet(bronze_dir, "AAPL", "5m", full)
-        monkeypatch.setattr(
-            "livewire_scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir
-        )
+        monkeypatch.setattr("livewire_scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir)
         with patch("livewire_scripts.health_check.subprocess.run") as mock_run:
             with patch.object(
-                sys, "argv",
+                sys,
+                "argv",
                 ["health_check.py", "--intraday", "--timeframe", "5m", "--force"],
             ):
                 main()
@@ -953,16 +1053,22 @@ class TestMainIntradayBranch:
         d = date(2026, 4, 6)
         full = sorted(generate_expected_intraday_timestamps([d], "5m"))
         _write_intraday_parquet(bronze_dir, "AAPL", "5m", full)
-        monkeypatch.setattr(
-            "livewire_scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir
-        )
+        monkeypatch.setattr("livewire_scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir)
         with patch("livewire_scripts.health_check.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(returncode=0)
             with patch.object(
-                sys, "argv",
+                sys,
+                "argv",
                 [
-                    "health_check.py", "--intraday", "--timeframe", "5m",
-                    "--symbol", "AAPL", "--since", "2026-04-01", "--force",
+                    "health_check.py",
+                    "--intraday",
+                    "--timeframe",
+                    "5m",
+                    "--symbol",
+                    "AAPL",
+                    "--since",
+                    "2026-04-01",
+                    "--force",
                 ],
             ):
                 main()
@@ -975,15 +1081,19 @@ class TestMainIntradayBranch:
         d = date(2026, 4, 6)
         full = sorted(generate_expected_intraday_timestamps([d], "5m"))
         _write_intraday_parquet(bronze_dir, "AAPL", "5m", full)
-        monkeypatch.setattr(
-            "livewire_scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir
-        )
+        monkeypatch.setattr("livewire_scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir)
         with patch("livewire_scripts.health_check.subprocess.run") as mock_run:
             with patch.object(
-                sys, "argv",
+                sys,
+                "argv",
                 [
-                    "health_check.py", "--intraday", "--timeframe", "5m",
-                    "--symbol", "AAPL", "--force",
+                    "health_check.py",
+                    "--intraday",
+                    "--timeframe",
+                    "5m",
+                    "--symbol",
+                    "AAPL",
+                    "--force",
                 ],
             ):
                 main()
@@ -994,16 +1104,22 @@ class TestMainIntradayBranch:
         d = date(2026, 4, 6)
         full = sorted(generate_expected_intraday_timestamps([d], "5m"))
         _write_intraday_parquet(bronze_dir, "AAPL", "5m", full)
-        monkeypatch.setattr(
-            "livewire_scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir
-        )
+        monkeypatch.setattr("livewire_scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir)
         with patch("livewire_scripts.health_check.subprocess.run") as mock_run:
             with patch.object(
-                sys, "argv",
+                sys,
+                "argv",
                 [
-                    "health_check.py", "--intraday", "--timeframe", "5m",
-                    "--symbol", "AAPL", "--since", "2026-04-01",
-                    "--dry-run", "--force",
+                    "health_check.py",
+                    "--intraday",
+                    "--timeframe",
+                    "5m",
+                    "--symbol",
+                    "AAPL",
+                    "--since",
+                    "2026-04-01",
+                    "--dry-run",
+                    "--force",
                 ],
             ):
                 main()
@@ -1014,16 +1130,22 @@ class TestMainIntradayBranch:
         d = date(2026, 4, 6)
         full = sorted(generate_expected_intraday_timestamps([d], "5m"))
         _write_intraday_parquet(bronze_dir, "AAPL", "5m", full)
-        monkeypatch.setattr(
-            "livewire_scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir
-        )
+        monkeypatch.setattr("livewire_scripts.health_check._resolve_bronze_dir", lambda ac: bronze_dir)
         with patch("livewire_scripts.health_check.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(returncode=3)
             with patch.object(
-                sys, "argv",
+                sys,
+                "argv",
                 [
-                    "health_check.py", "--intraday", "--timeframe", "5m",
-                    "--symbol", "AAPL", "--since", "2026-04-01", "--force",
+                    "health_check.py",
+                    "--intraday",
+                    "--timeframe",
+                    "5m",
+                    "--symbol",
+                    "AAPL",
+                    "--since",
+                    "2026-04-01",
+                    "--force",
                 ],
             ):
                 main()

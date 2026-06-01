@@ -17,6 +17,7 @@ class TestBarRecord:
 class TestContractSpecHelpers:
     def test_stock_to_spec(self):
         from ib_async import Stock
+
         contract = Stock("AAPL", "SMART", "USD")
         spec = ib_contract_to_spec(contract)
         assert spec["sec_type"] == "STK"
@@ -31,6 +32,7 @@ class TestContractSpecHelpers:
 
     def test_future_roundtrip(self):
         from ib_async import Future
+
         contract = Future("ES", "202506", "CME", "USD")
         spec = ib_contract_to_spec(contract)
         assert spec["sec_type"] == "FUT"
@@ -40,6 +42,7 @@ class TestContractSpecHelpers:
 
     def test_index_roundtrip(self):
         from ib_async import Index
+
         contract = Index("VIX", "CBOE", "USD")
         spec = ib_contract_to_spec(contract)
         assert spec["sec_type"] == "IND"

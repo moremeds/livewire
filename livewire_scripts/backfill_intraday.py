@@ -21,11 +21,12 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -54,9 +55,7 @@ from livewire_scripts.fetch_ib_historical import compute_intraday_chunks
 log = logging.getLogger("backfill_intraday")
 console = Console()
 
-_WAREHOUSE_DIR = Path(
-    os.environ.get("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))
-)
+_WAREHOUSE_DIR = Path(os.environ.get("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
 _DATA_LAKE = _WAREHOUSE_DIR / "data-lake"
 _LOG_DIR = _WAREHOUSE_DIR / "logs"
 _CURSOR_DIR = _WAREHOUSE_DIR / "cursors"
@@ -66,7 +65,7 @@ _NO_DATA_ERRORS = {162, 200}
 
 _DEFAULT_YEARS = {"1m": 5, "1h": 5, "5m": 5, "30m": 5}
 _ET = ZoneInfo("America/New_York")
-_UTC = timezone.utc
+_UTC = UTC
 
 
 @dataclass
@@ -166,20 +165,14 @@ def massive_intraday_bar_to_row(bar: Any, symbol_id: int) -> dict[str, Any]:
 
 def _is_regular_trading_timestamp(ts: datetime) -> bool:
     """Return True when a UTC timestamp falls inside the U.S. equity RTH window."""
-    if (
-        ts.tzinfo is None
-        or ts.tzinfo.utcoffset(ts) is None
-        or ts.utcoffset() != timedelta(0)
-    ):
+    if ts.tzinfo is None or ts.tzinfo.utcoffset(ts) is None or ts.utcoffset() != timedelta(0):
         return False
     et = ts.astimezone(_ET)
     if not is_trading_day(et.date()):
         return False
     rth_start = et.replace(hour=9, minute=30, second=0, microsecond=0)
     close_t = session_close_time(et.date())
-    rth_end = et.replace(
-        hour=close_t.hour, minute=close_t.minute, second=0, microsecond=0
-    )
+    rth_end = et.replace(hour=close_t.hour, minute=close_t.minute, second=0, microsecond=0)
     return rth_start <= et < rth_end
 
 
@@ -367,9 +360,7 @@ def backfill_ticker_massive(
             row = massive_intraday_bar_to_row(bar, symbol_id)
             if not _is_regular_trading_timestamp(row["bar_timestamp"]):
                 continue
-            issues = validate_intraday_bar(
-                _BarRow(row["bar_timestamp"]), ticker, timeframe
-            )
+            issues = validate_intraday_bar(_BarRow(row["bar_timestamp"]), ticker, timeframe)
             if issues:
                 outcome.rejected += 1
                 for issue in issues:
@@ -396,9 +387,7 @@ def backfill_ticker_massive(
     return outcome
 
 
-def compute_intraday_chunks_for_days(
-    timeframe: str, days_back: int
-) -> list[tuple[str, str]]:
+def compute_intraday_chunks_for_days(timeframe: str, days_back: int) -> list[tuple[str, str]]:
     """Generate IB chunks for a recent-day intraday catch-up."""
     if days_back < 1:
         raise ValueError("days_back must be >= 1")
@@ -427,10 +416,7 @@ def plan_chunks(
         if lookback_days is not None
         else compute_intraday_chunks(timeframe, years)
     )
-    return [
-        f"{ticker}: {len(chunks)} chunks of {INTRADAY_IB_BAR_SIZE[timeframe]}"
-        for ticker in tickers
-    ]
+    return [f"{ticker}: {len(chunks)} chunks of {INTRADAY_IB_BAR_SIZE[timeframe]}" for ticker in tickers]
 
 
 def _resolve_tickers(args: argparse.Namespace) -> tuple[str, list[str]]:
@@ -501,9 +487,7 @@ def main() -> None:
         help="Maximum concurrent Massive ticker fetches (default: 1)",
     )
     parser.add_argument("--host", default=os.getenv("MDW_IB_HOST", "127.0.0.1"))
-    parser.add_argument(
-        "--port", type=int, default=int(os.getenv("MDW_IB_PORT", "4001"))
-    )
+    parser.add_argument("--port", type=int, default=int(os.getenv("MDW_IB_PORT", "4001")))
     args = parser.parse_args()
 
     years = args.years if args.years is not None else _DEFAULT_YEARS[args.timeframe]
@@ -520,9 +504,7 @@ def main() -> None:
     # When --tickers is passed explicitly, the operator knows what they want;
     # always refetch and skip cursor bookkeeping.
     use_cursor = bool(args.preset)
-    completed: set[str] = (
-        load_cursor(args.timeframe, cursor_name) if use_cursor else set()
-    )
+    completed: set[str] = load_cursor(args.timeframe, cursor_name) if use_cursor else set()
 
     pending = [t for t in tickers if t not in completed]
     if args.max_tickers is not None:
@@ -559,9 +541,7 @@ def main() -> None:
         return
 
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = (
-        _LOG_DIR / f"backfill_intraday_{args.timeframe}_{date.today():%Y-%m-%d}.log"
-    )
+    log_path = _LOG_DIR / f"backfill_intraday_{args.timeframe}_{date.today():%Y-%m-%d}.log"
     log_handler = logging.FileHandler(log_path)
     log_handler.setLevel(logging.INFO)
     log.addHandler(log_handler)
@@ -595,15 +575,9 @@ def main() -> None:
         )
         if outcome.errors:
             failed.append(ticker)
-            console.print(
-                f"  [red]{ticker}[/red]: provider errors={len(outcome.errors)}; "
-                "not marking cursor complete"
-            )
+            console.print(f"  [red]{ticker}[/red]: provider errors={len(outcome.errors)}; not marking cursor complete")
             return
-        console.print(
-            f"  [green]{ticker}[/green]: +{outcome.bars_inserted} bars "
-            f"({outcome.rejected} rejected)"
-        )
+        console.print(f"  [green]{ticker}[/green]: +{outcome.bars_inserted} bars ({outcome.rejected} rejected)")
         if use_cursor:
             completed.add(ticker)
             save_cursor(args.timeframe, cursor_name, completed)
@@ -623,9 +597,7 @@ def main() -> None:
             return ticker, outcome
 
         with ThreadPoolExecutor(max_workers=args.max_concurrent) as executor:
-            futures = {
-                executor.submit(fetch_massive, ticker): ticker for ticker in pending
-            }
+            futures = {executor.submit(fetch_massive, ticker): ticker for ticker in pending}
             for future in as_completed(futures):
                 ticker = futures[future]
                 try:
@@ -654,9 +626,7 @@ def main() -> None:
             provider.connect(host=args.host, port=args.port)
             for ticker in pending:
                 if args.skip_existing and should_skip_existing(bronze, ticker, years):
-                    console.print(
-                        f"  [dim]{ticker}: bronze already covers {years}y — skip[/dim]"
-                    )
+                    console.print(f"  [dim]{ticker}: bronze already covers {years}y — skip[/dim]")
                     if use_cursor:
                         completed.add(ticker)
                         save_cursor(args.timeframe, cursor_name, completed)

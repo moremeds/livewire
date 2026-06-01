@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -101,9 +100,7 @@ class TestMain:
         sym_dir.mkdir(parents=True)
         (sym_dir / "data.parquet").write_bytes(b"fake")
 
-        monkeypatch.setattr(
-            "sys.argv", ["migrate_parquet_filename.py", "--dir", str(tmp_path / "bronze")]
-        )
+        monkeypatch.setattr("sys.argv", ["migrate_parquet_filename.py", "--dir", str(tmp_path / "bronze")])
         main()
 
         assert (sym_dir / "1d.parquet").exists()
@@ -113,9 +110,7 @@ class TestMain:
         bronze.mkdir(parents=True)
         (bronze / "data.parquet").write_bytes(b"fake")
 
-        delisted = (
-            tmp_path / "market-warehouse" / "data-lake" / "bronze-delisted" / "symbol=OLD"
-        )
+        delisted = tmp_path / "market-warehouse" / "data-lake" / "bronze-delisted" / "symbol=OLD"
         delisted.mkdir(parents=True)
         (delisted / "data.parquet").write_bytes(b"fake")
 

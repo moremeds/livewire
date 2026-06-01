@@ -29,9 +29,7 @@ def publish_parquet(
     The temp file is always cleaned up.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = out_path.with_name(
-        f".{out_path.name}.{os.getpid()}.{time.time_ns()}.tmp"
-    )
+    tmp_path = out_path.with_name(f".{out_path.name}.{os.getpid()}.{time.time_ns()}.tmp")
 
     try:
         pq.write_table(table, tmp_path, compression="snappy")
@@ -61,15 +59,10 @@ def validate_parquet_file(
 
     table = pq.read_table(path, columns=[sort_column])
     if table.num_rows != expected_rows:
-        raise ValueError(
-            f"{path}: expected {expected_rows} rows, found {table.num_rows}"
-        )
+        raise ValueError(f"{path}: expected {expected_rows} rows, found {table.num_rows}")
 
     raw_values = table.column(sort_column).to_pylist()
-    values = [
-        v.isoformat() if isinstance(v, (date, datetime)) else str(v)
-        for v in raw_values
-    ]
+    values = [v.isoformat() if isinstance(v, (date, datetime)) else str(v) for v in raw_values]
     if values != sorted(values):
         raise ValueError(f"{path}: {sort_column} values are not sorted ascending")
     if len(values) != len(set(values)):

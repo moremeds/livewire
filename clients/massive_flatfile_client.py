@@ -16,7 +16,7 @@ import io
 import logging
 import os
 import tempfile
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -64,7 +64,7 @@ def parse_flatfile_csv(
             continue
 
         ns = int(row["window_start"])
-        ts = datetime.fromtimestamp(ns / 1_000_000_000, tz=timezone.utc)
+        ts = datetime.fromtimestamp(ns / 1_000_000_000, tz=UTC)
 
         bar = {
             "bar_timestamp": ts,

@@ -34,8 +34,6 @@ def test_live_ensure_schema_creates_tables() -> None:
                 tables = {row[0] for row in cur.fetchall()}
         finally:
             with conn.cursor() as cur:
-                cur.execute(
-                    sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
-                )
+                cur.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema)))
 
     assert set(POSTGRES_TABLES).issubset(tables)

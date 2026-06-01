@@ -7,6 +7,7 @@ backfill mode (no older history available, exit 0 = success).
 
 See: docs/superpowers/specs/2026-05-17-mdw-reliability-foundation-design.md
 """
+
 from __future__ import annotations
 
 import argparse
@@ -17,10 +18,9 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
-from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BRONZE_DIR = Path.home() / "market-warehouse" / "data-lake" / "bronze"
@@ -39,7 +39,7 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Robust per-ticker IB fetch orchestrator")
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--preset", type=Path, help="Preset JSON file with .tickers array")
@@ -76,7 +76,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def load_tickers(*, preset_path: Optional[Path], explicit: Optional[list[str]]) -> list[str]:
+def load_tickers(*, preset_path: Path | None, explicit: list[str] | None) -> list[str]:
     if explicit:
         return list(explicit)
     if preset_path is None:
@@ -103,7 +103,7 @@ def _is_already_done(parquet_path: Path, mode: str) -> bool:
     return False  # pragma: no cover - argparse choices prevent other values
 
 
-class OutcomeCategory(str, Enum):
+class OutcomeCategory(StrEnum):
     OK = "ok"
     OK_NOOP = "ok-noop"
     SKIP = "skip"
@@ -252,14 +252,14 @@ def format_summary(
     )
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     tickers = load_tickers(preset_path=args.preset, explicit=args.tickers)
     if not tickers:
         _logger.error("no tickers to process")
         return 2
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%SZ")
     log_dir = args.log_dir / f"orch_{args.mode}_{stamp}"
     log_dir.mkdir(parents=True, exist_ok=True)
     summary_log = log_dir / "_summary.log"

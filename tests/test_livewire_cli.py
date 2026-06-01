@@ -97,9 +97,7 @@ class TestDispatchModule:
     def test_dispatches_with_argv(self):
         mock_module = MagicMock()
         mock_module.main.return_value = 0
-        with patch(
-            "scripts.livewire.importlib.import_module", return_value=mock_module
-        ):
+        with patch("scripts.livewire.importlib.import_module", return_value=mock_module):
             result = _dispatch_module("fake.module", ["--flag"], "test")
         assert result == 0
         mock_module.main.assert_called_once_with(["--flag"])
@@ -107,27 +105,21 @@ class TestDispatchModule:
     def test_handles_system_exit_zero(self):
         mock_module = MagicMock()
         mock_module.main.side_effect = SystemExit(0)
-        with patch(
-            "scripts.livewire.importlib.import_module", return_value=mock_module
-        ):
+        with patch("scripts.livewire.importlib.import_module", return_value=mock_module):
             result = _dispatch_module("fake.module", [], "test")
         assert result == 0
 
     def test_propagates_nonzero_system_exit(self):
         mock_module = MagicMock()
         mock_module.main.side_effect = SystemExit(1)
-        with patch(
-            "scripts.livewire.importlib.import_module", return_value=mock_module
-        ):
+        with patch("scripts.livewire.importlib.import_module", return_value=mock_module):
             with pytest.raises(SystemExit):
                 _dispatch_module("fake.module", [], "test")
 
     def test_handles_none_return(self):
         mock_module = MagicMock()
         mock_module.main.return_value = None
-        with patch(
-            "scripts.livewire.importlib.import_module", return_value=mock_module
-        ):
+        with patch("scripts.livewire.importlib.import_module", return_value=mock_module):
             result = _dispatch_module("fake.module", [], "test")
         assert result == 0
 
@@ -625,9 +617,7 @@ class TestBackfillSourceS3:
             return 0
 
         monkeypatch.setattr("scripts.livewire._dispatch_module", capture)
-        _dispatch_backfill(
-            ["--source", "s3", "--preset", "presets/sp500.json", "--years", "3"]
-        )
+        _dispatch_backfill(["--source", "s3", "--preset", "presets/sp500.json", "--years", "3"])
 
         s3_call = [d for d in dispatched if d[0] == "livewire_scripts.ingest_flatfiles"]
         assert len(s3_call) == 1

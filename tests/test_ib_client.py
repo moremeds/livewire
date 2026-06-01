@@ -9,7 +9,6 @@ import pytest
 
 from clients.ib_client import IBClient, IBConnectionError
 
-
 # ── helpers ───────────────────────────────────────────────────────────
 
 
@@ -33,9 +32,7 @@ class TestConnectSuccess:
 
         client.connect()
 
-        mock_ib.connect.assert_called_once_with(
-            "127.0.0.1", 4001, clientId=0, timeout=10
-        )
+        mock_ib.connect.assert_called_once_with("127.0.0.1", 4001, clientId=0, timeout=10)
 
     def test_connect_stores_last_client_id_on_success(self):
         client, mock_ib = _make_client()

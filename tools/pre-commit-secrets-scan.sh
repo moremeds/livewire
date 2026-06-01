@@ -10,8 +10,15 @@ YELLOW='\033[0;33m'
 GREEN='\033[0;32m'
 NC='\033[0m'
 
-# Get list of staged files (added/modified, not deleted)
-STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
+# Determine file list: CI mode scans the PR diff, pre-commit scans staged files
+CI_MODE=false
+if [[ "${1:-}" == "--ci" ]]; then
+    CI_MODE=true
+    BASE_REF="${2:-main}"
+    STAGED_FILES=$(git diff --name-only --diff-filter=ACM "origin/${BASE_REF}...HEAD")
+else
+    STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
+fi
 
 if [ -z "$STAGED_FILES" ]; then
     exit 0
@@ -157,9 +164,13 @@ for file in $STAGED_FILES; do
         continue
     fi
 
-    # Get staged content (what will actually be committed)
-    STAGED_CONTENT_FILE="$TMPDIR_SCAN/$(basename "$file")"
-    git show ":$file" > "$STAGED_CONTENT_FILE" 2>/dev/null || continue
+    # Get file content: staged version for pre-commit, working tree for CI
+    STAGED_CONTENT_FILE="$TMPDIR_SCAN/$(echo "$file" | tr '/' '_')"
+    if [ "$CI_MODE" = true ]; then
+        cp "$file" "$STAGED_CONTENT_FILE" 2>/dev/null || continue
+    else
+        git show ":$file" > "$STAGED_CONTENT_FILE" 2>/dev/null || continue
+    fi
 
     for i in "${!PATTERNS[@]}"; do
         MATCHES=$(grep -niE "${PATTERNS[$i]}" "$STAGED_CONTENT_FILE" 2>/dev/null || true)
@@ -230,25 +241,27 @@ fi
 
 echo -e "${GREEN}No secrets found. Proceeding with commit.${NC}"
 
-# ── Run pytest if any Python files are staged ────────────────────────
+# ── Run pytest if any Python files are staged (pre-commit only) ─────
 
-PY_STAGED=$(echo "$STAGED_FILES" | grep '\.py$' || true)
+if [ "$CI_MODE" = false ]; then
+    PY_STAGED=$(echo "$STAGED_FILES" | grep '\.py$' || true)
 
-if [ -n "$PY_STAGED" ]; then
-    echo ""
-    echo "Running pytest on staged Python changes..."
-    VENV_PYTHON="$HOME/market-warehouse/.venv/bin/python"
-    if [ -x "$VENV_PYTHON" ]; then
-        if ! "$VENV_PYTHON" -m pytest tests/ --tb=short -q 2>&1 | tail -15; then
-            echo ""
-            echo -e "${RED}Tests failed. Commit aborted.${NC}"
-            echo "Fix the failing tests, then try again."
-            echo ""
-            exit 1
+    if [ -n "$PY_STAGED" ]; then
+        echo ""
+        echo "Running pytest on staged Python changes..."
+        VENV_PYTHON="$HOME/market-warehouse/.venv/bin/python"
+        if [ -x "$VENV_PYTHON" ]; then
+            if ! "$VENV_PYTHON" -m pytest tests/ --tb=short -q 2>&1 | tail -15; then
+                echo ""
+                echo -e "${RED}Tests failed. Commit aborted.${NC}"
+                echo "Fix the failing tests, then try again."
+                echo ""
+                exit 1
+            fi
+            echo -e "${GREEN}All tests passed.${NC}"
+        else
+            echo -e "${YELLOW}Warning: venv python not found at $VENV_PYTHON — skipping pytest.${NC}"
         fi
-        echo -e "${GREEN}All tests passed.${NC}"
-    else
-        echo -e "${YELLOW}Warning: venv python not found at $VENV_PYTHON — skipping pytest.${NC}"
     fi
 fi
 

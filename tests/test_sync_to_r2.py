@@ -1,7 +1,6 @@
 """Tests for scripts/sync_to_r2.py — R2 sync logic."""
 
-from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 from livewire_scripts.sync_to_r2 import (
     PARQUET_FILES_TO_SYNC,
@@ -47,12 +46,8 @@ class TestUpload:
         (equity_dir / "1d.parquet").write_bytes(b"fake parquet")
 
         mock_client = MagicMock()
-        with patch(
-            "livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client
-        ):
-            with patch(
-                "livewire_scripts.sync_to_r2._get_bucket", return_value="test-bucket"
-            ):
+        with patch("livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client):
+            with patch("livewire_scripts.sync_to_r2._get_bucket", return_value="test-bucket"):
                 count = upload(bronze_dir)
 
         assert count == 1
@@ -70,9 +65,7 @@ class TestUpload:
             (d / "1d.parquet").write_bytes(b"fake")
 
         mock_client = MagicMock()
-        with patch(
-            "livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client
-        ):
+        with patch("livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client):
             with patch("livewire_scripts.sync_to_r2._get_bucket", return_value="b"):
                 count = upload(bronze_dir)
 
@@ -86,9 +79,7 @@ class TestUpload:
         (d / "1d.parquet").write_bytes(b"fake")
 
         mock_client = MagicMock()
-        with patch(
-            "livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client
-        ):
+        with patch("livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client):
             with patch("livewire_scripts.sync_to_r2._get_bucket", return_value="b"):
                 count = upload(bronze_dir, dry_run=True)
 
@@ -109,9 +100,7 @@ class TestDownload:
             {"Contents": [{"Key": "bronze/asset_class=equity/symbol=AAPL/1d.parquet"}]}
         ]
 
-        with patch(
-            "livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client
-        ):
+        with patch("livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client):
             with patch("livewire_scripts.sync_to_r2._get_bucket", return_value="b"):
                 count = download(bronze_dir)
 
@@ -131,9 +120,7 @@ class TestDownload:
             }
         ]
 
-        with patch(
-            "livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client
-        ):
+        with patch("livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client):
             with patch("livewire_scripts.sync_to_r2._get_bucket", return_value="b"):
                 count = download(bronze_dir)
 
@@ -147,9 +134,7 @@ class TestDownload:
             {"Contents": [{"Key": "bronze/asset_class=equity/symbol=AAPL/1d.parquet"}]}
         ]
 
-        with patch(
-            "livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client
-        ):
+        with patch("livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client):
             with patch("livewire_scripts.sync_to_r2._get_bucket", return_value="b"):
                 count = download(bronze_dir, dry_run=True)
 
@@ -160,13 +145,9 @@ class TestDownload:
         bronze_dir = tmp_path / "bronze"
 
         mock_client = MagicMock()
-        mock_client.get_paginator.return_value.paginate.return_value = [
-            {"Contents": []}
-        ]
+        mock_client.get_paginator.return_value.paginate.return_value = [{"Contents": []}]
 
-        with patch(
-            "livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client
-        ):
+        with patch("livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client):
             with patch("livewire_scripts.sync_to_r2._get_bucket", return_value="b"):
                 count = download(bronze_dir)
 
@@ -182,9 +163,7 @@ class TestMain:
         mock_upload.assert_called_once()
 
     def test_download_mode(self, tmp_path):
-        with patch(
-            "livewire_scripts.sync_to_r2.download", return_value=3
-        ) as mock_download:
+        with patch("livewire_scripts.sync_to_r2.download", return_value=3) as mock_download:
             rc = main(["--download", "--data-lake", str(tmp_path)])
 
         assert rc == 0
@@ -212,9 +191,7 @@ class TestMultiTimeframeSync:
         assert "5m.parquet" in PARQUET_FILES_TO_SYNC
 
         with patch("livewire_scripts.sync_to_r2._get_s3_client") as mock_s3:
-            with patch(
-                "livewire_scripts.sync_to_r2._get_bucket", return_value="test-bucket"
-            ):
+            with patch("livewire_scripts.sync_to_r2._get_bucket", return_value="test-bucket"):
                 client = MagicMock()
                 mock_s3.return_value = client
                 count = upload(bronze_dir, dry_run=False)
@@ -243,9 +220,7 @@ class TestMultiTimeframeSync:
             }
         ]
 
-        with patch(
-            "livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client
-        ):
+        with patch("livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client):
             with patch("livewire_scripts.sync_to_r2._get_bucket", return_value="b"):
                 count = download(bronze_dir)
 
@@ -301,9 +276,7 @@ class TestIncrementalUpload:
         mock_client = MagicMock()
         mock_client.head_object.return_value = {"ContentLength": 100}
 
-        with patch(
-            "livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client
-        ):
+        with patch("livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client):
             with patch("livewire_scripts.sync_to_r2._get_bucket", return_value="b"):
                 count = upload(bronze_dir)
 
@@ -320,9 +293,7 @@ class TestIncrementalUpload:
         mock_client = MagicMock()
         mock_client.head_object.return_value = {"ContentLength": 100}
 
-        with patch(
-            "livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client
-        ):
+        with patch("livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client):
             with patch("livewire_scripts.sync_to_r2._get_bucket", return_value="b"):
                 count = upload(bronze_dir)
 
@@ -340,9 +311,7 @@ class TestIncrementalUpload:
         exc.response = {"Error": {"Code": "404"}}
         mock_client.head_object.side_effect = exc
 
-        with patch(
-            "livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client
-        ):
+        with patch("livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client):
             with patch("livewire_scripts.sync_to_r2._get_bucket", return_value="b"):
                 count = upload(bronze_dir)
 
@@ -369,9 +338,7 @@ class TestIncrementalDownload:
             }
         ]
 
-        with patch(
-            "livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client
-        ):
+        with patch("livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client):
             with patch("livewire_scripts.sync_to_r2._get_bucket", return_value="b"):
                 count = download(bronze_dir)
 
@@ -393,9 +360,7 @@ class TestIncrementalDownload:
             }
         ]
 
-        with patch(
-            "livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client
-        ):
+        with patch("livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client):
             with patch("livewire_scripts.sync_to_r2._get_bucket", return_value="b"):
                 count = download(bronze_dir)
 
@@ -420,9 +385,7 @@ class TestIncrementalDownload:
             }
         ]
 
-        with patch(
-            "livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client
-        ):
+        with patch("livewire_scripts.sync_to_r2._get_s3_client", return_value=mock_client):
             with patch("livewire_scripts.sync_to_r2._get_bucket", return_value="b"):
                 count = download(bronze_dir)
 

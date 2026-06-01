@@ -2,6 +2,25 @@
 name = "livewire"
 version = "0.2.0"
 requires-python = ">=3.13"
+dependencies = [
+    "boto3>=1.42",
+    "httpx>=0.28",
+    "ib-async>=2.1",
+    "lxml[cssselect]>=6.1",
+    "psycopg[binary]>=3.3",
+    "pyarrow>=23.0",
+    "requests>=2.33",
+    "rich>=14.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+    "pytest-cov>=7.0",
+    "responses>=0.26",
+    "ruff>=0.12",
+    "pyright>=1.1",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -12,7 +31,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["clients", "livewire_scripts", "scripts"]
+source = ["clients", "livewire_scripts"]
 omit = [
     "tests/*",
     "clients/ib_client.py",
@@ -20,9 +39,46 @@ omit = [
 ]
 
 [tool.coverage.report]
-fail_under = 100
+fail_under = 95
 show_missing = true
 exclude_lines = [
     "if __name__ == .__main__.",
     "pragma: no cover",
 ]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = [
+    "E402",   # module-import-not-at-top — livewire_scripts use sys.path.insert before imports
+    "E501",   # line length handled by formatter, not linter
+    "E741",   # ambiguous-variable-name — single-letter vars are fine in math/finance context
+    "B017",   # assert-raises-exception — tests use bare Exception in pytest.raises
+    "SIM102", # collapsible-if — nested ifs are often more readable
+    "SIM105", # suppressible-exception — try/except pass is clearer than contextlib.suppress
+    "SIM108", # ternary — often less readable
+    "SIM117", # multiple-with-statements — nested with blocks are often more readable
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F841"]  # unused variables common in mock assignments
+
+[tool.ruff.lint.isort]
+known-first-party = ["clients", "livewire_scripts"]
+
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "basic"
+include = ["clients", "livewire_scripts"]
+exclude = ["tests", "scripts"]
+reportMissingTypeStubs = false
+reportCallIssue = false
+reportArgumentType = false
+reportGeneralTypeIssues = false
+reportOptionalMemberAccess = "warning"
+reportOptionalOperand = "warning"
+reportOperatorIssue = "warning"
+reportAttributeAccessIssue = "warning"

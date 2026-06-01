@@ -71,11 +71,16 @@ def test_run_fetches_and_persists_rates(tmp_path):
 
     rc = run(
         [
-            "--warehouse", str(tmp_path),
-            "--series", "DGS10",
-            "--start", "2026-05-01",
-            "--end", "2026-05-31",
-            "--frequency", "d",
+            "--warehouse",
+            str(tmp_path),
+            "--series",
+            "DGS10",
+            "--start",
+            "2026-05-01",
+            "--end",
+            "2026-05-31",
+            "--frequency",
+            "d",
         ],
         client=client,
     )
@@ -88,14 +93,7 @@ def test_run_fetches_and_persists_rates(tmp_path):
         frequency="d",
         aggregation_method="eop",
     )
-    parquet_path = (
-        Path(tmp_path)
-        / "data-lake"
-        / "bronze"
-        / "asset_class=rates"
-        / "symbol=DGS10"
-        / "1d.parquet"
-    )
+    parquet_path = Path(tmp_path) / "data-lake" / "bronze" / "asset_class=rates" / "symbol=DGS10" / "1d.parquet"
     table = pq.ParquetFile(parquet_path).read()
     assert table.column_names == ["trade_date", "symbol_id", "tenor_years", "yield_pct", "source"]
     assert table.num_rows == 2

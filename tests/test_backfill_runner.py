@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from livewire_scripts.backfill_runner import (
     EQUITY_INTRADAY_TIMEFRAMES,
@@ -486,14 +485,12 @@ class TestDeriveVol1h:
         preset = tmp_path / "vol.json"
         preset.write_text(json.dumps({"tickers": ["VIX", "SPX"]}))
         warehouse = tmp_path / "warehouse"
-        (warehouse / "data-lake" / "bronze" / "asset_class=volatility").mkdir(
-            parents=True
-        )
+        (warehouse / "data-lake" / "bronze" / "asset_class=volatility").mkdir(parents=True)
         result = _derive_vol_1h(str(preset), warehouse_dir=warehouse)
         assert result == 0
 
     def test_derives_1h_from_30m(self, tmp_path):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from clients.intraday_bronze_client import IntradayBronzeClient
 
@@ -506,7 +503,7 @@ class TestDeriveVol1h:
         bronze_30m = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe="30m")
         rows = [
             {
-                "bar_timestamp": datetime(2026, 5, 28, 14, 0, tzinfo=timezone.utc),
+                "bar_timestamp": datetime(2026, 5, 28, 14, 0, tzinfo=UTC),
                 "symbol_id": 1,
                 "open": 20.0,
                 "high": 22.0,
@@ -515,7 +512,7 @@ class TestDeriveVol1h:
                 "volume": 1000,
             },
             {
-                "bar_timestamp": datetime(2026, 5, 28, 14, 30, tzinfo=timezone.utc),
+                "bar_timestamp": datetime(2026, 5, 28, 14, 30, tzinfo=UTC),
                 "symbol_id": 1,
                 "open": 21.0,
                 "high": 23.0,
@@ -595,12 +592,8 @@ class TestRunBackfill:
         # Pre-populate all cursors as complete
         for preset_path in config.equity_presets:
             name, total = preset_info(preset_path)
-            (config.log_dir / f"cursor_{name}.json").write_text(
-                json.dumps({"completed": list(range(total))})
-            )
-            (config.log_dir / f"cursor_backfill_{name}.json").write_text(
-                json.dumps({"completed": list(range(total))})
-            )
+            (config.log_dir / f"cursor_{name}.json").write_text(json.dumps({"completed": list(range(total))}))
+            (config.log_dir / f"cursor_backfill_{name}.json").write_text(json.dumps({"completed": list(range(total))}))
             for tf in EQUITY_INTRADAY_TIMEFRAMES:
                 (config.cursor_dir / f"cursor_intraday_{tf}_{name}.json").write_text(
                     json.dumps({"completed": list(range(total))})
@@ -632,9 +625,7 @@ class TestRunBackfill:
         for preset_path in config.equity_presets:
             name, total = preset_info(preset_path)
             for prefix in ("cursor_", "cursor_backfill_"):
-                (config.log_dir / f"{prefix}{name}.json").write_text(
-                    json.dumps({"completed": list(range(total))})
-                )
+                (config.log_dir / f"{prefix}{name}.json").write_text(json.dumps({"completed": list(range(total))}))
             for tf in EQUITY_INTRADAY_TIMEFRAMES:
                 (config.cursor_dir / f"cursor_intraday_{tf}_{name}.json").write_text(
                     json.dumps({"completed": list(range(total))})
@@ -661,9 +652,7 @@ class TestRunBackfill:
         for preset_path in config.equity_presets:
             name, total = preset_info(preset_path)
             for prefix in ("cursor_", "cursor_backfill_"):
-                (config.log_dir / f"{prefix}{name}.json").write_text(
-                    json.dumps({"completed": list(range(total))})
-                )
+                (config.log_dir / f"{prefix}{name}.json").write_text(json.dumps({"completed": list(range(total))}))
             for tf in EQUITY_INTRADAY_TIMEFRAMES:
                 (config.cursor_dir / f"cursor_intraday_{tf}_{name}.json").write_text(
                     json.dumps({"completed": list(range(total))})
@@ -712,12 +701,8 @@ class TestRunBackfill:
         self._prepopulate_cursors(config)
 
         _, inject = self._inject(tmp_path)
-        with patch(
-            "livewire_scripts.backfill_runner._run_equity_intraday", return_value=1
-        ):
-            with patch(
-                "livewire_scripts.backfill_runner._derive_vol_1h", return_value=0
-            ):
+        with patch("livewire_scripts.backfill_runner._run_equity_intraday", return_value=1):
+            with patch("livewire_scripts.backfill_runner._derive_vol_1h", return_value=0):
                 rc = run_backfill(config, **inject)
         assert rc == 1
 
@@ -743,9 +728,7 @@ class TestMain:
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
         monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
 
-        with patch(
-            "livewire_scripts.backfill_runner.run_backfill", return_value=0
-        ) as mock:
+        with patch("livewire_scripts.backfill_runner.run_backfill", return_value=0) as mock:
             rc = main([])
         assert rc == 0
 
@@ -753,9 +736,7 @@ class TestMain:
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
         monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
 
-        with patch(
-            "livewire_scripts.backfill_runner.run_backfill", return_value=0
-        ) as mock:
+        with patch("livewire_scripts.backfill_runner.run_backfill", return_value=0) as mock:
             main(["--stall-timeout", "120", "--poll-interval", "5"])
         config = mock.call_args[0][0]
         assert config.stall_timeout == 120
@@ -765,9 +746,7 @@ class TestMain:
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
         monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
 
-        with patch(
-            "livewire_scripts.backfill_runner.run_backfill", return_value=0
-        ) as mock:
+        with patch("livewire_scripts.backfill_runner.run_backfill", return_value=0) as mock:
             main([])
         config = mock.call_args[0][0]
         assert config.stall_timeout == 600
@@ -791,9 +770,7 @@ class TestGapAwareCompleted:
         from datetime import date
 
         cursor_file = tmp_path / "cursor.json"
-        cursor_file.write_text(
-            json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}})
-        )
+        cursor_file.write_text(json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}}))
         registry_path = tmp_path / "registry.json"
         registry_data = {
             "version": 1,
@@ -836,6 +813,7 @@ class TestGapAwareCompleted:
                 preset_path=None,
                 warehouse_dir=tmp_path,
                 bronze_dir=bronze_dir,
+                as_of=date(2026, 5, 29),
             )
         assert result == 2
 
@@ -844,9 +822,7 @@ class TestGapAwareCompleted:
         from datetime import date
 
         cursor_file = tmp_path / "cursor.json"
-        cursor_file.write_text(
-            json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}})
-        )
+        cursor_file.write_text(json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}}))
         registry_path = tmp_path / "registry.json"
         registry_data = {
             "version": 1,
@@ -889,15 +865,14 @@ class TestGapAwareCompleted:
                 preset_path=None,
                 warehouse_dir=tmp_path,
                 bronze_dir=bronze_dir,
+                as_of=date(2026, 5, 29),
             )
         assert result == 1
 
     def test_no_registry_falls_back_to_cursor_count(self, tmp_path):
         """When registry.json doesn't exist, fall back to cursor count."""
         cursor_file = tmp_path / "cursor.json"
-        cursor_file.write_text(
-            json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}})
-        )
+        cursor_file.write_text(json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}}))
         result = gap_aware_completed(
             cursor_file,
             total=2,
@@ -911,9 +886,7 @@ class TestGapAwareCompleted:
         from datetime import date
 
         cursor_file = tmp_path / "cursor.json"
-        cursor_file.write_text(
-            json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}})
-        )
+        cursor_file.write_text(json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}}))
         registry_path = tmp_path / "registry.json"
         registry_data = {
             "version": 1,
@@ -950,6 +923,7 @@ class TestGapAwareCompleted:
                 preset_path=str(preset_path),
                 warehouse_dir=tmp_path,
                 bronze_dir=bronze_dir,
+                as_of=date(2026, 5, 29),
             )
         assert result == 2
 
@@ -958,9 +932,7 @@ class TestGapAwareCompleted:
         from datetime import date
 
         cursor_file = tmp_path / "cursor.json"
-        cursor_file.write_text(
-            json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}})
-        )
+        cursor_file.write_text(json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}}))
         registry_path = tmp_path / "registry.json"
         registry_data = {
             "version": 1,
@@ -1002,6 +974,7 @@ class TestGapAwareCompleted:
                 preset_path=None,
                 warehouse_dir=tmp_path,
                 bronze_dir=bronze_dir,
+                as_of=date(2026, 5, 29),
             )
         # MSFT has no earliest_available so it's skipped; AAPL is complete
         assert result == 2
@@ -1009,9 +982,7 @@ class TestGapAwareCompleted:
     def test_exception_falls_back_to_cursor_count(self, tmp_path):
         """If gap analysis raises, fall back to cursor count."""
         cursor_file = tmp_path / "cursor.json"
-        cursor_file.write_text(
-            json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}})
-        )
+        cursor_file.write_text(json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}}))
         registry_path = tmp_path / "registry.json"
         registry_path.write_text(
             json.dumps(

@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
-import pytest
-
 from livewire_scripts.sync_runner import (
-    EQUITY_INTRADAY_TIMEFRAMES,
-    VOL_INTRADAY_TIMEFRAMES,
     SyncConfig,
     _derive_vol_1h,
     _format_command,
@@ -144,9 +141,7 @@ class TestLatestCompleteTradingDay:
             mock_dt.now.return_value = sat
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
 
-            with patch(
-                "livewire_scripts.daily_update.is_trading_day", return_value=False
-            ):
+            with patch("livewire_scripts.daily_update.is_trading_day", return_value=False):
                 from datetime import date
 
                 with patch(
@@ -157,19 +152,15 @@ class TestLatestCompleteTradingDay:
                     assert result == "2026-05-29"
 
     def test_trading_day_after_close(self):
-        from datetime import date, datetime, time
+        from datetime import datetime, time
         from zoneinfo import ZoneInfo
 
         with patch("livewire_scripts.sync_runner.datetime") as mock_dt:
-            after_close = datetime(
-                2026, 5, 28, 17, 0, tzinfo=ZoneInfo("America/New_York")
-            )
+            after_close = datetime(2026, 5, 28, 17, 0, tzinfo=ZoneInfo("America/New_York"))
             mock_dt.now.return_value = after_close
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
 
-            with patch(
-                "livewire_scripts.daily_update.is_trading_day", return_value=True
-            ):
+            with patch("livewire_scripts.daily_update.is_trading_day", return_value=True):
                 with patch(
                     "livewire_scripts.daily_update.session_close_time",
                     return_value=time(16, 0),
@@ -182,15 +173,11 @@ class TestLatestCompleteTradingDay:
         from zoneinfo import ZoneInfo
 
         with patch("livewire_scripts.sync_runner.datetime") as mock_dt:
-            before_close = datetime(
-                2026, 5, 28, 15, 0, tzinfo=ZoneInfo("America/New_York")
-            )
+            before_close = datetime(2026, 5, 28, 15, 0, tzinfo=ZoneInfo("America/New_York"))
             mock_dt.now.return_value = before_close
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
 
-            with patch(
-                "livewire_scripts.daily_update.is_trading_day", return_value=True
-            ):
+            with patch("livewire_scripts.daily_update.is_trading_day", return_value=True):
                 with patch(
                     "livewire_scripts.daily_update.session_close_time",
                     return_value=time(16, 0),
@@ -277,14 +264,12 @@ class TestDeriveVol1h:
         preset = tmp_path / "vol.json"
         preset.write_text(json.dumps({"tickers": ["VIX"]}))
         warehouse = tmp_path / "warehouse"
-        (warehouse / "data-lake" / "bronze" / "asset_class=volatility").mkdir(
-            parents=True
-        )
+        (warehouse / "data-lake" / "bronze" / "asset_class=volatility").mkdir(parents=True)
         result = _derive_vol_1h(str(preset), warehouse_dir=warehouse)
         assert result == 0
 
     def test_derives_1h_from_30m(self, tmp_path):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from clients.intraday_bronze_client import IntradayBronzeClient
 
@@ -297,7 +282,7 @@ class TestDeriveVol1h:
         bronze_30m = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe="30m")
         rows = [
             {
-                "bar_timestamp": datetime(2026, 5, 28, 14, 0, tzinfo=timezone.utc),
+                "bar_timestamp": datetime(2026, 5, 28, 14, 0, tzinfo=UTC),
                 "symbol_id": 1,
                 "open": 20.0,
                 "high": 22.0,
@@ -306,7 +291,7 @@ class TestDeriveVol1h:
                 "volume": 1000,
             },
             {
-                "bar_timestamp": datetime(2026, 5, 28, 14, 30, tzinfo=timezone.utc),
+                "bar_timestamp": datetime(2026, 5, 28, 14, 30, tzinfo=UTC),
                 "symbol_id": 1,
                 "open": 21.0,
                 "high": 23.0,
@@ -371,9 +356,7 @@ class TestRunSync:
     def test_phase_failure_returns_nonzero(self, tmp_path):
         config = _make_config(tmp_path)
         with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
-            rc = run_sync(
-                config, runner=_fail_runner, trading_day_fn=lambda: "2026-05-28"
-            )
+            rc = run_sync(config, runner=_fail_runner, trading_day_fn=lambda: "2026-05-28")
         assert rc == 1
 
     def test_postgres_rebuild_when_dsn_set(self, tmp_path, monkeypatch):
@@ -401,9 +384,7 @@ class TestRunSync:
             return CompletedProcess(args=command, returncode=0)
 
         with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
-            rc = run_sync(
-                config, runner=selective_runner, trading_day_fn=lambda: "2026-05-28"
-            )
+            rc = run_sync(config, runner=selective_runner, trading_day_fn=lambda: "2026-05-28")
         assert rc == 1
 
     def test_postgres_skipped_when_dsn_unset(self, tmp_path, monkeypatch):

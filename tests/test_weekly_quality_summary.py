@@ -7,8 +7,6 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from livewire_scripts.weekly_quality_summary import (
     CoverageEntry,
     _iso_week_start,
@@ -54,7 +52,9 @@ class TestParseCoverageLog:
     def test_parses_missing_block_with_total_suffix(self, tmp_path):
         d = date(2026, 4, 6)
         path = _write_log(
-            tmp_path, d, _spec_header(d, present_5m=1158),
+            tmp_path,
+            d,
+            _spec_header(d, present_5m=1158),
             ["  5m missing: NEWA, RECENT_IPO, LOWLIQ_1, ... (8 total)"],
         )
         entry = parse_coverage_log(path)
@@ -64,7 +64,9 @@ class TestParseCoverageLog:
     def test_parses_short_missing_block_without_suffix(self, tmp_path):
         d = date(2026, 4, 6)
         path = _write_log(
-            tmp_path, d, _spec_header(d, present_5m=1164),
+            tmp_path,
+            d,
+            _spec_header(d, present_5m=1164),
             ["  5m missing: NEWA, RECENT_IPO"],
         )
         entry = parse_coverage_log(path)
@@ -173,12 +175,24 @@ class TestDetectChurn:
 class TestRenderMarkdown:
     def test_renders_clean_week(self):
         entries = [
-            CoverageEntry(day=date(2026, 3, 30), totals={
-                "1d": (10, 10), "1m": (10, 10), "1h": (10, 10), "5m": (10, 10),
-            }),
-            CoverageEntry(day=date(2026, 3, 31), totals={
-                "1d": (10, 10), "1m": (10, 10), "1h": (10, 10), "5m": (10, 10),
-            }),
+            CoverageEntry(
+                day=date(2026, 3, 30),
+                totals={
+                    "1d": (10, 10),
+                    "1m": (10, 10),
+                    "1h": (10, 10),
+                    "5m": (10, 10),
+                },
+            ),
+            CoverageEntry(
+                day=date(2026, 3, 31),
+                totals={
+                    "1d": (10, 10),
+                    "1m": (10, 10),
+                    "1h": (10, 10),
+                    "5m": (10, 10),
+                },
+            ),
         ]
         md = render_markdown("Week 14 of 2026", entries)
         assert "# Weekly Quality Report — Week 14 of 2026" in md
@@ -190,9 +204,21 @@ class TestRenderMarkdown:
 
     def test_renders_persistent_gaps_section(self):
         entries = [
-            CoverageEntry(day=date(2026, 3, 30), totals={"1d": (10, 10), "1m": (10, 10), "1h": (10, 10), "5m": (10, 10)}, missing={"5m": ["LOWLIQ"]}),
-            CoverageEntry(day=date(2026, 3, 31), totals={"1d": (10, 10), "1m": (10, 10), "1h": (10, 10), "5m": (10, 10)}, missing={"5m": ["LOWLIQ"]}),
-            CoverageEntry(day=date(2026, 4, 1), totals={"1d": (10, 10), "1m": (10, 10), "1h": (10, 10), "5m": (10, 10)}, missing={"5m": ["LOWLIQ"]}),
+            CoverageEntry(
+                day=date(2026, 3, 30),
+                totals={"1d": (10, 10), "1m": (10, 10), "1h": (10, 10), "5m": (10, 10)},
+                missing={"5m": ["LOWLIQ"]},
+            ),
+            CoverageEntry(
+                day=date(2026, 3, 31),
+                totals={"1d": (10, 10), "1m": (10, 10), "1h": (10, 10), "5m": (10, 10)},
+                missing={"5m": ["LOWLIQ"]},
+            ),
+            CoverageEntry(
+                day=date(2026, 4, 1),
+                totals={"1d": (10, 10), "1m": (10, 10), "1h": (10, 10), "5m": (10, 10)},
+                missing={"5m": ["LOWLIQ"]},
+            ),
         ]
         md = render_markdown("Week 14 of 2026", entries)
         assert "LOWLIQ (5m): missing 3 of last 3 days" in md
@@ -200,12 +226,24 @@ class TestRenderMarkdown:
     def test_renders_added_section(self):
         # Universe grew from 10 → 12 → triggers the "Added" line
         entries = [
-            CoverageEntry(day=date(2026, 3, 30), totals={
-                "1d": (10, 10), "1m": (10, 10), "1h": (10, 10), "5m": (10, 10),
-            }),
-            CoverageEntry(day=date(2026, 4, 5), totals={
-                "1d": (12, 12), "1m": (12, 12), "1h": (12, 12), "5m": (12, 12),
-            }),
+            CoverageEntry(
+                day=date(2026, 3, 30),
+                totals={
+                    "1d": (10, 10),
+                    "1m": (10, 10),
+                    "1h": (10, 10),
+                    "5m": (10, 10),
+                },
+            ),
+            CoverageEntry(
+                day=date(2026, 4, 5),
+                totals={
+                    "1d": (12, 12),
+                    "1m": (12, 12),
+                    "1h": (12, 12),
+                    "5m": (12, 12),
+                },
+            ),
         ]
         md = render_markdown("Week 14 of 2026", entries)
         assert "Added (1)" in md
@@ -272,7 +310,8 @@ class TestMain:
             mock_date.fromisocalendar = date.fromisocalendar
             mock_date.fromisoformat = date.fromisoformat
             with patch.object(
-                sys, "argv",
+                sys,
+                "argv",
                 ["weekly_quality_summary.py", "--week", "2026-14"],
             ):
                 main()

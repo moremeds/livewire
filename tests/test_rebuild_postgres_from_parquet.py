@@ -108,14 +108,16 @@ def test_volatility_calls_daily_loader_with_cboe(tmp_path: Path, monkeypatch: py
     script = fake_client(monkeypatch)
     touch_parquet(tmp_path, "VIX", "1d.parquet")
 
-    script.main([
-        "--dsn",
-        "postgresql://example/livewire",
-        "--asset-class",
-        "volatility",
-        "--bronze-dir",
-        str(tmp_path),
-    ])
+    script.main(
+        [
+            "--dsn",
+            "postgresql://example/livewire",
+            "--asset-class",
+            "volatility",
+            "--bronze-dir",
+            str(tmp_path),
+        ]
+    )
 
     assert ("replace_equities_from_parquet", tmp_path, "volatility", "CBOE") in FakePostgresClient.instances[0].calls
 
@@ -124,14 +126,16 @@ def test_futures_calls_futures_loader(tmp_path: Path, monkeypatch: pytest.Monkey
     script = fake_client(monkeypatch)
     touch_parquet(tmp_path, "ES_202606", "1d.parquet")
 
-    script.main([
-        "--dsn",
-        "postgresql://example/livewire",
-        "--asset-class",
-        "futures",
-        "--bronze-dir",
-        str(tmp_path),
-    ])
+    script.main(
+        [
+            "--dsn",
+            "postgresql://example/livewire",
+            "--asset-class",
+            "futures",
+            "--bronze-dir",
+            str(tmp_path),
+        ]
+    )
 
     assert ("replace_futures_from_parquet", tmp_path) in FakePostgresClient.instances[0].calls
 
@@ -142,19 +146,21 @@ def test_include_reliability_imports_jsonl_paths(tmp_path: Path, monkeypatch: py
     telemetry = tmp_path / "telemetry.jsonl"
     quality = tmp_path / "quality.jsonl"
 
-    script.main([
-        "--dsn",
-        "postgresql://example/livewire",
-        "--bronze-dir",
-        str(tmp_path),
-        "--timeframe",
-        "1d",
-        "--include-reliability",
-        "--telemetry-path",
-        str(telemetry),
-        "--quality-audit-path",
-        str(quality),
-    ])
+    script.main(
+        [
+            "--dsn",
+            "postgresql://example/livewire",
+            "--bronze-dir",
+            str(tmp_path),
+            "--timeframe",
+            "1d",
+            "--include-reliability",
+            "--telemetry-path",
+            str(telemetry),
+            "--quality-audit-path",
+            str(quality),
+        ]
+    )
 
     assert ("replace_telemetry_from_jsonl", telemetry) in FakePostgresClient.instances[0].calls
     assert ("replace_quality_flags_from_jsonl", quality) in FakePostgresClient.instances[0].calls
@@ -164,12 +170,14 @@ def test_missing_bronze_dir_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     script = fake_client(monkeypatch)
 
     with pytest.raises(FileNotFoundError, match="bronze directory does not exist"):
-        script.main([
-            "--dsn",
-            "postgresql://example/livewire",
-            "--bronze-dir",
-            str(tmp_path / "missing"),
-        ])
+        script.main(
+            [
+                "--dsn",
+                "postgresql://example/livewire",
+                "--bronze-dir",
+                str(tmp_path / "missing"),
+            ]
+        )
 
 
 def test_missing_explicit_timeframe_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -177,14 +185,16 @@ def test_missing_explicit_timeframe_raises(tmp_path: Path, monkeypatch: pytest.M
     touch_parquet(tmp_path, "AAPL", "1d.parquet")
 
     with pytest.raises(FileNotFoundError, match="no 5m parquet snapshots found"):
-        script.main([
-            "--dsn",
-            "postgresql://example/livewire",
-            "--bronze-dir",
-            str(tmp_path),
-            "--timeframe",
-            "5m",
-        ])
+        script.main(
+            [
+                "--dsn",
+                "postgresql://example/livewire",
+                "--bronze-dir",
+                str(tmp_path),
+                "--timeframe",
+                "5m",
+            ]
+        )
 
 
 def test_missing_explicit_1m_timeframe_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -192,23 +202,27 @@ def test_missing_explicit_1m_timeframe_raises(tmp_path: Path, monkeypatch: pytes
     touch_parquet(tmp_path, "AAPL", "1d.parquet")
 
     with pytest.raises(FileNotFoundError, match="no 1m parquet snapshots found"):
-        script.main([
-            "--dsn",
-            "postgresql://example/livewire",
-            "--bronze-dir",
-            str(tmp_path),
-            "--timeframe",
-            "1m",
-        ])
+        script.main(
+            [
+                "--dsn",
+                "postgresql://example/livewire",
+                "--bronze-dir",
+                str(tmp_path),
+                "--timeframe",
+                "1m",
+            ]
+        )
 
 
 def test_empty_bronze_dir_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     script = fake_client(monkeypatch)
 
     with pytest.raises(FileNotFoundError, match="no bronze parquet snapshots found"):
-        script.main([
-            "--dsn",
-            "postgresql://example/livewire",
-            "--bronze-dir",
-            str(tmp_path),
-        ])
+        script.main(
+            [
+                "--dsn",
+                "postgresql://example/livewire",
+                "--bronze-dir",
+                str(tmp_path),
+            ]
+        )

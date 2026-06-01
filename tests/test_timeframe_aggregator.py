@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from clients.timeframe_aggregator import VALID_ROLLUPS, aggregate_bars
 
-_BASE = datetime(2026, 5, 28, 13, 30, tzinfo=timezone.utc)  # 09:30 ET in UTC
+_BASE = datetime(2026, 5, 28, 13, 30, tzinfo=UTC)  # 09:30 ET in UTC
 
 
 def _bar(minute_offset: int, o: float, h: float, l: float, c: float, v: int) -> dict:
@@ -80,7 +80,7 @@ class TestAggregate1mTo30m:
 
 class TestAggregate1mTo1h:
     def test_sixty_bars_produce_one(self):
-        base = datetime(2026, 5, 28, 14, 0, tzinfo=timezone.utc)
+        base = datetime(2026, 5, 28, 14, 0, tzinfo=UTC)
         bars = [
             {
                 "bar_timestamp": base + timedelta(minutes=i),
@@ -101,8 +101,8 @@ class TestAggregate1mTo1h:
 
 class TestAggregate30mTo1h:
     def test_two_30m_bars_produce_one_1h(self):
-        ts1 = datetime(2026, 5, 28, 14, 0, tzinfo=timezone.utc)  # 10:00 ET
-        ts2 = datetime(2026, 5, 28, 14, 30, tzinfo=timezone.utc)  # 10:30 ET
+        ts1 = datetime(2026, 5, 28, 14, 0, tzinfo=UTC)  # 10:00 ET
+        ts2 = datetime(2026, 5, 28, 14, 30, tzinfo=UTC)  # 10:30 ET
         bars = [
             {
                 "bar_timestamp": ts1,

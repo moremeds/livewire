@@ -12,7 +12,8 @@ from typing import Any
 
 import requests
 from requests import Response
-from requests.exceptions import ConnectionError as ReqConnectionError, Timeout as ReqTimeout
+from requests.exceptions import ConnectionError as ReqConnectionError
+from requests.exceptions import Timeout as ReqTimeout
 
 log = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ class DailyBarFallbackClient:
     def close(self) -> None:
         self._session.close()
 
-    def __enter__(self) -> "DailyBarFallbackClient":
+    def __enter__(self) -> DailyBarFallbackClient:
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -185,7 +186,9 @@ class DailyBarFallbackClient:
                     continue
                 log.warning(
                     "Fallback %s request failed for %s: %s",
-                    provider_name, url, exc,
+                    provider_name,
+                    url,
+                    exc,
                 )
                 return None
 
@@ -198,7 +201,9 @@ class DailyBarFallbackClient:
 
             log.warning(
                 "Fallback %s request returned HTTP %s for %s",
-                provider_name, response.status_code, url,
+                provider_name,
+                response.status_code,
+                url,
             )
             return None
 
@@ -219,7 +224,7 @@ class DailyBarFallbackClient:
                 return
             except (TypeError, ValueError):
                 pass
-        time.sleep(self._backoff_factor * (2 ** attempt))
+        time.sleep(self._backoff_factor * (2**attempt))
 
     @staticmethod
     def _safe_json(response: Response) -> dict:

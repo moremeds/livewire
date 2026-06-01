@@ -84,9 +84,7 @@ def is_inverted_fx_pair(ticker: str) -> bool:
     return resolve_fx_pair(ticker)[1]
 
 
-def make_contract(
-    ticker: str, asset_class: str = "equity", exchange: str | None = None
-) -> Contract:
+def make_contract(ticker: str, asset_class: str = "equity", exchange: str | None = None) -> Contract:
     """Build an IB contract for the given *ticker* and *asset_class*."""
     if asset_class == "futures":
         root, expiry = ticker.rsplit("_", 1)
@@ -149,9 +147,7 @@ def bars_to_futures_rows(
     ]
 
 
-def bars_to_midpoint_rows(
-    bars: list, symbol_id: int, *, invert: bool = False
-) -> list[dict]:
+def bars_to_midpoint_rows(bars: list, symbol_id: int, *, invert: bool = False) -> list[dict]:
     """Convert IB midpoint bars to daily bronze rows."""
     rows = bars_to_rows(bars, symbol_id)
     for row in rows:

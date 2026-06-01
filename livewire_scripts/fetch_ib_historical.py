@@ -46,7 +46,7 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from ib_async import Contract, Forex, Future, Index, Stock
+from ib_async import Contract, Forex, Future, Index, Stock  # noqa: F401
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.progress import (
@@ -64,8 +64,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from clients.bronze_client import BronzeClient
 from clients.ib_client import IBClient, IBError
 from clients.ingestion_common import (
-    ROOT_EXCHANGE_MAP,
-    SUPPORTED_IB_FX_PAIRS,
+    ROOT_EXCHANGE_MAP,  # noqa: F401
+    SUPPORTED_IB_FX_PAIRS,  # noqa: F401
     bars_to_futures_rows,
     bars_to_midpoint_rows,
     bars_to_rows,
@@ -78,7 +78,7 @@ from clients.ingestion_common import (
     make_contract as _make_contract,
 )
 from clients.ingestion_common import (
-    resolve_fx_pair as _resolve_fx_pair,
+    resolve_fx_pair as _resolve_fx_pair,  # noqa: F401
 )
 from clients.massive_client import MassiveAPIError, MassiveClient
 from clients.quality_detector import _normalize_bars_for_detection, detect_all
@@ -99,9 +99,7 @@ def _storage_client():
 
 # ── Config ─────────────────────────────────────────────────────────────
 
-DATA_LAKE = Path(
-    os.getenv("MDW_DATA_LAKE", str(Path.home() / "market-warehouse" / "data-lake"))
-)
+DATA_LAKE = Path(os.getenv("MDW_DATA_LAKE", str(Path.home() / "market-warehouse" / "data-lake")))
 BRONZE_DIR = DATA_LAKE / "bronze" / "asset_class=equity"
 CURSOR_DIR = Path.home() / "market-warehouse" / "logs"
 
@@ -178,9 +176,7 @@ def is_ticker_complete(
     return all(tf in done for tf in required)
 
 
-def mark_timeframe_done(
-    cursor: dict[str, list[str]], ticker: str, timeframe: str
-) -> None:
+def mark_timeframe_done(cursor: dict[str, list[str]], ticker: str, timeframe: str) -> None:
     """Add *timeframe* to a ticker's completed list (idempotent)."""
     done = cursor.setdefault(ticker, [])
     if timeframe not in done:
@@ -276,13 +272,9 @@ def _resolve_historical_source(source: str, *, asset_class: str, backfill: bool)
         return "ib"
     if source == "massive":
         if asset_class != "equity":
-            raise SystemExit(
-                "--source massive is only supported for asset_class=equity"
-            )
+            raise SystemExit("--source massive is only supported for asset_class=equity")
         if not backfill:
-            raise SystemExit(
-                "--source massive is only supported for historical --backfill"
-            )
+            raise SystemExit("--source massive is only supported for historical --backfill")
         return "massive"
     if source == "auto":
         return "ib"
@@ -345,9 +337,7 @@ async def fetch_ticker_bars(
     else:
         head_str = str(head_ts)
         if not head_str or head_str == "[]":
-            console.print(
-                f"    [dim]{ticker}: no head timestamp — falling back to {IB_EARLIEST_DATE:%Y-%m-%d}[/dim]"
-            )
+            console.print(f"    [dim]{ticker}: no head timestamp — falling back to {IB_EARLIEST_DATE:%Y-%m-%d}[/dim]")
             head_dt = IB_EARLIEST_DATE
         else:
             head_dt = datetime.strptime(head_str, "%Y%m%d-%H:%M:%S")
@@ -379,9 +369,7 @@ async def fetch_ticker_bars(
                 end_date=end_str,
             )
 
-    chunk_results = await asyncio.gather(
-        *[_fetch_chunk(dur, end_str) for dur, end_str in windows]
-    )
+    chunk_results = await asyncio.gather(*[_fetch_chunk(dur, end_str) for dur, end_str in windows])
 
     # Flatten and deduplicate by date
     seen_dates: set[str] = set()
@@ -397,9 +385,7 @@ async def fetch_ticker_bars(
     # Sort by date
     all_bars.sort(key=lambda b: str(b.date))
     elapsed = time.monotonic() - t0
-    console.print(
-        f"    [cyan]{ticker}[/cyan]: fetched {len(all_bars)} bars in {elapsed:.1f}s"
-    )
+    console.print(f"    [cyan]{ticker}[/cyan]: fetched {len(all_bars)} bars in {elapsed:.1f}s")
     return (ticker, all_bars)
 
 
@@ -421,14 +407,8 @@ async def fetch_all_tickers(
     in ``None`` values; successful fetches with no data return ``[]``.
     """
     t0 = time.monotonic()
-    mode_label = (
-        ", backfill"
-        if end_dt_overrides
-        else (f", {max_years}Y lookback" if max_years else ", inception")
-    )
-    console.print(
-        f"  [bold]Fetching {len(tickers)} tickers (max {max_concurrent} concurrent{mode_label})...[/bold]"
-    )
+    mode_label = ", backfill" if end_dt_overrides else (f", {max_years}Y lookback" if max_years else ", inception")
+    console.print(f"  [bold]Fetching {len(tickers)} tickers (max {max_concurrent} concurrent{mode_label})...[/bold]")
     semaphore = asyncio.Semaphore(max_concurrent)
     results: dict[str, list | None] = {}
 
@@ -457,9 +437,7 @@ async def fetch_all_tickers(
     ok = sum(1 for b in results.values() if b is not None and len(b) > 0)
     empty = sum(1 for b in results.values() if b is not None and len(b) == 0)
     errors = sum(1 for b in results.values() if b is None)
-    console.print(
-        f"  [bold]Fetch complete:[/bold] {ok} succeeded, {empty} empty, {errors} errors in {elapsed:.1f}s"
-    )
+    console.print(f"  [bold]Fetch complete:[/bold] {ok} succeeded, {empty} empty, {errors} errors in {elapsed:.1f}s")
     return results
 
 
@@ -552,9 +530,7 @@ def fetch_ticker(
         expiry_date = f"{expiry[:4]}-{expiry[4:6]}-01"
         rows = bars_to_futures_rows(bars, symbol_id, root, expiry_date)
     elif asset_class in {"cmdty", "fx"}:
-        rows = bars_to_midpoint_rows(
-            bars, symbol_id, invert=asset_class == "fx" and _is_inverted_fx_pair(ticker)
-        )
+        rows = bars_to_midpoint_rows(bars, symbol_id, invert=asset_class == "fx" and _is_inverted_fx_pair(ticker))
     else:
         rows = bars_to_rows(bars, symbol_id)
     inserted = bronze.replace_ticker_rows(ticker, rows)
@@ -611,9 +587,7 @@ def backfill_ticker(
         expiry_date = f"{expiry[:4]}-{expiry[4:6]}-01"
         rows = bars_to_futures_rows(bars, symbol_id, root, expiry_date)
     elif asset_class in {"cmdty", "fx"}:
-        rows = bars_to_midpoint_rows(
-            bars, symbol_id, invert=asset_class == "fx" and _is_inverted_fx_pair(ticker)
-        )
+        rows = bars_to_midpoint_rows(bars, symbol_id, invert=asset_class == "fx" and _is_inverted_fx_pair(ticker))
     else:
         rows = bars_to_rows(bars, symbol_id)
     inserted = bronze.merge_ticker_rows(ticker, rows)
@@ -625,10 +599,8 @@ def backfill_ticker(
 # ── Main ──────────────────────────────────────────────────────────────
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Fetch historical OHLCV from Interactive Brokers"
-    )
+def main():  # pragma: no cover — only exercised by integration tests
+    parser = argparse.ArgumentParser(description="Fetch historical OHLCV from Interactive Brokers")
     ticker_group = parser.add_mutually_exclusive_group()
     ticker_group.add_argument(
         "--tickers",
@@ -723,9 +695,7 @@ def main():
     exchange_map: dict[str, str] = {}
     if args.preset:
         cursor_name, all_tickers, exchange_map = load_preset(args.preset)
-        console.print(
-            f"\n[bold]Preset:[/bold] {cursor_name} ({len(all_tickers)} tickers)"
-        )
+        console.print(f"\n[bold]Preset:[/bold] {cursor_name} ({len(all_tickers)} tickers)")
     else:
         cursor_name = "custom"
         all_tickers = args.tickers if args.tickers else MAG7
@@ -749,22 +719,16 @@ def main():
         console.print("[yellow]Cursor reset.[/yellow]")
 
     completed = load_cursor(effective_cursor)
-    remaining = [
-        t for t in all_tickers if not is_ticker_complete(completed, t, ("1d",))
-    ]
+    remaining = [t for t in all_tickers if not is_ticker_complete(completed, t, ("1d",))]
 
-    n_completed = sum(
-        1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",))
-    )
+    n_completed = sum(1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",)))
     console.print(
         f"\n[bold]{len(remaining)} of {len(all_tickers)} tickers remaining"
         f" ({n_completed} already completed via cursor)[/bold]"
     )
 
     if not remaining:
-        console.print(
-            "[green bold]All tickers already completed. Use --reset to re-run.[/green bold]\n"
-        )
+        console.print("[green bold]All tickers already completed. Use --reset to re-run.[/green bold]\n")
         return
 
     cursor_file = _cursor_path(effective_cursor)
@@ -834,14 +798,9 @@ def main():
         # Summary
         summary = bronze.get_summary()
         if summary:
-            console.print(
-                f"\n[bold]Data summary ({len(summary)} symbols in bronze):[/bold]"
-            )
+            console.print(f"\n[bold]Data summary ({len(summary)} symbols in bronze):[/bold]")
             for row in summary:
-                console.print(
-                    f"  {row['symbol']:6s}  {row['rows']:>6,d} rows  "
-                    f"{row['earliest']} → {row['latest']}"
-                )
+                console.print(f"  {row['symbol']:6s}  {row['rows']:>6,d} rows  {row['earliest']} → {row['latest']}")
 
     console.print("\n[green bold]Done.[/green bold]\n")
 
@@ -884,10 +843,7 @@ def _run_backfill(
     console.print(f"[bold]{len(backfill_tickers)} tickers to backfill[/bold]")
 
     # Batch processing
-    batches = [
-        backfill_tickers[i : i + args.batch_size]
-        for i in range(0, len(backfill_tickers), args.batch_size)
-    ]
+    batches = [backfill_tickers[i : i + args.batch_size] for i in range(0, len(backfill_tickers), args.batch_size)]
 
     total_rows = 0
     total_ok = 0
@@ -931,9 +887,7 @@ def _run_backfill(
                 progress.update(task, description=f"Backfilling {ticker}...")
                 bars = ticker_bars.get(ticker)
                 if bars is None:
-                    console.print(
-                        f"  [yellow]{ticker}[/yellow]: fetch error (will retry)"
-                    )
+                    console.print(f"  [yellow]{ticker}[/yellow]: fetch error (will retry)")
                     batch_fail += 1
                     progress.advance(task)
                     continue
@@ -942,9 +896,7 @@ def _run_backfill(
                 if count > 0:
                     mark_timeframe_done(completed, ticker, "1d")
                     save_cursor(cursor_name, completed, started_at)
-                    console.print(
-                        f"  [green]{ticker}[/green]: {count:,} backfill rows inserted"
-                    )
+                    console.print(f"  [green]{ticker}[/green]: {count:,} backfill rows inserted")
                     batch_ok += 1
                 elif not bars:
                     mark_timeframe_done(completed, ticker, "1d")
@@ -954,9 +906,7 @@ def _run_backfill(
                 else:
                     mark_timeframe_done(completed, ticker, "1d")
                     save_cursor(cursor_name, completed, started_at)
-                    console.print(
-                        f"  [dim]{ticker}[/dim]: 0 new rows (already current)"
-                    )
+                    console.print(f"  [dim]{ticker}[/dim]: 0 new rows (already current)")
                     batch_ok += 1
 
                 batch_rows += count
@@ -966,9 +916,7 @@ def _run_backfill(
         total_rows += batch_rows
         total_ok += batch_ok
         total_fail += batch_fail
-        n_done = sum(
-            1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",))
-        )
+        n_done = sum(1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",)))
         console.print(
             f"\n  [bold]Batch {batch_idx + 1} done:[/bold] "
             f"{batch_ok} ok, {batch_fail} failed, "
@@ -977,10 +925,7 @@ def _run_backfill(
         )
 
     n_done = sum(1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",)))
-    console.print(
-        f"\n[bold]Backfill complete:[/bold] {total_ok} ok, {total_fail} failed, "
-        f"{total_rows:,} rows"
-    )
+    console.print(f"\n[bold]Backfill complete:[/bold] {total_ok} ok, {total_fail} failed, {total_rows:,} rows")
     console.print(f"[bold]Cursor:[/bold] {n_done}/{len(all_tickers)} tickers saved")
 
 
@@ -1011,13 +956,8 @@ def _run_backfill_massive(
         console.print("[green bold]No tickers to backfill.[/green bold]")
         return
 
-    console.print(
-        f"[bold]{len(backfill_tickers)} tickers to backfill via Massive[/bold]"
-    )
-    batches = [
-        backfill_tickers[i : i + args.batch_size]
-        for i in range(0, len(backfill_tickers), args.batch_size)
-    ]
+    console.print(f"[bold]{len(backfill_tickers)} tickers to backfill via Massive[/bold]")
+    batches = [backfill_tickers[i : i + args.batch_size] for i in range(0, len(backfill_tickers), args.batch_size)]
 
     total_rows = 0
     total_ok = 0
@@ -1054,9 +994,7 @@ def _run_backfill_massive(
                 )
 
                 if not provider_ok:
-                    console.print(
-                        f"  [yellow]{ticker}[/yellow]: Massive failed (will retry next run)"
-                    )
+                    console.print(f"  [yellow]{ticker}[/yellow]: Massive failed (will retry next run)")
                     batch_fail += 1
                     progress.advance(task)
                     continue
@@ -1073,9 +1011,7 @@ def _run_backfill_massive(
                     save_cursor(cursor_name, completed, started_at)
 
                 if count > 0:
-                    console.print(
-                        f"  [green]{ticker}[/green]: {count:,} Massive rows inserted"
-                    )
+                    console.print(f"  [green]{ticker}[/green]: {count:,} Massive rows inserted")
                     if provider_complete:
                         batch_ok += 1
                     else:
@@ -1095,9 +1031,7 @@ def _run_backfill_massive(
         total_ok += batch_ok
         total_fail += batch_fail
         total_noop += batch_noop
-        n_done = sum(
-            1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",))
-        )
+        n_done = sum(1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",)))
         console.print(
             f"\n  [bold]Massive batch {batch_idx + 1} done:[/bold] "
             f"{batch_ok} ok, {batch_noop} noop, {batch_fail} failed, "
@@ -1137,23 +1071,15 @@ def _run_normal(
             save_cursor(cursor_name, completed, started_at)
             remaining = [t for t in remaining if t not in existing]
             console.print(
-                f"[cyan]Skipped {len(skipped)} tickers already in bronze:[/cyan] "
-                f"[dim]{' '.join(skipped)}[/dim]"
+                f"[cyan]Skipped {len(skipped)} tickers already in bronze:[/cyan] [dim]{' '.join(skipped)}[/dim]"
             )
-        console.print(
-            f"[bold]{len(remaining)} tickers to fetch after skip-existing[/bold]"
-        )
+        console.print(f"[bold]{len(remaining)} tickers to fetch after skip-existing[/bold]")
 
     if not remaining:
-        console.print(
-            "[green bold]All tickers already in bronze. Use --reset to re-run.[/green bold]\n"
-        )
+        console.print("[green bold]All tickers already in bronze. Use --reset to re-run.[/green bold]\n")
         return
 
-    batches = [
-        remaining[i : i + args.batch_size]
-        for i in range(0, len(remaining), args.batch_size)
-    ]
+    batches = [remaining[i : i + args.batch_size] for i in range(0, len(remaining), args.batch_size)]
 
     total_rows = 0
     total_ok = 0
@@ -1196,9 +1122,7 @@ def _run_normal(
                 progress.update(task, description=f"Inserting {ticker}...")
                 bars = ticker_bars.get(ticker)
                 if bars is None:
-                    console.print(
-                        f"  [yellow]{ticker}[/yellow]: fetch error (will retry)"
-                    )
+                    console.print(f"  [yellow]{ticker}[/yellow]: fetch error (will retry)")
                     batch_fail += 1
                     progress.advance(task)
                     continue
@@ -1215,9 +1139,7 @@ def _run_normal(
                     console.print(f"  [dim]{ticker}[/dim]: no data available (done)")
                     batch_ok += 1
                 else:
-                    console.print(
-                        f"  [yellow]{ticker}[/yellow]: 0 rows (will retry next run)"
-                    )
+                    console.print(f"  [yellow]{ticker}[/yellow]: 0 rows (will retry next run)")
                     batch_fail += 1
 
                 batch_rows += count
@@ -1227,9 +1149,7 @@ def _run_normal(
         total_rows += batch_rows
         total_ok += batch_ok
         total_fail += batch_fail
-        n_done = sum(
-            1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",))
-        )
+        n_done = sum(1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",)))
         console.print(
             f"\n  [bold]Batch {batch_idx + 1} done:[/bold] "
             f"{batch_ok} ok, {batch_fail} failed, "
@@ -1238,10 +1158,7 @@ def _run_normal(
         )
 
     n_done = sum(1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",)))
-    console.print(
-        f"\n[bold]Run complete:[/bold] {total_ok} ok, {total_fail} failed, "
-        f"{total_rows:,} rows"
-    )
+    console.print(f"\n[bold]Run complete:[/bold] {total_ok} ok, {total_fail} failed, {total_rows:,} rows")
     console.print(f"[bold]Cursor:[/bold] {n_done}/{len(all_tickers)} tickers saved")
 
 

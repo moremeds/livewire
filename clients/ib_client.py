@@ -24,11 +24,12 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, List, Optional, Sequence
+from typing import Any
 
 from ib_async import IB, FlexReport, Option
 
-from clients.telemetry import ConnectionTelemetry, _resolve_default_path as _resolve_telemetry_path
+from clients.telemetry import ConnectionTelemetry
+from clients.telemetry import _resolve_default_path as _resolve_telemetry_path
 
 # ---------------------------------------------------------------------------
 # Exception hierarchy
@@ -83,24 +84,30 @@ _CLIENT_ID_IN_USE = 326
 _MAX_CLIENT_ID_ATTEMPTS = 10
 
 # IB error codes that are informational / non-critical
-_INFO_CODES = frozenset({
-    2104,  # Market data farm connection is OK
-    2106,  # HMDS data farm connection is OK
-    2108,  # Market data farm connection is inactive
-    2158,  # Sec-def data farm connection is OK
-})
+_INFO_CODES = frozenset(
+    {
+        2104,  # Market data farm connection is OK
+        2106,  # HMDS data farm connection is OK
+        2108,  # Market data farm connection is inactive
+        2158,  # Sec-def data farm connection is OK
+    }
+)
 
 # IB error codes that should be silently ignored (not user-relevant)
-_IGNORE_CODES = frozenset({
-    10358,  # Reuters Fundamentals subscription inactive — auto-fallback
-})
+_IGNORE_CODES = frozenset(
+    {
+        10358,  # Reuters Fundamentals subscription inactive — auto-fallback
+    }
+)
 
 # IB error codes indicating connectivity issues
-_CONNECTIVITY_CODES = frozenset({
-    1100,  # Connectivity between IB and TWS has been lost
-    1101,  # Connectivity restored — data lost
-    1102,  # Connectivity restored — data maintained
-})
+_CONNECTIVITY_CODES = frozenset(
+    {
+        1100,  # Connectivity between IB and TWS has been lost
+        1101,  # Connectivity restored — data lost
+        1102,  # Connectivity restored — data maintained
+    }
+)
 
 logger = logging.getLogger("ib_client")
 
@@ -130,7 +137,7 @@ class IBClient:
         self._last_port: int = DEFAULT_GATEWAY_PORT
         self._last_client_id: int = 0
         self._last_timeout: int = 10
-        self._last_error: Optional[tuple] = None
+        self._last_error: tuple | None = None
         self._telemetry: ConnectionTelemetry | None = None
 
         # Wire up error callback
@@ -149,8 +156,8 @@ class IBClient:
         self,
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_GATEWAY_PORT,
-        client_id: Optional[int] = None,
-        client_name: Optional[str] = None,
+        client_id: int | None = None,
+        client_name: str | None = None,
         timeout: int = 10,
         max_retries: int = 1,
     ) -> None:
@@ -172,10 +179,7 @@ class IBClient:
         # Resolve client ID
         if client_id is None and client_name is not None:
             if client_name not in CLIENT_IDS:
-                raise ValueError(
-                    f"Unknown client name '{client_name}'. "
-                    f"Known names: {sorted(CLIENT_IDS.keys())}"
-                )
+                raise ValueError(f"Unknown client name '{client_name}'. Known names: {sorted(CLIENT_IDS.keys())}")
             client_id = CLIENT_IDS[client_name]
         elif client_id is None:
             client_id = 0
@@ -189,7 +193,7 @@ class IBClient:
             self._last_error = None  # clear stale errors before each attempt
 
             attempt = 0
-            last_exc: Optional[Exception] = None
+            last_exc: Exception | None = None
             while attempt < max_retries:
                 attempt += 1
                 telemetry = ConnectionTelemetry(
@@ -205,7 +209,9 @@ class IBClient:
                     self._telemetry.record_connected()
                     self.logger.info(
                         "Connected to IB on %s:%s (clientId=%s)",
-                        host, port, current_id,
+                        host,
+                        port,
+                        current_id,
                     )
                     return
                 except Exception as exc:
@@ -213,7 +219,9 @@ class IBClient:
                     last_exc = exc
                     self.logger.warning(
                         "Connection attempt %d/%d failed: %s",
-                        attempt, max_retries, exc,
+                        attempt,
+                        max_retries,
+                        exc,
                     )
                     if attempt < max_retries:
                         time.sleep(min(attempt, 5))
@@ -222,14 +230,14 @@ class IBClient:
             if self._last_error and self._last_error[0] == _CLIENT_ID_IN_USE:
                 self.logger.warning(
                     "clientId %d already in use (error 326), retrying with clientId %d",
-                    current_id, current_id + 1,
+                    current_id,
+                    current_id + 1,
                 )
                 continue
 
             # Any other failure — stop escalating clientIds
             raise IBConnectionError(
-                f"Failed to connect to IB on {host}:{port} after "
-                f"{max_retries} attempt(s): {last_exc}"
+                f"Failed to connect to IB on {host}:{port} after {max_retries} attempt(s): {last_exc}"
             )
 
         raise IBConnectionError(
@@ -268,7 +276,7 @@ class IBClient:
 
     # -- context manager ----------------------------------------------------
 
-    def __enter__(self) -> "IBClient":
+    def __enter__(self) -> IBClient:
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
@@ -318,7 +326,7 @@ class IBClient:
         self._require_connection()
         return self._ib.portfolio(account)
 
-    def get_account_summary(self, group: str = "", tags: Optional[List[str]] = None) -> list:
+    def get_account_summary(self, group: str = "", tags: list[str] | None = None) -> list:
         """Return account summary values."""
         self._require_connection()
         return self._ib.accountSummary(account=group)
@@ -375,7 +383,11 @@ class IBClient:
         self._require_connection()
         try:
             bracket = self._ib.bracketOrder(
-                action, quantity, limit_price, take_profit_price, stop_loss_price,
+                action,
+                quantity,
+                limit_price,
+                take_profit_price,
+                stop_loss_price,
             )
             trades = []
             for order in bracket:
@@ -383,8 +395,12 @@ class IBClient:
                 trades.append(trade)
             self.logger.info(
                 "Placed bracket order: %s %s %s limit=%.2f TP=%.2f SL=%.2f",
-                action, quantity, contract.symbol if hasattr(contract, "symbol") else contract,
-                limit_price, take_profit_price, stop_loss_price,
+                action,
+                quantity,
+                contract.symbol if hasattr(contract, "symbol") else contract,
+                limit_price,
+                take_profit_price,
+                stop_loss_price,
             )
             return trades
         except Exception as exc:
@@ -459,8 +475,10 @@ class IBClient:
         return self._ib.trades()
 
     def get_order_status(
-        self, order_id: Optional[int] = None, perm_id: Optional[int] = None,
-    ) -> Optional[Any]:
+        self,
+        order_id: int | None = None,
+        perm_id: int | None = None,
+    ) -> Any | None:
         """Look up a trade by order ID or permanent ID.
 
         Returns:
@@ -519,8 +537,13 @@ class IBClient:
         return self._ib.reqSecDefOptParams(symbol, exchange, sec_type, 0)
 
     def get_option_price(
-        self, symbol: str, expiry: str, strike: float, right: str,
-        exchange: str = "SMART", currency: str = "USD",
+        self,
+        symbol: str,
+        expiry: str,
+        strike: float,
+        right: str,
+        exchange: str = "SMART",
+        currency: str = "USD",
     ) -> Any:
         """Get a quote for a specific option contract.
 
@@ -537,9 +560,7 @@ class IBClient:
         )
         qualified = self._ib.qualifyContracts(contract)
         if not qualified:
-            raise IBContractError(
-                f"Could not qualify option: {symbol} {expiry} ${strike} {right}"
-            )
+            raise IBContractError(f"Could not qualify option: {symbol} {expiry} ${strike} {right}")
         ticker = self._ib.reqMktData(qualified[0], "", False, False)
         self._ib.sleep(2)
         return ticker
@@ -553,9 +574,7 @@ class IBClient:
         self._require_connection()
         results = self._ib.qualifyContracts(contract)
         if not results:
-            raise IBContractError(
-                f"Failed to qualify contract: {contract}"
-            )
+            raise IBContractError(f"Failed to qualify contract: {contract}")
         return results[0]
 
     def qualify_contracts(self, *contracts: Any) -> list:
@@ -609,9 +628,7 @@ class IBClient:
                 return trade
 
             if status in ("Cancelled", "ApiCancelled"):
-                raise IBOrderError(
-                    f"Order cancelled (orderId={trade.order.orderId}): {status}"
-                )
+                raise IBOrderError(f"Order cancelled (orderId={trade.order.orderId}): {status}")
 
             if status == "Inactive":
                 self.logger.warning(
@@ -620,8 +637,7 @@ class IBClient:
                 )
 
         raise IBTimeoutError(
-            f"Order not filled within {timeout}s (orderId={trade.order.orderId}, "
-            f"status={trade.orderStatus.status})"
+            f"Order not filled within {timeout}s (orderId={trade.order.orderId}, status={trade.orderStatus.status})"
         )
 
     # -- historical data ----------------------------------------------------
@@ -689,7 +705,10 @@ class IBClient:
         """Return the earliest available data timestamp for *contract*."""
         self._require_connection()
         return self._ib.reqHeadTimeStamp(
-            contract, whatToShow=what_to_show, useRTH=use_rth, formatDate=2,
+            contract,
+            whatToShow=what_to_show,
+            useRTH=use_rth,
+            formatDate=2,
         )
 
     async def get_head_timestamp_async(
@@ -701,7 +720,10 @@ class IBClient:
         """Async version of :meth:`get_head_timestamp`."""
         self._require_connection()
         return await self._ib.reqHeadTimeStampAsync(
-            contract, whatToShow=what_to_show, useRTH=use_rth, formatDate=2,
+            contract,
+            whatToShow=what_to_show,
+            useRTH=use_rth,
+            formatDate=2,
         )
 
     # -- contract details ---------------------------------------------------

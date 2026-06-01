@@ -4,6 +4,7 @@
 Views: summary | flap | quality
 Sources: ib | uw | massive | all
 """
+
 from __future__ import annotations
 
 import argparse
@@ -13,9 +14,9 @@ import re
 import subprocess
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Iterable, Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TELEMETRY = Path.home() / "market-warehouse" / "logs" / "telemetry.jsonl"
@@ -38,7 +39,7 @@ def _parse_since(raw: str) -> timedelta:
     }[unit]
 
 
-def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Livewire data quality report")
     p.add_argument("--view", choices=["summary", "flap", "quality"], required=True)
     p.add_argument("--since", default="24h", type=_parse_since)
@@ -140,15 +141,13 @@ def compute_summary(
     window_start: datetime,
     window_end: datetime,
 ) -> dict:
-    by_source_farm: dict[tuple[str, Optional[str]], list[tuple[datetime, str]]] = defaultdict(list)
+    by_source_farm: dict[tuple[str, str | None], list[tuple[datetime, str]]] = defaultdict(list)
     by_source_events: Counter = Counter()
     for row in telemetry:
         source = row.get("source", "?")
         by_source_events[source] += 1
         if row.get("event") == "farm_state":
-            by_source_farm[(source, row.get("farm"))].append(
-                (row["_ts"], row.get("state", "?"))
-            )
+            by_source_farm[(source, row.get("farm"))].append((row["_ts"], row.get("state", "?")))
 
     sources = []
     source_names = sorted({source for source, _ in by_source_farm} | set(by_source_events))
@@ -157,20 +156,24 @@ def compute_summary(
         for (farm_source, farm), transitions in by_source_farm.items():
             if farm_source != source:
                 continue
-            farms.append({
-                "farm": farm or "(unknown)",
-                "uptime_pct": round(
-                    _compute_farm_uptime(transitions, window_start, window_end),
-                    1,
-                ),
-                "flap_count": _compute_flap_count(transitions),
-                "mtbd_seconds": None,
-            })
-        sources.append({
-            "source": source,
-            "connection_events": by_source_events[source],
-            "farms": farms,
-        })
+            farms.append(
+                {
+                    "farm": farm or "(unknown)",
+                    "uptime_pct": round(
+                        _compute_farm_uptime(transitions, window_start, window_end),
+                        1,
+                    ),
+                    "flap_count": _compute_flap_count(transitions),
+                    "mtbd_seconds": None,
+                }
+            )
+        sources.append(
+            {
+                "source": source,
+                "connection_events": by_source_events[source],
+                "farms": farms,
+            }
+        )
 
     flag_counts: Counter = Counter()
     ticker_counts: Counter = Counter()
@@ -182,10 +185,7 @@ def compute_summary(
         "window": f"{window_start.isoformat()} -> {window_end.isoformat()}",
         "sources": sources,
         "flag_counts_by_category": dict(flag_counts),
-        "top_tickers": [
-            {"ticker": ticker, "flag_count": count}
-            for ticker, count in ticker_counts.most_common(10)
-        ],
+        "top_tickers": [{"ticker": ticker, "flag_count": count} for ticker, count in ticker_counts.most_common(10)],
     }
 
 
@@ -194,10 +194,7 @@ def render_summary_text(summary: dict) -> str:
     for source in summary["sources"]:
         lines.append(f"[{source['source']}] events={source['connection_events']}")
         for farm in source["farms"]:
-            lines.append(
-                f"  farm={farm['farm']} uptime={farm['uptime_pct']}% "
-                f"flaps={farm['flap_count']}"
-            )
+            lines.append(f"  farm={farm['farm']} uptime={farm['uptime_pct']}% flaps={farm['flap_count']}")
     lines.append("")
     lines.append("Quality flags by category:")
     for category, count in summary["flag_counts_by_category"].items():
@@ -222,8 +219,7 @@ def render_flap_view(telemetry: list[dict]) -> str:
         lines.append(f"\n[{farm}] {len(events)} transitions")
         for event in events:
             lines.append(
-                f"  {event['_ts'].strftime('%Y-%m-%dT%H:%M:%SZ')} "
-                f"state={event.get('state')} code={event.get('code')}"
+                f"  {event['_ts'].strftime('%Y-%m-%dT%H:%M:%SZ')} state={event.get('state')} code={event.get('code')}"
             )
     return "\n".join(lines)
 
@@ -231,16 +227,12 @@ def render_flap_view(telemetry: list[dict]) -> str:
 def render_quality_view(
     audit: list[dict],
     *,
-    severity_filter: Optional[str] = None,
+    severity_filter: str | None = None,
 ) -> str:
     rows = sorted(audit, key=lambda x: x["_ts"])
     if severity_filter:
         order = {"info": 0, "warning": 1, "critical": 2}
-        rows = [
-            row
-            for row in rows
-            if order.get(row.get("severity"), 0) >= order.get(severity_filter, 0)
-        ]
+        rows = [row for row in rows if order.get(row.get("severity"), 0) >= order.get(severity_filter, 0)]
 
     lines = ["=== Quality flags ==="]
     for row in rows:
@@ -286,7 +278,7 @@ def _send_email(summary: dict) -> bool:
 
     log_dir = _resolve_log_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    date_str = datetime.now(UTC).strftime("%Y-%m-%d")
     (log_dir / f"quality_summary_{date_str}.marker").write_text(
         "ok\n",
         encoding="utf-8",
@@ -294,9 +286,9 @@ def _send_email(summary: dict) -> bool:
     return True
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     window_start = now - args.since
     telemetry = load_telemetry(args.telemetry_path, since=window_start)
     audit = load_audit(args.audit_path, since=window_start)
