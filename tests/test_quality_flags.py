@@ -1,4 +1,5 @@
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -103,8 +104,10 @@ def test_alert_above_threshold_spawns(tmp_path, monkeypatch):
         called.append(a)
         return _ok()
 
-    monkeypatch.setattr("clients.quality_flags.subprocess.run", fake_run)
-    ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
+    with patch("clients.quality_flags.subprocess") as mock_sp:
+        mock_sp.run = fake_run
+        mock_sp.SubprocessError = OSError
+        ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
     assert ok is True
     assert called, "subprocess.run should have been invoked"
     cmd = called[0][0]
@@ -121,12 +124,14 @@ def test_alert_rate_limit_dedupes_within_window(tmp_path, monkeypatch):
         counts[0] += 1
         return _ok()
 
-    monkeypatch.setattr("clients.quality_flags.subprocess.run", fake_run)
     from clients import quality_flags
 
-    quality_flags._RATE_LIMIT_CACHE.clear()  # ensure clean state
-    alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
-    alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")  # duplicate
+    quality_flags._RATE_LIMIT_CACHE.clear()
+    with patch("clients.quality_flags.subprocess") as mock_sp:
+        mock_sp.run = fake_run
+        mock_sp.SubprocessError = OSError
+        alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
+        alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
     assert counts[0] == 1
 
 
@@ -137,11 +142,13 @@ def test_alert_smtp_failure_preserves_html(tmp_path, monkeypatch):
     def fake_run(*a, **kw):
         return _fail("SMTP timeout")
 
-    monkeypatch.setattr("clients.quality_flags.subprocess.run", fake_run)
     from clients import quality_flags
 
     quality_flags._RATE_LIMIT_CACHE.clear()
-    ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="HOOD")
+    with patch("clients.quality_flags.subprocess") as mock_sp:
+        mock_sp.run = fake_run
+        mock_sp.SubprocessError = OSError
+        ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="HOOD")
     assert ok is False
     saved = list((tmp_path / "undelivered").glob("*HOOD*"))
     assert saved, "undelivered HTML should be preserved"
@@ -150,8 +157,10 @@ def test_alert_smtp_failure_preserves_html(tmp_path, monkeypatch):
 def test_alert_invalid_rate_limit_env_uses_default(monkeypatch):
     monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
     monkeypatch.setenv("MDW_ALERT_RATE_LIMIT_SECONDS", "bad")
-    monkeypatch.setattr("clients.quality_flags.subprocess.run", lambda *a, **kw: _ok())
-    ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
+    with patch("clients.quality_flags.subprocess") as mock_sp:
+        mock_sp.run = lambda *a, **kw: _ok()
+        mock_sp.SubprocessError = OSError
+        ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
     assert ok is True
 
 
@@ -162,8 +171,10 @@ def test_alert_spawn_exception_preserves_html(tmp_path, monkeypatch):
     def boom(*a, **kw):
         raise OSError("node missing")
 
-    monkeypatch.setattr("clients.quality_flags.subprocess.run", boom)
-    ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="TSLA")
+    with patch("clients.quality_flags.subprocess") as mock_sp:
+        mock_sp.run = boom
+        mock_sp.SubprocessError = OSError
+        ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="TSLA")
     assert ok is False
     assert list((tmp_path / "undelivered").glob("*TSLA*"))
 
