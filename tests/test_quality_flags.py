@@ -3,8 +3,11 @@ from unittest.mock import patch
 
 import pytest
 
+from clients import quality_flags
 from clients.quality_detector import QualityFlag
-from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
+from clients.quality_flags import append_audit, write_sidecar
+
+alert_on_flag = quality_flags.alert_on_flag
 
 
 def _flag(category="range_shortfall", severity="critical"):
