@@ -103,7 +103,7 @@ def test_alert_above_threshold_spawns(tmp_path, monkeypatch):
         called.append(a)
         return _ok()
 
-    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("clients.quality_flags.subprocess.run", fake_run)
     ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
     assert ok is True
     assert called, "subprocess.run should have been invoked"
@@ -121,7 +121,7 @@ def test_alert_rate_limit_dedupes_within_window(tmp_path, monkeypatch):
         counts[0] += 1
         return _ok()
 
-    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("clients.quality_flags.subprocess.run", fake_run)
     from clients import quality_flags
 
     quality_flags._RATE_LIMIT_CACHE.clear()  # ensure clean state
@@ -137,7 +137,7 @@ def test_alert_smtp_failure_preserves_html(tmp_path, monkeypatch):
     def fake_run(*a, **kw):
         return _fail("SMTP timeout")
 
-    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("clients.quality_flags.subprocess.run", fake_run)
     from clients import quality_flags
 
     quality_flags._RATE_LIMIT_CACHE.clear()
@@ -150,7 +150,7 @@ def test_alert_smtp_failure_preserves_html(tmp_path, monkeypatch):
 def test_alert_invalid_rate_limit_env_uses_default(monkeypatch):
     monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
     monkeypatch.setenv("MDW_ALERT_RATE_LIMIT_SECONDS", "bad")
-    monkeypatch.setattr("subprocess.run", lambda *a, **kw: _ok())
+    monkeypatch.setattr("clients.quality_flags.subprocess.run", lambda *a, **kw: _ok())
     ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
     assert ok is True
 
@@ -162,7 +162,7 @@ def test_alert_spawn_exception_preserves_html(tmp_path, monkeypatch):
     def boom(*a, **kw):
         raise OSError("node missing")
 
-    monkeypatch.setattr("subprocess.run", boom)
+    monkeypatch.setattr("clients.quality_flags.subprocess.run", boom)
     ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="TSLA")
     assert ok is False
     assert list((tmp_path / "undelivered").glob("*TSLA*"))
