@@ -98,13 +98,16 @@ def test_alert_below_threshold_skipped(tmp_path, monkeypatch):
 
 def test_alert_above_threshold_spawns(tmp_path, monkeypatch):
     monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
+    from clients import quality_flags
+
+    quality_flags._RATE_LIMIT_CACHE.clear()
     called = []
 
     def fake_run(*a, **kw):
         called.append(a)
         return _ok()
 
-    with patch("clients.quality_flags.subprocess") as mock_sp:
+    with patch.object(quality_flags, "subprocess") as mock_sp:
         mock_sp.run = fake_run
         mock_sp.SubprocessError = OSError
         ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
@@ -127,7 +130,7 @@ def test_alert_rate_limit_dedupes_within_window(tmp_path, monkeypatch):
     from clients import quality_flags
 
     quality_flags._RATE_LIMIT_CACHE.clear()
-    with patch("clients.quality_flags.subprocess") as mock_sp:
+    with patch.object(quality_flags, "subprocess") as mock_sp:
         mock_sp.run = fake_run
         mock_sp.SubprocessError = OSError
         alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
@@ -145,7 +148,7 @@ def test_alert_smtp_failure_preserves_html(tmp_path, monkeypatch):
     from clients import quality_flags
 
     quality_flags._RATE_LIMIT_CACHE.clear()
-    with patch("clients.quality_flags.subprocess") as mock_sp:
+    with patch.object(quality_flags, "subprocess") as mock_sp:
         mock_sp.run = fake_run
         mock_sp.SubprocessError = OSError
         ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="HOOD")
@@ -157,7 +160,10 @@ def test_alert_smtp_failure_preserves_html(tmp_path, monkeypatch):
 def test_alert_invalid_rate_limit_env_uses_default(monkeypatch):
     monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
     monkeypatch.setenv("MDW_ALERT_RATE_LIMIT_SECONDS", "bad")
-    with patch("clients.quality_flags.subprocess") as mock_sp:
+    from clients import quality_flags
+
+    quality_flags._RATE_LIMIT_CACHE.clear()
+    with patch.object(quality_flags, "subprocess") as mock_sp:
         mock_sp.run = lambda *a, **kw: _ok()
         mock_sp.SubprocessError = OSError
         ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
@@ -167,11 +173,14 @@ def test_alert_invalid_rate_limit_env_uses_default(monkeypatch):
 def test_alert_spawn_exception_preserves_html(tmp_path, monkeypatch):
     monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
     monkeypatch.setenv("MDW_UNDELIVERED_DIR", str(tmp_path / "undelivered"))
+    from clients import quality_flags
+
+    quality_flags._RATE_LIMIT_CACHE.clear()
 
     def boom(*a, **kw):
         raise OSError("node missing")
 
-    with patch("clients.quality_flags.subprocess") as mock_sp:
+    with patch.object(quality_flags, "subprocess") as mock_sp:
         mock_sp.run = boom
         mock_sp.SubprocessError = OSError
         ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="TSLA")
