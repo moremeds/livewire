@@ -411,6 +411,8 @@ def _run_equity_intraday(
                     "--years",
                     "5",
                     "--skip-existing",
+                    "--max-concurrent",
+                    str(config.max_concurrent),
                 ],
                 config,
                 **{**inject, "completed_fn": gap_fn},
