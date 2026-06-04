@@ -22,7 +22,7 @@ from typing import Any
 
 log = logging.getLogger("livewire.massive_flatfile")
 
-S3_ENDPOINT = "https://files.polygon.io"
+S3_ENDPOINT = "https://files.massive.com"
 S3_BUCKET = "flatfiles"
 S3_PREFIX = "us_stocks_sip/minute_aggs_v1"
 
