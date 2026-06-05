@@ -17,12 +17,7 @@ def test_load_env_file_handles_missing_path(tmp_path: Path, monkeypatch) -> None
 def test_load_env_file_parses_export_and_quoted_values(tmp_path: Path, monkeypatch) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "# comment line\n"
-        "BARE=plain\n"
-        "export QUOTED='hello world'\n"
-        "EMPTY=\n"
-        "=ignored\n"
-        "BROKEN_LINE_NO_EQUALS\n",
+        "# comment line\nBARE=plain\nexport QUOTED='hello world'\nEMPTY=\n=ignored\nBROKEN_LINE_NO_EQUALS\n",
         encoding="utf-8",
     )
     monkeypatch.delenv("BARE", raising=False)

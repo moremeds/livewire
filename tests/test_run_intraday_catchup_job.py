@@ -236,12 +236,15 @@ class TestMain:
                 handle.write("daily-backfill ok\n")
             return CompletedProcess(args=cmd, returncode=0)
 
-        with patch(
-            "livewire_scripts.run_intraday_catchup_job.subprocess.run",
-            side_effect=fake_runner,
-        ), patch(
-            "livewire_scripts.run_intraday_catchup_job.shutil.which",
-            return_value="/usr/local/bin/node",
+        with (
+            patch(
+                "livewire_scripts.run_intraday_catchup_job.subprocess.run",
+                side_effect=fake_runner,
+            ),
+            patch(
+                "livewire_scripts.run_intraday_catchup_job.shutil.which",
+                return_value="/usr/local/bin/node",
+            ),
         ):
             rc = main([])
 
