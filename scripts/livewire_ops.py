@@ -7,7 +7,6 @@ import argparse
 import importlib
 import inspect
 import os
-import shlex
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -16,35 +15,16 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from livewire_scripts.scheduled_env import _load_env_file, load_scheduled_env  # noqa: F401  (re-export for backwards-compatible tests)
+
 COMMANDS = {
     "run-daily-job": "livewire_scripts.run_daily_update_job",
 }
 
 
-def _load_env_file(path: Path) -> None:
-    if not path.exists():
-        return
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        if line.startswith("export "):
-            line = line.removeprefix("export ").strip()
-        key, value = line.split("=", 1)
-        key = key.strip()
-        if not key:
-            continue
-        try:
-            parsed = shlex.split(value, comments=False, posix=True)
-        except ValueError:
-            parsed = [value.strip()]
-        os.environ[key] = parsed[0] if parsed else ""
-
-
 def _load_run_daily_env() -> None:
-    warehouse = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
-    for env_file in (Path.home() / ".secrets", REPO_ROOT / ".env", warehouse / ".env"):
-        _load_env_file(env_file.expanduser())
+    """Backwards-compatible alias for legacy tests; delegates to the shared loader."""
+    load_scheduled_env(REPO_ROOT)
 
 
 def _dispatch_module(module_name: str, argv: Sequence[str], display_name: str) -> int:
@@ -82,7 +62,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "send-alert":
         return _dispatch_send_alert(rest)
     if args.command == "run-daily-job":
-        _load_run_daily_env()
+        load_scheduled_env(REPO_ROOT)
     return _dispatch_module(COMMANDS[args.command], rest, f"livewire_ops.py {args.command}")
 
 

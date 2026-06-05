@@ -393,6 +393,31 @@ def test_ops_run_daily_job_loads_env_files_and_dispatches(monkeypatch, tmp_path)
     assert livewire_ops.os.environ["FROM_SECRET"] == "secret"
 
 
+def test_ops_run_daily_job_uses_shared_scheduled_env_loader(monkeypatch, tmp_path) -> None:
+    """The run-daily-job command must delegate env loading to
+    livewire_scripts.scheduled_env so other scheduled wrappers reuse the same code path."""
+
+    calls: list[Path] = []
+
+    from livewire_scripts import scheduled_env
+
+    def _fake_loader(repo_root: Path) -> None:
+        calls.append(repo_root)
+
+    monkeypatch.setattr(scheduled_env, "load_scheduled_env", _fake_loader)
+    monkeypatch.setattr(livewire_ops, "load_scheduled_env", _fake_loader)
+    monkeypatch.setattr(livewire_ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        livewire_ops.importlib,
+        "import_module",
+        lambda name: _fake_module([], name, accepts_argv=True),
+    )
+
+    livewire_ops.main(["run-daily-job"])
+
+    assert calls == [tmp_path]
+
+
 def test_ops_env_loader_ignores_missing_and_bad_quotes(tmp_path, monkeypatch) -> None:
     missing = tmp_path / "missing.env"
     livewire_ops._load_env_file(missing)
