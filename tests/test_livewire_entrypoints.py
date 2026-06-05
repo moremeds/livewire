@@ -415,6 +415,39 @@ def test_ops_run_daily_job_uses_shared_scheduled_env_loader(monkeypatch, tmp_pat
     assert calls == [tmp_path]
 
 
+def test_ops_run_intraday_catchup_job_loads_env_files_and_dispatches(monkeypatch, tmp_path) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    repo_env = tmp_path / ".env"
+    warehouse = tmp_path / "warehouse"
+    warehouse.mkdir()
+    warehouse_env = warehouse / ".env"
+    secrets = tmp_path / ".secrets"
+    repo_env.write_text("export FROM_REPO='repo value'\n", encoding="utf-8")
+    warehouse_env.write_text("FROM_WAREHOUSE=warehouse\n", encoding="utf-8")
+    secrets.write_text("FROM_SECRET=secret\n", encoding="utf-8")
+
+    monkeypatch.setattr(livewire_ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(livewire_ops.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(warehouse))
+    monkeypatch.setattr(
+        livewire_ops.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+
+    assert livewire_ops.main(["run-intraday-catchup-job"]) == 7
+    assert calls == [("livewire_scripts.run_intraday_catchup_job", [])]
+    assert livewire_ops.os.environ["FROM_REPO"] == "repo value"
+    assert livewire_ops.os.environ["FROM_WAREHOUSE"] == "warehouse"
+    assert livewire_ops.os.environ["FROM_SECRET"] == "secret"
+
+
+def test_ops_help_lists_intraday_catchup_command(capsys) -> None:
+    livewire_ops.main(["-h"])
+    captured = capsys.readouterr().out
+    assert "run-intraday-catchup-job" in captured
+
+
 def test_ops_env_loader_ignores_missing_and_bad_quotes(tmp_path, monkeypatch) -> None:
     missing = tmp_path / "missing.env"
     livewire_ops._load_env_file(missing)

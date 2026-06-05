@@ -19,6 +19,7 @@ from livewire_scripts.scheduled_env import _load_env_file, load_scheduled_env  #
 
 COMMANDS = {
     "run-daily-job": "livewire_scripts.run_daily_update_job",
+    "run-intraday-catchup-job": "livewire_scripts.run_intraday_catchup_job",
 }
 
 
@@ -56,7 +57,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "send-alert":
         return _dispatch_send_alert(rest)
-    if args.command == "run-daily-job":
+    if args.command in {"run-daily-job", "run-intraday-catchup-job"}:
         load_scheduled_env(REPO_ROOT)
     return _dispatch_module(COMMANDS[args.command], rest, f"livewire_ops.py {args.command}")
 
