@@ -86,7 +86,8 @@ def build_alert_command(config: IntradayCatchupConfig, request: AlertRequest) ->
     ]
 
 
-def _append_log(log_file: Path, message: str) -> None:
+def append_log(log_file: Path, message: str) -> None:
+    """Append a line to log_file, creating parent dirs as needed."""
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with log_file.open("a", encoding="utf-8") as handle:
         handle.write(message)
@@ -101,6 +102,7 @@ def _node_binary_exists(node_bin: str) -> bool:
 
 
 def _extract_error_summary(log_file: Path) -> str:
+    """Return the last non-blank, non-header line of log_file as a one-line summary."""
     try:
         lines = log_file.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
@@ -110,6 +112,56 @@ def _extract_error_summary(log_file: Path) -> str:
         if stripped and not stripped.startswith("==="):
             return stripped
     return "Intraday catchup failed with no error summary captured in the log."
+
+
+def _send_failure_alert(
+    config: IntradayCatchupConfig,
+    log_file: Path,
+    exit_code: int,
+    env: dict[str, str] | None,
+    runner: Callable[..., subprocess.CompletedProcess],
+    now_fn: Callable[[], datetime],
+) -> int:
+    """Log failure header, dispatch send-alert subprocess (or skip if prereqs missing), return exit_code."""
+    append_log(
+        log_file,
+        f"=== Failed {now_fn():%Y-%m-%dT%H:%M:%SZ} (exit_code={exit_code}) ===",
+    )
+
+    if not _node_binary_exists(config.node_bin):
+        append_log(log_file, f"WARNING: node binary not found at {config.node_bin}; skipping failure email")
+        return exit_code
+
+    if not config.alert_script.exists():
+        append_log(log_file, f"WARNING: alert script not found at {config.alert_script}; skipping failure email")
+        return exit_code
+
+    alert_request = AlertRequest(
+        run_date=log_file.stem.removeprefix("intraday_catchup_"),
+        log_file=log_file,
+        exit_code=exit_code,
+        error_summary=_extract_error_summary(log_file),
+        repo_root=REPO_ROOT,
+    )
+    alert_command = build_alert_command(config, alert_request)
+    append_log(log_file, f"Triggering failure alert via: {' '.join(alert_command)}")
+    alert_result = runner(
+        alert_command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+        check=False,
+    )
+    alert_output = (alert_result.stdout or "").strip()
+    if alert_result.returncode == 0:
+        append_log(log_file, f"Failure alert sent successfully. {alert_output}".strip())
+    else:
+        append_log(
+            log_file,
+            f"WARNING: failure alert returned non-zero exit code {alert_result.returncode}. {alert_output}".strip(),
+        )
+    return exit_code
 
 
 def run_intraday_catchup(
@@ -122,9 +174,9 @@ def run_intraday_catchup(
     log_file = build_log_file(config.log_dir, started_at)
     command = build_intraday_catchup_command(config)
 
-    _append_log(log_file, f"=== Intraday Catchup {started_at:%Y-%m-%dT%H:%M:%SZ} ===")
-    _append_log(log_file, f"Runner command: {' '.join(command)}")
-    _append_log(log_file, f"hostname={socket.gethostname()}")
+    append_log(log_file, f"=== Intraday Catchup {started_at:%Y-%m-%dT%H:%M:%SZ} ===")
+    append_log(log_file, f"Runner command: {' '.join(command)}")
+    append_log(log_file, f"hostname={socket.gethostname()}")
 
     with log_file.open("a", encoding="utf-8") as handle:
         result = runner(
@@ -137,48 +189,10 @@ def run_intraday_catchup(
         )
 
     if result.returncode == 0:
-        _append_log(log_file, f"=== Done {now_fn():%Y-%m-%dT%H:%M:%SZ} ===")
+        append_log(log_file, f"=== Done {now_fn():%Y-%m-%dT%H:%M:%SZ} ===")
         return 0
 
-    _append_log(
-        log_file,
-        f"=== Failed {now_fn():%Y-%m-%dT%H:%M:%SZ} (exit_code={result.returncode}) ===",
-    )
-
-    if not _node_binary_exists(config.node_bin):
-        _append_log(log_file, f"WARNING: node binary not found at {config.node_bin}; skipping failure email")
-        return result.returncode
-
-    if not config.alert_script.exists():
-        _append_log(log_file, f"WARNING: alert script not found at {config.alert_script}; skipping failure email")
-        return result.returncode
-
-    alert_request = AlertRequest(
-        run_date=log_file.stem.removeprefix("intraday_catchup_"),
-        log_file=log_file,
-        exit_code=result.returncode,
-        error_summary=_extract_error_summary(log_file),
-        repo_root=REPO_ROOT,
-    )
-    alert_command = build_alert_command(config, alert_request)
-    _append_log(log_file, f"Triggering failure alert via: {' '.join(alert_command)}")
-    alert_result = runner(
-        alert_command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env=env,
-        check=False,
-    )
-    alert_output = (alert_result.stdout or "").strip()
-    if alert_result.returncode == 0:
-        _append_log(log_file, f"Failure alert sent successfully. {alert_output}".strip())
-    else:
-        _append_log(
-            log_file,
-            f"WARNING: failure alert returned non-zero exit code {alert_result.returncode}. {alert_output}".strip(),
-        )
-    return result.returncode
+    return _send_failure_alert(config, log_file, result.returncode, env, runner, now_fn)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

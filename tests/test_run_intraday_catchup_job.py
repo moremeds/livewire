@@ -17,6 +17,7 @@ from livewire_scripts.run_intraday_catchup_job import (
     _extract_error_summary,
     _node_binary_exists,
     _utc_now,
+    append_log,
     build_alert_command,
     build_config,
     build_intraday_catchup_command,
@@ -126,12 +127,6 @@ class TestBuildAlertCommand:
         assert cmd[cmd.index("--exit-code") + 1] == "42"
         assert "--run-date" in cmd
         assert cmd[cmd.index("--run-date") + 1] == "2026-06-05"
-
-
-def _append(handle, lines: list[str]) -> None:
-    for line in lines:
-        handle.write(line)
-        handle.write("\n")
 
 
 class TestRunIntradayCatchup:
