@@ -1,9 +1,9 @@
 """Shared env-file loader for scheduled livewire jobs.
 
-Single source of truth for the env precedence used by every launchd-driven
-wrapper. Currently used by `scripts/livewire_ops.py` for both `run-daily-job`
-and `run-intraday-catchup-job`. Keeping this in one module prevents the two
-wrappers from drifting on env precedence when one is modified.
+Single source of truth for the env precedence used by launchd-driven
+wrappers (`~/.secrets` → repo `.env` → `~/market-warehouse/.env`, last-set-wins).
+Keeping this in one module prevents wrappers from drifting on env semantics
+when one is modified.
 """
 
 from __future__ import annotations
