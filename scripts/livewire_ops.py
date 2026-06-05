@@ -22,11 +22,6 @@ COMMANDS = {
 }
 
 
-def _load_run_daily_env() -> None:
-    """Backwards-compatible alias for legacy tests; delegates to the shared loader."""
-    load_scheduled_env(REPO_ROOT)
-
-
 def _dispatch_module(module_name: str, argv: Sequence[str], display_name: str) -> int:
     module = importlib.import_module(module_name)
     original_argv = sys.argv

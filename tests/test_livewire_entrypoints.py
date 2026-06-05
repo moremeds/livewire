@@ -399,12 +399,9 @@ def test_ops_run_daily_job_uses_shared_scheduled_env_loader(monkeypatch, tmp_pat
 
     calls: list[Path] = []
 
-    from livewire_scripts import scheduled_env
-
     def _fake_loader(repo_root: Path) -> None:
         calls.append(repo_root)
 
-    monkeypatch.setattr(scheduled_env, "load_scheduled_env", _fake_loader)
     monkeypatch.setattr(livewire_ops, "load_scheduled_env", _fake_loader)
     monkeypatch.setattr(livewire_ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(
