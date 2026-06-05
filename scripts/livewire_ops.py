@@ -15,7 +15,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from livewire_scripts.scheduled_env import _load_env_file, load_scheduled_env  # noqa: F401  (re-export for backwards-compatible tests)
+from livewire_scripts.scheduled_env import (  # noqa: F401  (re-export for backwards-compatible tests)
+    _load_env_file,
+    load_scheduled_env,
+)
 
 COMMANDS = {
     "run-daily-job": "livewire_scripts.run_daily_update_job",

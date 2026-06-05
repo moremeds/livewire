@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
-
-import pytest
 
 from livewire_scripts.run_intraday_catchup_job import (
     AlertRequest,
@@ -17,7 +14,6 @@ from livewire_scripts.run_intraday_catchup_job import (
     _extract_error_summary,
     _node_binary_exists,
     _utc_now,
-    append_log,
     build_alert_command,
     build_config,
     build_intraday_catchup_command,
