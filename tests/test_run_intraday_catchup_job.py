@@ -345,3 +345,21 @@ class TestRunIntradayCatchupAdditional:
         log_file = config.log_dir / "intraday_catchup_2026-06-05.log"
         contents = log_file.read_text(encoding="utf-8")
         assert "failure alert returned non-zero exit code" in contents
+
+
+class TestLaunchdTemplate:
+    def test_plist_template_exists_and_parses(self):
+        repo_root = Path(__file__).resolve().parent.parent
+        plist_path = repo_root / "launchd" / "com.livewire.intraday-catchup.plist.example"
+        assert plist_path.exists(), f"missing plist template at {plist_path}"
+
+        # Avoid plistlib XML strictness — just check the human-meaningful invariants.
+        text = plist_path.read_text(encoding="utf-8")
+        assert "<string>com.livewire.intraday-catchup</string>" in text
+        assert "run-intraday-catchup-job" in text
+        assert "<key>Hour</key>" in text
+        assert "<integer>16</integer>" in text
+        assert "<key>Minute</key>" in text
+        assert "<integer>0</integer>" in text
+        # Same /path/to/repo substitution sentinel as the daily-update example.
+        assert "/path/to/repo" in text
