@@ -438,12 +438,15 @@ python scripts/livewire_ops.py run-daily-job
 ```bash
 sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.daily-update.plist.example > ~/Library/LaunchAgents/com.livewire.daily-update.plist
 sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.daily-update-watchdog.plist.example > ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
+sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.intraday-catchup.plist.example > ~/Library/LaunchAgents/com.livewire.intraday-catchup.plist
 launchctl load ~/Library/LaunchAgents/com.livewire.daily-update.plist
 launchctl load ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
+launchctl load ~/Library/LaunchAgents/com.livewire.intraday-catchup.plist
 ```
 
 * **Daily sync**: 13:05 PT (4:05 PM ET)
 * **Watchdog**: 18:30 PT
+* **Intraday catch-up**: 16:00 PT
 
 ---
 
@@ -479,7 +482,7 @@ python scripts/livewire_quality.py watchdog
 Postgres is optional and replayable. It is not the ingestion source of truth.
 
 ```bash
-export MDW_POSTGRES_DSN="postgresql://user:password@localhost:5432/livewire"
+export MDW_POSTGRES_DSN="postgresql://USER:YOUR_PASSWORD@localhost:5432/livewire"
 export MDW_POSTGRES_SCHEMA="md"
 
 # Smoke check

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.livewire.intraday-catchup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <!-- Replace /path/to/repo with your actual repo path -->
+        <string>cd /path/to/repo &amp;&amp; /Users/chenxi/market-warehouse/.venv/bin/python scripts/livewire_ops.py run-intraday-catchup-job</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <!-- 16:00 PT = 7:00 PM ET year-round (PT and ET always 3h apart) -->
+        <!-- Runs after com.livewire.daily-update (13:05 PT) typically completes. -->
+        <key>Hour</key>
+        <integer>16</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/com.livewire.intraday-catchup.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/com.livewire.intraday-catchup.stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
