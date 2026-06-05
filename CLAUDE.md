@@ -397,7 +397,7 @@ python scripts/livewire_quality.py health --intraday --timeframe 5m --symbol AAP
 
 ```bash
 source ~/market-warehouse/.venv/bin/activate
-export MDW_POSTGRES_DSN="postgresql://user:password@localhost:5432/livewire"
+export MDW_POSTGRES_DSN="postgresql://USER:YOUR_PASSWORD@localhost:5432/livewire"
 export MDW_POSTGRES_SCHEMA="md"
 
 python scripts/livewire_store.py smoke-postgres --ensure-schema

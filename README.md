@@ -482,7 +482,7 @@ python scripts/livewire_quality.py watchdog
 Postgres is optional and replayable. It is not the ingestion source of truth.
 
 ```bash
-export MDW_POSTGRES_DSN="postgresql://user:password@localhost:5432/livewire"
+export MDW_POSTGRES_DSN="postgresql://USER:YOUR_PASSWORD@localhost:5432/livewire"
 export MDW_POSTGRES_SCHEMA="md"
 
 # Smoke check
