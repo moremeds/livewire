@@ -257,10 +257,14 @@ python scripts/livewire_ingest.py daily --asset-class futures             # Dail
 # Copy examples, replace /path/to/repo with your actual repo path
 sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.daily-update.plist.example > ~/Library/LaunchAgents/com.livewire.daily-update.plist
 sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.daily-update-watchdog.plist.example > ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
+sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.intraday-catchup.plist.example > ~/Library/LaunchAgents/com.livewire.intraday-catchup.plist
 launchctl load ~/Library/LaunchAgents/com.livewire.daily-update.plist
 launchctl load ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
+launchctl load ~/Library/LaunchAgents/com.livewire.intraday-catchup.plist
 ```
 `scripts/livewire_ops.py run-daily-job` loads `~/.secrets`, repo `.env`, and `~/market-warehouse/.env` before invoking the retrying scheduled runner. This preserves the old launchd wrapper behavior for API keys like `CEREBRAS_API_KEY`. The runner automatically syncs equities and futures via IB, then all volatility indices via CBOE's public API in a single invocation; pass `--asset-class <name>` to run only one IB asset class (skips CBOE volatility sync).
+
+A second scheduled job, `com.livewire.intraday-catchup`, runs at 16:00 Pacific local time daily and invokes `scripts/livewire_ops.py run-intraday-catchup-job`. This calls the existing `daily-backfill` orchestrator so equity intraday parquet (1m/5m/1h), FRED Treasury rates, and CBOE volatility all refresh through the Massive flat-file fast path (when `MASSIVE_S3_ACCESS_KEY` / `MASSIVE_S3_SECRET_KEY` are set) or the Massive REST path otherwise. The wrapper is single-attempt because `daily-backfill` already owns retry-until-done and activity-based stall detection; on terminal failure the wrapper sends one alert through the same Nodemailer pipeline as the daily-update wrapper, tagged `--job-name intraday_catchup`. Logs land at `~/market-warehouse/logs/intraday_catchup_YYYY-MM-DD.log` (UTC date). The default 7-day `MDW_DAILY_BACKFILL_INTRADAY_DAYS` lookback absorbs a single missed run; widen via `~/market-warehouse/.env` if you need more headroom.
 
 The main sync runs at 13:05 Pacific local time daily (4:05 PM Eastern year-round). The watchdog runs at 18:30 Pacific by default and alerts if the scheduled sync never started or never logged a completion marker. Non-trading days are harmless no-ops.
 
