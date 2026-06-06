@@ -16,6 +16,7 @@ Read-only probing on 2026-06-06 confirmed:
 
 - endpoint: `https://files.massive.com`
 - bucket: `flatfiles`
+- client signing: explicit `Config(signature_version="s3v4")`
 - `list_objects_v2` and `head_object` are supported
 - accessible minute history: 2003-09-10 through 2026-06-05
 - accessible daily objects: 5,721
@@ -27,6 +28,9 @@ Read-only probing on 2026-06-06 confirmed:
   remains required because one sample cannot prove the full historical domain
 - `head_object` returns `404` for absent, holiday, and malformed keys
 - `head_object` returns `403` for an object outside accessible history
+- the documented example object
+  `us_stocks_sip/minute_aggs_v1/2023/10/2023-10-27.csv.gz` downloaded
+  successfully and matched its `head_object` byte count
 
 ## Current Problem
 
@@ -290,6 +294,11 @@ MDW_FLATFILE_LOOKBACK_DAYS=7
 MDW_FLATFILE_MIN_FREE_GB=<safety threshold>
 MDW_FLATFILE_RAW_RETENTION=keep
 ```
+
+The S3 client is constructed from an explicit `boto3.Session` and
+`botocore.config.Config(signature_version="s3v4")`. Object keys are stored
+without the bucket prefix; operator-supplied keys beginning with `flatfiles/`
+are normalized by removing that prefix before S3 calls.
 
 ## Testing
 

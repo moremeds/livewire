@@ -138,17 +138,21 @@ depends_on: [T0]
 5. Add `MassiveFlatfileClient.inspect_date(d)` using the verified supported
    provider operation. Classify unavailable, forbidden, and retryable failures
    from observed Massive behavior rather than generic AWS assumptions.
-6. Add `download_date_to_path(d, destination)` that streams the gzip to a
+6. Construct the client through an explicit `boto3.Session` and
+   `Config(signature_version="s3v4")`. Add a key-normalization helper that
+   removes a leading `flatfiles/` bucket prefix when supplied.
+7. Add `download_date_to_path(d, destination)` that streams the gzip to a
    caller-controlled path without parsing it into memory.
-7. Test holiday exclusion, object-key construction, status classification,
+8. Test holiday exclusion, object-key construction, bucket-prefix
+   normalization, explicit Signature V4 configuration, status classification,
    streamed downloads, cleanup on failure, and secret redaction.
-8. Run:
+9. Run:
 
    ```bash
    python -m pytest tests/test_massive_flatfile_client.py tests/test_trading_calendar.py -q
    ```
 
-9. Commit:
+10. Commit:
 
    ```bash
    git add clients/massive_flatfile_client.py clients/trading_calendar.py tests/test_massive_flatfile_client.py tests/test_trading_calendar.py
