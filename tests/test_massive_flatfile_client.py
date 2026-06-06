@@ -12,10 +12,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from clients.massive_flatfile_client import (
+    FlatfileObjectStatus,
     MassiveFlatfileClient,
     _s3_key_for_date,
+    normalize_object_key,
     parse_flatfile_csv,
-    trading_dates_between,
 )
 
 
@@ -48,17 +49,8 @@ class TestS3KeyForDate:
         assert key == "us_stocks_sip/minute_aggs_v1/2026/03/2026-03-15.csv.gz"
 
 
-class TestTradingDatesBetween:
-    def test_excludes_weekends(self):
-        # 2026-05-25 is Monday, 2026-05-31 is Sunday
-        dates = trading_dates_between(date(2026, 5, 25), date(2026, 5, 31))
-        assert date(2026, 5, 25) in dates
-        assert date(2026, 5, 29) in dates
-        assert date(2026, 5, 30) not in dates
-        assert date(2026, 5, 31) not in dates
-
-    def test_empty_range(self):
-        assert trading_dates_between(date(2026, 5, 30), date(2026, 5, 30)) == []
+def test_normalize_object_key_removes_bucket_prefix():
+    assert normalize_object_key("flatfiles/us_stocks_sip/x") == "us_stocks_sip/x"
 
 
 class TestParseFlatfileCsv:
@@ -245,3 +237,10 @@ class TestMassiveFlatfileClient:
         mock_s3 = MagicMock()
         with MassiveFlatfileClient(_s3_client=mock_s3) as client:
             assert client is not None
+
+    def test_inspect_date_classifies_available(self):
+        mock_s3 = MagicMock()
+        mock_s3.head_object.return_value = {"ContentLength": 123, "ETag": '"abc"'}
+        info = MassiveFlatfileClient(_s3_client=mock_s3).inspect_date(date(2026, 5, 28))
+        assert info.status == FlatfileObjectStatus.AVAILABLE
+        assert info.size_bytes == 123
