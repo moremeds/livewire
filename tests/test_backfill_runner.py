@@ -8,6 +8,8 @@ from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from livewire_scripts.backfill_runner import (
     EQUITY_INTRADAY_TIMEFRAMES,
     VOL_INTRADAY_TIMEFRAMES,
@@ -26,6 +28,12 @@ from livewire_scripts.backfill_runner import (
     run_preset,
     run_until_done,
 )
+
+
+@pytest.fixture(autouse=True)
+def _flatfile_credentials(monkeypatch):
+    monkeypatch.setenv("MASSIVE_S3_ACCESS_KEY", "test-access")
+    monkeypatch.setenv("MASSIVE_S3_SECRET_KEY", "test-secret")
 
 
 def _make_config(tmp_path: Path) -> BackfillConfig:
@@ -453,31 +461,16 @@ class TestRunUntilDone:
 
 
 class TestRunEquityIntraday:
-    def test_runs_all_presets_and_timeframes(self, tmp_path):
+    def test_runs_one_full_market_flatfile_backfill(self, tmp_path):
         config = _make_config(tmp_path)
-        config.cursor_dir.mkdir(parents=True, exist_ok=True)
         commands: list = []
 
-        def mock_popen(cmd, **kw):
+        def mock_runner(cmd, **kw):
             commands.append(cmd)
-            return _MockProc(poll_count=0)
+            return CompletedProcess(args=cmd, returncode=0)
 
-        for preset_path in config.equity_presets:
-            name, total = preset_info(preset_path)
-            for tf in EQUITY_INTRADAY_TIMEFRAMES:
-                cursor = config.cursor_dir / f"cursor_intraday_{tf}_{name}.json"
-                cursor.write_text(json.dumps({"completed": list(range(total))}))
-
-        _run_equity_intraday(
-            config,
-            popen_fn=mock_popen,
-            sleep_fn=lambda s: None,
-            clock_fn=lambda: 0,
-            mtime_fn=lambda p: 0,
-            completed_fn=cursor_completed,
-            kill_fn=lambda p: None,
-        )
-        assert len(commands) == 0  # all already complete
+        assert _run_equity_intraday(config, runner=mock_runner) == 0
+        assert commands == [[config.python_bin, str(config.ingest_script), "flatfile-ingest", "backfill"]]
 
 
 class TestDeriveVol1h:
@@ -563,6 +556,12 @@ class TestRunVolatilityLanes:
 
 
 class TestRunBackfill:
+    def test_missing_flatfile_credentials_fail_before_phases(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MASSIVE_S3_SECRET_KEY")
+        commands, inject = self._inject(tmp_path)
+        assert run_backfill(_make_config(tmp_path), **inject) == 2
+        assert commands == []
+
     def _inject(self, tmp_path):
         commands: list = []
 

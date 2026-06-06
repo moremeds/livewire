@@ -90,3 +90,22 @@ Massive minute flat files for the maximum entitled history.
   depends_on: [F1]
   - Plan: `docs/plans/2026-06-06-massive-flatfile-full-market.md`
   - Includes explicit deletion of legacy ticker-filtered flat-file and Massive REST equity-intraday paths.
+
+# Massive Flat-File Full-Market Implementation
+
+## Dependency Graph
+
+- M0 -> M1 -> M2 -> M3 -> M4
+
+## Tasks
+
+- [x] M0 Create isolated implementation worktree and verify baseline.
+  depends_on: []
+- [x] M1 Add S3 classification, bucketed raw staging, and durable resume state.
+  depends_on: [M0]
+- [x] M2 Add capacity planning, resumable downloads, and bounded ticker-oriented publication.
+  depends_on: [M1]
+- [x] M3 Remove legacy ticker-filtered flat-file and Massive REST equity-intraday runtime paths.
+  depends_on: [M2]
+- [ ] M4 Complete isolated live validation and final repository gates.
+  depends_on: [M3]

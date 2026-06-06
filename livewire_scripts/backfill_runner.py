@@ -368,6 +368,7 @@ def run_until_done(
 def _run_equity_intraday(
     config: BackfillConfig,
     *,
+    runner: callable = subprocess.run,
     popen_fn: callable = subprocess.Popen,
     sleep_fn: callable = time.sleep,
     clock_fn: callable = time.monotonic,
@@ -375,49 +376,13 @@ def _run_equity_intraday(
     completed_fn: callable = cursor_completed,
     kill_fn: callable = _kill_process,
 ) -> int:
-    """Phases 4-6: equity intraday via Massive for all presets."""
-    py = config.python_bin
-    ingest = str(config.ingest_script)
-    inject = dict(
-        popen_fn=popen_fn,
-        sleep_fn=sleep_fn,
-        clock_fn=clock_fn,
-        mtime_fn=mtime_fn,
-        completed_fn=completed_fn,
-        kill_fn=kill_fn,
+    """Full-market equity intraday via Massive flat files."""
+    del popen_fn, sleep_fn, clock_fn, mtime_fn, completed_fn, kill_fn
+    result = runner(
+        [config.python_bin, str(config.ingest_script), "flatfile-ingest", "backfill"],
+        check=False,
     )
-
-    for tf in EQUITY_INTRADAY_TIMEFRAMES:
-        for preset_path in config.equity_presets:
-            name, total = preset_info(preset_path)
-            cursor_file = config.cursor_dir / f"cursor_intraday_{tf}_{name}.json"
-            gap_fn = make_gap_completed_fn(total, preset_path)
-            run_until_done(
-                f"intraday_{tf}_{name}",
-                cursor_file,
-                total,
-                [
-                    py,
-                    ingest,
-                    "intraday-backfill",
-                    "--preset",
-                    preset_path,
-                    "--timeframe",
-                    tf,
-                    "--source",
-                    "massive",
-                    "--asset-class",
-                    "equity",
-                    "--years",
-                    "5",
-                    "--skip-existing",
-                    "--max-concurrent",
-                    str(config.max_concurrent),
-                ],
-                config,
-                **{**inject, "completed_fn": gap_fn},
-            )
-    return 0
+    return result.returncode
 
 
 def _derive_vol_1h(
@@ -532,6 +497,13 @@ def run_backfill(
     completed_fn: callable = cursor_completed,
     kill_fn: callable = _kill_process,
 ) -> int:
+    from clients.massive_flatfile_client import require_flatfile_credentials
+
+    try:
+        require_flatfile_credentials()
+    except RuntimeError as exc:
+        logger.error("%s", exc)
+        return 2
     logger.info("=" * 60)
     logger.info("BACKFILL RUNNER START")
     logger.info(
@@ -628,7 +600,7 @@ def run_backfill(
     # Phases 4-8: Equity intraday and volatility lanes in parallel
     logger.info("Starting equity intraday and volatility lanes in parallel")
     with ThreadPoolExecutor(max_workers=2) as pool:
-        equity_future = pool.submit(_run_equity_intraday, config, **inject)
+        equity_future = pool.submit(_run_equity_intraday, config, runner=runner, **inject)
         vol_future = pool.submit(_run_volatility_lanes, config, runner=runner, **inject)
         equity_status = equity_future.result()
         vol_status = vol_future.result()

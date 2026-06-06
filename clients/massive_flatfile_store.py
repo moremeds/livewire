@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import csv
 import gzip
+import heapq
 import shutil
 import tempfile
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.csv as pacsv
@@ -71,7 +73,9 @@ class MassiveFlatfileStore:
                     writers[bucket].writerow(
                         {
                             "ticker": ticker,
-                            "bar_timestamp": datetime.fromtimestamp(int(row["window_start"]) / 1_000_000_000, tz=UTC).isoformat(),
+                            "bar_timestamp": datetime.fromtimestamp(
+                                int(row["window_start"]) / 1_000_000_000, tz=UTC
+                            ).isoformat(),
                             "open": row["open"],
                             "high": row["high"],
                             "low": row["low"],
@@ -84,9 +88,12 @@ class MassiveFlatfileStore:
                 handle.close()
             for csv_path in sorted(spill.glob("*.csv")):
                 bucket = int(csv_path.stem)
-                table = pacsv.read_csv(csv_path).cast(RAW_SCHEMA)
+                table = pacsv.read_csv(csv_path).cast(RAW_SCHEMA)  # pyright: ignore[reportPrivateImportUsage]
                 table = table.sort_by([("ticker", "ascending"), ("bar_timestamp", "ascending")])
+                self._validate_table(table)
                 pq.write_table(table, temp / f"bucket={bucket:03d}.parquet", compression="snappy")
+            if rows == 0:
+                raise ValueError(f"{day}: Massive flat file contained no rows")
             pq.write_table(pa.table({"ticker": sorted(symbols)}), temp / "_symbols.parquet", compression="snappy")
             shutil.rmtree(spill)
             (temp / "_SUCCESS").write_text(f"rows={rows}\nsymbols={len(symbols)}\n", encoding="utf-8")
@@ -124,7 +131,84 @@ class MassiveFlatfileStore:
             if path.exists():
                 yield pq.read_table(path)
 
-    def raw_stats(self, day: date) -> dict[str, int]:
+    def scan_bucket_by_ticker(
+        self,
+        bucket: int,
+        days: list[date],
+        *,
+        batch_size: int = 256,
+    ) -> Iterator[tuple[str, list[dict[str, Any]]]]:
+        """K-way merge sorted daily bucket files, buffering one ticker at a time."""
+        iterators = [
+            self._iter_path_rows(self.bucket_path(day, bucket), batch_size)
+            for day in days
+            if self.bucket_path(day, bucket).exists()
+        ]
+        heap: list[tuple[str, datetime, int, dict[str, Any]]] = []
+        for index, rows in enumerate(iterators):
+            try:
+                row = next(rows)
+            except StopIteration:
+                continue
+            heapq.heappush(heap, (row["ticker"], row["bar_timestamp"], index, row))
+
+        current_ticker: str | None = None
+        current_rows: list[dict[str, Any]] = []
+        previous_key: tuple[str, datetime] | None = None
+        while heap:
+            ticker, timestamp, index, row = heapq.heappop(heap)
+            key = (ticker, timestamp)
+            if key == previous_key:
+                raise ValueError(f"duplicate raw flat-file key: {ticker} {timestamp.isoformat()}")
+            previous_key = key
+            if current_ticker is not None and ticker != current_ticker:
+                yield current_ticker, current_rows
+                current_rows = []
+            current_ticker = ticker
+            current_rows.append(row)
+            try:
+                following = next(iterators[index])
+            except StopIteration:
+                continue
+            heapq.heappush(heap, (following["ticker"], following["bar_timestamp"], index, following))
+        if current_ticker is not None:
+            yield current_ticker, current_rows
+
+    @staticmethod
+    def _iter_path_rows(path: Path, batch_size: int) -> Iterator[dict[str, Any]]:
+        for batch in pq.ParquetFile(path).iter_batches(batch_size=batch_size, columns=RAW_SCHEMA.names):
+            yield from batch.to_pylist()
+
+    @staticmethod
+    def _validate_table(table: pa.Table) -> None:
+        if table.num_rows == 0:
+            raise ValueError("raw flat-file bucket cannot be empty")
+        previous: tuple[str, datetime] | None = None
+        for ticker, timestamp in zip(
+            table.column("ticker").to_pylist(), table.column("bar_timestamp").to_pylist(), strict=True
+        ):
+            key = (ticker, timestamp)
+            if key == previous:
+                raise ValueError(f"duplicate raw flat-file key: {ticker} {timestamp.isoformat()}")
+            if previous is not None and key < previous:
+                raise ValueError("raw flat-file bucket is not sorted")
+            previous = key
+
+    def raw_stats(self, day: date) -> dict[str, Any]:
         root = self.raw_path(day)
-        rows = sum(pq.read_metadata(p).num_rows for p in root.glob("bucket=*.parquet"))
-        return {"rows": rows, "symbols": len(self.symbols_for_date(day))}
+        paths = list(root.glob("bucket=*.parquet"))
+        rows = sum(pq.read_metadata(p).num_rows for p in paths)
+        size_bytes = sum(p.stat().st_size for p in paths)
+        bounds: list[datetime] = []
+        for path in paths:
+            table = pq.read_table(path, columns=["bar_timestamp"])
+            values = table.column("bar_timestamp").to_pylist()
+            if values:
+                bounds.extend((values[0], values[-1]))
+        return {
+            "rows": rows,
+            "symbols": len(self.symbols_for_date(day)),
+            "size_bytes": size_bytes,
+            "earliest": min(bounds) if bounds else None,
+            "latest": max(bounds) if bounds else None,
+        }

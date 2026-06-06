@@ -8,6 +8,8 @@ from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
+import pytest
+
 from livewire_scripts.sync_runner import (
     SyncConfig,
     _derive_vol_1h,
@@ -20,6 +22,12 @@ from livewire_scripts.sync_runner import (
     run_sync,
     ticker_union,
 )
+
+
+@pytest.fixture(autouse=True)
+def _flatfile_credentials(monkeypatch):
+    monkeypatch.setenv("MASSIVE_S3_ACCESS_KEY", "test-access")
+    monkeypatch.setenv("MASSIVE_S3_SECRET_KEY", "test-secret")
 
 
 def _make_config(tmp_path: Path) -> SyncConfig:
@@ -57,7 +65,6 @@ def _make_config(tmp_path: Path) -> SyncConfig:
         vol_preset=str(vol),
         vol_daily_preset=str(vol_daily),
         intraday_days=3,
-        intraday_concurrent=10,
         target_date="2026-05-28",
     )
 
@@ -76,13 +83,11 @@ class TestBuildConfig:
         monkeypatch.delenv("MDW_PYTHON_BIN", raising=False)
         monkeypatch.delenv("MDW_LOG_DIR", raising=False)
         monkeypatch.delenv("MDW_DAILY_BACKFILL_INTRADAY_DAYS", raising=False)
-        monkeypatch.delenv("MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT", raising=False)
         monkeypatch.delenv("MDW_DAILY_BACKFILL_TARGET_DATE", raising=False)
 
         config = build_config(tmp_path)
         assert config.log_dir == tmp_path / "logs"
         assert config.intraday_days == 7
-        assert config.intraday_concurrent == 20
         assert config.target_date is None
 
     def test_env_overrides(self, monkeypatch, tmp_path):
@@ -90,14 +95,12 @@ class TestBuildConfig:
         monkeypatch.setenv("MDW_PYTHON_BIN", "/venv/bin/python")
         monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "custom"))
         monkeypatch.setenv("MDW_DAILY_BACKFILL_INTRADAY_DAYS", "14")
-        monkeypatch.setenv("MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT", "5")
         monkeypatch.setenv("MDW_DAILY_BACKFILL_TARGET_DATE", "2026-05-20")
 
         config = build_config(tmp_path)
         assert config.python_bin == "/venv/bin/python"
         assert config.log_dir == tmp_path / "custom"
         assert config.intraday_days == 14
-        assert config.intraday_concurrent == 5
         assert config.target_date == "2026-05-20"
 
     def test_empty_target_date_becomes_none(self, monkeypatch, tmp_path):
@@ -307,6 +310,12 @@ class TestDeriveVol1h:
 
 
 class TestRunSync:
+    def test_missing_flatfile_credentials_fail_before_phases(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MASSIVE_S3_ACCESS_KEY")
+        commands = []
+        assert run_sync(_make_config(tmp_path), runner=lambda command, **kwargs: commands.append(command)) == 2
+        assert commands == []
+
     def test_all_phases_succeed(self, tmp_path):
         config = _make_config(tmp_path)
         commands: list[list[str]] = []
@@ -323,9 +332,7 @@ class TestRunSync:
         assert any("daily" in c and "--source massive" in c for c in joined)
         assert any("fred-rates" in c for c in joined)
         assert any("cboe-vol" in c for c in joined)
-        assert any("--timeframe 1m" in c for c in joined)
-        assert any("--timeframe 5m" in c and "equity" in c for c in joined)
-        assert any("--timeframe 1h" in c and "equity" in c for c in joined)
+        assert any("flatfile-ingest catch-up" in c for c in joined)
         assert any("--timeframe 30m" in c and "volatility" in c for c in joined)
 
     def test_uses_target_date_from_config(self, tmp_path):
@@ -412,8 +419,8 @@ class TestRunSync:
 
         with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
             run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
-        # 1 equity daily + 1 FRED + 1 CBOE + 3 equity intraday + 1 vol intraday (30m) = 7
-        assert len(commands) == 7
+        # 1 equity daily + 1 FRED + 1 CBOE + 1 full-market equity intraday + 1 vol intraday
+        assert len(commands) == 5
 
 
 class TestMain:
@@ -439,14 +446,11 @@ class TestMain:
                     "2026-05-20",
                     "--intraday-days",
                     "14",
-                    "--intraday-concurrent",
-                    "5",
                 ]
             )
         config = mock.call_args[0][0]
         assert config.target_date == "2026-05-20"
         assert config.intraday_days == 14
-        assert config.intraday_concurrent == 5
 
     def test_no_overrides(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))

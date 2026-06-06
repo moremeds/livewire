@@ -86,9 +86,7 @@ def _requires_ib_preflight(command: str, rest: Sequence[str]) -> bool:
         asset_class = _arg_value(rest, "--asset-class", "equity")
         return not (source == "massive" and asset_class == "equity")
     if command == "intraday-backfill":
-        source = _arg_value(rest, "--source", "ib")
-        asset_class = _arg_value(rest, "--asset-class", "equity")
-        return not (source == "massive" and asset_class == "equity")
+        return True
     return command in IB_COMMANDS
 
 

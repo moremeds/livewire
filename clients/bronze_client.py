@@ -12,6 +12,7 @@ import pyarrow.parquet as pq
 
 from clients.parquet_io import publish_parquet
 from clients.symbol_ids import stable_symbol_id
+from clients.symbol_paths import decode_symbol, encode_symbol
 
 log = logging.getLogger(__name__)
 
@@ -133,7 +134,7 @@ class BronzeClient:
         for path in self._bronze_dir.glob(f"symbol=*/{PARQUET_FILENAME}"):
             partition = path.parent.name
             if partition.startswith("symbol="):
-                symbols.add(partition.split("=", 1)[1])
+                symbols.add(decode_symbol(partition.split("=", 1)[1]))
         return symbols
 
     def get_latest_dates(self) -> dict[str, str]:
@@ -230,7 +231,7 @@ class BronzeClient:
         return inserted
 
     def _symbol_path(self, symbol: str) -> Path:
-        return self._bronze_dir / f"symbol={symbol}" / PARQUET_FILENAME
+        return self._bronze_dir / f"symbol={encode_symbol(symbol)}" / PARQUET_FILENAME
 
     def _symbol_paths(self) -> list[Path]:
         if not self._bronze_dir.exists():
@@ -238,7 +239,7 @@ class BronzeClient:
         return sorted(self._bronze_dir.glob(f"symbol=*/{PARQUET_FILENAME}"))
 
     def _symbol_from_path(self, path: Path) -> str:
-        return path.parent.name.split("=", 1)[1]
+        return decode_symbol(path.parent.name.split("=", 1)[1])
 
     def _read_trade_dates(self, path: Path) -> list[date]:
         table = pq.read_table(path, columns=["trade_date"])

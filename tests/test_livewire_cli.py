@@ -16,7 +16,6 @@ from scripts.livewire import (
     _dispatch_publish,
     _dispatch_sync,
     _has_massive_key,
-    _has_s3_keys,
     _ib_reachable,
     _needs_ib,
     main,
@@ -241,7 +240,7 @@ class TestDispatchBackfill:
         assert "massive" in argv
         assert "--dry-run" in argv
 
-    def test_intraday_dispatches_backfill_intraday(self, monkeypatch):
+    def test_equity_intraday_dispatches_full_market_flatfiles(self, monkeypatch):
         monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
         dispatched = []
 
@@ -253,9 +252,8 @@ class TestDispatchBackfill:
         _dispatch_backfill(["--timeframe", "5m", "--dry-run"])
 
         mod, argv = dispatched[0]
-        assert mod == "livewire_scripts.backfill_intraday"
-        assert "--timeframe" in argv
-        assert "5m" in argv
+        assert mod == "livewire_scripts.ingest_flatfiles"
+        assert argv == ["backfill", "--dry-run"]
 
     def test_all_timeframes_dispatches_five(self, monkeypatch):
         monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
@@ -268,9 +266,9 @@ class TestDispatchBackfill:
         monkeypatch.setattr("scripts.livewire._dispatch_module", capture)
         _dispatch_backfill(["--timeframe", "all", "--dry-run"])
 
-        assert len(dispatched) == 5
+        assert len(dispatched) == 2
         assert "livewire backfill 1d" in dispatched
-        assert "livewire backfill 30m" in dispatched
+        assert "livewire backfill equity intraday" in dispatched
 
     def test_years_passed_through(self, monkeypatch):
         monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
@@ -286,7 +284,7 @@ class TestDispatchBackfill:
         assert "--years" in dispatched[0]
         assert "3" in dispatched[0]
 
-    def test_preset_passed_through(self, monkeypatch):
+    def test_equity_intraday_does_not_pass_preset(self, monkeypatch):
         monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
         dispatched = []
 
@@ -297,8 +295,7 @@ class TestDispatchBackfill:
         monkeypatch.setattr("scripts.livewire._dispatch_module", capture)
         _dispatch_backfill(["--timeframe", "1h", "--preset", "presets/sp500.json"])
 
-        assert "--preset" in dispatched[0]
-        assert "presets/sp500.json" in dispatched[0]
+        assert dispatched[0] == ["backfill"]
 
 
 class TestDispatchCheck:
@@ -520,7 +517,7 @@ class TestBackfillFull:
 
 
 class TestBackfillSkipExisting:
-    def test_skip_existing_passed_through(self, monkeypatch):
+    def test_equity_intraday_does_not_pass_skip_existing(self, monkeypatch):
         monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
         dispatched = []
 
@@ -531,11 +528,11 @@ class TestBackfillSkipExisting:
         monkeypatch.setattr("scripts.livewire._dispatch_module", capture)
         _dispatch_backfill(["--timeframe", "5m", "--skip-existing"])
 
-        assert "--skip-existing" in dispatched[0]
+        assert dispatched[0] == ["backfill"]
 
 
 class TestBackfillIntradayMassive:
-    def test_intraday_with_massive_adds_source(self, monkeypatch):
+    def test_equity_intraday_ignores_rest_key_and_years(self, monkeypatch):
         monkeypatch.setenv("MASSIVE_API_KEY", "key")
         dispatched = []
 
@@ -547,50 +544,13 @@ class TestBackfillIntradayMassive:
         _dispatch_backfill(["--timeframe", "5m", "--years", "2"])
 
         argv = dispatched[0]
-        assert "--source" in argv
-        assert "massive" in argv
-        assert "--years" in argv
-        assert "2" in argv
-
-
-class TestHasS3Keys:
-    def test_returns_true_when_both_set(self, monkeypatch):
-        monkeypatch.setenv("MASSIVE_S3_ACCESS_KEY", "ak")
-        monkeypatch.setenv("MASSIVE_S3_SECRET_KEY", "sk")
-        assert _has_s3_keys() is True
-
-    def test_returns_false_when_access_key_missing(self, monkeypatch):
-        monkeypatch.delenv("MASSIVE_S3_ACCESS_KEY", raising=False)
-        monkeypatch.setenv("MASSIVE_S3_SECRET_KEY", "sk")
-        assert _has_s3_keys() is False
-
-    def test_returns_false_when_secret_key_missing(self, monkeypatch):
-        monkeypatch.setenv("MASSIVE_S3_ACCESS_KEY", "ak")
-        monkeypatch.delenv("MASSIVE_S3_SECRET_KEY", raising=False)
-        assert _has_s3_keys() is False
-
-    def test_returns_false_when_both_missing(self, monkeypatch):
-        monkeypatch.delenv("MASSIVE_S3_ACCESS_KEY", raising=False)
-        monkeypatch.delenv("MASSIVE_S3_SECRET_KEY", raising=False)
-        assert _has_s3_keys() is False
+        assert argv == ["backfill"]
 
 
 class TestBackfillSourceS3:
-    def test_s3_dispatches_flatfile_ingest(self, monkeypatch):
-        monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
-        monkeypatch.delenv("MASSIVE_S3_ACCESS_KEY", raising=False)
-        dispatched = []
-
-        def capture(mod, argv, display):
-            dispatched.append((mod, display))
-            return 0
-
-        monkeypatch.setattr("scripts.livewire._dispatch_module", capture)
-        _dispatch_backfill(["--source", "s3", "--preset", "presets/sp500.json"])
-
-        assert len(dispatched) == 2  # 1d (daily) + s3 flat file
-        assert dispatched[1][0] == "livewire_scripts.ingest_flatfiles"
-        assert "s3" in dispatched[1][1]
+    def test_removed_s3_source_is_rejected(self):
+        with pytest.raises(SystemExit):
+            _dispatch_backfill(["--source", "s3"])
 
     def test_s3_auto_detected_with_keys(self, monkeypatch):
         monkeypatch.setenv("MASSIVE_S3_ACCESS_KEY", "ak")
@@ -606,23 +566,6 @@ class TestBackfillSourceS3:
         _dispatch_backfill(["--timeframe", "1m", "--preset", "presets/sp500.json"])
 
         assert dispatched[0][0] == "livewire_scripts.ingest_flatfiles"
-
-    def test_s3_passes_years_through(self, monkeypatch):
-        monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
-        monkeypatch.delenv("MASSIVE_S3_ACCESS_KEY", raising=False)
-        dispatched = []
-
-        def capture(mod, argv, display):
-            dispatched.append((mod, argv))
-            return 0
-
-        monkeypatch.setattr("scripts.livewire._dispatch_module", capture)
-        _dispatch_backfill(["--source", "s3", "--preset", "presets/sp500.json", "--years", "3"])
-
-        s3_call = [d for d in dispatched if d[0] == "livewire_scripts.ingest_flatfiles"]
-        assert len(s3_call) == 1
-        assert "--years" in s3_call[0][1]
-        assert "3" in s3_call[0][1]
 
     def test_s3_not_used_for_non_equity(self, monkeypatch):
         monkeypatch.setenv("MASSIVE_S3_ACCESS_KEY", "ak")

@@ -17,9 +17,14 @@ class MassiveFlatfileState:
 
     def _load(self) -> dict[str, Any]:
         try:
-            return json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {"raw_completed": [], "buckets_completed": [], "tickers_completed": {}}
+            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            data = {}
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Malformed Massive flat-file state: {self.state_path}") from exc
+        data.setdefault("raw_completed", [])
+        data.setdefault("publish_scopes", {})
+        return data
 
     def record(self, event: str, **fields: Any) -> None:
         self.cursor_dir.mkdir(parents=True, exist_ok=True)
@@ -44,3 +49,53 @@ class MassiveFlatfileState:
     def raw_completed(self, day: date | str) -> bool:
         value = day.isoformat() if hasattr(day, "isoformat") else str(day)
         return value in self.data.get("raw_completed", [])
+
+    def mark_raw_failed(self, day: date | str, error: str) -> None:
+        value = day.isoformat() if hasattr(day, "isoformat") else str(day)
+        self.record("raw_failed", date=value, error=error)
+
+    def mark_raw_unavailable(self, day: date | str, error: str) -> None:
+        value = day.isoformat() if hasattr(day, "isoformat") else str(day)
+        self.record("raw_unavailable", date=value, error=error)
+
+    def set_discovery(self, *, earliest: date, latest: date, object_count: int, compressed_bytes: int) -> None:
+        self.data["discovery"] = {
+            "earliest": earliest.isoformat(),
+            "latest": latest.isoformat(),
+            "object_count": object_count,
+            "compressed_bytes": compressed_bytes,
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        self.record("discovery_completed", **self.data["discovery"])
+        self.save()
+
+    def _scope(self, scope: str) -> dict[str, Any]:
+        scopes = self.data.setdefault("publish_scopes", {})
+        return scopes.setdefault(scope, {"buckets_completed": [], "tickers_completed": {}})
+
+    def bucket_completed(self, scope: str, bucket: int) -> bool:
+        return bucket in self._scope(scope)["buckets_completed"]
+
+    def ticker_completed(self, scope: str, bucket: int, ticker: str) -> bool:
+        return ticker in self._scope(scope)["tickers_completed"].get(str(bucket), [])
+
+    def mark_ticker_completed(self, scope: str, bucket: int, ticker: str) -> None:
+        per_bucket = self._scope(scope)["tickers_completed"].setdefault(str(bucket), [])
+        if ticker not in per_bucket:
+            per_bucket.append(ticker)
+            per_bucket.sort()
+            self.record("ticker_completed", scope=scope, bucket=bucket, ticker=ticker)
+            self.save()
+
+    def mark_bucket_completed(self, scope: str, bucket: int) -> None:
+        completed = self._scope(scope)["buckets_completed"]
+        if bucket not in completed:
+            completed.append(bucket)
+            completed.sort()
+            self.record("bucket_completed", scope=scope, bucket=bucket)
+            self.save()
+
+    def reset_publish_scope(self, scope: str) -> None:
+        if self.data.setdefault("publish_scopes", {}).pop(scope, None) is not None:
+            self.record("publish_scope_reset", scope=scope)
+            self.save()

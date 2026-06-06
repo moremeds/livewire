@@ -29,6 +29,7 @@ import pyarrow.parquet as pq
 from rich.console import Console
 
 from clients.intraday_bronze_client import INTRADAY_PARQUET_FILENAME
+from clients.symbol_paths import decode_symbol
 from livewire_scripts.daily_update import is_trading_day, previous_trading_day
 
 log = logging.getLogger(__name__)
@@ -78,11 +79,26 @@ def _list_symbols(tf: str, bronze_root: Path) -> set[str]:
     if not bronze_dir.exists():
         return set()
     fname = _filename_for(tf)
-    return {p.parent.name.split("=", 1)[1] for p in bronze_dir.glob(f"symbol=*/{fname}")}
+    return {decode_symbol(p.parent.name.split("=", 1)[1]) for p in bronze_dir.glob(f"symbol=*/{fname}")}
 
 
 def _symbol_from_parquet_path(path: Path) -> str:
-    return path.parent.name.split("=", 1)[1]
+    return decode_symbol(path.parent.name.split("=", 1)[1])
+
+
+def _raw_symbols_for_date(target_date: date, bronze_root: Path) -> set[str]:
+    path = (
+        bronze_root.parent
+        / "raw"
+        / "massive"
+        / "us_stocks_sip"
+        / "minute_aggs_v1"
+        / f"date={target_date.isoformat()}"
+        / "_symbols.parquet"
+    )
+    if not path.exists():
+        return set()
+    return set(pq.read_table(path, columns=["ticker"]).column("ticker").to_pylist())
 
 
 def _latest_date_in_parquet(path: Path, column_name: str) -> date | None:
@@ -102,11 +118,12 @@ def compute_coverage(
     bronze_root = bronze_root or _DATA_LAKE / "bronze"
     results: dict[str, CoverageResult] = {}
 
-    # Universe = union of symbols across all timeframes (so a missing tf shows up
-    # as missing rather than silently passing because the file doesn't exist).
-    universe = set()
-    for tf in TIMEFRAMES:
-        universe |= _list_symbols(tf, bronze_root)
+    # Prefer the provider's exact target-day symbol set. Fall back to existing
+    # bronze only when that raw date has not been staged yet.
+    universe = _raw_symbols_for_date(target_date, bronze_root)
+    if not universe:
+        for tf in TIMEFRAMES:
+            universe |= _list_symbols(tf, bronze_root)
     universe_size = len(universe)
 
     for tf in TIMEFRAMES:
@@ -210,15 +227,10 @@ def auto_recover(
         cmd = [
             sys.executable,
             str(_INGEST_SCRIPT),
-            "intraday-backfill",
-            "--timeframe",
-            timeframe,
-            "--source",
-            "massive",
-            "--asset-class",
-            "equity",
-            "--tickers",
-            *missing_symbols,
+            "flatfile-ingest",
+            "repair",
+            "--dates",
+            (target_date or date.today()).isoformat(),
         ]
     console.print(f"[cyan]Auto-recover {timeframe}: launching backfill for {len(missing_symbols)} symbols[/cyan]")
     subprocess.run(cmd, check=False)

@@ -20,6 +20,7 @@ import pyarrow.parquet as pq
 
 from clients.parquet_io import publish_parquet
 from clients.symbol_ids import stable_symbol_id
+from clients.symbol_paths import decode_symbol, encode_symbol
 
 log = logging.getLogger(__name__)
 
@@ -123,7 +124,7 @@ class IntradayBronzeClient:
         for path in self._bronze_dir.glob(f"symbol=*/{self._filename}"):
             partition = path.parent.name
             if partition.startswith("symbol="):
-                symbols.add(partition.split("=", 1)[1])
+                symbols.add(decode_symbol(partition.split("=", 1)[1]))
         return symbols
 
     def get_latest_timestamps(self) -> dict[str, datetime]:
@@ -132,7 +133,7 @@ class IntradayBronzeClient:
         if not self._bronze_dir.exists():
             return result
         for path in self._bronze_dir.glob(f"symbol=*/{self._filename}"):
-            symbol = path.parent.name.split("=", 1)[1]
+            symbol = decode_symbol(path.parent.name.split("=", 1)[1])
             table = pq.read_table(path, columns=["bar_timestamp"])
             values: list[datetime] = table.column("bar_timestamp").to_pylist()
             result[symbol] = max(values)
@@ -211,7 +212,7 @@ class IntradayBronzeClient:
         return keys
 
     def _symbol_path(self, symbol: str) -> Path:
-        return self._bronze_dir / f"symbol={symbol}" / self._filename
+        return self._bronze_dir / f"symbol={encode_symbol(symbol)}" / self._filename
 
     def _normalize_rows(self, rows: list[dict[str, Any]], symbol: str) -> list[dict[str, Any]]:
         # Use the row's own symbol_id if provided, otherwise derive a stable one.

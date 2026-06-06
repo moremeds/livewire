@@ -101,6 +101,12 @@ def _write_intraday(bronze_root: Path, symbol: str, timeframe: str, days: list[d
     )
 
 
+def _write_raw_symbols(bronze_root: Path, target: date, symbols: list[str]) -> None:
+    path = bronze_root.parent / "raw" / "massive" / "us_stocks_sip" / "minute_aggs_v1" / f"date={target.isoformat()}"
+    path.mkdir(parents=True)
+    pq.write_table(pa.table({"ticker": symbols}), path / "_symbols.parquet")
+
+
 @pytest.fixture()
 def seeded_bronze(tmp_path):
     """Two symbols (AAPL, MSFT), all coverage timeframes current to 2026-04-06."""
@@ -125,6 +131,14 @@ class TestComputeCoverage:
             assert results[tf].present == 2
             assert results[tf].missing_symbols == []
             assert results[tf].ratio == 1.0
+
+    def test_target_day_raw_symbols_define_universe(self, seeded_bronze):
+        target = date(2026, 4, 6)
+        _write_raw_symbols(seeded_bronze, target, ["AAPL"])
+        results = compute_coverage(target, bronze_root=seeded_bronze)
+        for result in results.values():
+            assert result.total == 1
+            assert result.missing_symbols == []
 
     def test_one_symbol_stale_at_5m(self, tmp_path):
         root = tmp_path / "bronze"
