@@ -607,7 +607,7 @@ depends_on: [T8]
 
 ## Plan Validation Outcome
 
-Status: **ready with one execution blocker**.
+Status: **ready**.
 
 The plan was validated against the current flat-file writer, S3 client,
 orchestrators, coverage repair path, bronze clients, atomic Parquet helper, test
@@ -615,6 +615,8 @@ suite, and CI tooling. The original monthly/full-table approach was replaced
 with bucketed raw staging plus a bounded k-way merge so the initial historical
 build writes each ticker once and does not require full-market memory.
 
-Execution blocker: Massive S3 credentials are not currently configured in the
-scheduled env paths. Task T1 must stop until the read-only provider-contract
-probe can run with valid credentials.
+The provider-contract probe is complete. Massive supports `list_objects_v2`
+and `head_object`; the current account exposes 5,721 daily minute files from
+2003-09-10 through 2026-06-05 totaling 78.04 GiB compressed. Task T1 can
+proceed using the observed `404` absent-object and `403` outside-entitlement
+semantics.

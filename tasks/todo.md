@@ -79,6 +79,7 @@ Massive minute flat files for the maximum entitled history.
   depends_on: []
   - Confirmed scheduled orchestrators use REST despite documentation claiming S3 preference.
   - Confirmed the existing flat-file writer rewrites complete ticker snapshots once per day.
+  - Live provider probe: 5,721 objects, 78.04 GiB compressed, accessible from 2003-09-10 through 2026-06-05.
 
 - [x] F1 Write and approve the full-market flat-file design.
   depends_on: [F0]

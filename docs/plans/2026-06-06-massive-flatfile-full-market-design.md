@@ -7,8 +7,26 @@ intraday ingestion. Ingest every symbol present in the available daily files,
 backfill the maximum history allowed by the configured Massive plan, and keep
 the warehouse current with one whole-market download per trading day.
 
-The expected entitlement is five years, but the implementation must discover
-the actual available range instead of hard-coding that assumption.
+The live account exposes more than five years, and the implementation must
+discover the actual available range instead of hard-coding an assumption.
+
+## Live Provider Evidence
+
+Read-only probing on 2026-06-06 confirmed:
+
+- endpoint: `https://files.massive.com`
+- bucket: `flatfiles`
+- `list_objects_v2` and `head_object` are supported
+- accessible minute history: 2003-09-10 through 2026-06-05
+- accessible daily objects: 5,721
+- total compressed download size: 83,789,933,019 bytes (78.04 GiB)
+- average compressed daily object: 13.97 MiB
+- a recent full-market day contained 1,983,840 rows across 11,764 symbols
+- the sampled CSV was grouped by ticker with no ticker re-entry
+- the sampled ticker set contained no unsafe path characters, but path encoding
+  remains required because one sample cannot prove the full historical domain
+- `head_object` returns `404` for absent, holiday, and malformed keys
+- `head_object` returns `403` for an object outside accessible history
 
 ## Current Problem
 
