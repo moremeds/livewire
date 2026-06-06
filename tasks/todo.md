@@ -60,3 +60,29 @@ Remove target-date unavailable symbols from managed preset universes only when p
   depends_on: [U1]
   - Recheck preset counts, cursor consistency, and remaining daily gaps.
   - Verification: all 162 preset JSON files parse; cleaned preset union is 2,401 symbols; only active unresolved daily gaps are `KFS`, `MCW`, and `SLNO`; `git diff --check`; focused tests `31 passed`.
+
+# Massive Flat-File Full-Market Planning
+
+## Goal
+
+Design and plan a resumable pipeline that ingests every U.S. equity symbol in
+Massive minute flat files for the maximum entitled history.
+
+## Dependency Graph
+
+- F0 -> F1
+- F1 -> F2
+
+## Tasks
+
+- [x] F0 Investigate the current flat-file, REST, scheduler, and bronze write paths.
+  depends_on: []
+  - Confirmed scheduled orchestrators use REST despite documentation claiming S3 preference.
+  - Confirmed the existing flat-file writer rewrites complete ticker snapshots once per day.
+
+- [x] F1 Write and approve the full-market flat-file design.
+  depends_on: [F0]
+  - Approved scope: every symbol, maximum available history, raw staging, monthly publish batches, and all derived intraday timeframes.
+
+- [ ] F2 Write and review the task-by-task implementation plan.
+  depends_on: [F1]
