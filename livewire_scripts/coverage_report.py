@@ -18,7 +18,7 @@ import subprocess
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -106,7 +106,7 @@ def _latest_date_in_parquet(path: Path, column_name: str) -> date | None:
     values = table.column(column_name).to_pylist()
     if not values:
         return None
-    dates = [value if isinstance(value, date) and not hasattr(value, "date") else value.date() for value in values]
+    dates = [value.date() if isinstance(value, datetime) else value for value in values]
     return max(dates)
 
 

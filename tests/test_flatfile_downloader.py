@@ -52,3 +52,33 @@ def test_download_dates_rejects_missing_expected_day(tmp_path):
     with pytest.raises(RuntimeError, match="unavailable"):
         download_dates(client, store, state, [day])
     assert '"event": "raw_unavailable"' in state.manifest_path.read_text()
+
+
+@pytest.mark.parametrize(
+    ("status", "message"),
+    [
+        (FlatfileObjectStatus.FORBIDDEN, "forbidden"),
+        (FlatfileObjectStatus.TRANSIENT_ERROR, "retries exhausted"),
+    ],
+)
+def test_download_dates_rejects_non_downloadable_objects(tmp_path, status, message):
+    day = date(2026, 6, 5)
+    client = MagicMock()
+    client.inspect_date.return_value = _info(day, status)
+    store = MagicMock()
+    store.has_raw_date.return_value = False
+    with pytest.raises(RuntimeError, match=message):
+        download_dates(client, store, MassiveFlatfileState(tmp_path / "cursors"), [day], max_retries=0)
+
+
+def test_download_dates_records_staging_failure(tmp_path):
+    day = date(2026, 6, 5)
+    client = MagicMock()
+    client.inspect_date.return_value = _info(day)
+    store = MagicMock()
+    store.has_raw_date.return_value = False
+    store.stage_gzip.side_effect = ValueError("bad gzip")
+    state = MassiveFlatfileState(tmp_path / "cursors")
+    with pytest.raises(ValueError, match="bad gzip"):
+        download_dates(client, store, state, [day])
+    assert '"event": "raw_failed"' in state.manifest_path.read_text()

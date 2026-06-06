@@ -76,7 +76,7 @@ class MassiveFlatfileClient:
 
         ak = access_key or os.environ["MASSIVE_S3_ACCESS_KEY"]  # pragma: no cover
         sk = secret_key or os.environ["MASSIVE_S3_SECRET_KEY"]  # pragma: no cover
-        session = boto3.Session(aws_access_key_id=ak, aws_secret_access_key=sk)
+        session = boto3.Session(aws_access_key_id=ak, aws_secret_access_key=sk)  # pragma: no cover
         self._s3 = session.client(  # pragma: no cover
             "s3",
             endpoint_url=S3_ENDPOINT,

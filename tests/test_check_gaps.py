@@ -6,7 +6,7 @@ import json
 from datetime import date
 from unittest.mock import MagicMock, patch
 
-from livewire_scripts.check_gaps import compute_gaps, main
+from livewire_scripts.check_gaps import GapReport, compute_gaps, main
 
 
 class TestComputeGaps:
@@ -158,6 +158,18 @@ class TestMain:
         }
         with patch("livewire_scripts.check_gaps.BronzeClient", return_value=mock_bronze):
             main([])
+
+    def test_main_complete_status_and_incomplete_filter(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch)
+        mock_bronze = MagicMock()
+        mock_bronze.get_trade_dates_by_symbol.return_value = {"AAPL": [date(2026, 5, 29)]}
+        complete = GapReport("AAPL", "2026-05-29", "2026-05-29", "2026-05-29", 1, 1, 0, complete=True)
+        with (
+            patch("livewire_scripts.check_gaps.BronzeClient", return_value=mock_bronze),
+            patch("livewire_scripts.check_gaps.compute_gaps", return_value=complete),
+        ):
+            main([])
+            main(["--incomplete-only"])
 
     def test_main_show_gaps_many(self, tmp_path, monkeypatch):
         """Test show-gaps with more than 20 missing dates (triggers truncation)."""

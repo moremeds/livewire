@@ -76,6 +76,15 @@ def test_download_date_to_path_streams_and_cleans_partial_failure(tmp_path):
     assert not destination.exists()
 
 
+def test_download_date_to_path_returns_completed_destination(tmp_path):
+    destination = tmp_path / "day.csv.gz"
+    s3 = MagicMock()
+    s3.download_fileobj.side_effect = lambda _bucket, _key, fh: fh.write(b"complete")
+    result = MassiveFlatfileClient(_s3_client=s3).download_date_to_path(date(2026, 5, 28), destination)
+    assert result == destination
+    assert destination.read_bytes() == b"complete"
+
+
 def test_context_manager_returns_client():
     s3 = MagicMock()
     with MassiveFlatfileClient(_s3_client=s3) as client:

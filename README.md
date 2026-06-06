@@ -364,6 +364,10 @@ uses `MDW_FLATFILE_STORAGE_MULTIPLIER` (default `8`) and preserves at least
 live under
 `data-lake/raw/massive/us_stocks_sip/minute_aggs_v1/date=YYYY-MM-DD/`.
 
+Rollback is operational, not a runtime fallback: unload the intraday-catchup
+launchd job, revert the replacement PR, deploy the revert, then reload the
+prior scheduled job. Do not run old and new equity-intraday writers together.
+
 #### 2. IB (volatility/index, futures)
 
 Volatility/index intraday covers VIX, SPX, NDX, RUT, VXN, and RVX via `presets/volatility-intraday.json`. IB fetches 30m bars only; 1h is derived locally via lossless aggregation from 30m.

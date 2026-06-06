@@ -10,7 +10,7 @@ import tempfile
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import pyarrow as pa
 import pyarrow.csv as pacsv
@@ -54,7 +54,7 @@ class MassiveFlatfileStore:
         temp = Path(tempfile.mkdtemp(prefix=f".date={day}.", dir=self.raw_root))
         spill = temp / ".spill"
         spill.mkdir()
-        handles: dict[int, object] = {}
+        handles: dict[int, TextIO] = {}
         writers: dict[int, csv.DictWriter] = {}
         symbols: set[str] = set()
         rows = 0
@@ -124,12 +124,6 @@ class MassiveFlatfileStore:
             for path in self.raw_path(day).glob("bucket=*.parquet"):
                 result.add(int(path.stem.split("=")[1]))
         return result
-
-    def iter_bucket_tables(self, bucket: int, days: list[date]) -> Iterator[pa.Table]:
-        for day in days:
-            path = self.bucket_path(day, bucket)
-            if path.exists():
-                yield pq.read_table(path)
 
     def scan_bucket_by_ticker(
         self,

@@ -16,7 +16,6 @@ from clients.intraday_bronze_client import IntradayBronzeClient
 from livewire_scripts import backfill_intraday
 from livewire_scripts.backfill_intraday import (
     TickerOutcome,
-    _is_regular_trading_timestamp,
     _resolve_tickers,
     backfill_ticker,
     compute_intraday_chunks_for_days,
@@ -83,12 +82,6 @@ class TestIbBarToRow:
         row = ib_bar_to_row(bar, symbol_id=1)
         assert row["bar_timestamp"].tzinfo == _UTC
         assert row["bar_timestamp"].date() == _date(2026, 4, 6)
-
-
-class TestRegularTradingTimestamp:
-    def test_regular_trading_timestamp_rejects_naive_and_non_trading_days(self):
-        assert _is_regular_trading_timestamp(datetime(2026, 4, 6, 13, 30)) is False
-        assert _is_regular_trading_timestamp(datetime(2026, 4, 4, 13, 30, tzinfo=_UTC)) is False
 
 
 # ── load/save cursor ──────────────────────────────────────────────────────────
@@ -844,6 +837,29 @@ class TestMain:
                     main()
         # --tickers run never writes cursor; the no-data skip is per-run only
         assert load_cursor("5m", "custom") == set()
+
+    def test_provider_errors_make_run_fail(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
+        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
+        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        fake_ib = MagicMock()
+        fake_ib.__enter__.return_value = fake_ib
+        fake_ib.__exit__.return_value = None
+        with (
+            patch("clients.ib_client.IBClient", return_value=fake_ib),
+            patch(
+                "livewire_scripts.backfill_intraday.backfill_ticker",
+                return_value=TickerOutcome(ticker="AAPL", errors=["provider failed"]),
+            ),
+            patch.object(
+                sys,
+                "argv",
+                ["backfill_intraday.py", "--timeframe", "5m", "--tickers", "AAPL"],
+            ),
+            pytest.raises(SystemExit) as exc,
+        ):
+            main()
+        assert exc.value.code == 1
 
 
 class TestComputeIntradayChunksForDays:

@@ -107,5 +107,13 @@ Massive minute flat files for the maximum entitled history.
   depends_on: [M1]
 - [x] M3 Remove legacy ticker-filtered flat-file and Massive REST equity-intraday runtime paths.
   depends_on: [M2]
-- [ ] M4 Complete isolated live validation and final repository gates.
+- [x] M4 Complete isolated live validation and final repository gates.
   depends_on: [M3]
+  - Live discovery: 5,721 objects, 2003-09-10 through 2026-06-05, 78.04 GiB compressed, 624.28 GiB projected.
+  - Capacity gate: full build blocked before download with 576.50 GiB free and 25 GiB minimum reserve.
+  - Isolated repair for 2023-10-27: 1,462,240 raw rows and 10,145 exact provider symbols.
+  - Every isolated `1m`, `5m`, `30m`, and `1h` bronze set exactly matched all 10,145 raw symbols.
+  - Case-distinct provider symbols (`BCPC`/`BCpC`, `CPK`/`CpK`, `TPC`/`TpC`) verified after filesystem-safe encoding fix.
+  - AAPL verification: 712 unique `1m` timestamps, stable ID match, and exact derived OHLCV for all three derived timeframes.
+  - Resume verification: completed raw date skipped with zero provider inspections; completed publish scope wrote zero tickers.
+  - Repository coverage gate: 1,259 passed, 1 skipped, 100.00% coverage.

@@ -24,6 +24,17 @@ def test_publish_completion_is_scoped_and_idempotent(tmp_path):
     assert loaded.bucket_completed("history-a", 3)
     assert not loaded.bucket_completed("history-b", 3)
     assert state.manifest_path.read_text().count('"event": "ticker_completed"') == 1
+    state.reset_publish_scope("history-a")
+    assert not state.bucket_completed("history-a", 3)
+
+
+def test_state_records_string_failure_and_unavailable_dates(tmp_path):
+    state = MassiveFlatfileState(tmp_path)
+    state.mark_raw_failed("2026-06-04", "failed")
+    state.mark_raw_unavailable("2026-06-05", "missing")
+    manifest = state.manifest_path.read_text()
+    assert '"event": "raw_failed"' in manifest
+    assert '"event": "raw_unavailable"' in manifest
 
 
 def test_malformed_state_is_rejected(tmp_path):

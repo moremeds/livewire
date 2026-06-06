@@ -50,6 +50,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.getLogger("clients.intraday_bronze_client").setLevel(logging.WARNING)
     _require_credentials()
 
     warehouse = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
@@ -75,7 +76,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.mode == "discover" or args.dry_run:
             return 0
         if args.mode == "backfill":
-            require_capacity(plan)
+            try:
+                require_capacity(plan)
+            except RuntimeError as exc:
+                raise SystemExit(str(exc)) from exc
         dates = _parse_dates(args, plan.dates)
         download_stats = download_dates(client, store, state, dates, replace=args.mode == "repair")
     bronze_dir = warehouse / "data-lake" / "bronze" / "asset_class=equity"

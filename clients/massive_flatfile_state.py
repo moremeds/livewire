@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any
 
 
+def _date_value(day: date | str) -> str:
+    return day.isoformat() if isinstance(day, date) else day
+
+
 class MassiveFlatfileState:
     def __init__(self, cursor_dir: Path):
         self.cursor_dir = cursor_dir
@@ -39,7 +43,7 @@ class MassiveFlatfileState:
         tmp.replace(self.state_path)
 
     def mark_raw_completed(self, day: date | str) -> None:
-        value = day.isoformat() if hasattr(day, "isoformat") else str(day)
+        value = _date_value(day)
         completed = set(self.data.setdefault("raw_completed", []))
         completed.add(value)
         self.data["raw_completed"] = sorted(completed)
@@ -47,15 +51,15 @@ class MassiveFlatfileState:
         self.save()
 
     def raw_completed(self, day: date | str) -> bool:
-        value = day.isoformat() if hasattr(day, "isoformat") else str(day)
+        value = _date_value(day)
         return value in self.data.get("raw_completed", [])
 
     def mark_raw_failed(self, day: date | str, error: str) -> None:
-        value = day.isoformat() if hasattr(day, "isoformat") else str(day)
+        value = _date_value(day)
         self.record("raw_failed", date=value, error=error)
 
     def mark_raw_unavailable(self, day: date | str, error: str) -> None:
-        value = day.isoformat() if hasattr(day, "isoformat") else str(day)
+        value = _date_value(day)
         self.record("raw_unavailable", date=value, error=error)
 
     def set_discovery(self, *, earliest: date, latest: date, object_count: int, compressed_bytes: int) -> None:

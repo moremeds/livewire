@@ -43,11 +43,7 @@ from clients.intraday_bronze_client import (
 )
 from clients.quality_detector import _normalize_bars_for_detection, detect_all
 from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
-from livewire_scripts.daily_update import (
-    is_trading_day,
-    session_close_time,
-    validate_intraday_bar,
-)
+from livewire_scripts.daily_update import validate_intraday_bar
 from livewire_scripts.fetch_ib_historical import compute_intraday_chunks
 
 log = logging.getLogger("backfill_intraday")
@@ -143,19 +139,6 @@ def ib_bar_to_row(bar: Any, symbol_id: int) -> dict[str, Any]:
         "close": float(bar.close),
         "volume": int(bar.volume),
     }
-
-
-def _is_regular_trading_timestamp(ts: datetime) -> bool:
-    """Return True when a UTC timestamp falls inside the U.S. equity RTH window."""
-    if ts.tzinfo is None or ts.tzinfo.utcoffset(ts) is None or ts.utcoffset() != timedelta(0):
-        return False
-    et = ts.astimezone(_ET)
-    if not is_trading_day(et.date()):
-        return False
-    rth_start = et.replace(hour=9, minute=30, second=0, microsecond=0)
-    close_t = session_close_time(et.date())
-    rth_end = et.replace(hour=close_t.hour, minute=close_t.minute, second=0, microsecond=0)
-    return rth_start <= et < rth_end
 
 
 def _run_quality_detection(

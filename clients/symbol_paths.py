@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
-from urllib.parse import quote, unquote
+from urllib.parse import unquote
+
+_CASE_SAFE = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 
 
 def encode_symbol(symbol: str) -> str:
-    return quote(symbol, safe="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+    """Encode symbols distinctly on case-insensitive filesystems."""
+    parts: list[str] = []
+    for character in symbol:
+        if character in _CASE_SAFE:
+            parts.append(character)
+        else:
+            parts.extend(f"%{byte:02X}" for byte in character.encode("utf-8"))
+    return "".join(parts)
 
 
 def decode_symbol(value: str) -> str:
