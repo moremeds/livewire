@@ -15,12 +15,18 @@
 
     <key>StartCalendarInterval</key>
     <dict>
-        <!-- 16:00 PT = 7:00 PM ET year-round (PT and ET always 3h apart) -->
-        <!-- Runs after com.livewire.daily-update (13:05 PT) typically completes. -->
+        <!-- Target: 20:30 UTC daily (= 16:30 EDT Mar-Nov / 15:30 EST Nov-Mar). -->
+        <!-- launchd interprets Hour/Minute in the Mac's local TZ, with no TimeZone key -->
+        <!-- support, so choose values that map to 20:30 UTC on the install host. Examples: -->
+        <!--   America/Los_Angeles: Hour=13 Minute=30 -->
+        <!--   America/New_York:    Hour=16 Minute=30 -->
+        <!--   UTC:                 Hour=20 Minute=30 -->
+        <!--   Asia/Hong_Kong:      Hour=4  Minute=30 (next day) -->
+        <!-- Defaults below assume Asia/Hong_Kong. Runs well after com.livewire.daily-update. -->
         <key>Hour</key>
-        <integer>16</integer>
+        <integer>4</integer>
         <key>Minute</key>
-        <integer>0</integer>
+        <integer>30</integer>
     </dict>
 
     <key>StandardOutPath</key>
