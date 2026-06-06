@@ -15,7 +15,14 @@
 
     <key>StartCalendarInterval</key>
     <dict>
-        <!-- 18:30 PT leaves room for the 13:05 PT sync, retries, and a long-running close-of-day ingest -->
+        <!-- Target: 10:30 UTC daily (= 06:30 ET), ~5.5h after the daily-update window -->
+        <!-- starts at 05:05 UTC. Detects missed or stalled sync runs. launchd interprets -->
+        <!-- Hour/Minute in the Mac's local TZ; choose values that map to 10:30 UTC. Examples: -->
+        <!--   America/Los_Angeles: Hour=3  Minute=30 -->
+        <!--   America/New_York:    Hour=6  Minute=30 -->
+        <!--   UTC:                 Hour=10 Minute=30 -->
+        <!--   Asia/Hong_Kong:      Hour=18 Minute=30 -->
+        <!-- Defaults below assume Asia/Hong_Kong. -->
         <key>Hour</key>
         <integer>18</integer>
         <key>Minute</key>

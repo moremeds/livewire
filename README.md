@@ -444,9 +444,11 @@ launchctl load ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
 launchctl load ~/Library/LaunchAgents/com.livewire.intraday-catchup.plist
 ```
 
-* **Daily sync**: 13:05 PT (4:05 PM ET)
-* **Watchdog**: 18:30 PT
-* **Intraday catch-up**: 16:00 PT
+* **Daily sync**: 05:05 UTC (01:05 ET, ~9h after US RTH close)
+* **Watchdog**: 10:30 UTC (06:30 ET)
+* **Intraday catch-up**: 20:30 UTC (16:30 EDT Mar–Nov / 15:30 EST Nov–Mar — see CLAUDE.md for the DST-drift caveat)
+
+> launchd has no `TimeZone` key — each plist's `Hour`/`Minute` are interpreted in the Mac's local TZ. The example plists ship with `Asia/Hong_Kong` defaults; see each plist header for the conversion table to other Mac timezones.
 
 ---
 

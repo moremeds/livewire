@@ -15,7 +15,14 @@
 
     <key>StartCalendarInterval</key>
     <dict>
-        <!-- 13:05 PT = 4:05 PM ET year-round (PT and ET always 3h apart) — always after market close -->
+        <!-- Target: 05:05 UTC daily (= 01:05 ET, ~9h after US RTH close — well clear of -->
+        <!-- the trading day on either DST setting). launchd interprets Hour/Minute in the -->
+        <!-- Mac's local TZ; choose values that map to 05:05 UTC. Examples: -->
+        <!--   America/Los_Angeles: Hour=22 Minute=5 (previous day) -->
+        <!--   America/New_York:    Hour=1  Minute=5 -->
+        <!--   UTC:                 Hour=5  Minute=5 -->
+        <!--   Asia/Hong_Kong:      Hour=13 Minute=5 -->
+        <!-- Defaults below assume Asia/Hong_Kong. -->
         <key>Hour</key>
         <integer>13</integer>
         <key>Minute</key>
