@@ -1,247 +1,91 @@
-"""Tests for clients/massive_flatfile_client.py — Polygon S3 flat file client."""
-
 from __future__ import annotations
 
-import csv
-import gzip
-import io
-from datetime import UTC, date
-from pathlib import Path
+from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
+from botocore.exceptions import ClientError
 
 from clients.massive_flatfile_client import (
+    FlatfileObjectStatus,
     MassiveFlatfileClient,
     _s3_key_for_date,
-    parse_flatfile_csv,
-    trading_dates_between,
+    normalize_object_key,
 )
 
 
-def _make_csv_gz(rows: list[dict]) -> bytes:
-    """Build a gzipped CSV bytes object matching Polygon minute agg format."""
-    buf = io.StringIO()
-    writer = csv.DictWriter(
-        buf,
-        fieldnames=[
-            "ticker",
-            "volume",
-            "open",
-            "close",
-            "high",
-            "low",
-            "window_start",
-            "transactions",
-        ],
-    )
-    writer.writeheader()
-    for row in rows:
-        writer.writerow(row)
-    return gzip.compress(buf.getvalue().encode("utf-8"))
+def _client_error(code: str) -> ClientError:
+    return ClientError({"Error": {"Code": code, "Message": "redacted"}}, "HeadObject")
 
 
-class TestS3KeyForDate:
-    def test_formats_correctly(self):
-        d = date(2026, 3, 15)
-        key = _s3_key_for_date(d)
-        assert key == "us_stocks_sip/minute_aggs_v1/2026/03/2026-03-15.csv.gz"
+def test_key_and_bucket_prefix_normalization():
+    assert _s3_key_for_date(date(2026, 3, 15)) == "us_stocks_sip/minute_aggs_v1/2026/03/2026-03-15.csv.gz"
+    assert normalize_object_key("flatfiles/us_stocks_sip/x") == "us_stocks_sip/x"
 
 
-class TestTradingDatesBetween:
-    def test_excludes_weekends(self):
-        # 2026-05-25 is Monday, 2026-05-31 is Sunday
-        dates = trading_dates_between(date(2026, 5, 25), date(2026, 5, 31))
-        assert date(2026, 5, 25) in dates
-        assert date(2026, 5, 29) in dates
-        assert date(2026, 5, 30) not in dates
-        assert date(2026, 5, 31) not in dates
-
-    def test_empty_range(self):
-        assert trading_dates_between(date(2026, 5, 30), date(2026, 5, 30)) == []
-
-
-class TestParseFlatfileCsv:
-    def test_filters_to_target_tickers(self):
-        csv_gz = _make_csv_gz(
-            [
-                {
-                    "ticker": "AAPL",
-                    "volume": "1000",
-                    "open": "150.0",
-                    "close": "151.0",
-                    "high": "152.0",
-                    "low": "149.0",
-                    "window_start": "1748440200000000000",
-                    "transactions": "50",
-                },
-                {
-                    "ticker": "MSFT",
-                    "volume": "2000",
-                    "open": "300.0",
-                    "close": "301.0",
-                    "high": "302.0",
-                    "low": "299.0",
-                    "window_start": "1748440200000000000",
-                    "transactions": "30",
-                },
-                {
-                    "ticker": "GOOG",
-                    "volume": "500",
-                    "open": "170.0",
-                    "close": "171.0",
-                    "high": "172.0",
-                    "low": "169.0",
-                    "window_start": "1748440200000000000",
-                    "transactions": "10",
-                },
-            ]
-        )
-        result = parse_flatfile_csv(csv_gz, target_tickers={"AAPL", "MSFT"})
-        assert set(result.keys()) == {"AAPL", "MSFT"}
-        assert len(result["AAPL"]) == 1
-        assert result["AAPL"][0]["open"] == 150.0
-        assert result["AAPL"][0]["volume"] == 1000
-
-    def test_returns_empty_for_no_matches(self):
-        csv_gz = _make_csv_gz(
-            [
-                {
-                    "ticker": "GOOG",
-                    "volume": "500",
-                    "open": "170.0",
-                    "close": "171.0",
-                    "high": "172.0",
-                    "low": "169.0",
-                    "window_start": "1748440200000000000",
-                    "transactions": "10",
-                },
-            ]
-        )
-        result = parse_flatfile_csv(csv_gz, target_tickers={"AAPL"})
-        assert result == {}
-
-    def test_all_tickers_when_no_filter(self):
-        csv_gz = _make_csv_gz(
-            [
-                {
-                    "ticker": "AAPL",
-                    "volume": "1000",
-                    "open": "150.0",
-                    "close": "151.0",
-                    "high": "152.0",
-                    "low": "149.0",
-                    "window_start": "1748440200000000000",
-                    "transactions": "50",
-                },
-            ]
-        )
-        result = parse_flatfile_csv(csv_gz, target_tickers=None)
-        assert "AAPL" in result
-
-    def test_bar_timestamp_is_utc(self):
-        csv_gz = _make_csv_gz(
-            [
-                {
-                    "ticker": "AAPL",
-                    "volume": "100",
-                    "open": "150.0",
-                    "close": "151.0",
-                    "high": "152.0",
-                    "low": "149.0",
-                    "window_start": "1748440200000000000",
-                    "transactions": "5",
-                },
-            ]
-        )
-        result = parse_flatfile_csv(csv_gz, target_tickers={"AAPL"})
-        ts = result["AAPL"][0]["bar_timestamp"]
-        assert ts.tzinfo == UTC
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("404", FlatfileObjectStatus.NOT_FOUND),
+        ("NoSuchKey", FlatfileObjectStatus.NOT_FOUND),
+        ("403", FlatfileObjectStatus.FORBIDDEN),
+        ("AccessDenied", FlatfileObjectStatus.FORBIDDEN),
+        ("500", FlatfileObjectStatus.TRANSIENT_ERROR),
+    ],
+)
+def test_inspect_date_classifies_provider_errors(code, expected):
+    s3 = MagicMock()
+    s3.head_object.side_effect = _client_error(code)
+    info = MassiveFlatfileClient(_s3_client=s3).inspect_date(date(2026, 5, 28))
+    assert info.status == expected
+    assert info.error == code
 
 
-class TestMassiveFlatfileClient:
-    def test_injected_s3_client(self):
-        mock_s3 = MagicMock()
-        client = MassiveFlatfileClient(_s3_client=mock_s3)
-        assert client._s3 is mock_s3
-        client.close()
+def test_inspect_date_classifies_available():
+    s3 = MagicMock()
+    s3.head_object.return_value = {"ContentLength": 123, "ETag": '"abc"'}
+    info = MassiveFlatfileClient(_s3_client=s3).inspect_date(date(2026, 5, 28))
+    assert info.status == FlatfileObjectStatus.AVAILABLE
+    assert info.size_bytes == 123
+    assert info.etag == "abc"
 
-    def test_download_date_writes_temp_and_deletes(self, monkeypatch):
-        """Verify download_date uses a temp file and cleans it up after parsing."""
-        csv_gz = _make_csv_gz(
-            [
-                {
-                    "ticker": "AAPL",
-                    "volume": "1000",
-                    "open": "150.0",
-                    "close": "151.0",
-                    "high": "152.0",
-                    "low": "149.0",
-                    "window_start": "1748440200000000000",
-                    "transactions": "50",
-                },
-            ]
-        )
 
-        created_temps: list[Path] = []
+def test_list_objects_paginates_and_normalizes_prefix():
+    s3 = MagicMock()
+    s3.list_objects_v2.side_effect = [
+        {"Contents": [{"Key": "a"}], "IsTruncated": True, "NextContinuationToken": "next"},
+        {"Contents": [{"Key": "b"}], "IsTruncated": False},
+    ]
+    client = MassiveFlatfileClient(_s3_client=s3)
+    assert client.list_objects("flatfiles/us_stocks_sip") == [{"Key": "a"}, {"Key": "b"}]
+    assert s3.list_objects_v2.call_args_list[0].kwargs["Prefix"] == "us_stocks_sip"
+    assert s3.list_objects_v2.call_args_list[1].kwargs["ContinuationToken"] == "next"
 
-        def fake_download_fileobj(bucket, key, fh):
-            fh.write(csv_gz)
 
-        mock_s3 = MagicMock()
-        mock_s3.download_fileobj.side_effect = fake_download_fileobj
+def test_download_date_to_path_streams_and_cleans_partial_failure(tmp_path):
+    destination = tmp_path / "day.csv.gz"
+    s3 = MagicMock()
 
-        import clients.massive_flatfile_client as mod
+    def fail(_bucket, _key, fh):
+        fh.write(b"partial")
+        raise RuntimeError("network failure")
 
-        orig_mkstemp = mod.tempfile.mkstemp
+    s3.download_fileobj.side_effect = fail
+    with pytest.raises(RuntimeError, match="network failure"):
+        MassiveFlatfileClient(_s3_client=s3).download_date_to_path(date(2026, 5, 28), destination)
+    assert not destination.exists()
 
-        def tracking_mkstemp(**kwargs):
-            fd, name = orig_mkstemp(**kwargs)
-            created_temps.append(Path(name))
-            return fd, name
 
-        monkeypatch.setattr(mod.tempfile, "mkstemp", tracking_mkstemp)
+def test_download_date_to_path_returns_completed_destination(tmp_path):
+    destination = tmp_path / "day.csv.gz"
+    s3 = MagicMock()
+    s3.download_fileobj.side_effect = lambda _bucket, _key, fh: fh.write(b"complete")
+    result = MassiveFlatfileClient(_s3_client=s3).download_date_to_path(date(2026, 5, 28), destination)
+    assert result == destination
+    assert destination.read_bytes() == b"complete"
 
-        client = MassiveFlatfileClient(_s3_client=mock_s3)
-        result = client.download_date(date(2026, 5, 28), target_tickers={"AAPL"})
-        client.close()
 
-        assert "AAPL" in result
-        assert len(result["AAPL"]) == 1
-        # Temp file was created and then deleted
-        assert len(created_temps) == 1
-        assert not created_temps[0].exists()
-
-    def test_download_date_deletes_on_parse_error(self, monkeypatch):
-        """Temp file is deleted even when parsing fails."""
-
-        def fake_download_fileobj(bucket, key, fh):
-            fh.write(b"not valid gzip data")
-
-        mock_s3 = MagicMock()
-        mock_s3.download_fileobj.side_effect = fake_download_fileobj
-
-        created_temps: list[Path] = []
-        import clients.massive_flatfile_client as mod
-
-        orig_mkstemp = mod.tempfile.mkstemp
-
-        def tracking_mkstemp(**kwargs):
-            fd, name = orig_mkstemp(**kwargs)
-            created_temps.append(Path(name))
-            return fd, name
-
-        monkeypatch.setattr(mod.tempfile, "mkstemp", tracking_mkstemp)
-
-        client = MassiveFlatfileClient(_s3_client=mock_s3)
-        with pytest.raises(Exception):
-            client.download_date(date(2026, 5, 28), target_tickers={"AAPL"})
-        client.close()
-
-        assert len(created_temps) == 1
-        assert not created_temps[0].exists()
-
-    def test_context_manager(self):
-        mock_s3 = MagicMock()
-        with MassiveFlatfileClient(_s3_client=mock_s3) as client:
-            assert client is not None
+def test_context_manager_returns_client():
+    s3 = MagicMock()
+    with MassiveFlatfileClient(_s3_client=s3) as client:
+        assert client._s3 is s3

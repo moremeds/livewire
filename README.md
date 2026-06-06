@@ -148,9 +148,7 @@ python scripts/livewire.py sync --scheduled             # Scheduled job with ret
 # Deep historical backfill
 python scripts/livewire.py backfill --full              # Full warehouse build (all presets, all phases)
 python scripts/livewire.py backfill --timeframe 1d      # Daily bars only
-python scripts/livewire.py backfill --timeframe 1m 5m   # Specific intraday timeframes
-python scripts/livewire.py backfill --source s3         # Polygon S3 flat files (equity intraday)
-python scripts/livewire.py backfill --preset presets/sp500.json --skip-existing
+python scripts/livewire.py backfill --timeframe 1m 5m   # Full-market equity intraday
 
 # Quality and health
 python scripts/livewire.py check                        # Default: coverage report
@@ -166,10 +164,9 @@ python scripts/livewire.py publish r2                   # Sync to R2
 python scripts/livewire.py publish --migrate            # Parquet schema migration
 ```
 
-**Source auto-selection** — the unified CLI detects available API keys and picks the best source:
-- `MASSIVE_API_KEY` set → equity daily/intraday uses Massive
-- `MASSIVE_S3_ACCESS_KEY` + `MASSIVE_S3_SECRET_KEY` set → equity intraday prefers S3 flat files
-- Neither set → falls back to IB
+**Sources** — equity daily may use Massive REST when `MASSIVE_API_KEY` is set.
+Equity intraday always requires Massive flat-file credentials. Non-equity
+intraday remains IB-backed.
 
 ### Operator Scripts
 
@@ -289,7 +286,7 @@ python scripts/livewire.py backfill --full
 Features:
 - Equity daily seed/backfill for `sp500`, `ndx100`, `r2k`
 - FRED Treasury yield rates
-- Massive equity intraday (`1m`, `5m`, `1h`, 5 years) in parallel with volatility/index lane
+- Maximum-entitled-history full-market Massive equity intraday (`1m`, `5m`, `30m`, `1h`) in parallel with the volatility/index lane
 - CBOE daily volatility sync followed by IB-backed VIX/SPX/NDX/RUT/VXN/RVX intraday (`30m` bars, 1h derived locally)
 - Optional Postgres analytical rebuild when `MDW_POSTGRES_DSN` is set
 - Activity-based stall detection and retry-until-done logic
@@ -303,7 +300,8 @@ tmux new-session -s livewire_backfill \
 
 ### Daily Backfill
 
-Routine daily catch-up. Uses Massive for equity daily gaps and recent intraday windows across the full `sp500` + `ndx100` + `r2k` union:
+Routine daily catch-up. Uses Massive for equity daily gaps and one whole-market
+flat-file catch-up across every symbol present in each target day:
 
 ```bash
 python scripts/livewire_ingest.py daily-backfill
@@ -311,7 +309,7 @@ python scripts/livewire_ingest.py daily-backfill
 python scripts/livewire.py sync --full
 ```
 
-Default intraday lookback: 7 calendar days (`MDW_DAILY_BACKFILL_INTRADAY_DAYS`). Default Massive concurrency: 20 (`MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT`).
+Default intraday lookback: 7 calendar days (`MDW_DAILY_BACKFILL_INTRADAY_DAYS`).
 
 ---
 
@@ -335,39 +333,42 @@ python scripts/livewire_ingest.py historical --preset presets/fx-pairs.json --as
 
 ### Intraday Data
 
-Three data paths for intraday bars, depending on asset class and source:
+Equity intraday uses Massive whole-market flat files exclusively. Non-equity
+intraday remains IB-backed.
 
-#### 1. Polygon S3 flat files (equity, fastest)
+#### 1. Massive flat files (equity)
 
-Downloads per-day gzipped CSVs from Polygon S3. One download per trading day covers ALL tickers. Writes 1m bronze parquet, then derives 5m/30m/1h via lossless OHLCV aggregation locally. CSV temp files are deleted after processing.
-
-```bash
-# Full 5-year equity intraday build via S3
-python scripts/livewire_ingest.py flatfile-ingest --preset presets/sp500.json --years 5
-
-# Specific tickers
-python scripts/livewire_ingest.py flatfile-ingest --tickers AAPL MSFT --years 2
-
-# Dry run
-python scripts/livewire_ingest.py flatfile-ingest --preset presets/sp500.json --years 5 --dry-run
-
-# Via unified CLI (auto-detects S3 keys)
-python scripts/livewire.py backfill --source s3 --preset presets/sp500.json --years 5
-```
-
-Requires `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY` environment variables. These are Polygon S3 credentials from the Polygon dashboard, separate from `MASSIVE_API_KEY`.
-
-#### 2. Massive REST API (equity)
+Each daily gzip covers every U.S. stock present in Massive's SIP minute file.
+Livewire discovers the maximum entitled range, stages immutable bucketed raw
+Parquet, publishes every ticker's canonical `1m` history, and derives
+`5m`/`30m`/`1h` locally. Runs resume from durable raw-date, ticker, and bucket
+state under `~/market-warehouse/cursors/`.
 
 ```bash
-# Default equity intraday build
-python scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json --timeframe 1m --source massive --years 5 --skip-existing
+# Read-only entitlement and capacity plan
+python scripts/livewire_ingest.py flatfile-ingest discover
 
-# Recent-window catch-up (used by daily-backfill)
-python scripts/livewire_ingest.py intraday-backfill --preset presets/sp500.json --timeframe 1m --source massive --days 7 --max-concurrent 20
+# Full entitled-history build
+python scripts/livewire_ingest.py flatfile-ingest backfill
+
+# Routine whole-market catch-up
+python scripts/livewire_ingest.py flatfile-ingest catch-up --days 7
+
+# Explicit date repair
+python scripts/livewire_ingest.py flatfile-ingest repair --dates 2026-06-05
 ```
 
-#### 3. IB (volatility/index, futures)
+Requires `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY`. Capacity planning
+uses `MDW_FLATFILE_STORAGE_MULTIPLIER` (default `8`) and preserves at least
+`MDW_FLATFILE_MIN_FREE_GB` (default `25`) after a full build. Raw partitions
+live under
+`data-lake/raw/massive/us_stocks_sip/minute_aggs_v1/date=YYYY-MM-DD/`.
+
+Rollback is operational, not a runtime fallback: unload the intraday-catchup
+launchd job, revert the replacement PR, deploy the revert, then reload the
+prior scheduled job. Do not run old and new equity-intraday writers together.
+
+#### 2. IB (volatility/index, futures)
 
 Volatility/index intraday covers VIX, SPX, NDX, RUT, VXN, and RVX via `presets/volatility-intraday.json`. IB fetches 30m bars only; 1h is derived locally via lossless aggregation from 30m.
 
@@ -564,7 +565,6 @@ python scripts/livewire_store.py migrate-parquet
 | `MDW_ORCHESTRATOR_MAX_ATTEMPTS` | `3` | Per-ticker retry budget |
 | `MDW_ORCHESTRATOR_COOLDOWN_SECONDS` | `60` | Sleep between retry attempts |
 | `MDW_DAILY_BACKFILL_INTRADAY_DAYS` | `7` | Intraday recent-window lookback (calendar days) |
-| `MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT` | `20` | Massive intraday concurrency cap |
 
 ---
 

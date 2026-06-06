@@ -22,7 +22,6 @@ import os
 import sys
 import time
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -42,14 +41,9 @@ from clients.intraday_bronze_client import (
     INTRADAY_TIMEFRAMES,
     IntradayBronzeClient,
 )
-from clients.massive_client import MassiveClient
 from clients.quality_detector import _normalize_bars_for_detection, detect_all
 from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
-from livewire_scripts.daily_update import (
-    is_trading_day,
-    session_close_time,
-    validate_intraday_bar,
-)
+from livewire_scripts.daily_update import validate_intraday_bar
 from livewire_scripts.fetch_ib_historical import compute_intraday_chunks
 
 log = logging.getLogger("backfill_intraday")
@@ -145,35 +139,6 @@ def ib_bar_to_row(bar: Any, symbol_id: int) -> dict[str, Any]:
         "close": float(bar.close),
         "volume": int(bar.volume),
     }
-
-
-def massive_intraday_bar_to_row(bar: Any, symbol_id: int) -> dict[str, Any]:
-    """Convert a normalized Massive intraday bar to a bronze row dict."""
-    ts = bar.bar_timestamp
-    if ts.tzinfo is None or ts.tzinfo.utcoffset(ts) is None:
-        raise ValueError("Massive intraday bar_timestamp must be tz-aware")
-    return {
-        "bar_timestamp": ts.astimezone(_UTC),
-        "symbol_id": symbol_id,
-        "open": float(bar.open),
-        "high": float(bar.high),
-        "low": float(bar.low),
-        "close": float(bar.close),
-        "volume": int(bar.volume),
-    }
-
-
-def _is_regular_trading_timestamp(ts: datetime) -> bool:
-    """Return True when a UTC timestamp falls inside the U.S. equity RTH window."""
-    if ts.tzinfo is None or ts.tzinfo.utcoffset(ts) is None or ts.utcoffset() != timedelta(0):
-        return False
-    et = ts.astimezone(_ET)
-    if not is_trading_day(et.date()):
-        return False
-    rth_start = et.replace(hour=9, minute=30, second=0, microsecond=0)
-    close_t = session_close_time(et.date())
-    rth_end = et.replace(hour=close_t.hour, minute=close_t.minute, second=0, microsecond=0)
-    return rth_start <= et < rth_end
 
 
 def _run_quality_detection(
@@ -316,77 +281,6 @@ def backfill_ticker(
     return outcome
 
 
-def compute_intraday_date_windows(
-    years: int,
-    *,
-    lookback_days: int | None = None,
-    window_days: int = 30,
-) -> list[tuple[date, date]]:
-    """Return inclusive calendar date windows for Massive intraday aggregate pulls."""
-    end_day = datetime.now(_UTC).date()
-    days_back = lookback_days if lookback_days is not None else 365 * years
-    start_day = end_day - timedelta(days=days_back)
-    windows: list[tuple[date, date]] = []
-    cursor = start_day
-    while cursor <= end_day:
-        window_end = min(cursor + timedelta(days=window_days - 1), end_day)
-        windows.append((cursor, window_end))
-        cursor = window_end + timedelta(days=1)
-    return windows
-
-
-def backfill_ticker_massive(
-    ticker: str,
-    timeframe: str,
-    years: int,
-    massive: MassiveClient,
-    bronze: IntradayBronzeClient,
-    lookback_days: int | None = None,
-) -> TickerOutcome:
-    """Fetch and merge Massive intraday aggregates for one equity ticker."""
-    outcome = TickerOutcome(ticker=ticker)
-    symbol_id = bronze.get_symbol_id(ticker)
-    all_rows: list[dict[str, Any]] = []
-
-    for start, end in compute_intraday_date_windows(years, lookback_days=lookback_days):
-        try:
-            bars = massive.get_intraday_bars(ticker, start, end, timeframe=timeframe)
-        except Exception as exc:
-            outcome.errors.append(f"{start}:{end}: {exc}")
-            continue
-
-        outcome.chunks_fetched += 1
-        for bar in bars:
-            row = massive_intraday_bar_to_row(bar, symbol_id)
-            if not _is_regular_trading_timestamp(row["bar_timestamp"]):
-                continue
-            issues = validate_intraday_bar(_BarRow(row["bar_timestamp"]), ticker, timeframe)
-            if issues:
-                outcome.rejected += 1
-                for issue in issues:
-                    log.debug("rejected %s", issue)
-                continue
-            all_rows.append(row)
-
-    if all_rows:
-        parquet_path = bronze.bronze_dir / f"symbol={ticker}" / f"{timeframe}.parquet"
-        _run_quality_detection(
-            ticker=ticker,
-            timeframe=timeframe,
-            bars=all_rows,
-            parquet_path=parquet_path,
-            outcome=outcome,
-            asset_class="equity",
-            source="massive",
-        )
-        outcome.bars_inserted = bronze.merge_ticker_rows(
-            ticker,
-            all_rows,
-            overwrite_existing=lookback_days is None,
-        )
-    return outcome
-
-
 def compute_intraday_chunks_for_days(timeframe: str, days_back: int) -> list[tuple[str, str]]:
     """Generate IB chunks for a recent-day intraday catch-up."""
     if days_back < 1:
@@ -404,13 +298,9 @@ def plan_chunks(
     years: int,
     tickers: Sequence[str],
     *,
-    source: str = "ib",
     lookback_days: int | None = None,
 ) -> list[str]:
     """Return human-readable lines describing the planned IB requests."""
-    if source == "massive":
-        windows = compute_intraday_date_windows(years, lookback_days=lookback_days)
-        return [f"{ticker}: {len(windows)} Massive date windows" for ticker in tickers]
     chunks = (
         compute_intraday_chunks_for_days(timeframe, lookback_days)
         if lookback_days is not None
@@ -438,9 +328,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--source",
-        choices=["ib", "massive"],
+        choices=["ib"],
         default="ib",
-        help="Intraday source (default: ib; Massive supports equity only)",
+        help="Intraday source (IB only; equity Massive ingestion uses flatfile-ingest)",
     )
     parser.add_argument(
         "--asset-class",
@@ -480,12 +370,6 @@ def main() -> None:
         default=None,
         help="Cap the number of tickers processed this run",
     )
-    parser.add_argument(
-        "--max-concurrent",
-        type=int,
-        default=1,
-        help="Maximum concurrent Massive ticker fetches (default: 1)",
-    )
     parser.add_argument("--host", default=os.getenv("MDW_IB_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("MDW_IB_PORT", "4001")))
     args = parser.parse_args()
@@ -493,11 +377,6 @@ def main() -> None:
     years = args.years if args.years is not None else _DEFAULT_YEARS[args.timeframe]
     if args.days is not None and args.days < 1:
         raise SystemExit("--days must be >= 1")
-    if args.max_concurrent < 1:
-        raise SystemExit("--max-concurrent must be >= 1")
-    if args.source == "massive" and args.asset_class != "equity":
-        raise SystemExit("--source massive is only supported for equity intraday")
-
     cursor_name, tickers = _resolve_tickers(args)
 
     # Cursor is only meaningful for preset runs (resumable bulk backfills).
@@ -521,7 +400,7 @@ def main() -> None:
         f"days={args.days if args.days is not None else 'full'}  "
         f"source={args.source}  asset_class={args.asset_class}  "
         f"tickers={len(tickers)}  pending={len(pending)}  "
-        f"max_concurrent={args.max_concurrent if args.source == 'massive' else 1}  "
+        "max_concurrent=1  "
         f"cursor={cursor_name if use_cursor else 'disabled'}"
     )
 
@@ -530,7 +409,6 @@ def main() -> None:
             args.timeframe,
             years,
             pending,
-            source=args.source,
             lookback_days=args.days,
         ):
             console.print(f"  {line}")
@@ -582,66 +460,29 @@ def main() -> None:
             completed.add(ticker)
             save_cursor(args.timeframe, cursor_name, completed)
 
-    if args.source == "massive" and args.max_concurrent > 1:
+    from clients.ib_client import IBClient  # noqa: PLC0415
 
-        def fetch_massive(ticker: str) -> tuple[str, TickerOutcome]:
-            with MassiveClient() as provider:
-                outcome = backfill_ticker_massive(
-                    ticker,
-                    args.timeframe,
-                    years,
-                    provider,
-                    bronze,
-                    lookback_days=args.days,
-                )
-            return ticker, outcome
+    provider_context = IBClient()
+    with provider_context as provider:
+        provider.connect(host=args.host, port=args.port)
+        for ticker in pending:
+            if args.skip_existing and should_skip_existing(bronze, ticker, years):
+                console.print(f"  [dim]{ticker}: bronze already covers {years}y — skip[/dim]")
+                if use_cursor:
+                    completed.add(ticker)
+                    save_cursor(args.timeframe, cursor_name, completed)
+                continue
 
-        with ThreadPoolExecutor(max_workers=args.max_concurrent) as executor:
-            futures = {executor.submit(fetch_massive, ticker): ticker for ticker in pending}
-            for future in as_completed(futures):
-                ticker = futures[future]
-                try:
-                    ticker, outcome = future.result()
-                except Exception as exc:  # noqa: BLE001
-                    outcome = TickerOutcome(ticker=ticker, errors=[str(exc)])
-                record_outcome(ticker, outcome)
-    elif args.source == "massive":
-        with MassiveClient() as provider:
-            for ticker in pending:
-                outcome = backfill_ticker_massive(
-                    ticker,
-                    args.timeframe,
-                    years,
-                    provider,
-                    bronze,
-                    lookback_days=args.days,
-                )
-                record_outcome(ticker, outcome)
-    else:
-        # Lazy IB import keeps Massive-only and tests free of the dependency until needed.
-        from clients.ib_client import IBClient  # noqa: PLC0415
-
-        provider_context = IBClient()
-        with provider_context as provider:
-            provider.connect(host=args.host, port=args.port)
-            for ticker in pending:
-                if args.skip_existing and should_skip_existing(bronze, ticker, years):
-                    console.print(f"  [dim]{ticker}: bronze already covers {years}y — skip[/dim]")
-                    if use_cursor:
-                        completed.add(ticker)
-                        save_cursor(args.timeframe, cursor_name, completed)
-                    continue
-
-                outcome = backfill_ticker(
-                    ticker,
-                    args.timeframe,
-                    years,
-                    provider,
-                    bronze,
-                    asset_class=args.asset_class,
-                    lookback_days=args.days,
-                )
-                record_outcome(ticker, outcome)
+            outcome = backfill_ticker(
+                ticker,
+                args.timeframe,
+                years,
+                provider,
+                bronze,
+                asset_class=args.asset_class,
+                lookback_days=args.days,
+            )
+            record_outcome(ticker, outcome)
 
     elapsed = time.monotonic() - t0
     console.print(

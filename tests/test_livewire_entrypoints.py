@@ -77,8 +77,9 @@ def test_ingest_daily_massive_equals_bypasses_ib_preflight(monkeypatch) -> None:
     assert livewire_ingest.main(["daily", "--source=massive"]) == 0
 
 
-def test_ingest_intraday_massive_equity_bypasses_ib_preflight(monkeypatch) -> None:
+def test_removed_intraday_massive_route_keeps_ib_preflight(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
+    preflight_calls: list[bool] = []
     monkeypatch.setattr(
         livewire_ingest.importlib,
         "import_module",
@@ -87,7 +88,7 @@ def test_ingest_intraday_massive_equity_bypasses_ib_preflight(monkeypatch) -> No
     monkeypatch.setattr(
         ib_gateway_preflight,
         "assert_gateway_up",
-        lambda: (_ for _ in ()).throw(AssertionError("preflight should not run")),
+        lambda: preflight_calls.append(True),
     )
 
     assert (
@@ -107,6 +108,7 @@ def test_ingest_intraday_massive_equity_bypasses_ib_preflight(monkeypatch) -> No
         == 0
     )
     assert calls == [("livewire_scripts.backfill_intraday", [])]
+    assert preflight_calls == [True]
 
 
 def test_ingest_historical_massive_equity_backfill_bypasses_ib_preflight(

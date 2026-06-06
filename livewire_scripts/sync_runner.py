@@ -42,7 +42,6 @@ class SyncConfig:
     vol_preset: str
     vol_daily_preset: str
     intraday_days: int
-    intraday_concurrent: int
     target_date: str | None
 
 
@@ -58,7 +57,6 @@ def build_config(repo_root: Path | None = None) -> SyncConfig:
         vol_preset=str(root / VOL_PRESET),
         vol_daily_preset=str(root / VOL_DAILY_PRESET),
         intraday_days=int(os.getenv("MDW_DAILY_BACKFILL_INTRADAY_DAYS", "7")),
-        intraday_concurrent=int(os.getenv("MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT", "20")),
         target_date=os.getenv("MDW_DAILY_BACKFILL_TARGET_DATE") or None,
     )
 
@@ -180,6 +178,13 @@ def run_sync(
     runner: callable = subprocess.run,
     trading_day_fn: callable = latest_complete_trading_day,
 ) -> int:
+    from clients.massive_flatfile_client import require_flatfile_credentials
+
+    try:
+        require_flatfile_credentials()
+    except RuntimeError as exc:
+        logger.error("%s", exc)
+        return 2
     failures: list[str] = []
     target_date = config.target_date or trading_day_fn()
     equity_tickers = ticker_union(config.equity_presets)
@@ -187,10 +192,9 @@ def run_sync(
     logger.info("=" * 60)
     logger.info("DAILY BACKFILL START")
     logger.info(
-        "Target: %s | Intraday: %d days | Concurrent: %d",
+        "Target: %s | Intraday: %d days",
         target_date,
         config.intraday_days,
-        config.intraday_concurrent,
     )
     logger.info("=" * 60)
 
@@ -242,32 +246,15 @@ def run_sync(
     if rc != 0:
         failures.append("cboe_volatility")
 
-    # Phase 4: Equity intraday via Massive
-    for tf in EQUITY_INTRADAY_TIMEFRAMES:
-        rc = run_phase(
-            f"daily_backfill_intraday_{tf}_equity",
-            [
-                py,
-                ingest,
-                "intraday-backfill",
-                "--tickers",
-                *equity_tickers,
-                "--timeframe",
-                tf,
-                "--source",
-                "massive",
-                "--asset-class",
-                "equity",
-                "--days",
-                str(config.intraday_days),
-                "--max-concurrent",
-                str(config.intraday_concurrent),
-            ],
-            config.log_dir,
-            runner=runner,
-        )
-        if rc != 0:
-            failures.append(f"intraday_{tf}")
+    # Phase 4: Full-market equity intraday via Massive flat files
+    rc = run_phase(
+        "daily_backfill_intraday_equity_flatfiles",
+        [py, ingest, "flatfile-ingest", "catch-up", "--days", str(config.intraday_days)],
+        config.log_dir,
+        runner=runner,
+    )
+    if rc != 0:
+        failures.append("intraday_equity_flatfiles")
 
     # Phase 5: Volatility intraday via IB
     vol_tickers = load_tickers(config.vol_preset)
@@ -339,7 +326,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Daily sync runner — routine warehouse catch-up")
     parser.add_argument("--target-date", type=str, default=None)
     parser.add_argument("--intraday-days", type=int, default=None)
-    parser.add_argument("--intraday-concurrent", type=int, default=None)
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -353,8 +339,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         overrides["target_date"] = args.target_date
     if args.intraday_days is not None:
         overrides["intraday_days"] = args.intraday_days
-    if args.intraday_concurrent is not None:
-        overrides["intraday_concurrent"] = args.intraday_concurrent
     if overrides:
         config = replace(config, **overrides)
 

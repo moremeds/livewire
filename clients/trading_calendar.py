@@ -108,3 +108,12 @@ def trading_days_between(start: date, end: date) -> int:
             count += 1
         d += timedelta(days=1)
     return count
+
+
+def trading_dates_in_range(start: date, end: date) -> list[date]:
+    """Return NYSE trading dates in the inclusive range."""
+    if end < start:
+        return []
+    return [
+        start + timedelta(days=i) for i in range((end - start).days + 1) if is_trading_day(start + timedelta(days=i))
+    ]

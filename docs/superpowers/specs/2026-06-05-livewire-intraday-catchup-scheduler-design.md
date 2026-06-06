@@ -19,7 +19,7 @@ The equity intraday warehouse (1m, 5m, 1h) currently has no scheduled refresh. T
 
 - No watchdog plist. The default 7-day `MDW_DAILY_BACKFILL_INTRADAY_DAYS` lookback inside `daily-backfill` absorbs a single missed run; multiple consecutive misses are caught by routine coverage inspection rather than an automated watchdog.
 - No external retry loop in the wrapper. `daily-backfill` owns retry-until-done.
-- No changes to `daily-backfill`, `intraday-backfill`, or `flatfile-ingest` themselves. This design only adds a scheduling surface around the existing orchestrator.
+- The scheduler delegates equity intraday to `daily-backfill`, which now invokes one `flatfile-ingest catch-up` command. `intraday-backfill` is not an equity path.
 - No changes to the existing `com.livewire.daily-update` 13:05 PT job. It continues running `daily` for 1d catch-up.
 
 ## Data Flow
@@ -43,9 +43,8 @@ livewire_scripts/run_intraday_catchup_job.main()
    │       ▼
    │  daily-backfill (livewire_scripts/sync_runner.py) handles:
    │     • equity 1d catch-up (Massive, --skip-existing)
-   │     • equity intraday 1m/5m/1h × {sp500, ndx100, r2k}
+   │     • full-market equity intraday via flatfile-ingest catch-up
    │         lookback = MDW_DAILY_BACKFILL_INTRADAY_DAYS (default 7)
-   │         concurrency = MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT (default 20)
    │     • FRED Treasury rates
    │     • CBOE daily volatility sync
    │     • IB VIX/SPX intraday (best effort; logs and continues if Gateway down)
@@ -76,8 +75,7 @@ exit code captured by wrapper
 
 - Run manually for testing: `python scripts/livewire_ops.py run-intraday-catchup-job`.
 - Tune lookback via env: `export MDW_DAILY_BACKFILL_INTRADAY_DAYS=14` in `~/market-warehouse/.env` to widen the catch-up window.
-- Tune concurrency via env: `export MDW_DAILY_BACKFILL_INTRADAY_CONCURRENT=20` in `~/market-warehouse/.env` (this is already the default).
-- Required env: `MASSIVE_API_KEY`. Recommended for performance: `MASSIVE_S3_ACCESS_KEY` + `MASSIVE_S3_SECRET_KEY` (S3 path auto-detected by `daily-backfill`). Optional: `MDW_POSTGRES_DSN` to trigger the Postgres rebuild phase.
+- Required env for equity intraday: `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY`. Optional: `MASSIVE_API_KEY` for equity daily and `MDW_POSTGRES_DSN` for analytical rebuild.
 - Failure alerting requires `CEREBRAS_API_KEY` (or `CEREBRAS_API_KEY_FREE`) for the human-readable AI summary; absent it, the alert email is still sent with the raw error summary, matching the existing daily-update behavior.
 
 ## Overlap and Timing
