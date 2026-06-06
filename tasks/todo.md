@@ -83,6 +83,7 @@ Massive minute flat files for the maximum entitled history.
 - [x] F1 Write and approve the full-market flat-file design.
   depends_on: [F0]
   - Approved scope: every symbol, maximum available history, raw staging, monthly publish batches, and all derived intraday timeframes.
+  - Revised boundary: replacement only; remove legacy ticker-filtered flat-file and Massive REST equity-intraday paths with no backwards compatibility.
 
 - [ ] F2 Write and review the task-by-task implementation plan.
   depends_on: [F1]

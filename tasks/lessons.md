@@ -1,5 +1,8 @@
 # Lessons
 
+- When the user requests a replacement without backwards compatibility, remove
+  the legacy runtime and CLI paths from the design instead of retaining them as
+  degraded fallbacks.
 - Before finalizing a plan or design summary in a dirty worktree, re-run `git status --short` and inspect current diffs for touched runtime files so the plan matches the latest local code, not an earlier snapshot.
 - When the user calls out stale documentation, audit every repo doc that describes runtime behavior, operations, architecture, or examples instead of updating only the most obvious file.
 - When answering questions about the current storage path, inspect both ingestion scripts and the storage client so you distinguish the system of record from the publish sidecar.

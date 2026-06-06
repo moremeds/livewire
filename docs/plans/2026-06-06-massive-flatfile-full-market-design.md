@@ -34,9 +34,10 @@ subcommand, but the production paths do not use them:
 - Publish canonical per-symbol `1m` bronze Parquet in resumable batches.
 - Materialize `5m`, `30m`, and `1h` from canonical `1m` for every discovered
   symbol.
-- Make flat files the default equity-intraday source for `backfill-all` and
-  `daily-backfill` when S3 credentials are available.
-- Keep Massive REST as a narrow fallback for targeted ticker/date repairs.
+- Make flat files the only equity-intraday source for `backfill-all`,
+  `daily-backfill`, manual backfills, and repairs.
+- Remove the old ticker-filtered flat-file implementation and Massive REST
+  equity-intraday implementation rather than preserving compatibility paths.
 - Keep equity `1d`, volatility, futures, rates, and other non-equity lanes
   unchanged.
 
@@ -48,6 +49,9 @@ subcommand, but the production paths do not use them:
 - Replacing canonical per-symbol bronze Parquet with a database.
 - Automatically deleting old raw files after publication.
 - Building adjustment-factor or corporate-action processing.
+- Preserving compatibility with the current `flatfile-ingest --preset`,
+  `flatfile-ingest --tickers`, or equity `intraday-backfill --source massive`
+  command shapes.
 
 ## Architecture
 
@@ -168,8 +172,8 @@ completed batch is idempotent.
 
 ### Full Backfill
 
-`backfill-all` uses the full-market flat-file pipeline for equity intraday when
-S3 credentials are present. It performs:
+`backfill-all` uses the full-market flat-file pipeline for equity intraday. It
+performs:
 
 1. history discovery
 2. missing raw-date downloads
@@ -177,28 +181,20 @@ S3 credentials are present. It performs:
 4. derived timeframe publication
 5. existing non-equity lanes and optional Postgres rebuild
 
-If S3 credentials are absent, the job fails the equity-intraday lane with a
-clear configuration error. It must not silently fall back to thousands of REST
-requests for a full-market build.
+If S3 credentials are absent, the job fails immediately with a clear
+configuration error.
 
 ### Daily Catch-Up
 
-`daily-backfill` uses the flat-file pipeline for equity intraday when S3
-credentials are present. It requests missing raw files from a configurable
-recent lookback window, then publishes all symbols found.
-
-If S3 credentials are absent, the current managed-universe REST path remains
-available as a degraded fallback so scheduled catch-up still has a recovery
-path.
+`daily-backfill` uses the flat-file pipeline for equity intraday. It requests
+missing raw files from a configurable recent lookback window, then publishes
+all symbols found. Missing S3 credentials are a hard configuration failure.
 
 ### Targeted Repair
 
-Massive REST remains the appropriate tool for narrow repairs where downloading
-and replaying a whole-market day is unnecessary:
-
-- explicit ticker list
-- explicit short date range
-- coverage repair for a small missing-symbol set
+Targeted equity-intraday repair replays the relevant whole-market raw day. If
+the raw partition is absent or explicitly marked for replacement, it downloads
+that Massive daily flat file again. There is no REST repair path.
 
 ## Error Handling
 
@@ -233,8 +229,8 @@ cannot safely publish.
 
 ## CLI And Configuration
 
-The existing `flatfile-ingest` command becomes the operator surface for the
-full-market pipeline.
+The existing `flatfile-ingest` implementation is replaced by the full-market
+pipeline. The old required `--preset` / `--tickers` interface is removed.
 
 Planned modes:
 
@@ -270,8 +266,10 @@ Tests must prove:
 - stable symbol IDs are preserved
 - derived bars remain correct across batch boundaries
 - `backfill-all` prefers flat files and refuses silent full-market REST fallback
-- `daily-backfill` prefers flat files but retains explicit degraded REST fallback
-- targeted REST repair behavior remains unchanged
+- `daily-backfill` requires flat files and fails clearly without S3 credentials
+- legacy ticker-filtered flat-file and equity-intraday REST command paths are
+  removed
+- targeted repair replays whole-market raw partitions without REST calls
 - dry-run and capacity estimates perform no downloads or writes
 - the configured 100% coverage gate and RuntimeWarning guard pass
 
@@ -282,9 +280,10 @@ Tests must prove:
 3. Ingest and verify one historical month into an isolated warehouse root.
 4. Compare sampled symbols and bars against Massive REST.
 5. Run a full-market one-day catch-up into the production warehouse.
-6. Enable `daily-backfill` flat-file preference.
+6. Switch `daily-backfill` to the flat-file-only path and remove its REST lane.
 7. Run the resumable full historical backfill.
-8. Enable `backfill-all` flat-file default and update operational docs.
+8. Switch `backfill-all` to the flat-file-only path, remove legacy code, and
+   update operational docs.
 
 ## Success Criteria
 
@@ -293,6 +292,5 @@ Tests must prove:
 - Every symbol present in the files is published to canonical `1m` bronze.
 - `5m`, `30m`, and `1h` are materialized for every published symbol.
 - A full run resumes without repeating completed downloads or batches.
-- Scheduled equity intraday catch-up no longer issues ticker-by-ticker REST
-  requests when S3 credentials are configured.
+- No equity-intraday ingestion path issues ticker-by-ticker REST requests.
 - Full historical publication avoids per-day complete Parquet rewrites.
