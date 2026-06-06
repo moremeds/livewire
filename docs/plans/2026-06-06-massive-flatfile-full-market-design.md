@@ -31,7 +31,8 @@ subcommand, but the production paths do not use them:
   `us_stocks_sip/minute_aggs_v1` daily files.
 - Discover and backfill the maximum accessible history.
 - Preserve downloaded whole-market days as raw Parquet artifacts.
-- Publish canonical per-symbol `1m` bronze Parquet in resumable batches.
+- Publish canonical per-symbol `1m` bronze Parquet through resumable hash
+  buckets.
 - Materialize `5m`, `30m`, and `1h` from canonical `1m` for every discovered
   symbol.
 - Make flat files the only equity-intraday source for `backfill-all`,
@@ -61,16 +62,17 @@ The pipeline has three durable stages:
 Massive S3 daily .csv.gz
         |
         v
-raw/massive/us_stocks_sip/minute_aggs_v1/date=YYYY-MM-DD/data.parquet
+raw/massive/us_stocks_sip/minute_aggs_v1/date=YYYY-MM-DD/
+  bucket=000/part.parquet ... bucket=255/part.parquet + _SUCCESS
         |
         v
-monthly publish batch grouped by ticker
+symbol-oriented historical publish, one bucket at a time
         |
         v
-bronze/asset_class=equity/symbol=<ticker>/1m.parquet
+bronze/asset_class=equity/symbol=<encoded-ticker>/1m.parquet
         |
         v
-derive and publish 5m / 30m / 1h
+derive and publish 5m / 30m / 1h once per ticker
 ```
 
 Raw daily Parquet is a replayable provider artifact. Bronze remains the
@@ -96,7 +98,9 @@ routine jobs do not repeat entitlement discovery.
 ## Raw Download Stage
 
 Each accessible Massive daily gzip is downloaded once and converted to a
-normalized raw Parquet file partitioned by trade date.
+normalized raw Parquet dataset partitioned by trade date and stable ticker-hash
+bucket. Bucketed staging keeps memory bounded and lets historical publication
+read one subset of the full market across all available dates.
 
 The raw schema retains provider ticker and minute OHLCV:
 
@@ -110,37 +114,50 @@ close: float64
 volume: int64
 ```
 
-Publication uses the existing atomic Parquet helper. A completed raw partition
-is immutable unless an explicit repair command replaces it.
+Provider ticker spelling and case are preserved exactly. Unsafe filesystem path
+characters are encoded only when constructing bronze partition paths.
+
+Each raw date also writes `_symbols.parquet`, containing the exact distinct
+ticker set present on that trading day. Coverage uses this date-specific set so
+historical or delisted symbols are not incorrectly expected on later dates.
+
+The date partition is built in a temporary directory, validated, marked with
+`_SUCCESS`, then renamed into place. Readers ignore any partition without
+`_SUCCESS`. A completed raw partition is immutable unless an explicit repair
+command performs a recoverable old/temp/final directory swap.
 
 The downloader writes a manifest entry per date containing status, object key,
 row count, symbol count, file size, checksum, and completion timestamp.
 
 ## Bronze Publish Stage
 
-Historical publication runs in configurable calendar-month batches:
+Historical publication is symbol-oriented:
 
-1. Read all available raw daily Parquet partitions for the month.
-2. Group rows by ticker across the batch.
+1. Read one stable hash bucket across all available raw dates.
+2. K-way merge the sorted daily bucket readers and stream/group rows by ticker
+   across the complete available range.
 3. Assign the stable Livewire `symbol_id`.
-4. Merge each ticker into `1m.parquet` once for the entire batch.
-5. Record per-ticker and per-batch completion only after atomic publication.
+4. Publish each ticker's complete entitled `1m` history once.
+5. Derive and publish its complete `5m`, `30m`, and `1h` history once.
+6. Record per-ticker and per-bucket completion only after atomic publication.
 
 This changes the historical write complexity from one complete ticker rewrite
-per trading day to one rewrite per ticker per monthly batch.
+per trading day to one complete write per ticker and timeframe.
 
-Routine daily catch-up uses a one-day publish batch. It downloads the latest
+Routine daily catch-up uses a one-day publish operation. It downloads the latest
 complete trading-day file once, then publishes all symbols found in that file.
 
 ## Derived Timeframes
 
-Canonical equity intraday is `1m`. After a batch publishes `1m`, the pipeline
+Canonical equity intraday is `1m`. After historical or catch-up publication of
+`1m`, the pipeline
 derives `5m`, `30m`, and `1h` locally using the existing lossless OHLCV
 aggregator.
 
-For correctness at batch boundaries, derivation reads the affected timestamp
-range plus the minimum overlap needed to complete the first and last target
-windows. The derived writer then merges only those affected windows.
+Historical derivation runs once from each ticker's complete `1m` history.
+Routine catch-up and repair read the affected timestamp range plus the minimum
+overlap needed to complete the first and last target windows, then merge only
+those affected windows.
 
 All discovered symbols receive all four intraday timeframes. This is
 storage-intensive but matches the approved full-market warehouse goal and
@@ -161,12 +178,13 @@ The state records:
 - discovered earliest accessible date
 - latest checked/downloaded raw date
 - raw dates completed, unavailable, or failed
-- publish batches completed
-- derived-timeframe batches completed
+- raw date buckets completed
+- historical publish buckets and tickers completed
+- derived-timeframe tickers completed
 - last successful run and aggregate counters
 
 All state transitions occur after durable output publication. Re-running a
-completed batch is idempotent.
+completed bucket or date is idempotent.
 
 ## Orchestrator Integration
 
@@ -177,7 +195,7 @@ performs:
 
 1. history discovery
 2. missing raw-date downloads
-3. monthly `1m` bronze publication
+3. symbol-oriented `1m` bronze publication
 4. derived timeframe publication
 5. existing non-equity lanes and optional Postgres rebuild
 
@@ -199,18 +217,21 @@ that Massive daily flat file again. There is no REST repair path.
 ## Error Handling
 
 - Authentication or entitlement failures stop the flat-file lane immediately.
+- Provider object-listing and `head_object` behavior is verified with a
+  read-only live probe before implementation locks in error classification.
 - Transient download failures are retried with bounded exponential backoff.
 - Missing objects on expected trading days are recorded and reported, not
   silently treated as market holidays.
 - A raw partition is never marked complete until its Parquet validates.
-- A bronze batch is never marked complete until all ticker publications for the
-  batch succeed.
-- Partial batch failure is resumable at ticker level without re-downloading raw
-  files.
-- Derived-timeframe failure does not invalidate canonical `1m`, but the batch
+- A historical publish bucket is never marked complete until all ticker
+  publications in the bucket succeed.
+- Partial bucket failure is resumable at ticker level without re-downloading
+  raw files.
+- Derived-timeframe failure does not invalidate canonical `1m`, but the ticker
   remains incomplete until derivation succeeds.
 - Logs and final summaries expose dates downloaded, bytes read, symbols found,
-  rows published, batches completed, skipped work, and failures.
+  rows published, buckets completed, skipped work, and failures.
+- Logs never include S3 access or secret key values.
 
 ## Storage And Capacity
 
@@ -246,7 +267,7 @@ Relevant configuration:
 ```text
 MASSIVE_S3_ACCESS_KEY
 MASSIVE_S3_SECRET_KEY
-MDW_FLATFILE_BATCH_MONTHS=1
+MDW_FLATFILE_BUCKETS=256
 MDW_FLATFILE_LOOKBACK_DAYS=7
 MDW_FLATFILE_MIN_FREE_GB=<safety threshold>
 MDW_FLATFILE_RAW_RETENTION=keep
@@ -261,11 +282,14 @@ Tests must prove:
 - exchange holidays are not requested
 - raw daily CSV converts to validated atomic Parquet
 - all symbols are retained when no ticker filter is supplied
-- monthly publication merges each ticker once per batch
-- interrupted downloads and interrupted publish batches resume idempotently
+- historical publication writes each ticker once for the complete available
+  range
+- interrupted downloads and interrupted publish buckets resume idempotently
 - stable symbol IDs are preserved
-- derived bars remain correct across batch boundaries
-- `backfill-all` prefers flat files and refuses silent full-market REST fallback
+- provider ticker values that are unsafe as path components are encoded and
+  decode back to the original ticker
+- derived bars remain correct across catch-up and repair boundaries
+- `backfill-all` requires flat files and refuses silent full-market REST fallback
 - `daily-backfill` requires flat files and fails clearly without S3 credentials
 - legacy ticker-filtered flat-file and equity-intraday REST command paths are
   removed
@@ -276,14 +300,30 @@ Tests must prove:
 ## Rollout
 
 1. Implement and test history discovery, raw staging, and manifests.
-2. Run a small read-only entitlement discovery and capacity estimate.
-3. Ingest and verify one historical month into an isolated warehouse root.
-4. Compare sampled symbols and bars against Massive REST.
+2. Run a small read-only provider-contract probe and entitlement/capacity
+   discovery.
+3. Ingest and verify one historical month into an isolated warehouse root,
+   including a bounded-memory bucket publish.
+4. Compare sampled symbols and bars against a one-off read-only provider probe
+   kept outside the runtime implementation.
 5. Run a full-market one-day catch-up into the production warehouse.
 6. Switch `daily-backfill` to the flat-file-only path and remove its REST lane.
 7. Run the resumable full historical backfill.
 8. Switch `backfill-all` to the flat-file-only path, remove legacy code, and
    update operational docs.
+
+## Rollback
+
+There is no runtime fallback to the removed implementation. Rollback is a code
+rollback through Git/PR:
+
+1. Disable the scheduled intraday-catchup launchd job.
+2. Revert the replacement PR.
+3. Re-enable the prior scheduled job only after the revert is deployed.
+
+Raw Massive partitions are additive and may remain on disk during rollback.
+Bronze publication remains atomic, so rollback does not require restoring
+partially written Parquet files.
 
 ## Success Criteria
 
@@ -291,6 +331,7 @@ Tests must prove:
   market.
 - Every symbol present in the files is published to canonical `1m` bronze.
 - `5m`, `30m`, and `1h` are materialized for every published symbol.
-- A full run resumes without repeating completed downloads or batches.
+- A full run resumes without repeating completed downloads, buckets, or
+  tickers.
 - No equity-intraday ingestion path issues ticker-by-ticker REST requests.
 - Full historical publication avoids per-day complete Parquet rewrites.
