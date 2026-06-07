@@ -26,7 +26,7 @@ Livewire is a market data warehouse designed for storing and analyzing historica
   * **Treasury yields** (FRED API)
 * Intraday bars for:
 
-  * **Equities** (Massive REST or Polygon S3 flat files for 1m, with local derivation to 5m/30m/1h)
+  * **Equities** (Massive whole-market flat files for 1m, with local derivation to 5m/30m/1h)
   * **Volatility/Index** (IB 30m bars, with local 1h derivation)
   * **Futures** (IB)
 * Per-ticker **bronze Parquet snapshots**
@@ -344,6 +344,10 @@ Parquet, publishes every ticker's canonical `1m` history, and derives
 `5m`/`30m`/`1h` locally. Runs resume from durable raw-date, ticker, and bucket
 state under `~/market-warehouse/cursors/`.
 
+The client signs S3 V4 requests against `https://files.massive.com`, bucket
+`flatfiles`, under `us_stocks_sip/minute_aggs_v1/`. Flat-file modes are
+whole-market operations; ticker and preset filters are intentionally unsupported.
+
 ```bash
 # Read-only entitlement and capacity plan
 python scripts/livewire_ingest.py flatfile-ingest discover
@@ -539,9 +543,9 @@ python scripts/livewire_store.py migrate-parquet
 
 | Variable | Purpose |
 | --- | --- |
-| `MASSIVE_API_KEY` | Polygon REST API key for equity daily/intraday |
-| `MASSIVE_S3_ACCESS_KEY` | Polygon S3 access key for flat file downloads |
-| `MASSIVE_S3_SECRET_KEY` | Polygon S3 secret key for flat file downloads |
+| `MASSIVE_API_KEY` | Massive REST API key for optional equity daily acceleration |
+| `MASSIVE_S3_ACCESS_KEY` | Massive S3 access key; required for equity intraday |
+| `MASSIVE_S3_SECRET_KEY` | Massive S3 secret key; required for equity intraday |
 | `FRED_API_KEY` | FRED API key for Treasury yield rates |
 
 ### IB Gateway
@@ -577,6 +581,10 @@ python scripts/livewire_store.py migrate-parquet
 | `MDW_ORCHESTRATOR_MAX_ATTEMPTS` | `3` | Per-ticker retry budget |
 | `MDW_ORCHESTRATOR_COOLDOWN_SECONDS` | `60` | Sleep between retry attempts |
 | `MDW_DAILY_BACKFILL_INTRADAY_DAYS` | `7` | Intraday recent-window lookback (calendar days) |
+| `MDW_FLATFILE_LOOKBACK_DAYS` | `7` | Default direct `flatfile-ingest catch-up` lookback |
+| `MDW_FLATFILE_BUCKETS` | `256` | Raw ticker buckets per Massive trading-day partition |
+| `MDW_FLATFILE_STORAGE_MULTIPLIER` | `8` | Full-build storage projection multiplier |
+| `MDW_FLATFILE_MIN_FREE_GB` | `25` | Required free-space reserve after a full build |
 
 ---
 

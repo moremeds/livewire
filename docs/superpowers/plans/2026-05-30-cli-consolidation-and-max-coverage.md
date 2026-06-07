@@ -1,5 +1,11 @@
 # CLI Consolidation & Maximum Coverage Plan
 
+> **Status: superseded for equity intraday.** Current equity intraday uses the
+> full-market replacement documented in
+> [`docs/plans/2026-06-06-massive-flatfile-full-market.md`](../../plans/2026-06-06-massive-flatfile-full-market.md).
+> Do not implement this plan's ticker-scoped Massive REST/flat-file routing or
+> five-year equity-intraday limits.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Collapse 4 CLIs / 21 subcommands into a single `livewire` CLI with 4 commands, add 30m timeframe, bump all intraday depths to 5 years, fix R2 incremental sync, replace bash orchestrators with testable Python, and run a full warehouse backfill.
