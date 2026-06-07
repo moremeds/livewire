@@ -1,5 +1,11 @@
 # Livewire Intraday Catch-up Scheduler Implementation Plan
 
+> **Status: implemented, then updated for full-market flat files.** Current
+> equity-intraday catch-up behavior is documented in the corresponding
+> [scheduler design](../specs/2026-06-05-livewire-intraday-catchup-scheduler-design.md)
+> and the [full-market replacement plan](../../plans/2026-06-06-massive-flatfile-full-market.md).
+> Historical ticker-scoped commands below are not current operator guidance.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a second launchd job (`com.livewire.intraday-catchup` at 16:00 PT) that runs the existing `daily-backfill` orchestrator so equity intraday parquet (1m/5m/1h), FRED rates, and CBOE volatility refresh daily — closing the gap left by the 13:05 PT daily-update which only catches up 1d.

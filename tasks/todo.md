@@ -1,3 +1,28 @@
+# Massive Flat-File Post-Ship Documentation
+
+## Dependency Graph
+
+```text
+D1 Audit active docs against merged behavior
+ └─> D2 Update operator and contributor docs
+      └─> D3 Mark superseded design guidance
+           └─> D4 Verify documentation consistency
+```
+
+- [x] D1 Audit active docs against merged behavior.
+  depends_on: []
+- [x] D2 Update README, CLAUDE, AGENTS, environment examples, changelog, and project memory.
+  depends_on: [D1]
+- [x] D3 Mark obsolete ticker-scoped Massive intraday design guidance as superseded.
+  depends_on: [D2]
+- [x] D4 Run stale-reference, command-help, formatting, and repository verification gates.
+  depends_on: [D3]
+  - Stale active-doc reference scan returned no matches.
+  - `flatfile-ingest --help` confirmed only `discover`, `backfill`, `catch-up`, and `repair`.
+  - Unified `backfill --help` confirmed `--source {auto,ib}` and the mandatory flat-file equity-intraday route.
+  - Ruff check/format passed.
+  - Repository gate: 1,259 passed, 1 skipped, 100.00% coverage.
+
 # Daily Backfill Runner
 
 ## Goal

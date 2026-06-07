@@ -2,7 +2,7 @@
 
 ## Goal
 
-The equity intraday warehouse (1m, 5m, 1h) currently has no scheduled refresh. The existing `com.livewire.daily-update` launchd job calls `scripts/livewire_ingest.py daily`, which only catches up `1d` bars. As a result intraday parquet drifts behind 1d by multiple trading days during normal operation. A second launchd job must run the existing `daily-backfill` orchestrator once per day so equity intraday, FRED rates, and CBOE volatility stay current alongside the daily 1d sync.
+The equity intraday warehouse (1m, 5m, 30m, 1h) needs a scheduled refresh. The existing `com.livewire.daily-update` launchd job calls `scripts/livewire_ingest.py daily`, which only catches up `1d` bars. A second launchd job runs the existing `daily-backfill` orchestrator once per day so equity intraday, FRED rates, and CBOE volatility stay current alongside the daily 1d sync.
 
 ## Scope
 
@@ -20,6 +20,7 @@ The equity intraday warehouse (1m, 5m, 1h) currently has no scheduled refresh. T
 - No watchdog plist. The default 7-day `MDW_DAILY_BACKFILL_INTRADAY_DAYS` lookback inside `daily-backfill` absorbs a single missed run; multiple consecutive misses are caught by routine coverage inspection rather than an automated watchdog.
 - No external retry loop in the wrapper. `daily-backfill` owns retry-until-done.
 - The scheduler delegates equity intraday to `daily-backfill`, which now invokes one `flatfile-ingest catch-up` command. `intraday-backfill` is not an equity path.
+- Massive S3 credentials are mandatory for `daily-backfill`; there is no equity-intraday REST or IB fallback.
 - No changes to the existing `com.livewire.daily-update` 13:05 PT job. It continues running `daily` for 1d catch-up.
 
 ## Data Flow
@@ -84,7 +85,7 @@ exit code captured by wrapper
 - `com.livewire.intraday-catchup` starts at 16:00 PT, leaving ~3 hours of margin after daily-update's typical completion.
 - If daily-update is still running at 16:00 PT, both jobs run in parallel. The overlap is safe because:
   - `daily-backfill`'s 1d Massive catch-up runs with `--skip-existing` and is a near-noop once daily-update has finished the 1d pass.
-  - Intraday writes target different parquet files (`{1m,5m,1h}.parquet`) than the daily writer (`1d.parquet`), so atomic `os.replace()` publication does not contend.
+  - Intraday writes target different parquet files (`{1m,5m,30m,1h}.parquet`) than the daily writer (`1d.parquet`), so atomic `os.replace()` publication does not contend.
 - No file lock contention is expected. If the same ticker's same-timeframe parquet were targeted by both jobs at once (it is not in the current design), the atomic `temp -> validate -> os.replace()` publish path in `BronzeClient` would make the last writer win cleanly rather than corrupt.
 
 ## Verification

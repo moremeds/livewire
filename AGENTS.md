@@ -79,6 +79,8 @@ Current live shape:
 - Quality flags are emitted independently to the parquet sidecar, central audit JSONL, and Nodemailer alert path; one failed emit path should not block the others.
 - `scripts/livewire_store.py rebuild-postgres` rebuilds Postgres analytical tables from bronze parquet and reliability JSONL artifacts.
 - `scripts/livewire_ingest.py flatfile-ingest` is the only equity-intraday path. Modes are `discover`, `backfill`, `catch-up`, and `repair`; every mode operates on every symbol present in the selected whole-market files. `intraday-backfill` remains IB-only for non-equity.
+- Equity-intraday orchestrators require `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY` and fail before other phases when they are absent. There is no equity-intraday REST or IB fallback.
+- `flatfile-ingest backfill` discovers the provider-entitled range and enforces projected-storage plus free-space-reserve checks before downloading.
 - `scripts/livewire_quality.py coverage` uses the target day's raw `_symbols.parquet` set when available and repairs intraday gaps with `flatfile-ingest repair --dates <date>`.
 - `scripts/livewire_quality.py weekly` aggregates seven daily coverage logs into `~/market-warehouse/logs/quality_weekly_YYYY-WW.md`. Self-skips on non-Sunday so it can be called daily without a date branch.
 - `scripts/livewire_quality.py health --intraday` is report-only by default. Repair fires implicitly only when `--symbol`, `--since`, and `--timeframe` are all set (targeted, narrow, explicit) and shells out to `backfill_intraday.py`.
