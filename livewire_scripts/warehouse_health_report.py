@@ -9,11 +9,11 @@ import os
 import shlex
 import subprocess
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
-from functools import lru_cache
+from datetime import UTC, date, datetime, time, timedelta
+from functools import cache
 from pathlib import Path
-from typing import Iterable
 from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -166,7 +166,7 @@ def build_report(options: ScanOptions | None = None) -> WarehouseReport:
     resolved_options = ScanOptions(bronze_root=options.bronze_root, target_date=target_date)
     snapshots = scan_warehouse(resolved_options)
     return WarehouseReport(
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         bronze_root=Path(options.bronze_root).expanduser(),
         target_date=target_date,
         snapshots=snapshots,
@@ -216,11 +216,9 @@ def plan_warehouse_repairs(report: WarehouseReport) -> list[RepairAction]:
         )
 
     for timeframe in INTRADAY_TIMEFRAMES:
-        symbols = sorted({
-            item.symbol
-            for item in stale
-            if item.asset_class == "equity" and item.timeframe == timeframe
-        })
+        symbols = sorted(
+            {item.symbol for item in stale if item.asset_class == "equity" and item.timeframe == timeframe}
+        )
         if symbols:
             actions.append(
                 RepairAction(
@@ -268,11 +266,9 @@ def plan_warehouse_repairs(report: WarehouseReport) -> list[RepairAction]:
         )
 
     for timeframe in ("5m", "1h"):
-        vol_intraday = sorted({
-            item.symbol
-            for item in stale
-            if item.asset_class == "volatility" and item.timeframe == timeframe
-        })
+        vol_intraday = sorted(
+            {item.symbol for item in stale if item.asset_class == "volatility" and item.timeframe == timeframe}
+        )
         if vol_intraday:
             actions.append(
                 RepairAction(
@@ -350,9 +346,7 @@ def render_html(report: WarehouseReport) -> str:
     asset_rows = _render_asset_summary_rows(report.by_asset)
     ticker_sections = _render_ticker_summary_sections(report.snapshots)
     asset_cards = "\n".join(_render_group_card(name, summary) for name, summary in report.by_asset.items())
-    timeframe_cards = "\n".join(
-        _render_group_card(name, summary) for name, summary in report.by_timeframe.items()
-    )
+    timeframe_cards = "\n".join(_render_group_card(name, summary) for name, summary in report.by_timeframe.items())
     status_counts = report.status_counts
     payload = json.dumps(
         {
@@ -795,8 +789,8 @@ def _expected_intraday_rows(first: datetime, latest: datetime, timeframe: str) -
     if latest < first:
         return 0
     step = _INTRADAY_STEPS[timeframe]
-    first_utc = first.astimezone(timezone.utc)
-    latest_utc = latest.astimezone(timezone.utc)
+    first_utc = first.astimezone(UTC)
+    latest_utc = latest.astimezone(UTC)
     current_day = first_utc.astimezone(_ET).date()
     end_day = latest_utc.astimezone(_ET).date()
     total = 0
@@ -814,11 +808,11 @@ def _expected_intraday_rows_for_day(
     timeframe: str,
     step: timedelta,
 ) -> int:
-    open_dt = datetime.combine(trading_day, time(9, 30), tzinfo=_ET).astimezone(timezone.utc)
-    close_dt = datetime.combine(trading_day, _session_close_time_cached(trading_day), tzinfo=_ET).astimezone(timezone.utc)
+    open_dt = datetime.combine(trading_day, time(9, 30), tzinfo=_ET).astimezone(UTC)
+    close_dt = datetime.combine(trading_day, _session_close_time_cached(trading_day), tzinfo=_ET).astimezone(UTC)
     if timeframe == "1h":
         points = [open_dt]
-        current = datetime.combine(trading_day, time(10, 0), tzinfo=_ET).astimezone(timezone.utc)
+        current = datetime.combine(trading_day, time(10, 0), tzinfo=_ET).astimezone(UTC)
         while current + step <= close_dt:
             points.append(current)
             current += step
@@ -842,19 +836,19 @@ def _ceil_div_timedelta(value: timedelta, step: timedelta) -> int:
     return (value_us + step_us - 1) // step_us
 
 
-@lru_cache(maxsize=None)
+@cache
 def _is_expected_daily(asset_class: str, day: date) -> bool:
     if asset_class in {"futures", "rates"}:
         return day.weekday() < 5
     return _is_trading_day_cached(day)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _is_trading_day_cached(day: date) -> bool:
     return is_trading_day(day)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _session_close_time_cached(day: date) -> time:
     return session_close_time(day)
 
@@ -1002,8 +996,8 @@ def _coerce_date(value: object) -> date | None:
 def _coerce_datetime(value: object) -> datetime | None:
     if isinstance(value, datetime):
         if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
     return None
 
 
@@ -1011,7 +1005,7 @@ def _value_date(value: object | None) -> date | None:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value.astimezone(timezone.utc).date() if value.tzinfo else value.date()
+        return value.astimezone(UTC).date() if value.tzinfo else value.date()
     if isinstance(value, date):
         return value
     if isinstance(value, str):
@@ -1024,8 +1018,8 @@ def _format_value(value: object | None) -> str:
         return ""
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc).isoformat()
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC).isoformat()
     if isinstance(value, date):
         return value.isoformat()
     return str(value)
@@ -1120,7 +1114,7 @@ def _render_ticker_summary_sections(snapshots: list[SnapshotHealth]) -> str:
           <th>Reason</th>
         </tr>
       </thead>
-      <tbody>{''.join(rows)}</tbody>
+      <tbody>{"".join(rows)}</tbody>
     </table>
   </div>
 </details>"""

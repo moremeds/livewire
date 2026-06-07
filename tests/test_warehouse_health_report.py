@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pyarrow as pa
@@ -14,14 +14,13 @@ from livewire_scripts.warehouse_health_report import (
     ScanOptions,
     _build_repair_env,
     build_report,
-    plan_warehouse_repairs,
-    repair_warehouse,
     main,
+    plan_warehouse_repairs,
     render_html,
+    repair_warehouse,
     scan_warehouse,
     write_html_report,
 )
-
 
 _DAILY_SCHEMA = pa.schema(
     [
@@ -100,8 +99,8 @@ def test_scan_warehouse_reports_daily_and_intraday_snapshots(tmp_path: Path) -> 
         "AAPL",
         "5m",
         [
-            datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc),
-            datetime(2026, 1, 5, 14, 35, tzinfo=timezone.utc),
+            datetime(2026, 1, 5, 14, 30, tzinfo=UTC),
+            datetime(2026, 1, 5, 14, 35, tzinfo=UTC),
         ],
     )
 
@@ -138,7 +137,7 @@ def test_render_html_contains_summary_and_searchable_table(tmp_path: Path) -> No
         tmp_path,
         "AAPL",
         "1m",
-        [datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc)],
+        [datetime(2026, 1, 5, 14, 30, tzinfo=UTC)],
     )
     report = build_report(ScanOptions(bronze_root=tmp_path, target_date=date(2026, 1, 6)))
 
@@ -178,8 +177,8 @@ def test_intraday_sparse_trade_bars_are_thin_when_fresh(tmp_path: Path) -> None:
         "AAPL",
         "1m",
         [
-            datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc),
-            datetime(2026, 1, 5, 19, 59, tzinfo=timezone.utc),
+            datetime(2026, 1, 5, 14, 30, tzinfo=UTC),
+            datetime(2026, 1, 5, 19, 59, tzinfo=UTC),
         ],
     )
 
@@ -196,7 +195,7 @@ def test_orphan_intraday_snapshot_without_daily_is_not_actionable_warning(tmp_pa
         tmp_path,
         "OLD",
         "1m",
-        [datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc)],
+        [datetime(2026, 1, 5, 14, 30, tzinfo=UTC)],
     )
 
     snapshots = scan_warehouse(ScanOptions(bronze_root=tmp_path, target_date=date(2026, 1, 12)))
@@ -213,7 +212,7 @@ def test_plan_warehouse_repairs_groups_stale_actionable_snapshots(tmp_path: Path
         tmp_path,
         "MSFT",
         "5m",
-        [datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc)],
+        [datetime(2026, 1, 5, 14, 30, tzinfo=UTC)],
     )
     report = build_report(ScanOptions(bronze_root=tmp_path, target_date=date(2026, 1, 12)))
 
@@ -294,18 +293,20 @@ def test_repair_warehouse_executes_until_report_is_clean(monkeypatch, tmp_path: 
     assert outcome.before_errors == 1
     assert outcome.after_errors == 0
     assert outcome.cleared is True
-    assert commands == [[
-        "python",
-        "scripts/livewire_ingest.py",
-        "daily",
-        "--source",
-        "massive",
-        "--force",
-        "--target-date",
-        "2026-01-12",
-        "--tickers",
-        "AAPL",
-    ]]
+    assert commands == [
+        [
+            "python",
+            "scripts/livewire_ingest.py",
+            "daily",
+            "--source",
+            "massive",
+            "--force",
+            "--target-date",
+            "2026-01-12",
+            "--tickers",
+            "AAPL",
+        ]
+    ]
 
 
 def test_build_repair_env_loads_repo_and_warehouse_env(monkeypatch, tmp_path: Path) -> None:
@@ -336,14 +337,16 @@ def test_main_writes_report_and_prints_path(tmp_path: Path, capsys) -> None:
     _write_daily(tmp_path / "bronze", "equity", "AAPL", [date(2026, 1, 5)])
     output = tmp_path / "report.html"
 
-    rc = main([
-        "--bronze-root",
-        str(tmp_path / "bronze"),
-        "--output",
-        str(output),
-        "--target-date",
-        "2026-01-06",
-    ])
+    rc = main(
+        [
+            "--bronze-root",
+            str(tmp_path / "bronze"),
+            "--output",
+            str(output),
+            "--target-date",
+            "2026-01-06",
+        ]
+    )
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -383,11 +386,12 @@ def snapshot_for_test(
 
 
 def build_report_for_test(snapshots, *, target_date: date, bronze_root: Path):
+    from datetime import datetime
+
     from livewire_scripts.warehouse_health_report import WarehouseReport
-    from datetime import datetime, timezone
 
     return WarehouseReport(
-        generated_at=datetime(2026, 1, 12, tzinfo=timezone.utc),
+        generated_at=datetime(2026, 1, 12, tzinfo=UTC),
         bronze_root=bronze_root,
         target_date=target_date,
         snapshots=list(snapshots),
