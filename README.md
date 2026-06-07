@@ -175,7 +175,7 @@ For granular control, use the five operator scripts directly:
 | Script | Function | Typical usage |
 | --- | --- | --- |
 | `scripts/livewire_ingest.py` | Data ingestion | Historical seeds, daily updates, robust IB runs, CBOE volatility, intraday backfill, S3 flat files |
-| `scripts/livewire_quality.py` | Quality and health reporting | Bronze health checks, coverage reports, daily rollup, weekly summary, watchdog alerts |
+| `scripts/livewire_quality.py` | Quality and health reporting | Bronze health checks, HTML warehouse report, coverage reports, daily rollup, weekly summary, watchdog alerts |
 | `scripts/livewire_ops.py` | Operations | Scheduled daily job, alert sending |
 | `scripts/livewire_store.py` | Storage maintenance | Postgres rebuilds, Postgres smoke checks, R2 sync, parquet filename migration |
 | `scripts/setup_market_warehouse.sh` | One-time bootstrap | Create `~/market-warehouse/`, venv, directories, optional ClickHouse helpers |
@@ -193,7 +193,7 @@ Subcommand map:
 livewire_ingest.py   daily | historical | robust | cboe-vol | fred-rates |
                      intraday-backfill | flatfile-ingest | universe |
                      backfill-all | daily-backfill
-livewire_quality.py  health | coverage | report | weekly | watchdog
+livewire_quality.py  health | coverage | report | weekly | watchdog | warehouse
 livewire_ops.py      run-daily-job | send-alert
 livewire_store.py    rebuild-postgres | smoke-postgres | sync-r2 | migrate-parquet
 ```
@@ -461,6 +461,18 @@ python scripts/livewire_quality.py health
 
 # Include intraday gap detection
 python scripts/livewire_quality.py health --intraday --timeframe 5m
+
+# Static HTML warehouse report from actual bronze parquet, grouped by asset and ticker
+python scripts/livewire_quality.py warehouse
+
+# Write the report to a specific path
+python scripts/livewire_quality.py warehouse --output ~/market-warehouse/reports/warehouse_health.html
+
+# Plan repair actions for actionable report warnings/errors
+python scripts/livewire_quality.py warehouse --repair --dry-run
+
+# Run repair actions, then regenerate the report
+python scripts/livewire_quality.py warehouse --repair
 
 # Daily coverage report with auto-recovery
 python scripts/livewire_quality.py coverage
