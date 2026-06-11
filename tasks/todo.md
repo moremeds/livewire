@@ -50,3 +50,22 @@ Two follow-ups:
 `daily_backfill_equity_union` exits non-zero when any ticker fails after all retries, even if 1,548 succeeded. The orchestrator treats this as recoverable ("exited 1 after completed summary; continuing") — good — but the underlying tickers stay failing.
 
 Persistent set across multiple days: KFS, SLNO, AMWD, BK, CVGW, FFIC, MCW, THR, TSEOF, VRE. All actively traded; not delisted. Most likely a symbol-normalization mismatch in Massive's SIP feed (suffixes, dot-class shares, ADR variants). Need to inspect Massive's actual ticker for each name and add a normalization map in `MassiveClient`.
+
+## Per-day publish cost is HDD-bound (2026-06-11)
+
+The DATA_LAKE volume is a spinning HDD with ~73 MB/s sustained sequential throughput. The current per-ticker monolithic intraday layout (`symbol=AAPL/{1m,5m,30m,1h}.parquet`) means every single-day append touches ~16 MB per ticker × ~12K tickers = ~192 GB read + 192 GB write. Disk-floor wall-clock = ~88 min for one day.
+
+Real-world numbers from 2026-06-11:
+- 5-year backfill staging: ~5 s/day (pyarrow-native, in `260cbf1`).
+- 5-year backfill publish: completed inside the staged window — bound by the same HDD throughput.
+- One-day repair for 2026-06-10: **48 min** with `--workers 4` and the new pyarrow-native merge (`95182c2`).
+
+Three paths to actually break the ~88-min floor, none of which are in PR #28:
+
+1. **Per-month partition layout** for intraday parquet: `symbol=AAPL/1m/year=2026/month=06.parquet`. Appending within a month rewrites only that month (~22 days, ~5 % of touch surface) → projected ~5 min/day at current HDD throughput. Requires updating every reader that opens intraday parquet by path (Postgres rebuild, warehouse health report, quality checks, any analytical script in this repo or downstream). Plus a one-time migration script that splits each existing `1m.parquet` into per-month files atomically. Multi-day effort.
+
+2. **Hot/cold storage tier**: recent N months on internal SSD (`~/market-warehouse-hot/`), historical archive on the HDD volume. Daily catch-up only writes the hot tier; a separate compaction step rolls aging data into cold. Read path has to union both. Same downstream-touch surface as option 1, plus the operational complexity of two locations.
+
+3. **Per-day delta sidecar**: keep the monolithic `1m.parquet` for reads as-is, but write incremental updates to `1m.delta/date=YYYY-MM-DD.parquet`. A separate compaction job folds the deltas into the monolith periodically (weekly?). Every reader has to union the monolith with whatever's in the delta dir at read time. Less invasive than option 1 — the monolithic file's API stays — but adds a non-trivial compaction service and a read-time correctness invariant.
+
+Recommendation: option 1, when we're ready to coordinate the reader updates. Until then, daily catch-up takes ~50–90 min on this hardware and that is the actual ceiling, not a software bug.
