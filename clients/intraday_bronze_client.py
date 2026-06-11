@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from clients.parquet_io import publish_parquet
@@ -174,27 +175,49 @@ class IntradayBronzeClient:
         *,
         overwrite_existing: bool = True,
     ) -> int:
-        """Merge *rows* into existing snapshot. Returns count of new rows added."""
-        incoming = self._normalize_rows(rows, symbol)
-        if not incoming:
+        """Merge *rows* into existing snapshot. Returns count of new rows added.
+
+        Pyarrow-native: avoids round-tripping the existing parquet through
+        Python ``list[dict]`` / ``dict[ts -> dict]``. For a 5-year 1m parquet
+        (~500K rows), the old dict-based merge spent the bulk of its time on
+        list/dict conversions, not actual I/O.
+        """
+        incoming_rows = self._normalize_rows(rows, symbol)
+        if not incoming_rows:
             return 0
 
+        incoming_table = pa.Table.from_pylist(incoming_rows, schema=_INTRADAY_SCHEMA)
+        incoming_keys = incoming_table.column("bar_timestamp")
+
+        path = self._symbol_path(symbol)
+        if path.exists():
+            existing_table = pq.read_table(path, columns=list(_INTRADAY_COLUMNS)).cast(_INTRADAY_SCHEMA)
+        else:
+            existing_table = pa.table(
+                {col: pa.array([], type=_INTRADAY_SCHEMA.field(col).type) for col in _INTRADAY_COLUMNS},
+                schema=_INTRADAY_SCHEMA,
+            )
+
+        existing_keys = existing_table.column("bar_timestamp")
+
+        # "inserted" follows the original API: incoming rows whose timestamp is NOT
+        # in the *original* existing parquet. Computed against existing_keys before
+        # we filter anything below.
+        new_in_incoming = pc.invert(pc.is_in(incoming_keys, value_set=existing_keys))
+        inserted = int(pc.sum(pc.cast(new_in_incoming, pa.int64())).as_py() or 0)
+
         if not overwrite_existing:
-            existing_keys = self._read_symbol_timestamps(symbol)
-            new_rows = [row for row in incoming if row["bar_timestamp"] not in existing_keys]
-            if not new_rows:
+            # Append-only: drop incoming rows whose timestamp is already in existing.
+            incoming_table = incoming_table.filter(new_in_incoming)
+            if incoming_table.num_rows == 0:
                 return 0
-            incoming = new_rows
+        elif existing_table.num_rows > 0:
+            # Overwrite: drop overlapping rows from existing so incoming wins on concat.
+            keep_existing = pc.invert(pc.is_in(existing_keys, value_set=incoming_keys))
+            existing_table = existing_table.filter(keep_existing)
 
-        existing = self.read_symbol_rows(symbol)
-        merged: dict[datetime, dict[str, Any]] = {row["bar_timestamp"]: row for row in existing}
-        existing_keys = set(merged.keys())
-        for row in incoming:
-            merged[row["bar_timestamp"]] = row
-
-        inserted = sum(1 for row in incoming if row["bar_timestamp"] not in existing_keys)
-        ordered = [merged[ts] for ts in sorted(merged)]
-        self._publish(symbol, ordered)
+        merged = pa.concat_tables([existing_table, incoming_table]).sort_by([("bar_timestamp", "ascending")])
+        self._publish_table(symbol, merged)
         return inserted
 
     def _read_symbol_timestamps(self, symbol: str) -> set[datetime]:
@@ -242,6 +265,10 @@ class IntradayBronzeClient:
     def _publish(self, symbol: str, rows: list[dict[str, Any]]) -> Path:
         out_path = self._symbol_path(symbol)
         table = pa.Table.from_pylist(rows, schema=_INTRADAY_SCHEMA)
+        return self._publish_table(symbol, table, _out_path=out_path)
+
+    def _publish_table(self, symbol: str, table: pa.Table, *, _out_path: Path | None = None) -> Path:
+        out_path = _out_path or self._symbol_path(symbol)
         result = publish_parquet(out_path, table, sort_column="bar_timestamp")
         log.info("Published %s", result)
         return result

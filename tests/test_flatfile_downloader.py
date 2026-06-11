@@ -41,17 +41,32 @@ def test_download_dates_retries_transient_inspection_then_stages(tmp_path):
     assert sleeps == [1]
 
 
-def test_download_dates_rejects_missing_expected_day(tmp_path):
-    day = date(2026, 6, 5)
+def test_download_dates_records_missing_day_and_continues(tmp_path):
+    # NOT_FOUND is non-fatal: Massive only stages SIP trading days, so an unscheduled
+    # NYSE closure (e.g. presidential funeral) legitimately has no flat file. The batch
+    # must keep going, the date must be persisted to raw_unavailable, and a subsequent
+    # run must skip it without re-inspecting.
+    missing = date(2026, 6, 5)
+    later = date(2026, 6, 6)
     client = MagicMock()
-    client.inspect_date.return_value = _info(day, FlatfileObjectStatus.NOT_FOUND)
+    client.inspect_date.side_effect = [_info(missing, FlatfileObjectStatus.NOT_FOUND), _info(later)]
     store = MagicMock()
     store.has_raw_date.return_value = False
+    store.stage_gzip.return_value = {"rows": 1, "symbols": 1}
     state = MassiveFlatfileState(tmp_path / "cursors")
 
-    with pytest.raises(RuntimeError, match="unavailable"):
-        download_dates(client, store, state, [day])
+    stats = download_dates(client, store, state, [missing, later])
+
+    assert stats.unavailable == 1
+    assert stats.downloaded == 1
+    assert state.raw_unavailable(missing)
     assert '"event": "raw_unavailable"' in state.manifest_path.read_text()
+
+    # Resumed run: the cached unavailable marker must keep inspect_date from firing again.
+    client.reset_mock()
+    stats = download_dates(client, store, state, [missing])
+    assert stats.skipped == 1
+    client.inspect_date.assert_not_called()
 
 
 @pytest.mark.parametrize(

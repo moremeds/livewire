@@ -190,12 +190,18 @@ class TestTradingDaysBetween:
         assert trading_days_between(date(2025, 1, 2), date(2025, 1, 2)) == 0
 
     def test_full_week(self):
-        # Mon Jan 6 to Fri Jan 10 = 4 (Tue-Fri)
-        assert trading_days_between(date(2025, 1, 6), date(2025, 1, 10)) == 4
+        # Mon Jan 13 to Fri Jan 17 2025 = 4 (Tue-Fri), no holidays in this stretch.
+        # (Picked over Jan 6–10 because Jan 9 2025 is the Carter Day of Mourning.)
+        assert trading_days_between(date(2025, 1, 13), date(2025, 1, 17)) == 4
 
     def test_over_holiday(self):
         # 2024-12-31 (Tue) to 2025-01-02 (Thu) — Jan 1 is holiday
         assert trading_days_between(date(2024, 12, 31), date(2025, 1, 2)) == 1
+
+    def test_skips_carter_day_of_mourning(self):
+        # 2025-01-08 (Wed) to 2025-01-10 (Fri) — Jan 9 is the NYSE National Day of
+        # Mourning for President Carter and must not be counted.
+        assert trading_days_between(date(2025, 1, 8), date(2025, 1, 10)) == 1
 
 
 class TestResolveTargetDate:
@@ -1115,7 +1121,7 @@ class TestMain:
     @pytest.mark.integration
     def test_massive_recovery_runs_before_public_fallback(self, tmp_path, monkeypatch):
         """IB gaps are recovered from Massive before Nasdaq/Stooq fallback."""
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
             bronze_dir,
@@ -1188,7 +1194,7 @@ class TestMain:
 
     @pytest.mark.integration
     def test_quality_hook_receives_massive_reference_source(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
             bronze_dir,
@@ -1240,7 +1246,7 @@ class TestMain:
     @pytest.mark.integration
     def test_not_trading_day_exits(self, monkeypatch, capsys):
         """main() exits early on non-trading day without --force."""
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
         with patch("livewire_scripts.daily_update.is_trading_day", return_value=False):
             main()
 
@@ -1266,7 +1272,7 @@ class TestMain:
     @pytest.mark.integration
     def test_no_tickers_in_bronze(self, monkeypatch):
         """main() exits when no tickers are available in bronze."""
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
@@ -1282,7 +1288,7 @@ class TestMain:
     @pytest.mark.integration
     def test_all_up_to_date(self, monkeypatch):
         """main() exits when all tickers are up to date."""
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
 
         today = date(2025, 1, 3)
         with (
@@ -1376,7 +1382,7 @@ class TestMain:
         """main() does not publish bars later than the requested target date."""
         monkeypatch.setattr(
             "sys.argv",
-            ["daily_update.py", "--target-date", "2025-01-03"],
+            ["daily_update.py", "--source", "ib", "--target-date", "2025-01-03"],
         )
 
         bronze_dir = tmp_path / "bronze"
@@ -1433,7 +1439,7 @@ class TestMain:
     @pytest.mark.integration
     def test_end_to_end(self, tmp_path, monkeypatch):
         """Full integration: main() fetches, validates, and publishes bars."""
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
             bronze_dir,
@@ -1518,7 +1524,7 @@ class TestMain:
             def write_ticker_parquet(self, symbol, symbol_id, bronze_dir):
                 self.write_calls.append((symbol, symbol_id, bronze_dir))
 
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
         storage = CompatStorage()
         today = date(2025, 1, 3)
         mock_ib = _mock_ib_instance({"AAPL": [_make_bar(date="2025-01-03")]})
@@ -1611,7 +1617,7 @@ class TestMain:
     @pytest.mark.integration
     def test_no_new_bars_after_latest(self, tmp_path, monkeypatch):
         """main() handles case where all fetched bars are older than latest_date."""
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
             bronze_dir,
@@ -1662,7 +1668,7 @@ class TestMain:
     @pytest.mark.integration
     def test_empty_bars_from_ib(self, tmp_path, monkeypatch):
         """main() handles tickers with no bars returned from IB."""
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
             bronze_dir,
@@ -1712,7 +1718,7 @@ class TestMain:
     @pytest.mark.integration
     def test_fallback_recovers_missing_bar(self, tmp_path, monkeypatch):
         """main() publishes a validated fallback bar when IB has no data."""
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
             bronze_dir,
@@ -1775,7 +1781,7 @@ class TestMain:
     @pytest.mark.integration
     def test_all_bars_fail_validation(self, tmp_path, monkeypatch):
         """main() handles tickers where all bars fail validation."""
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
             bronze_dir,
@@ -1827,7 +1833,7 @@ class TestMain:
     @pytest.mark.integration
     def test_fallback_recovers_missing_target_bar(self, tmp_path, monkeypatch):
         """Fallback publishes the target date when IB returns no bars."""
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
             bronze_dir,
@@ -1888,7 +1894,7 @@ class TestMain:
     @pytest.mark.integration
     def test_fallback_fills_only_missing_dates_after_partial_ib_recovery(self, tmp_path, monkeypatch):
         """Fallback complements IB when a multi-day gap is only partially recovered."""
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
             bronze_dir,
@@ -1953,7 +1959,7 @@ class TestMain:
     @pytest.mark.integration
     def test_partial_fallback_leaves_symbol_failed_when_target_still_missing(self, tmp_path, monkeypatch):
         """main() publishes what it can but fails the ticker if dates still remain unresolved."""
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
             bronze_dir,
@@ -2117,7 +2123,7 @@ class TestMain:
     @pytest.mark.integration
     def test_batching(self, tmp_path, monkeypatch):
         """main() splits tickers into batches."""
-        monkeypatch.setattr("sys.argv", ["daily_update.py", "--batch-size", "1"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib", "--batch-size", "1"])
 
         bronze_dir = tmp_path / "bronze"
         for idx, sym in enumerate(["AAPL", "MSFT"], start=1):
@@ -2172,7 +2178,7 @@ class TestMain:
     @pytest.mark.integration
     def test_validation_issues_printed(self, tmp_path, monkeypatch):
         """main() prints validation issues in the summary."""
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
             bronze_dir,
@@ -2368,7 +2374,7 @@ class TestMain:
         """main() respects --host and --port flags."""
         monkeypatch.setattr(
             "sys.argv",
-            ["daily_update.py", "--host", "192.168.1.50", "--port", "4002"],
+            ["daily_update.py", "--source", "ib", "--host", "192.168.1.50", "--port", "4002"],
         )
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
@@ -2430,7 +2436,7 @@ class TestMain:
         """main() reads MDW_IB_HOST and MDW_IB_PORT from environment."""
         monkeypatch.setenv("MDW_IB_HOST", "10.0.0.5")
         monkeypatch.setenv("MDW_IB_PORT", "4002")
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
             bronze_dir,

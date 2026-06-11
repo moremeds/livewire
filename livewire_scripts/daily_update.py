@@ -593,10 +593,15 @@ def main():  # pragma: no cover — only exercised by integration tests
     parser.add_argument(
         "--source",
         choices=["ib", "massive"],
-        default="ib",
-        help="Daily source for equity updates (default: ib).",
+        default=None,
+        help="Daily source. Default: massive for equity, ib for non-equity asset classes. "
+        "Pass --source ib explicitly to force IB for equity.",
     )
     args = parser.parse_args()
+    # Asset-class-aware default: equity → massive; everything else → ib (Massive flatfiles
+    # cover US equities only).
+    if args.source is None:
+        args.source = "massive" if args.asset_class == "equity" else "ib"
 
     logging.basicConfig(
         level=logging.INFO,

@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import csv
-import gzip
 import heapq
 import shutil
 import tempfile
 from collections.abc import Iterator
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
@@ -52,50 +51,85 @@ class MassiveFlatfileStore:
             return self.raw_stats(day)
         self.raw_root.mkdir(parents=True, exist_ok=True)
         temp = Path(tempfile.mkdtemp(prefix=f".date={day}.", dir=self.raw_root))
-        spill = temp / ".spill"
-        spill.mkdir()
-        handles: dict[int, TextIO] = {}
-        writers: dict[int, csv.DictWriter] = {}
-        symbols: set[str] = set()
-        rows = 0
         try:
-            with gzip.open(gzip_path, "rt", newline="", encoding="utf-8") as source:
-                for row in csv.DictReader(source):
-                    ticker = row["ticker"]
-                    symbols.add(ticker)
-                    bucket = stable_symbol_id(ticker) % self.bucket_count
-                    if bucket not in handles:
-                        handle = (spill / f"{bucket:03d}.csv").open("w", newline="", encoding="utf-8")
-                        handles[bucket] = handle
-                        writer = csv.DictWriter(handle, fieldnames=RAW_SCHEMA.names)
-                        writer.writeheader()
-                        writers[bucket] = writer
-                    writers[bucket].writerow(
-                        {
-                            "ticker": ticker,
-                            "bar_timestamp": datetime.fromtimestamp(
-                                int(row["window_start"]) / 1_000_000_000, tz=UTC
-                            ).isoformat(),
-                            "open": row["open"],
-                            "high": row["high"],
-                            "low": row["low"],
-                            "close": row["close"],
-                            "volume": row["volume"],
-                        }
-                    )
-                    rows += 1
-            for handle in handles.values():
-                handle.close()
-            for csv_path in sorted(spill.glob("*.csv")):
-                bucket = int(csv_path.stem)
-                table = pacsv.read_csv(csv_path).cast(RAW_SCHEMA)  # pyright: ignore[reportPrivateImportUsage]
-                table = table.sort_by([("ticker", "ascending"), ("bar_timestamp", "ascending")])
-                self._validate_table(table)
-                pq.write_table(table, temp / f"bucket={bucket:03d}.parquet", compression="snappy")
+            # pyarrow reads gzipped CSV in C — release the GIL for decompression and parsing.
+            # The csv option classes / read_csv are publicly documented but live in a
+            # private submodule, hence the reportPrivateImportUsage suppression.
+            read_options = pacsv.ReadOptions(use_threads=True)  # pyright: ignore[reportPrivateImportUsage]
+            parse_options = pacsv.ParseOptions(delimiter=",")  # pyright: ignore[reportPrivateImportUsage]
+            convert_options = pacsv.ConvertOptions(  # pyright: ignore[reportPrivateImportUsage]
+                column_types={
+                    "ticker": pa.string(),
+                    # Massive sometimes emits fractional volumes; read as float, truncate to int below.
+                    "volume": pa.float64(),
+                    "open": pa.float64(),
+                    "high": pa.float64(),
+                    "low": pa.float64(),
+                    "close": pa.float64(),
+                    "window_start": pa.int64(),
+                },
+                include_columns=["ticker", "volume", "open", "close", "high", "low", "window_start"],
+            )
+            try:
+                src = pacsv.read_csv(  # pyright: ignore[reportPrivateImportUsage]
+                    str(gzip_path),
+                    read_options=read_options,
+                    parse_options=parse_options,
+                    convert_options=convert_options,
+                )
+            except pa.ArrowInvalid as exc:
+                raise ValueError(f"{day}: invalid Massive flat-file CSV: {exc}") from exc
+
+            rows = src.num_rows
             if rows == 0:
                 raise ValueError(f"{day}: Massive flat file contained no rows")
-            pq.write_table(pa.table({"ticker": sorted(symbols)}), temp / "_symbols.parquet", compression="snappy")
-            shutil.rmtree(spill)
+
+            # Dictionary-encode the ticker column; compute bucket per unique value (~12K),
+            # then map back to the full ~5M-row table. Avoids any per-row Python loop.
+            ticker_dict = pc.dictionary_encode(src["ticker"].combine_chunks())
+            unique_tickers = ticker_dict.dictionary.to_pylist()
+            bucket_lookup = pa.array(
+                [stable_symbol_id(t) % self.bucket_count for t in unique_tickers],
+                type=pa.int32(),
+            )
+            bucket_col = pc.take(bucket_lookup, ticker_dict.indices)
+
+            # window_start is nanoseconds since epoch → cast to UTC microsecond timestamps.
+            bar_ts = pc.cast(
+                pc.divide(src["window_start"], pa.scalar(1000, type=pa.int64())),
+                pa.timestamp("us", tz="UTC"),
+            )
+
+            # Truncate fractional volume into RAW_SCHEMA's int64.
+            volume_int = pc.cast(src["volume"], pa.int64(), safe=False)
+
+            bronze = pa.table(
+                {
+                    "ticker": src["ticker"],
+                    "bar_timestamp": bar_ts,
+                    "open": src["open"],
+                    "high": src["high"],
+                    "low": src["low"],
+                    "close": src["close"],
+                    "volume": volume_int,
+                }
+            )
+
+            # Partition by bucket, sort each partition, validate, write.
+            for bucket in range(self.bucket_count):
+                sub = bronze.filter(pc.equal(bucket_col, bucket))
+                if sub.num_rows == 0:
+                    continue
+                sub = sub.sort_by([("ticker", "ascending"), ("bar_timestamp", "ascending")])
+                self._validate_table(sub)
+                pq.write_table(sub, temp / f"bucket={bucket:03d}.parquet", compression="snappy")
+
+            symbols = set(unique_tickers)
+            pq.write_table(
+                pa.table({"ticker": sorted(symbols)}),
+                temp / "_symbols.parquet",
+                compression="snappy",
+            )
             (temp / "_SUCCESS").write_text(f"rows={rows}\nsymbols={len(symbols)}\n", encoding="utf-8")
             if final.exists():
                 old = final.with_name(f".old-{final.name}")
@@ -108,9 +142,6 @@ class MassiveFlatfileStore:
                 temp.rename(final)
             return {"rows": rows, "symbols": len(symbols)}
         finally:
-            for handle in handles.values():
-                if not handle.closed:
-                    handle.close()
             if temp.exists():
                 shutil.rmtree(temp)
 

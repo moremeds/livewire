@@ -470,7 +470,11 @@ class TestRunEquityIntraday:
             return CompletedProcess(args=cmd, returncode=0)
 
         assert _run_equity_intraday(config, runner=mock_runner) == 0
-        assert commands == [[config.python_bin, str(config.ingest_script), "flatfile-ingest", "backfill"]]
+        assert len(commands) == 1
+        cmd = commands[0]
+        assert cmd[:4] == [config.python_bin, str(config.ingest_script), "flatfile-ingest", "backfill"]
+        assert "--workers" in cmd
+        assert int(cmd[cmd.index("--workers") + 1]) >= 1
 
 
 class TestDeriveVol1h:

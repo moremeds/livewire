@@ -249,7 +249,16 @@ def run_sync(
     # Phase 4: Full-market equity intraday via Massive flat files
     rc = run_phase(
         "daily_backfill_intraday_equity_flatfiles",
-        [py, ingest, "flatfile-ingest", "catch-up", "--days", str(config.intraday_days)],
+        [
+            py,
+            ingest,
+            "flatfile-ingest",
+            "catch-up",
+            "--days",
+            str(config.intraday_days),
+            "--workers",
+            str(int(os.getenv("MDW_FLATFILE_WORKERS", "4"))),
+        ],
         config.log_dir,
         runner=runner,
     )

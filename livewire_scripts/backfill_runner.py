@@ -379,7 +379,14 @@ def _run_equity_intraday(
     """Full-market equity intraday via Massive flat files."""
     del popen_fn, sleep_fn, clock_fn, mtime_fn, completed_fn, kill_fn
     result = runner(
-        [config.python_bin, str(config.ingest_script), "flatfile-ingest", "backfill"],
+        [
+            config.python_bin,
+            str(config.ingest_script),
+            "flatfile-ingest",
+            "backfill",
+            "--workers",
+            str(int(os.getenv("MDW_FLATFILE_WORKERS", "4"))),
+        ],
         check=False,
     )
     return result.returncode
