@@ -56,14 +56,27 @@ def publish_dates(
                 continue
             state.record("ticker_started", scope=scope, bucket=bucket, ticker=ticker)
             rows = _bronze_rows(ticker, raw_rows)
+            # Aggregation windows (5m/30m/1h) are anchored on calendar-day boundaries
+            # (see timeframe_aggregator._window_start), so a single trading day's 1m bars
+            # only produce that day's derived windows — never crossing into a neighbor day.
+            # That means we can aggregate from JUST the new rows and merge the result into
+            # the derived parquet, instead of re-reading the full 5-year 1m history and
+            # re-aggregating it from scratch on every incremental publish.
             if replace_complete:
+                # Backfill: `rows` IS the complete history for this scope. Replace 1m, then
+                # aggregate-and-replace each derived timeframe from the same complete set.
                 local_rows += one_minute.replace_ticker_rows(ticker, rows)
+                for timeframe in DERIVED_TIMEFRAMES:
+                    derived = aggregate_bars(rows, source_tf="1m", target_tf=timeframe)
+                    derived_clients[timeframe].replace_ticker_rows(ticker, derived)
             else:
+                # Catch-up / repair: `rows` is only the new days. Merge into 1m, then
+                # aggregate just the new bars and merge into each derived parquet —
+                # overwrite_existing=True replaces any overlapping window timestamps.
                 local_rows += one_minute.merge_ticker_rows(ticker, rows, overwrite_existing=True)
-            complete_one_minute = rows if replace_complete else one_minute.read_symbol_rows(ticker)
-            for timeframe in DERIVED_TIMEFRAMES:
-                derived = aggregate_bars(complete_one_minute, source_tf="1m", target_tf=timeframe)
-                derived_clients[timeframe].replace_ticker_rows(ticker, derived)
+                for timeframe in DERIVED_TIMEFRAMES:
+                    derived = aggregate_bars(rows, source_tf="1m", target_tf=timeframe)
+                    derived_clients[timeframe].merge_ticker_rows(ticker, derived, overwrite_existing=True)
             local_published += 1
             state.mark_ticker_completed(scope, bucket, ticker)
         state.mark_bucket_completed(scope, bucket)

@@ -128,9 +128,7 @@ class MassiveFlatfileStore:
                 temp / "_symbols.parquet",
                 compression="snappy",
             )
-            (temp / "_SUCCESS").write_text(
-                f"rows={rows}\nsymbols={len(symbols)}\n", encoding="utf-8"
-            )
+            (temp / "_SUCCESS").write_text(f"rows={rows}\nsymbols={len(symbols)}\n", encoding="utf-8")
             if final.exists():
                 old = final.with_name(f".old-{final.name}")
                 if old.exists():
