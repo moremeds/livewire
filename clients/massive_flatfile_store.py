@@ -53,9 +53,11 @@ class MassiveFlatfileStore:
         temp = Path(tempfile.mkdtemp(prefix=f".date={day}.", dir=self.raw_root))
         try:
             # pyarrow reads gzipped CSV in C — release the GIL for decompression and parsing.
-            read_options = pacsv.ReadOptions(use_threads=True)
-            parse_options = pacsv.ParseOptions(delimiter=",")
-            convert_options = pacsv.ConvertOptions(
+            # The csv option classes / read_csv are publicly documented but live in a
+            # private submodule, hence the reportPrivateImportUsage suppression.
+            read_options = pacsv.ReadOptions(use_threads=True)  # pyright: ignore[reportPrivateImportUsage]
+            parse_options = pacsv.ParseOptions(delimiter=",")  # pyright: ignore[reportPrivateImportUsage]
+            convert_options = pacsv.ConvertOptions(  # pyright: ignore[reportPrivateImportUsage]
                 column_types={
                     "ticker": pa.string(),
                     # Massive sometimes emits fractional volumes; read as float, truncate to int below.
@@ -69,7 +71,7 @@ class MassiveFlatfileStore:
                 include_columns=["ticker", "volume", "open", "close", "high", "low", "window_start"],
             )
             try:
-                src = pacsv.read_csv(
+                src = pacsv.read_csv(  # pyright: ignore[reportPrivateImportUsage]
                     str(gzip_path),
                     read_options=read_options,
                     parse_options=parse_options,
