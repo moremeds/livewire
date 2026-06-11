@@ -18,7 +18,7 @@ Livewire is a market data warehouse designed for storing and analyzing historica
 
 * Daily ingestion for:
 
-  * **Equities** (IB or Massive)
+  * **Equities** (Massive by default; IB available with `--source ib`)
   * **Futures** (IB)
   * **Volatility indices** (CBOE API)
   * **Spot commodities** (IB CMDTY MIDPOINT)
@@ -75,7 +75,7 @@ Live ingestion writes bronze Parquet only. Postgres is the replayable analytical
 
 ```text
 ~/market-warehouse/
-├── data-lake/
+├── data-lake/         # Can be a symlink to an external volume — see note below
 │   ├── raw/
 │   ├── bronze/
 │   │   ├── asset_class=equity/symbol=AAPL/{1d,1m,5m,30m,1h}.parquet
@@ -84,6 +84,7 @@ Live ingestion writes bronze Parquet only. Postgres is the replayable analytical
 │   │   ├── asset_class=cmdty/symbol=XAUUSD/1d.parquet
 │   │   ├── asset_class=fx/symbol=USDEUR/1d.parquet
 │   │   └── asset_class=rates/symbol=DGS10/1d.parquet
+│   ├── bronze-delisted/   # Symbols archived out of the daily sync universe
 │   ├── silver/
 │   └── gold/
 ├── logs/
@@ -93,6 +94,24 @@ Live ingestion writes bronze Parquet only. Postgres is the replayable analytical
 ├── scripts/
 └── .venv/
 ```
+
+> **Relocating the data lake**: a full Massive intraday build projects ~600 GB.
+> If `~` lives on a small SSD, you can move `data-lake/` to an external volume
+> and symlink it back:
+>
+> ```bash
+> launchctl unload ~/Library/LaunchAgents/com.livewire.*.plist
+> mv ~/market-warehouse/data-lake /Volumes/YOUR_VOLUME/livewire/data-lake
+> ln -s /Volumes/YOUR_VOLUME/livewire/data-lake ~/market-warehouse/data-lake
+> launchctl load ~/Library/LaunchAgents/com.livewire.*.plist
+> ```
+>
+> Atomic publish (`temp → validate → os.replace`) still works because the temp
+> file is created in the same directory as the canonical file — both end up on
+> the external volume. On exFAT, expect cold-cache wide scans to be 5-25×
+> slower than APFS; warm-cache scans converge with APFS. macOS may spawn
+> `._foo.parquet` AppleDouble sidecars; the codebase filters them in glob
+> patterns where it matters.
 
 ---
 
@@ -164,9 +183,9 @@ python scripts/livewire.py publish r2                   # Sync to R2
 python scripts/livewire.py publish --migrate            # Parquet schema migration
 ```
 
-**Sources** — equity daily may use Massive REST when `MASSIVE_API_KEY` is set.
-Equity intraday always requires Massive flat-file credentials. Non-equity
-intraday remains IB-backed.
+**Sources** — equity daily uses Massive by default (requires `MASSIVE_API_KEY`);
+pass `--source ib` to force IB. Equity intraday always requires Massive flat-file
+credentials. Non-equity intraday remains IB-backed.
 
 ### Operator Scripts
 
@@ -192,9 +211,9 @@ Subcommand map:
 ```text
 livewire_ingest.py   daily | historical | robust | cboe-vol | fred-rates |
                      intraday-backfill | flatfile-ingest | universe |
-                     backfill-all | daily-backfill
+                     universe-sync | backfill-all | daily-backfill
 livewire_quality.py  health | coverage | report | weekly | watchdog | warehouse
-livewire_ops.py      run-daily-job | send-alert
+livewire_ops.py      run-daily-job | run-intraday-catchup-job | send-alert
 livewire_store.py    rebuild-postgres | smoke-postgres | sync-r2 | migrate-parquet
 ```
 
@@ -352,21 +371,35 @@ whole-market operations; ticker and preset filters are intentionally unsupported
 # Read-only entitlement and capacity plan
 python scripts/livewire_ingest.py flatfile-ingest discover
 
-# Full entitled-history build
-python scripts/livewire_ingest.py flatfile-ingest backfill
+# Full entitled-history build (Massive's standard entitlement is a rolling 5-year window)
+python scripts/livewire_ingest.py flatfile-ingest backfill --workers 4
 
 # Routine whole-market catch-up
-python scripts/livewire_ingest.py flatfile-ingest catch-up --days 7
+python scripts/livewire_ingest.py flatfile-ingest catch-up --days 7 --workers 4
 
-# Explicit date repair
+# Explicit date-range repair (skips capacity preflight)
+python scripts/livewire_ingest.py flatfile-ingest repair --start 2021-06-11 --end 2026-06-10 --workers 4
+
+# Explicit date repair (single day)
 python scripts/livewire_ingest.py flatfile-ingest repair --dates 2026-06-05
 ```
+
+`--workers N` parallelises both phases (download+stage and per-bucket publish).
+Sweet spot is 4 on a 4-core Mac mini; expect ~3-4× speedup over serial.
+Each worker caps open bucket file descriptors at 64 (256 total across 4 workers,
+well under launchd's default rlimit). Set `MDW_FLATFILE_WORKERS` to control the
+default used by scheduled jobs (daily intraday catch-up and full-backfill).
 
 Requires `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY`. Capacity planning
 uses `MDW_FLATFILE_STORAGE_MULTIPLIER` (default `8`) and preserves at least
 `MDW_FLATFILE_MIN_FREE_GB` (default `25`) after a full build. Raw partitions
 live under
 `data-lake/raw/massive/us_stocks_sip/minute_aggs_v1/date=YYYY-MM-DD/`.
+
+> **Entitlement window**: the standard Massive plan is a rolling 5-year window
+> (today − 5 years through today). Dates outside the window return `403
+> Forbidden`. The discovery output reports both the entitled range and the
+> object count.
 
 Rollback is operational, not a runtime fallback: unload the intraday-catchup
 launchd job, revert the replacement PR, deploy the revert, then reload the
@@ -393,19 +426,19 @@ Lossless OHLCV rollup supports: `1m→5m`, `1m→30m`, `1m→1h`, `30m→1h`. Ag
 ### Daily Updates
 
 ```bash
-# Equity daily update
+# Equity daily update (uses Massive by default — requires MASSIVE_API_KEY)
 python scripts/livewire_ingest.py daily
 
-# Equity via Massive instead of IB
-python scripts/livewire_ingest.py daily --asset-class equity --source massive
+# Force IB for equity instead of Massive
+python scripts/livewire_ingest.py daily --asset-class equity --source ib
 
-# Futures daily update
+# Futures daily update (IB)
 python scripts/livewire_ingest.py daily --asset-class futures
 
-# Spot commodity daily update
+# Spot commodity daily update (IB)
 python scripts/livewire_ingest.py daily --asset-class cmdty --preset presets/cmdty-metals.json
 
-# FX daily update
+# FX daily update (IB)
 python scripts/livewire_ingest.py daily --asset-class fx --preset presets/fx-pairs.json
 
 # Volatility (CBOE direct — authoritative)
@@ -420,7 +453,7 @@ Common flags:
 --target-date YYYY-MM-DD
 --preset presets/sp500.json
 --asset-class {equity|volatility|futures|cmdty|fx}
---source {ib|massive}
+--source {ib|massive}        # default: massive for equity, ib for everything else
 ```
 
 Key behavior:
@@ -585,6 +618,7 @@ python scripts/livewire_store.py migrate-parquet
 | `MDW_FLATFILE_BUCKETS` | `256` | Raw ticker buckets per Massive trading-day partition |
 | `MDW_FLATFILE_STORAGE_MULTIPLIER` | `8` | Full-build storage projection multiplier |
 | `MDW_FLATFILE_MIN_FREE_GB` | `25` | Required free-space reserve after a full build |
+| `MDW_FLATFILE_WORKERS` | `4` (scheduled jobs); `1` (manual CLI) | Parallel worker count for download+stage and per-bucket publish |
 
 ---
 

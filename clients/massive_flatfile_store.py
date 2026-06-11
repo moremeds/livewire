@@ -7,10 +7,13 @@ import gzip
 import heapq
 import shutil
 import tempfile
+from collections import OrderedDict
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, TextIO
+
+MAX_OPEN_BUCKETS = 64
 
 import pyarrow as pa
 import pyarrow.csv as pacsv
@@ -54,8 +57,29 @@ class MassiveFlatfileStore:
         temp = Path(tempfile.mkdtemp(prefix=f".date={day}.", dir=self.raw_root))
         spill = temp / ".spill"
         spill.mkdir()
-        handles: dict[int, TextIO] = {}
-        writers: dict[int, csv.DictWriter] = {}
+        # LRU cache of open bucket writers — caps file descriptors at MAX_OPEN_BUCKETS so
+        # bucket_count > rlimit doesn't EMFILE during streaming.
+        open_buckets: OrderedDict[int, tuple[TextIO, csv.DictWriter]] = OrderedDict()
+        header_written: set[int] = set()
+
+        def writer_for(bucket: int) -> csv.DictWriter:
+            if bucket in open_buckets:
+                open_buckets.move_to_end(bucket)
+                return open_buckets[bucket][1]
+            while len(open_buckets) >= MAX_OPEN_BUCKETS:
+                _, (evicted, _) = open_buckets.popitem(last=False)
+                evicted.close()
+            first_time = bucket not in header_written
+            handle = (spill / f"{bucket:03d}.csv").open(
+                "w" if first_time else "a", newline="", encoding="utf-8"
+            )
+            writer = csv.DictWriter(handle, fieldnames=RAW_SCHEMA.names)
+            if first_time:
+                writer.writeheader()
+                header_written.add(bucket)
+            open_buckets[bucket] = (handle, writer)
+            return writer
+
         symbols: set[str] = set()
         rows = 0
         try:
@@ -64,13 +88,7 @@ class MassiveFlatfileStore:
                     ticker = row["ticker"]
                     symbols.add(ticker)
                     bucket = stable_symbol_id(ticker) % self.bucket_count
-                    if bucket not in handles:
-                        handle = (spill / f"{bucket:03d}.csv").open("w", newline="", encoding="utf-8")
-                        handles[bucket] = handle
-                        writer = csv.DictWriter(handle, fieldnames=RAW_SCHEMA.names)
-                        writer.writeheader()
-                        writers[bucket] = writer
-                    writers[bucket].writerow(
+                    writer_for(bucket).writerow(
                         {
                             "ticker": ticker,
                             "bar_timestamp": datetime.fromtimestamp(
@@ -80,13 +98,18 @@ class MassiveFlatfileStore:
                             "high": row["high"],
                             "low": row["low"],
                             "close": row["close"],
-                            "volume": row["volume"],
+                            # Massive sometimes emits fractional volumes (split-adjusted or
+                            # fractional-share aware); RAW_SCHEMA is int64, so truncate here.
+                            "volume": int(float(row["volume"])),
                         }
                     )
                     rows += 1
-            for handle in handles.values():
+            for handle, _ in open_buckets.values():
                 handle.close()
-            for csv_path in sorted(spill.glob("*.csv")):
+            open_buckets.clear()
+            # exFAT mounts spawn AppleDouble (`._foo.csv`) sidecars for any file with xattrs;
+            # the glob would otherwise pick them up and int() would crash on the leading dot.
+            for csv_path in sorted(p for p in spill.glob("*.csv") if not p.name.startswith("._")):
                 bucket = int(csv_path.stem)
                 table = pacsv.read_csv(csv_path).cast(RAW_SCHEMA)  # pyright: ignore[reportPrivateImportUsage]
                 table = table.sort_by([("ticker", "ascending"), ("bar_timestamp", "ascending")])
@@ -108,7 +131,7 @@ class MassiveFlatfileStore:
                 temp.rename(final)
             return {"rows": rows, "symbols": len(symbols)}
         finally:
-            for handle in handles.values():
+            for handle, _ in open_buckets.values():
                 if not handle.closed:
                     handle.close()
             if temp.exists():

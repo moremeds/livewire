@@ -91,7 +91,7 @@ class TestDailyScriptCompat:
         mock_ib.__exit__ = MagicMock(return_value=False)
         mock_ib.ib.run.side_effect = lambda awaitable: (awaitable.close(), {"AAPL": [_bar()]})[1]
 
-        monkeypatch.setattr("sys.argv", ["daily_update.py"])
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
         monkeypatch.setattr(daily_script, "StorageClient", lambda **kwargs: storage)
         monkeypatch.setattr(daily_script, "is_trading_day", lambda d: True)
         monkeypatch.setattr(daily_script, "IBClient", lambda: mock_ib)

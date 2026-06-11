@@ -48,6 +48,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--start")
     parser.add_argument("--end")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=int(os.getenv("MDW_FLATFILE_WORKERS", "1")),
+        help="Parallel worker count for download+stage and per-bucket publish (default 1; env MDW_FLATFILE_WORKERS).",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("clients.intraday_bronze_client").setLevel(logging.WARNING)
@@ -81,7 +87,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             except RuntimeError as exc:
                 raise SystemExit(str(exc)) from exc
         dates = _parse_dates(args, plan.dates)
-        download_stats = download_dates(client, store, state, dates, replace=args.mode == "repair")
+        log.info("Workers: %d (download+stage and per-bucket publish)", args.workers)
+        download_stats = download_dates(
+            client, store, state, dates, replace=args.mode == "repair", workers=args.workers
+        )
     bronze_dir = warehouse / "data-lake" / "bronze" / "asset_class=equity"
     scope = f"{args.mode}_{dates[0].isoformat()}_{dates[-1].isoformat()}_{len(dates)}"
     if args.mode == "repair":
@@ -93,6 +102,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         bronze_dir,
         replace_complete=args.mode == "backfill",
         scope=scope,
+        workers=args.workers,
     )
     log.info(
         "Downloaded=%d skipped=%d published_tickers=%d",
