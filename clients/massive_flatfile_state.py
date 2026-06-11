@@ -30,6 +30,7 @@ class MassiveFlatfileState:
         except json.JSONDecodeError as exc:
             raise ValueError(f"Malformed Massive flat-file state: {self.state_path}") from exc
         data.setdefault("raw_completed", [])
+        data.setdefault("raw_unavailable", [])
         data.setdefault("publish_scopes", {})
         return data
 
@@ -67,7 +68,17 @@ class MassiveFlatfileState:
 
     def mark_raw_unavailable(self, day: date | str, error: str) -> None:
         value = _date_value(day)
-        self.record("raw_unavailable", date=value, error=error)
+        with self._lock:
+            unavailable = set(self.data.setdefault("raw_unavailable", []))
+            unavailable.add(value)
+            self.data["raw_unavailable"] = sorted(unavailable)
+            self.record("raw_unavailable", date=value, error=error)
+            self.save()
+
+    def raw_unavailable(self, day: date | str) -> bool:
+        value = _date_value(day)
+        with self._lock:
+            return value in self.data.get("raw_unavailable", [])
 
     def set_discovery(self, *, earliest: date, latest: date, object_count: int, compressed_bytes: int) -> None:
         with self._lock:

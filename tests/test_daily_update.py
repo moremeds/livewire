@@ -190,12 +190,18 @@ class TestTradingDaysBetween:
         assert trading_days_between(date(2025, 1, 2), date(2025, 1, 2)) == 0
 
     def test_full_week(self):
-        # Mon Jan 6 to Fri Jan 10 = 4 (Tue-Fri)
-        assert trading_days_between(date(2025, 1, 6), date(2025, 1, 10)) == 4
+        # Mon Jan 13 to Fri Jan 17 2025 = 4 (Tue-Fri), no holidays in this stretch.
+        # (Picked over Jan 6–10 because Jan 9 2025 is the Carter Day of Mourning.)
+        assert trading_days_between(date(2025, 1, 13), date(2025, 1, 17)) == 4
 
     def test_over_holiday(self):
         # 2024-12-31 (Tue) to 2025-01-02 (Thu) — Jan 1 is holiday
         assert trading_days_between(date(2024, 12, 31), date(2025, 1, 2)) == 1
+
+    def test_skips_carter_day_of_mourning(self):
+        # 2025-01-08 (Wed) to 2025-01-10 (Fri) — Jan 9 is the NYSE National Day of
+        # Mourning for President Carter and must not be counted.
+        assert trading_days_between(date(2025, 1, 8), date(2025, 1, 10)) == 1
 
 
 class TestResolveTargetDate:

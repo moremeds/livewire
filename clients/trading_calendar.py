@@ -4,6 +4,15 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+# One-off NYSE closures that the rule-based calendar can't derive.
+# Add new entries here when the Exchange declares an unscheduled closure
+# (presidential funerals, national days of mourning, weather, etc.).
+SPECIAL_CLOSURES: frozenset[date] = frozenset(
+    {
+        date(2025, 1, 9),  # National Day of Mourning for President Carter
+    }
+)
+
 
 def get_nyse_holidays(year: int) -> set[date]:
     """Compute NYSE observed holidays for *year*.
@@ -65,6 +74,9 @@ def get_nyse_holidays(year: int) -> set[date]:
 
     # Christmas
     holidays.add(_observed(date(year, 12, 25)))
+
+    # Special one-off NYSE closures for this year.
+    holidays.update(d for d in SPECIAL_CLOSURES if d.year == year)
 
     return holidays
 

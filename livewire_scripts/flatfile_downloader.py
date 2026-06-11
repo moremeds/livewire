@@ -52,6 +52,12 @@ def download_dates(
         if store.has_raw_date(day) and state.raw_completed(day):
             _bump("skipped")
             return
+        # Skip days the provider has already told us are missing (e.g. NYSE special closures
+        # the local calendar doesn't know about). Persisted in raw_unavailable so a single
+        # NOT_FOUND doesn't get re-inspected on every restart.
+        if state.raw_unavailable(day):
+            _bump("skipped")
+            return
         info = None
         for attempt in range(max_retries + 1):
             info = client.inspect_date(day)
@@ -62,9 +68,12 @@ def download_dates(
                 sleep_fn(2**attempt)
         assert info is not None
         if info.status == FlatfileObjectStatus.NOT_FOUND:
+            # Not a fatal error: Massive only stages SIP trading days, so a date the local
+            # calendar treats as open can legitimately be absent (e.g. presidential funerals).
+            # Record it durably and move on; the rest of the batch should still complete.
             _bump("unavailable")
             state.mark_raw_unavailable(day, info.error or "not found")
-            raise RuntimeError(f"Expected Massive flat file is unavailable for {day}")
+            return
         if info.status == FlatfileObjectStatus.FORBIDDEN:
             _bump("failed")
             state.mark_raw_failed(day, info.error or "forbidden")
