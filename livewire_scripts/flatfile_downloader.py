@@ -46,7 +46,10 @@ def download_dates(
             setattr(stats, field, getattr(stats, field) + value)
 
     def _process(day: date) -> None:
-        if store.has_raw_date(day) and state.raw_completed(day) and not replace:
+        # Skip already-completed days regardless of `replace` — the cursor exists for a reason.
+        # `replace=True` (repair mode) still applies to the publish phase where it overwrites
+        # bronze rows; the raw staging itself is idempotent and need not be redone.
+        if store.has_raw_date(day) and state.raw_completed(day):
             _bump("skipped")
             return
         info = None
