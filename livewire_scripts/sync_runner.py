@@ -29,7 +29,7 @@ EQUITY_PRESETS = ("presets/sp500.json", "presets/ndx100.json", "presets/r2k.json
 VOL_PRESET = "presets/volatility-intraday.json"
 VOL_DAILY_PRESET = "presets/volatility.json"
 EQUITY_INTRADAY_TIMEFRAMES = ("1m", "5m", "1h")
-VOL_INTRADAY_TIMEFRAMES = ("30m",)
+VOL_INTRADAY_TIMEFRAMES = ("30m", "5m")
 
 
 @dataclass(frozen=True)

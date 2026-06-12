@@ -419,8 +419,8 @@ class TestRunSync:
 
         with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
             run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
-        # 1 equity daily + 1 FRED + 1 CBOE + 1 full-market equity intraday + 1 vol intraday
-        assert len(commands) == 5
+        # 1 equity daily + 1 FRED + 1 CBOE + 1 full-market equity intraday + 2 vol intraday (30m, 5m)
+        assert len(commands) == 6
 
 
 class TestMain:
