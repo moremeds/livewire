@@ -21,6 +21,7 @@ COMMANDS = {
     "fred-rates": "livewire_scripts.fetch_fred_rates",
     "intraday-backfill": "livewire_scripts.backfill_intraday",
     "flatfile-ingest": "livewire_scripts.ingest_flatfiles",
+    "flatfile-ingest-daily": "livewire_scripts.ingest_daily_flatfiles",
     "universe": "livewire_scripts.universe_screener",
     "universe-sync": "livewire_scripts.universe_sync",
 }

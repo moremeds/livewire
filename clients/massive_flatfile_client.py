@@ -24,6 +24,7 @@ log = logging.getLogger("livewire.massive_flatfile")
 S3_ENDPOINT = "https://files.massive.com"
 S3_BUCKET = "flatfiles"
 S3_PREFIX = "us_stocks_sip/minute_aggs_v1"
+S3_PREFIX_DAILY = "us_stocks_sip/day_aggs_v1"
 
 
 def require_flatfile_credentials() -> None:
@@ -32,8 +33,8 @@ def require_flatfile_credentials() -> None:
         raise RuntimeError(f"Missing required Massive S3 credentials: {', '.join(missing)}")
 
 
-def _s3_key_for_date(d: date) -> str:
-    return f"{S3_PREFIX}/{d.year}/{d.month:02d}/{d.isoformat()}.csv.gz"
+def _s3_key_for_date(d: date, prefix: str = S3_PREFIX) -> str:
+    return f"{prefix}/{d.year}/{d.month:02d}/{d.isoformat()}.csv.gz"
 
 
 class FlatfileObjectStatus(StrEnum):
@@ -67,8 +68,10 @@ class MassiveFlatfileClient:
         access_key: str | None = None,
         secret_key: str | None = None,
         *,
+        prefix: str = S3_PREFIX,
         _s3_client: Any | None = None,
     ):
+        self._prefix = prefix
         if _s3_client is not None:
             self._s3 = _s3_client
             return
@@ -93,8 +96,12 @@ class MassiveFlatfileClient:
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
+    @property
+    def prefix(self) -> str:
+        return self._prefix
+
     def inspect_date(self, d: date) -> FlatfileObjectInfo:
-        key = _s3_key_for_date(d)
+        key = _s3_key_for_date(d, self._prefix)
         try:
             result = self._s3.head_object(Bucket=S3_BUCKET, Key=key)
             return FlatfileObjectInfo(
@@ -115,8 +122,10 @@ class MassiveFlatfileClient:
             )
             return FlatfileObjectInfo(date=d, key=key, status=status, error=code)
 
-    def list_objects(self, prefix: str = S3_PREFIX) -> list[dict[str, Any]]:
-        """List every object under *prefix* using pagination."""
+    def list_objects(self, prefix: str | None = None) -> list[dict[str, Any]]:
+        """List every object under *prefix* (default: the client's bound prefix) using pagination."""
+        if prefix is None:
+            prefix = self._prefix
         items: list[dict[str, Any]] = []
         token: str | None = None
         while True:
@@ -133,7 +142,7 @@ class MassiveFlatfileClient:
         destination.parent.mkdir(parents=True, exist_ok=True)
         try:
             with destination.open("wb") as fh:
-                self._s3.download_fileobj(S3_BUCKET, _s3_key_for_date(d), fh)
+                self._s3.download_fileobj(S3_BUCKET, _s3_key_for_date(d, self._prefix), fh)
         except Exception:
             destination.unlink(missing_ok=True)
             raise
