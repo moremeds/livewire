@@ -360,6 +360,33 @@ storage leaves the configured reserve. Raw partitions live under
 state lives under `~/market-warehouse/cursors/`. Modes operate on every symbol
 in each selected whole-market file; ticker and preset filters are unsupported.
 
+### Massive day_aggs flat-file ingestion (full-universe equity daily)
+
+`scripts/livewire_ingest.py flatfile-ingest-daily` widens the daily ingest
+universe from the ~2.5K preset-driven `daily` command to the full SIP universe
+(~20K tickers) by reading Massive's `day_aggs_v1` whole-market daily flat files
+back to 2003. Same operational model as `flatfile-ingest` (discover / backfill
+/ catch-up / repair, durable cursor under `~/market-warehouse/cursors/`,
+capacity guard on full backfill), but writes per-ticker `1d.parquet` bronze
+via `BronzeClient` — no intraday derivation. Raw partitions live under
+`data-lake/raw/massive/us_stocks_sip/day_aggs_v1/date=YYYY-MM-DD/`; the publish
+phase uses a process pool by default (`--workers`, env
+`MDW_FLATFILE_DAILY_WORKERS`, default 4) with 32 ticker buckets per day
+(`--buckets`, env `MDW_FLATFILE_DAILY_BUCKETS`).
+
+```bash
+source ~/market-warehouse/.venv/bin/activate
+python scripts/livewire_ingest.py flatfile-ingest-daily discover
+python scripts/livewire_ingest.py flatfile-ingest-daily backfill --workers 4
+python scripts/livewire_ingest.py flatfile-ingest-daily catch-up --days 14
+python scripts/livewire_ingest.py flatfile-ingest-daily repair --dates 2026-06-11
+```
+
+Requires `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY`. The full backfill
+(~22 years × 12K–20K tickers × 1 row/day) is large but bronze-only writes; no
+IB calls. Both `flatfile-ingest` and `flatfile-ingest-daily` can run
+side-by-side — they use separate raw paths and separate cursors.
+
 ### Coverage tracking + auto-recovery
 
 `scripts/livewire_quality.py coverage` runs every day after the upload step in the container entrypoint. For each tracked timeframe (`1d`, `1m`, `1h`, `5m`) it counts how many symbols have bars current as-of the target trading day, writes a one-line summary to `~/market-warehouse/logs/coverage_YYYY-MM-DD.log`, and — when coverage drops below `MDW_COVERAGE_ALERT_THRESHOLD` (default `0.95`) — triggers a targeted backfill subprocess and re-checks.

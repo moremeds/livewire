@@ -14,10 +14,10 @@ def _date_value(day: date | str) -> str:
 
 
 class MassiveFlatfileState:
-    def __init__(self, cursor_dir: Path):
+    def __init__(self, cursor_dir: Path, *, name: str = "massive_flatfile"):
         self.cursor_dir = cursor_dir
-        self.manifest_path = cursor_dir / "massive_flatfile_manifest.jsonl"
-        self.state_path = cursor_dir / "massive_flatfile_state.json"
+        self.manifest_path = cursor_dir / f"{name}_manifest.jsonl"
+        self.state_path = cursor_dir / f"{name}_state.json"
         self.data: dict[str, Any] = self._load()
         # RLock so methods that call into one another (mark_* → record + save) re-enter safely.
         self._lock = threading.RLock()

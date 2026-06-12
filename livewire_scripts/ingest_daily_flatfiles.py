@@ -1,0 +1,130 @@
+"""Full-market Massive day_aggs flat-file ingestion CLI.
+
+Mirrors livewire_scripts.ingest_flatfiles but for daily 1d bars instead of
+1m intraday. The daily flat files at s3://flatfiles/us_stocks_sip/day_aggs_v1/
+publish one row per ticker per trading day across the full SIP universe
+(~20K tickers), so this widens the daily ingest universe well beyond the
+~2.5K preset-driven `daily` command.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+from collections.abc import Sequence
+from datetime import date, timedelta
+from pathlib import Path
+
+from clients.massive_daily_flatfile_store import MassiveDailyFlatfileStore
+from clients.massive_flatfile_client import S3_PREFIX_DAILY, MassiveFlatfileClient, require_flatfile_credentials
+from clients.massive_flatfile_state import MassiveFlatfileState
+from clients.trading_calendar import trading_dates_in_range
+from livewire_scripts.daily_flatfile_publisher import publish_daily_dates
+from livewire_scripts.flatfile_downloader import download_dates
+from livewire_scripts.flatfile_planner import discover_plan, require_capacity
+
+log = logging.getLogger("livewire.ingest_daily_flatfiles")
+
+
+def _require_credentials() -> None:
+    try:
+        require_flatfile_credentials()
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _parse_dates(args: argparse.Namespace, plan_dates: tuple[date, ...]) -> list[date]:
+    if args.mode == "backfill":
+        return list(plan_dates)
+    if args.mode == "catch-up":
+        end = plan_dates[-1]
+        return [d for d in plan_dates if d >= end - timedelta(days=args.days)]
+    if args.dates:
+        return sorted(date.fromisoformat(value) for value in args.dates)
+    if args.start and args.end:
+        return trading_dates_in_range(date.fromisoformat(args.start), date.fromisoformat(args.end))
+    raise SystemExit("repair requires --dates or --start and --end")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Full-market Massive day_aggs flat-file ingestion")
+    parser.add_argument("mode", choices=["discover", "backfill", "catch-up", "repair"])
+    parser.add_argument("--days", type=int, default=int(os.getenv("MDW_FLATFILE_DAILY_LOOKBACK_DAYS", "14")))
+    parser.add_argument("--dates", nargs="+")
+    parser.add_argument("--start")
+    parser.add_argument("--end")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=int(os.getenv("MDW_FLATFILE_DAILY_WORKERS", "4")),
+        help="Parallel worker count for download and per-bucket publish (default 4; env MDW_FLATFILE_DAILY_WORKERS).",
+    )
+    parser.add_argument(
+        "--buckets",
+        type=int,
+        default=int(os.getenv("MDW_FLATFILE_DAILY_BUCKETS", "32")),
+        help="Raw ticker buckets per trading day (default 32; env MDW_FLATFILE_DAILY_BUCKETS).",
+    )
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.getLogger("clients.bronze_client").setLevel(logging.WARNING)
+    _require_credentials()
+
+    warehouse = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
+    store = MassiveDailyFlatfileStore(warehouse, bucket_count=args.buckets)
+    state = MassiveFlatfileState(
+        Path(os.getenv("MDW_CURSOR_DIR", str(warehouse / "cursors"))),
+        name="massive_daily_flatfile",
+    )
+    with MassiveFlatfileClient(prefix=S3_PREFIX_DAILY) as client:
+        plan = discover_plan(client, warehouse)
+        log.info(
+            "Massive day_aggs flat files: %s to %s, %d days, %.3f GiB compressed, %.3f GiB projected, %.2f GiB free",
+            plan.earliest,
+            plan.latest,
+            len(plan.dates),
+            plan.compressed_bytes / 1024**3,
+            plan.projected_bytes / 1024**3,
+            plan.free_bytes / 1024**3,
+        )
+        state.set_discovery(
+            earliest=plan.earliest,
+            latest=plan.latest,
+            object_count=len(plan.dates),
+            compressed_bytes=plan.compressed_bytes,
+        )
+        if args.mode == "discover" or args.dry_run:
+            return 0
+        if args.mode == "backfill":
+            try:
+                require_capacity(plan)
+            except RuntimeError as exc:
+                raise SystemExit(str(exc)) from exc
+        dates = _parse_dates(args, plan.dates)
+        log.info("Workers: %d (download and per-bucket publish)", args.workers)
+        download_stats = download_dates(
+            client, store, state, dates, replace=args.mode == "repair", workers=args.workers
+        )
+    bronze_dir = warehouse / "data-lake" / "bronze" / "asset_class=equity"
+    scope = f"daily_{args.mode}_{dates[0].isoformat()}_{dates[-1].isoformat()}_{len(dates)}"
+    if args.mode == "repair":
+        state.reset_publish_scope(scope)
+    publish_stats = publish_daily_dates(
+        store,
+        state,
+        dates,
+        bronze_dir,
+        scope=scope,
+        workers=args.workers,
+    )
+    log.info(
+        "Downloaded=%d skipped=%d published_tickers=%d rows=%d skipped_existing=%d",
+        download_stats.downloaded,
+        download_stats.skipped,
+        publish_stats["tickers"],
+        publish_stats["rows_1d"],
+        publish_stats["skipped_existing"],
+    )
+    return 0
