@@ -7,6 +7,7 @@ dependencies = [
     "httpx>=0.28",
     "ib-async>=2.1",
     "lxml[cssselect]>=6.1",
+    "prefect>=3.7.4",
     "psycopg[binary]>=3.3",
     "pyarrow>=23.0",
     "requests>=2.33",
