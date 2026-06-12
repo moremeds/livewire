@@ -15,18 +15,21 @@
 
     <key>StartCalendarInterval</key>
     <dict>
-        <!-- Target: 16:00 UTC daily (= 11:00 EST winter / 12:00 EDT summer). -->
-        <!-- Aligned to Massive's official 11 AM ET publish for whole-market SIP -->
-        <!-- minute-aggregate flat files (the file for trade-date D appears at ~11 AM ET on D+1). -->
+        <!-- Target: 04:00 UTC daily (= 23:00 EST winter / 00:00 EDT summer). -->
+        <!-- Empirically Massive whole-market SIP minute-aggregate flat files for -->
+        <!-- trade-date D become available shortly after midnight ET on D+1, well -->
+        <!-- before the docs' stated 11 AM ET publish window. 04:00 UTC gives a -->
+        <!-- comfortable margin after midnight EDT (summer) while still beating -->
+        <!-- any downstream analytical reads that start with the EU/Asia trading day. -->
         <!-- launchd interprets Hour/Minute in the Mac's local TZ, with no TimeZone key -->
-        <!-- support, so choose values that map to 16:00 UTC on the install host. Examples: -->
-        <!--   America/Los_Angeles: Hour=8  Minute=0  (PST winter; shifts to Hour=9 under PDT) -->
-        <!--   America/New_York:    Hour=11 Minute=0  (EST winter; shifts to Hour=12 under EDT) -->
-        <!--   UTC:                 Hour=16 Minute=0 -->
-        <!--   Asia/Hong_Kong:      Hour=0  Minute=0  (no DST, year-round; next calendar day) -->
+        <!-- support, so choose values that map to 04:00 UTC on the install host. Examples: -->
+        <!--   America/Los_Angeles: Hour=20 Minute=0  (PST winter, prev day; shifts to Hour=21 under PDT) -->
+        <!--   America/New_York:    Hour=23 Minute=0  (EST winter, prev day; shifts to Hour=0 under EDT) -->
+        <!--   UTC:                 Hour=4  Minute=0 -->
+        <!--   Asia/Hong_Kong:      Hour=12 Minute=0  (no DST, year-round; noon HKT) -->
         <!-- Defaults below assume Asia/Hong_Kong. -->
         <key>Hour</key>
-        <integer>0</integer>
+        <integer>12</integer>
         <key>Minute</key>
         <integer>0</integer>
     </dict>
