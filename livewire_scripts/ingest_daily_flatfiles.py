@@ -116,15 +116,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         state,
         dates,
         bronze_dir,
-        replace_complete=args.mode == "backfill",
         scope=scope,
         workers=args.workers,
     )
     log.info(
-        "Downloaded=%d skipped=%d published_tickers=%d rows=%d",
+        "Downloaded=%d skipped=%d published_tickers=%d rows=%d skipped_existing=%d",
         download_stats.downloaded,
         download_stats.skipped,
         publish_stats["tickers"],
         publish_stats["rows_1d"],
+        publish_stats["skipped_existing"],
     )
     return 0

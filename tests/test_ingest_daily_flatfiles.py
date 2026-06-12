@@ -75,7 +75,7 @@ def test_main_executes_full_pipeline_modes(monkeypatch, tmp_path, mode):
         ) as download,
         patch(
             "livewire_scripts.ingest_daily_flatfiles.publish_daily_dates",
-            return_value={"tickers": 1, "rows_1d": 1},
+            return_value={"tickers": 1, "rows_1d": 1, "skipped_existing": 0},
         ) as publish,
     ):
         assert main(args) == 0

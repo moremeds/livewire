@@ -35,7 +35,7 @@ def _row(ticker, ts_ns, vol=10):
     }
 
 
-def test_publish_daily_writes_per_ticker_bronze_1d(tmp_path):
+def test_publish_daily_writes_per_ticker_bronze_1d_for_new_tickers(tmp_path):
     source = tmp_path / "day.csv.gz"
     _write_day(source, [_row("AAPL", _TS_20240603), _row("MSFT", _TS_20240603)])
     day = date(2024, 6, 3)
@@ -44,12 +44,66 @@ def test_publish_daily_writes_per_ticker_bronze_1d(tmp_path):
     state = MassiveFlatfileState(tmp_path / "cursors", name="massive_daily_flatfile")
 
     stats = publish_daily_dates(store, state, [day], tmp_path / "bronze", use_processes=False)
-    assert stats == {"tickers": 2, "rows_1d": 2}
+    assert stats == {"tickers": 2, "rows_1d": 2, "skipped_existing": 0}
     bronze = BronzeClient(tmp_path / "bronze", asset_class="equity")
     assert bronze.get_existing_symbols() == {"AAPL", "MSFT"}
 
 
-def test_publish_daily_replace_then_resume(tmp_path):
+def test_publish_daily_skips_tickers_with_existing_parquet(tmp_path):
+    """Pre-existing 1d.parquet (e.g. from the IB-backed `daily` command) is left alone."""
+    bronze_dir = tmp_path / "bronze"
+    pre_existing = BronzeClient(bronze_dir, asset_class="equity")
+    pre_existing.replace_ticker_rows(
+        "AAPL",
+        [
+            {
+                "trade_date": "1980-12-12",
+                "symbol_id": 42,
+                "open": 0.1,
+                "high": 0.11,
+                "low": 0.09,
+                "close": 0.105,
+                "adj_close": 0.105,
+                "volume": 1000,
+            }
+        ],
+    )
+
+    source = tmp_path / "day.csv.gz"
+    _write_day(source, [_row("AAPL", _TS_20240603), _row("MSFT", _TS_20240603)])
+    day = date(2024, 6, 3)
+    store = MassiveDailyFlatfileStore(tmp_path, bucket_count=4)
+    store.stage_gzip(day, source)
+    state = MassiveFlatfileState(tmp_path / "cursors", name="massive_daily_flatfile")
+
+    stats = publish_daily_dates(store, state, [day], bronze_dir, use_processes=False)
+    assert stats == {"tickers": 1, "rows_1d": 1, "skipped_existing": 1}
+
+    aapl_rows = pre_existing.read_symbol_rows("AAPL")
+    assert len(aapl_rows) == 1
+    assert aapl_rows[0]["trade_date"] == "1980-12-12"
+
+
+def test_publish_daily_explicit_existing_symbols_set(tmp_path):
+    """Caller may pass a frozen set instead of reading the bronze dir."""
+    source = tmp_path / "day.csv.gz"
+    _write_day(source, [_row("AAPL", _TS_20240603), _row("MSFT", _TS_20240603)])
+    day = date(2024, 6, 3)
+    store = MassiveDailyFlatfileStore(tmp_path, bucket_count=4)
+    store.stage_gzip(day, source)
+    state = MassiveFlatfileState(tmp_path / "cursors", name="massive_daily_flatfile")
+
+    stats = publish_daily_dates(
+        store, state, [day], tmp_path / "bronze",
+        existing_symbols=frozenset({"AAPL"}),
+        use_processes=False,
+    )
+    assert stats == {"tickers": 1, "rows_1d": 1, "skipped_existing": 1}
+    bronze = BronzeClient(tmp_path / "bronze", asset_class="equity")
+    assert bronze.get_existing_symbols() == {"MSFT"}
+
+
+def test_publish_daily_resume_via_scope_cursor(tmp_path):
     source_a = tmp_path / "a.csv.gz"
     source_b = tmp_path / "b.csv.gz"
     _write_day(source_a, [_row("AAPL", _TS_20240603)])
@@ -61,20 +115,22 @@ def test_publish_daily_replace_then_resume(tmp_path):
     state = MassiveFlatfileState(tmp_path / "cursors", name="massive_daily_flatfile")
 
     days = [date(2024, 6, 3), date(2024, 6, 4)]
-    stats = publish_daily_dates(
-        store, state, days, tmp_path / "bronze", replace_complete=True, scope="hist", use_processes=False
-    )
-    assert stats == {"tickers": 1, "rows_1d": 2}
+    stats = publish_daily_dates(store, state, days, tmp_path / "bronze", scope="hist", use_processes=False)
+    assert stats == {"tickers": 1, "rows_1d": 2, "skipped_existing": 0}
 
-    # Second invocation with same scope is a no-op (bucket marked complete).
+    # Same scope: bucket already marked complete → no work, AAPL stays in existing-set.
     again = publish_daily_dates(store, state, days, tmp_path / "bronze", scope="hist", use_processes=False)
-    assert again == {"tickers": 0, "rows_1d": 0}
+    assert again == {"tickers": 0, "rows_1d": 0, "skipped_existing": 0}
 
 
 def test_publish_daily_empty_days_is_noop(tmp_path):
     state = MassiveFlatfileState(tmp_path / "cursors", name="massive_daily_flatfile")
     store = MassiveDailyFlatfileStore(tmp_path, bucket_count=1)
-    assert publish_daily_dates(store, state, [], tmp_path / "bronze") == {"tickers": 0, "rows_1d": 0}
+    assert publish_daily_dates(store, state, [], tmp_path / "bronze") == {
+        "tickers": 0,
+        "rows_1d": 0,
+        "skipped_existing": 0,
+    }
 
 
 def test_publish_daily_threadpool_path(tmp_path):
@@ -86,7 +142,6 @@ def test_publish_daily_threadpool_path(tmp_path):
     store.stage_gzip(day, source)
     state = MassiveFlatfileState(tmp_path / "cursors", name="massive_daily_flatfile")
 
-    stats = publish_daily_dates(
-        store, state, [day], tmp_path / "bronze", workers=2, replace_complete=True, use_processes=False
-    )
+    stats = publish_daily_dates(store, state, [day], tmp_path / "bronze", workers=2, use_processes=False)
     assert stats["tickers"] == 2
+    assert stats["skipped_existing"] == 0
