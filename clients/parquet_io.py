@@ -16,6 +16,15 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+# Compression codec for all bronze parquet writes. zstd level 3 is ~28% smaller
+# than snappy on OHLCV bars (measured on real equity 1m/5m/30m/1h files) at
+# effectively the same write CPU. It is lossless and transparent to every reader
+# (pyarrow / pandas / DuckDB / Postgres decompress automatically), so the on-disk
+# filename and format are unchanged. On the HDD-backed lake, fewer bytes means a
+# lighter cold read pass on every subsequent merge-and-rewrite.
+PARQUET_COMPRESSION = "zstd"
+PARQUET_COMPRESSION_LEVEL = 3
+
 
 def publish_parquet(
     out_path: Path,
@@ -32,7 +41,12 @@ def publish_parquet(
     tmp_path = out_path.with_name(f".{out_path.name}.{os.getpid()}.{time.time_ns()}.tmp")
 
     try:
-        pq.write_table(table, tmp_path, compression="snappy")
+        pq.write_table(
+            table,
+            tmp_path,
+            compression=PARQUET_COMPRESSION,
+            compression_level=PARQUET_COMPRESSION_LEVEL,
+        )
         validate_parquet_file(tmp_path, expected_rows=table.num_rows, sort_column=sort_column)
         os.replace(tmp_path, out_path)
     finally:

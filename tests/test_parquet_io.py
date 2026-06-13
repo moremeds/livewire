@@ -8,7 +8,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from clients.parquet_io import publish_parquet, validate_parquet_file
+from clients.parquet_io import (
+    PARQUET_COMPRESSION,
+    PARQUET_COMPRESSION_LEVEL,
+    publish_parquet,
+    validate_parquet_file,
+)
 
 _SCHEMA = pa.schema(
     [
@@ -56,6 +61,36 @@ class TestPublishParquet:
         rows = [{"trade_date": date(2026, 1, 5), "symbol_id": 1, "value": 1.0}]
         publish_parquet(out, _table(rows), sort_column="trade_date")
         assert out.exists()
+
+    def test_published_file_uses_zstd_codec(self, tmp_path):
+        # zstd is the cheap, lossless storage win: every column of every row group
+        # must be written with the configured codec, not snappy.
+        assert PARQUET_COMPRESSION == "zstd"
+        assert PARQUET_COMPRESSION_LEVEL == 3
+        out = tmp_path / "data.parquet"
+        rows = [
+            {"trade_date": date(2026, 1, 5), "symbol_id": 1, "value": 1.0},
+            {"trade_date": date(2026, 1, 6), "symbol_id": 1, "value": 2.0},
+        ]
+        publish_parquet(out, _table(rows), sort_column="trade_date")
+        metadata = pq.read_metadata(out)
+        codecs = {
+            metadata.row_group(rg).column(col).compression
+            for rg in range(metadata.num_row_groups)
+            for col in range(metadata.num_columns)
+        }
+        assert codecs == {"ZSTD"}
+
+    def test_published_file_round_trips_losslessly(self, tmp_path):
+        # zstd must not alter any value: bytes in == bytes out.
+        out = tmp_path / "data.parquet"
+        rows = [
+            {"trade_date": date(2026, 1, 5), "symbol_id": 7, "value": 192.34},
+            {"trade_date": date(2026, 1, 6), "symbol_id": 7, "value": 0.0001},
+        ]
+        table = _table(rows)
+        publish_parquet(out, table, sort_column="trade_date")
+        assert pq.read_table(out).equals(table)
 
 
 class TestValidateParquetFile:

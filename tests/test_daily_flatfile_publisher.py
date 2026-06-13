@@ -94,7 +94,10 @@ def test_publish_daily_explicit_existing_symbols_set(tmp_path):
     state = MassiveFlatfileState(tmp_path / "cursors", name="massive_daily_flatfile")
 
     stats = publish_daily_dates(
-        store, state, [day], tmp_path / "bronze",
+        store,
+        state,
+        [day],
+        tmp_path / "bronze",
         existing_symbols=frozenset({"AAPL"}),
         use_processes=False,
     )
