@@ -49,6 +49,12 @@ def test_stage_gzip_writes_buckets_and_symbols(tmp_path):
     assert raw["rows"] == 2
     assert raw["symbols"] == 2
     assert raw["size_bytes"] > 0
+    # Raw daily staging buckets use the shared zstd codec, not snappy.
+    bucket_files = list(store.raw_path(date(2024, 6, 3)).glob("bucket=*.parquet"))
+    assert bucket_files
+    for bucket_file in bucket_files:
+        metadata = pq.read_metadata(bucket_file)
+        assert metadata.row_group(0).column(0).compression == "ZSTD"
 
 
 def test_stage_gzip_is_idempotent(tmp_path):

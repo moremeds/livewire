@@ -47,6 +47,12 @@ def test_stage_gzip_preserves_all_symbols(tmp_path):
     assert store.symbols_for_date(date(2024, 6, 3)) == {"AAPL", "MSFT"}
     assert store.raw_stats(date(2024, 6, 3))["rows"] == 2
     assert store.stage_gzip(date(2024, 6, 3), source)["rows"] == 2
+    # Raw staging buckets use the shared zstd codec, not snappy.
+    bucket_files = list(store.raw_path(date(2024, 6, 3)).glob("bucket=*.parquet"))
+    assert bucket_files
+    for bucket_file in bucket_files:
+        metadata = pq.read_metadata(bucket_file)
+        assert metadata.row_group(0).column(0).compression == "ZSTD"
 
 
 def test_scan_bucket_by_ticker_merges_dates_without_full_bucket_concat(tmp_path):

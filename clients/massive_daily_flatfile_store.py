@@ -15,6 +15,7 @@ import pyarrow.compute as pc
 import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
+from clients.parquet_io import PARQUET_COMPRESSION, PARQUET_COMPRESSION_LEVEL
 from clients.symbol_ids import stable_symbol_id
 
 RAW_DAILY_SCHEMA = pa.schema(
@@ -118,13 +119,19 @@ class MassiveDailyFlatfileStore:
                     continue
                 sub = sub.sort_by([("ticker", "ascending"), ("trade_date", "ascending")])
                 self._validate_table(sub)
-                pq.write_table(sub, temp / f"bucket={bucket:03d}.parquet", compression="snappy")
+                pq.write_table(
+                    sub,
+                    temp / f"bucket={bucket:03d}.parquet",
+                    compression=PARQUET_COMPRESSION,
+                    compression_level=PARQUET_COMPRESSION_LEVEL,
+                )
 
             symbols = set(unique_tickers)
             pq.write_table(
                 pa.table({"ticker": sorted(symbols)}),
                 temp / "_symbols.parquet",
-                compression="snappy",
+                compression=PARQUET_COMPRESSION,
+                compression_level=PARQUET_COMPRESSION_LEVEL,
             )
             (temp / "_SUCCESS").write_text(f"rows={rows}\nsymbols={len(symbols)}\n", encoding="utf-8")
             if final.exists():
