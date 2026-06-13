@@ -4,6 +4,7 @@ Status: Draft / proposed
 Date: 2026-06-13
 Author: livewire maintainers
 Related: `2026-06-05-livewire-intraday-catchup-scheduler-design.md`, `2026-05-20-massive-equity-incremental-backfill-design.md`
+Measurements: `2026-06-13-intraday-build-time-measurements.md` (build-time breakdown + phase decomposition + zstd A/B that motivate this design)
 
 ## 1. Problem
 
