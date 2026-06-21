@@ -15,21 +15,19 @@
 
     <key>StartCalendarInterval</key>
     <dict>
-        <!-- Target: 04:00 UTC daily (= 23:00 EST winter / 00:00 EDT summer). -->
-        <!-- Empirically Massive whole-market SIP minute-aggregate flat files for -->
-        <!-- trade-date D become available shortly after midnight ET on D+1, well -->
-        <!-- before the docs' stated 11 AM ET publish window. 04:00 UTC gives a -->
-        <!-- comfortable margin after midnight EDT (summer) while still beating -->
-        <!-- any downstream analytical reads that start with the EU/Asia trading day. -->
-        <!-- launchd interprets Hour/Minute in the Mac's local TZ, with no TimeZone key -->
-        <!-- support, so choose values that map to 04:00 UTC on the install host. Examples: -->
-        <!--   America/Los_Angeles: Hour=20 Minute=0  (PST winter, prev day; shifts to Hour=21 under PDT) -->
-        <!--   America/New_York:    Hour=23 Minute=0  (EST winter, prev day; shifts to Hour=0 under EDT) -->
-        <!--   UTC:                 Hour=4  Minute=0 -->
-        <!--   Asia/Hong_Kong:      Hour=12 Minute=0  (no DST, year-round; noon HKT) -->
+        <!-- Target: 05:00 UTC daily (= 01:00 ET EDT / 00:00 ET EST). Shifted from 04:00 to -->
+        <!-- give a 1h15m buffer after IBC's 03:45 UTC auto-restart (AutoRestartTime=11:45 ET) -->
+        <!-- and the 2FA approval window. Massive whole-market SIP minute files for trade-date -->
+        <!-- D are available shortly after midnight ET on D+1, well before 05:00 UTC, so no -->
+        <!-- data-availability risk from the later start. launchd interprets Hour/Minute in -->
+        <!-- the Mac's local TZ, with no TimeZone key support. Examples: -->
+        <!--   America/Los_Angeles: Hour=21 Minute=0  (PDT summer; Hour=21 PDT = 04:00 UTC → adjust to Hour=22 for 05:00) -->
+        <!--   America/New_York:    Hour=1  Minute=0  (EDT summer) -->
+        <!--   UTC:                 Hour=5  Minute=0 -->
+        <!--   Asia/Hong_Kong:      Hour=13 Minute=0  (no DST, year-round) -->
         <!-- Defaults below assume Asia/Hong_Kong. -->
         <key>Hour</key>
-        <integer>12</integer>
+        <integer>13</integer>
         <key>Minute</key>
         <integer>0</integer>
     </dict>

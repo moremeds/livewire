@@ -15,18 +15,19 @@
 
     <key>StartCalendarInterval</key>
     <dict>
-        <!-- Target: 05:05 UTC daily (= 01:05 ET, ~9h after US RTH close — well clear of -->
-        <!-- the trading day on either DST setting). launchd interprets Hour/Minute in the -->
-        <!-- Mac's local TZ; choose values that map to 05:05 UTC. Examples: -->
-        <!--   America/Los_Angeles: Hour=22 Minute=5 (previous day) -->
-        <!--   America/New_York:    Hour=1  Minute=5 -->
-        <!--   UTC:                 Hour=5  Minute=5 -->
-        <!--   Asia/Hong_Kong:      Hour=13 Minute=5 -->
+        <!-- Target: 06:00 UTC daily (= 02:00 ET EDT / 01:00 ET EST). Shifted from 05:05 to -->
+        <!-- give a 2h+ buffer after IBC's 03:45 UTC auto-restart (AutoRestartTime=11:45 ET) -->
+        <!-- and the 2FA approval window. launchd interprets Hour/Minute in the Mac's local -->
+        <!-- TZ; choose values that map to 06:00 UTC. Examples: -->
+        <!--   America/Los_Angeles: Hour=22 Minute=0 (previous day) -->
+        <!--   America/New_York:    Hour=2  Minute=0 -->
+        <!--   UTC:                 Hour=6  Minute=0 -->
+        <!--   Asia/Hong_Kong:      Hour=14 Minute=0 -->
         <!-- Defaults below assume Asia/Hong_Kong. -->
         <key>Hour</key>
-        <integer>13</integer>
+        <integer>14</integer>
         <key>Minute</key>
-        <integer>5</integer>
+        <integer>0</integer>
     </dict>
 
     <key>StandardOutPath</key>
