@@ -151,19 +151,52 @@ def load_cursor(name: str) -> dict[str, list[str]]:
     return {}
 
 
-def save_cursor(name: str, completed: dict[str, list[str]], started_at: str) -> None:
-    """Write per-timeframe cursor JSON atomically."""
+def save_cursor(
+    name: str,
+    completed: dict[str, list[str]],
+    started_at: str,
+    depth_info: dict[str, dict] | None = None,
+) -> None:
+    """Write per-timeframe cursor JSON atomically.
+
+    *depth_info*, when provided, is merged into a ``"backfill_depth"`` key so
+    callers can distinguish "IB confirmed no older data" (noop=True) from "deep
+    history achieved" (oldest_date well before the min threshold).  Backward
+    compat: if the key is absent old cursor readers are unaffected.
+    """
     path = _cursor_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    payload = {
+    payload: dict = {
         "completed": {k: sorted(set(v)) for k, v in completed.items()},
         "started_at": started_at,
         "updated_at": datetime.now().isoformat(),
     }
+    if depth_info is not None:
+        # Merge with any existing backfill_depth so incremental batch writes
+        # accumulate correctly.
+        existing: dict[str, dict] = {}
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8")).get("backfill_depth", {})
+            except Exception:
+                pass
+        merged = {**existing, **depth_info}
+        payload["backfill_depth"] = merged
     with tmp.open("w") as f:
         json.dump(payload, f, indent=2)
     tmp.rename(path)
+
+
+def load_depth_info(name: str) -> dict[str, dict]:
+    """Return the ``backfill_depth`` mapping from a cursor file, or ``{}``."""
+    path = _cursor_path(name)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("backfill_depth", {})
+    except Exception:
+        return {}
 
 
 def is_ticker_complete(
@@ -848,6 +881,9 @@ def _run_backfill(
     total_rows = 0
     total_ok = 0
     total_fail = 0
+    # Accumulates across batches; passed to save_cursor so the cursor records
+    # how far back each ticker's IB history reaches.
+    depth_info: dict[str, dict] = {}
 
     for batch_idx, batch in enumerate(batches):
         batch_t0 = time.monotonic()
@@ -894,18 +930,25 @@ def _run_backfill(
                 count = backfill_ticker(ticker, bars, bronze, asset_class=asset_class)
 
                 if count > 0:
+                    # Real backfill: record the oldest date seen in the returned bars.
+                    oldest_bar_date = min(str(b.date)[:10] for b in bars)
+                    depth_info[ticker] = {"oldest_date": oldest_bar_date, "noop": False}
                     mark_timeframe_done(completed, ticker, "1d")
-                    save_cursor(cursor_name, completed, started_at)
+                    save_cursor(cursor_name, completed, started_at, depth_info=depth_info)
                     console.print(f"  [green]{ticker}[/green]: {count:,} backfill rows inserted")
                     batch_ok += 1
                 elif not bars:
+                    # IB confirmed no older data exists — genuine noop.
+                    depth_info[ticker] = {"oldest_date": oldest_dates[ticker], "noop": True}
                     mark_timeframe_done(completed, ticker, "1d")
-                    save_cursor(cursor_name, completed, started_at)
+                    save_cursor(cursor_name, completed, started_at, depth_info=depth_info)
                     console.print(f"  [dim]{ticker}[/dim]: no older history (done)")
                     batch_ok += 1
                 else:
+                    # Bars returned but all were duplicates — already current.
+                    depth_info[ticker] = {"oldest_date": oldest_dates[ticker], "noop": False}
                     mark_timeframe_done(completed, ticker, "1d")
-                    save_cursor(cursor_name, completed, started_at)
+                    save_cursor(cursor_name, completed, started_at, depth_info=depth_info)
                     console.print(f"  [dim]{ticker}[/dim]: 0 new rows (already current)")
                     batch_ok += 1
 
