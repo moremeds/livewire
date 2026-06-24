@@ -592,6 +592,11 @@ class TestMakeContract:
         assert isinstance(contract, Index)
         assert contract.exchange == "RUSSELL"
 
+    def test_volatility_ndx_uses_nasdaq_exchange(self):
+        contract = _make_contract("NDX", "volatility")
+        assert isinstance(contract, Index)
+        assert contract.exchange == "NASDAQ"
+
     def test_volatility_explicit_exchange_overrides_map(self):
         contract = _make_contract("RUT", "volatility", exchange="CBOE")
         assert contract.exchange == "CBOE"

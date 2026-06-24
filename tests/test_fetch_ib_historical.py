@@ -461,6 +461,11 @@ class TestMakeContract:
         assert isinstance(contract, Index)
         assert contract.exchange == "RUSSELL"
 
+    def test_volatility_ndx_uses_nasdaq_exchange(self):
+        contract = _make_contract("NDX", "volatility")
+        assert isinstance(contract, Index)
+        assert contract.exchange == "NASDAQ"
+
     def test_default_is_equity(self):
         contract = _make_contract("AAPL")
         assert isinstance(contract, Stock)

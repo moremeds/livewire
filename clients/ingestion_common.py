@@ -12,6 +12,7 @@ from ib_async import Contract, Forex, Future, Index, Stock
 
 VOLATILITY_EXCHANGE_MAP = {
     "RUT": "RUSSELL",
+    "NDX": "NASDAQ",
 }
 
 ROOT_EXCHANGE_MAP = {
