@@ -40,6 +40,7 @@ from livewire_scripts.fetch_ib_historical import (
     get_oldest_dates,
     is_ticker_complete,
     load_cursor,
+    load_depth_info,
     load_preset,
     main,
     mark_timeframe_done,
@@ -439,6 +440,125 @@ class TestClearCursor:
     def test_no_error_when_file_missing(self, tmp_path):
         with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
             clear_cursor("nonexistent")  # Should not raise
+
+
+# ══════════════════════════════════════════════════════════════════════
+# save_cursor depth_info extension
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestSaveCursorDepthInfo:
+    def test_writes_backfill_depth_when_provided(self, tmp_path):
+        depth = {
+            "AAPL": {"oldest_date": "1999-01-04", "noop": False},
+            "NEWCO": {"oldest_date": "2022-03-15", "noop": True},
+        }
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+            save_cursor("test", {"AAPL": ["1d"], "NEWCO": ["1d"]}, "2025-01-01T00:00:00", depth_info=depth)
+
+        data = json.loads((tmp_path / "cursor_test.json").read_text())
+        assert "backfill_depth" in data
+        assert data["backfill_depth"]["AAPL"] == {"oldest_date": "1999-01-04", "noop": False}
+        assert data["backfill_depth"]["NEWCO"] == {"oldest_date": "2022-03-15", "noop": True}
+        # completed key is untouched
+        assert set(data["completed"]) == {"AAPL", "NEWCO"}
+
+    def test_no_backfill_depth_key_when_depth_info_is_none(self, tmp_path):
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+            save_cursor("test", {"AAPL": ["1d"]}, "2025-01-01T00:00:00")
+
+        data = json.loads((tmp_path / "cursor_test.json").read_text())
+        assert "backfill_depth" not in data
+
+    def test_depth_info_merges_across_batches(self, tmp_path):
+        """Second save_cursor call accumulates depth_info from previous write."""
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+            save_cursor(
+                "test",
+                {"AAPL": ["1d"]},
+                "2025-01-01T00:00:00",
+                depth_info={"AAPL": {"oldest_date": "2000-01-03", "noop": False}},
+            )
+            save_cursor(
+                "test",
+                {"AAPL": ["1d"], "MSFT": ["1d"]},
+                "2025-01-01T00:00:00",
+                depth_info={"MSFT": {"oldest_date": "2001-01-02", "noop": False}},
+            )
+
+        data = json.loads((tmp_path / "cursor_test.json").read_text())
+        assert data["backfill_depth"]["AAPL"]["oldest_date"] == "2000-01-03"
+        assert data["backfill_depth"]["MSFT"]["oldest_date"] == "2001-01-02"
+
+    def test_depth_info_overrides_existing_entry_for_same_ticker(self, tmp_path):
+        """Later save_cursor call updates a ticker's depth entry."""
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+            save_cursor(
+                "test",
+                {"AAPL": ["1d"]},
+                "2025-01-01T00:00:00",
+                depth_info={"AAPL": {"oldest_date": "2015-01-02", "noop": False}},
+            )
+            save_cursor(
+                "test",
+                {"AAPL": ["1d"]},
+                "2025-01-01T00:00:00",
+                depth_info={"AAPL": {"oldest_date": "2000-01-03", "noop": False}},
+            )
+
+        data = json.loads((tmp_path / "cursor_test.json").read_text())
+        assert data["backfill_depth"]["AAPL"]["oldest_date"] == "2000-01-03"
+
+    def test_corrupt_existing_cursor_is_tolerated_on_merge(self, tmp_path):
+        """If existing cursor JSON is unreadable, depth_info still writes cleanly."""
+        cursor_file = tmp_path / "cursor_test.json"
+        cursor_file.write_text("not json")
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+            save_cursor(
+                "test",
+                {"AAPL": ["1d"]},
+                "2025-01-01T00:00:00",
+                depth_info={"AAPL": {"oldest_date": "2000-01-03", "noop": False}},
+            )
+        data = json.loads(cursor_file.read_text())
+        assert data["backfill_depth"]["AAPL"]["oldest_date"] == "2000-01-03"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# load_depth_info
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestLoadDepthInfo:
+    def test_returns_backfill_depth_from_cursor(self, tmp_path):
+        cursor_file = tmp_path / "cursor_myrun.json"
+        cursor_file.write_text(
+            json.dumps(
+                {
+                    "completed": {"AAPL": ["1d"]},
+                    "backfill_depth": {"AAPL": {"oldest_date": "1999-01-04", "noop": False}},
+                }
+            )
+        )
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+            result = load_depth_info("myrun")
+        assert result == {"AAPL": {"oldest_date": "1999-01-04", "noop": False}}
+
+    def test_returns_empty_when_file_missing(self, tmp_path):
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+            assert load_depth_info("nonexistent") == {}
+
+    def test_returns_empty_when_key_absent(self, tmp_path):
+        cursor_file = tmp_path / "cursor_myrun.json"
+        cursor_file.write_text(json.dumps({"completed": {"AAPL": ["1d"]}}))
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+            assert load_depth_info("myrun") == {}
+
+    def test_returns_empty_on_corrupt_file(self, tmp_path):
+        cursor_file = tmp_path / "cursor_myrun.json"
+        cursor_file.write_text("not json")
+        with patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path):
+            assert load_depth_info("myrun") == {}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1102,6 +1222,144 @@ class TestRunBackfillZeroNewRows:
         )
 
         assert is_ticker_complete(completed, "AAPL", ("1d",))
+
+    def test_zero_new_rows_records_depth_info_not_noop(self, tmp_path, monkeypatch):
+        """Zero rows inserted (bars returned but all duplicates) records noop=False."""
+        import asyncio
+        from argparse import Namespace
+
+        cursor_dir = tmp_path / "cursors"
+        cursor_dir.mkdir()
+        monkeypatch.setattr("livewire_scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir)
+
+        mock_bronze = MagicMock()
+        mock_ib = MagicMock()
+        mock_ib.ib.run = lambda coro: asyncio.run(coro)
+
+        monkeypatch.setattr(
+            "livewire_scripts.fetch_ib_historical.get_oldest_dates",
+            lambda b: {"AAPL": "2020-01-02"},
+        )
+
+        bar = MagicMock()
+        bar.date = "2019-12-31"
+
+        async def fake_fetch(tickers, ib, **kw):
+            return {t: [bar] for t in tickers}
+
+        monkeypatch.setattr("livewire_scripts.fetch_ib_historical.fetch_all_tickers", fake_fetch)
+        monkeypatch.setattr(
+            "livewire_scripts.fetch_ib_historical.backfill_ticker",
+            lambda *a, **kw: 0,
+        )
+
+        args = Namespace(max_concurrent=1, batch_size=10, years=0, source="ib")
+        _run_backfill(
+            args,
+            mock_ib,
+            mock_bronze,
+            all_tickers=["AAPL"],
+            remaining=["AAPL"],
+            completed={},
+            cursor_name="backfill_depth_zero",
+            started_at="2026-05-31T00:00:00",
+        )
+
+        depth = load_depth_info("backfill_depth_zero")
+        assert depth["AAPL"]["noop"] is False
+        assert depth["AAPL"]["oldest_date"] == "2020-01-02"
+
+    def test_noop_empty_bars_records_depth_info_noop_true(self, tmp_path, monkeypatch):
+        """When IB returns no bars at all, depth entry has noop=True."""
+        import asyncio
+        from argparse import Namespace
+
+        cursor_dir = tmp_path / "cursors"
+        cursor_dir.mkdir()
+        monkeypatch.setattr("livewire_scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir)
+
+        mock_bronze = MagicMock()
+        mock_ib = MagicMock()
+        mock_ib.ib.run = lambda coro: asyncio.run(coro)
+
+        monkeypatch.setattr(
+            "livewire_scripts.fetch_ib_historical.get_oldest_dates",
+            lambda b: {"AAPL": "2020-01-02"},
+        )
+
+        async def fake_fetch(tickers, ib, **kw):
+            return {t: [] for t in tickers}
+
+        monkeypatch.setattr("livewire_scripts.fetch_ib_historical.fetch_all_tickers", fake_fetch)
+        monkeypatch.setattr(
+            "livewire_scripts.fetch_ib_historical.backfill_ticker",
+            lambda *a, **kw: 0,
+        )
+
+        args = Namespace(max_concurrent=1, batch_size=10, years=0, source="ib")
+        _run_backfill(
+            args,
+            mock_ib,
+            mock_bronze,
+            all_tickers=["AAPL"],
+            remaining=["AAPL"],
+            completed={},
+            cursor_name="backfill_depth_noop",
+            started_at="2026-05-31T00:00:00",
+        )
+
+        depth = load_depth_info("backfill_depth_noop")
+        assert depth["AAPL"]["noop"] is True
+        assert depth["AAPL"]["oldest_date"] == "2020-01-02"
+
+    def test_rows_inserted_records_min_bar_date(self, tmp_path, monkeypatch):
+        """When rows are inserted, depth entry uses the min bar date."""
+        import asyncio
+        from argparse import Namespace
+
+        cursor_dir = tmp_path / "cursors"
+        cursor_dir.mkdir()
+        monkeypatch.setattr("livewire_scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir)
+
+        mock_bronze = MagicMock()
+        mock_ib = MagicMock()
+        mock_ib.ib.run = lambda coro: asyncio.run(coro)
+
+        monkeypatch.setattr(
+            "livewire_scripts.fetch_ib_historical.get_oldest_dates",
+            lambda b: {"AAPL": "2020-01-02"},
+        )
+
+        bar_old = MagicMock()
+        bar_old.date = "1999-01-04"
+        bar_recent = MagicMock()
+        bar_recent.date = "2000-06-01"
+
+        async def fake_fetch(tickers, ib, **kw):
+            return {t: [bar_old, bar_recent] for t in tickers}
+
+        monkeypatch.setattr("livewire_scripts.fetch_ib_historical.fetch_all_tickers", fake_fetch)
+        # 2 rows inserted
+        monkeypatch.setattr(
+            "livewire_scripts.fetch_ib_historical.backfill_ticker",
+            lambda *a, **kw: 2,
+        )
+
+        args = Namespace(max_concurrent=1, batch_size=10, years=0, source="ib")
+        _run_backfill(
+            args,
+            mock_ib,
+            mock_bronze,
+            all_tickers=["AAPL"],
+            remaining=["AAPL"],
+            completed={},
+            cursor_name="backfill_depth_rows",
+            started_at="2026-05-31T00:00:00",
+        )
+
+        depth = load_depth_info("backfill_depth_rows")
+        assert depth["AAPL"]["noop"] is False
+        assert depth["AAPL"]["oldest_date"] == "1999-01-04"
 
 
 class TestQualityHookIntegration:

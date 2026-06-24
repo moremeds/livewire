@@ -109,7 +109,13 @@ def gap_aware_completed(
 
     Returns cursor count when below *total*. When cursor count >= total,
     validates against bronze parquet dates and TagRegistry.earliest_available.
-    Falls back to cursor count if registry is unavailable.
+
+    When the registry is absent, falls back to ``backfill_depth`` recorded in
+    the cursor: tickers with ``noop=True`` (IB confirmed no older data) or an
+    ``oldest_date`` before ``MDW_BACKFILL_MIN_DEPTH_DATE`` (default
+    ``2010-01-01``) count as genuinely complete.  Cursors without a
+    ``backfill_depth`` key (old format or fresh run) return 0 to force a
+    re-run.
     """
     cursor_count = cursor_completed(cursor_file)
     if cursor_count < total:
@@ -118,8 +124,46 @@ def gap_aware_completed(
     wh = warehouse_dir or Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
     registry_path = wh / "registry.json"
     if not registry_path.exists():
-        logger.debug("No registry at %s — falling back to cursor count", registry_path)
-        return cursor_count
+        min_depth = date.fromisoformat(os.getenv("MDW_BACKFILL_MIN_DEPTH_DATE", "2010-01-01"))
+        try:
+            cursor_data = json.loads(cursor_file.read_text(encoding="utf-8"))
+            depth_info = cursor_data.get("backfill_depth", {})
+        except Exception:
+            depth_info = {}
+
+        if not depth_info:
+            # No depth info — old cursor format or fresh run; cannot trust the
+            # completed count.  Return 0 to force a re-run.
+            logger.debug(
+                "No backfill_depth in cursor %s — treating as incomplete",
+                cursor_file,
+            )
+            return 0
+
+        # Load tickers from preset when available; otherwise use depth_info keys.
+        if preset_path:
+            try:
+                with open(preset_path, encoding="utf-8") as fh:
+                    tickers: list[str] = json.load(fh).get("tickers", [])
+            except Exception:
+                tickers = list(depth_info.keys())
+        else:
+            tickers = list(depth_info.keys())
+
+        n_complete = 0
+        for ticker in tickers:
+            entry = depth_info.get(ticker)
+            if entry is None:
+                continue  # not yet processed in this run
+            if entry.get("noop"):
+                n_complete += 1  # IB confirmed no older data
+            else:
+                try:
+                    if date.fromisoformat(entry["oldest_date"]) < min_depth:
+                        n_complete += 1  # deep enough history
+                except (KeyError, ValueError):
+                    pass
+        return n_complete
 
     try:
         import clients.bronze_client as _bc

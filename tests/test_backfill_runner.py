@@ -872,8 +872,9 @@ class TestGapAwareCompleted:
             )
         assert result == 1
 
-    def test_no_registry_falls_back_to_cursor_count(self, tmp_path):
-        """When registry.json doesn't exist, fall back to cursor count."""
+    def test_no_registry_no_depth_info_returns_zero(self, tmp_path):
+        """When registry.json doesn't exist and cursor has no backfill_depth, return 0
+        to force a re-run (old cursor format cannot be trusted)."""
         cursor_file = tmp_path / "cursor.json"
         cursor_file.write_text(json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}}))
         result = gap_aware_completed(
@@ -882,7 +883,159 @@ class TestGapAwareCompleted:
             preset_path=None,
             warehouse_dir=tmp_path,
         )
+        assert result == 0
+
+    def test_no_registry_deep_depth_counts_as_complete(self, tmp_path):
+        """When registry is absent but cursor has deep backfill_depth, count as complete."""
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text(
+            json.dumps(
+                {
+                    "completed": {"AAPL": ["1d"], "MSFT": ["1d"]},
+                    "backfill_depth": {
+                        "AAPL": {"oldest_date": "1999-01-04", "noop": False},
+                        "MSFT": {"oldest_date": "2001-06-01", "noop": False},
+                    },
+                }
+            )
+        )
+        preset = tmp_path / "preset.json"
+        preset.write_text(json.dumps({"tickers": ["AAPL", "MSFT"]}))
+        result = gap_aware_completed(
+            cursor_file,
+            total=2,
+            preset_path=str(preset),
+            warehouse_dir=tmp_path,
+        )
         assert result == 2
+
+    def test_no_registry_noop_entries_count_as_complete(self, tmp_path):
+        """noop=True entries (IB confirmed no older data) count as complete."""
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text(
+            json.dumps(
+                {
+                    "completed": {"NEWCO": ["1d"]},
+                    "backfill_depth": {
+                        "NEWCO": {"oldest_date": "2022-03-15", "noop": True},
+                    },
+                }
+            )
+        )
+        preset = tmp_path / "preset.json"
+        preset.write_text(json.dumps({"tickers": ["NEWCO"]}))
+        result = gap_aware_completed(
+            cursor_file,
+            total=1,
+            preset_path=str(preset),
+            warehouse_dir=tmp_path,
+        )
+        assert result == 1
+
+    def test_no_registry_shallow_depth_not_counted(self, tmp_path, monkeypatch):
+        """Entries with oldest_date after MDW_BACKFILL_MIN_DEPTH_DATE are not counted."""
+        monkeypatch.setenv("MDW_BACKFILL_MIN_DEPTH_DATE", "2010-01-01")
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text(
+            json.dumps(
+                {
+                    "completed": {"AAPL": ["1d"]},
+                    "backfill_depth": {
+                        # oldest_date is AFTER the min threshold — shallow history
+                        "AAPL": {"oldest_date": "2021-01-04", "noop": False},
+                    },
+                }
+            )
+        )
+        preset = tmp_path / "preset.json"
+        preset.write_text(json.dumps({"tickers": ["AAPL"]}))
+        result = gap_aware_completed(
+            cursor_file,
+            total=1,
+            preset_path=str(preset),
+            warehouse_dir=tmp_path,
+        )
+        assert result == 0
+
+    def test_no_registry_mixed_deep_and_shallow(self, tmp_path, monkeypatch):
+        """Mixed: deep + noop count; shallow does not."""
+        monkeypatch.setenv("MDW_BACKFILL_MIN_DEPTH_DATE", "2010-01-01")
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text(
+            json.dumps(
+                {
+                    "completed": {"AAPL": ["1d"], "NEWCO": ["1d"], "SHALLOW": ["1d"]},
+                    "backfill_depth": {
+                        "AAPL": {"oldest_date": "1999-01-04", "noop": False},  # deep
+                        "NEWCO": {"oldest_date": "2022-03-15", "noop": True},  # noop
+                        "SHALLOW": {"oldest_date": "2021-01-04", "noop": False},  # shallow
+                    },
+                }
+            )
+        )
+        preset = tmp_path / "preset.json"
+        preset.write_text(json.dumps({"tickers": ["AAPL", "NEWCO", "SHALLOW"]}))
+        result = gap_aware_completed(
+            cursor_file,
+            total=3,
+            preset_path=str(preset),
+            warehouse_dir=tmp_path,
+        )
+        assert result == 2  # AAPL + NEWCO, not SHALLOW
+
+    def test_no_registry_no_preset_uses_depth_info_keys(self, tmp_path):
+        """When no preset_path, tickers come from depth_info keys."""
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text(
+            json.dumps(
+                {
+                    "completed": {"AAPL": ["1d"]},
+                    "backfill_depth": {
+                        "AAPL": {"oldest_date": "1999-01-04", "noop": False},
+                    },
+                }
+            )
+        )
+        result = gap_aware_completed(
+            cursor_file,
+            total=1,
+            preset_path=None,
+            warehouse_dir=tmp_path,
+        )
+        assert result == 1
+
+    def test_no_registry_corrupt_cursor_returns_zero(self, tmp_path):
+        """If cursor is unreadable when registry absent, return 0."""
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text("not json")
+        result = gap_aware_completed(
+            cursor_file,
+            total=1,
+            preset_path=None,
+            warehouse_dir=tmp_path,
+        )
+        assert result == 0
+
+    def test_no_registry_preset_unreadable_falls_back_to_depth_keys(self, tmp_path):
+        """When preset_path is given but unreadable, fall back to depth_info keys."""
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text(
+            json.dumps(
+                {
+                    "completed": {"AAPL": ["1d"]},
+                    "backfill_depth": {
+                        "AAPL": {"oldest_date": "1999-01-04", "noop": False},
+                    },
+                }
+            )
+        )
+        result = gap_aware_completed(
+            cursor_file,
+            total=1,
+            preset_path=str(tmp_path / "nonexistent.json"),
+            warehouse_dir=tmp_path,
+        )
+        assert result == 1
 
     def test_preset_path_limits_ticker_scope(self, tmp_path):
         """When preset_path is provided, only those tickers are gap-checked."""
@@ -1021,3 +1174,90 @@ class TestGapAwareCompleted:
                 bronze_dir=bronze_dir,
             )
         assert result == 2
+
+    def test_no_registry_cursor_read_error_returns_zero(self, tmp_path):
+        """If cursor file read_text raises an OS-level error, depth_info is empty → return 0."""
+        cursor_file = tmp_path / "cursor.json"
+        # Write a valid cursor so cursor_completed (which uses .open()) returns >= total.
+        # Then patch read_text so the second read inside the registry-absent branch fails.
+        cursor_file.write_text(json.dumps({"completed": {"AAPL": ["1d"]}}))
+
+        with patch.object(cursor_file.__class__, "read_text", side_effect=OSError("simulated")):
+            result = gap_aware_completed(
+                cursor_file,
+                total=1,
+                preset_path=None,
+                warehouse_dir=tmp_path,
+            )
+        assert result == 0
+
+    def test_no_registry_ticker_not_in_depth_info_skipped(self, tmp_path):
+        """Preset tickers absent from depth_info are skipped (not counted)."""
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text(
+            json.dumps(
+                {
+                    "completed": {"AAPL": ["1d"], "MSFT": ["1d"]},
+                    "backfill_depth": {
+                        # AAPL deep; MSFT absent (not yet processed)
+                        "AAPL": {"oldest_date": "1999-01-04", "noop": False},
+                    },
+                }
+            )
+        )
+        preset = tmp_path / "preset.json"
+        preset.write_text(json.dumps({"tickers": ["AAPL", "MSFT"]}))
+        result = gap_aware_completed(
+            cursor_file,
+            total=2,
+            preset_path=str(preset),
+            warehouse_dir=tmp_path,
+        )
+        # Only AAPL is counted; MSFT is absent from depth_info → skipped
+        assert result == 1
+
+    def test_no_registry_bad_oldest_date_format_skipped(self, tmp_path):
+        """Entries with malformed oldest_date don't crash and are not counted."""
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text(
+            json.dumps(
+                {
+                    "completed": {"AAPL": ["1d"]},
+                    "backfill_depth": {
+                        "AAPL": {"oldest_date": "not-a-date", "noop": False},
+                    },
+                }
+            )
+        )
+        preset = tmp_path / "preset.json"
+        preset.write_text(json.dumps({"tickers": ["AAPL"]}))
+        result = gap_aware_completed(
+            cursor_file,
+            total=1,
+            preset_path=str(preset),
+            warehouse_dir=tmp_path,
+        )
+        assert result == 0
+
+    def test_no_registry_missing_oldest_date_key_skipped(self, tmp_path):
+        """Entries missing the oldest_date key entirely don't crash and are not counted."""
+        cursor_file = tmp_path / "cursor.json"
+        cursor_file.write_text(
+            json.dumps(
+                {
+                    "completed": {"AAPL": ["1d"]},
+                    "backfill_depth": {
+                        "AAPL": {"noop": False},  # no oldest_date key
+                    },
+                }
+            )
+        )
+        preset = tmp_path / "preset.json"
+        preset.write_text(json.dumps({"tickers": ["AAPL"]}))
+        result = gap_aware_completed(
+            cursor_file,
+            total=1,
+            preset_path=str(preset),
+            warehouse_dir=tmp_path,
+        )
+        assert result == 0
