@@ -357,7 +357,7 @@ class TestLaunchdTemplate:
         assert "<string>com.livewire.intraday-catchup</string>" in text
         assert "run-intraday-catchup-job" in text
         assert "<key>Hour</key>" in text
-        assert "<integer>12</integer>" in text
+        assert "<integer>13</integer>" in text
         assert "<key>Minute</key>" in text
         assert "<integer>0</integer>" in text
         # Same /path/to/repo substitution sentinel as the daily-update example.

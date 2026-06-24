@@ -32,6 +32,7 @@ from livewire_scripts.daily_update import (
     fetch_massive_bars,
     fetch_ticker_update,
     get_missing_trading_dates,
+    _et_today,
     get_nyse_holidays,
     is_trading_day,
     load_preset,
@@ -202,6 +203,31 @@ class TestTradingDaysBetween:
         # 2025-01-08 (Wed) to 2025-01-10 (Fri) — Jan 9 is the NYSE National Day of
         # Mourning for President Carter and must not be counted.
         assert trading_days_between(date(2025, 1, 8), date(2025, 1, 10)) == 1
+
+
+class TestEtToday:
+    def test_before_close_returns_previous_trading_day(self):
+        # 02:00 ET Tuesday — session hasn't closed yet, want Monday
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        et = ZoneInfo("America/New_York")
+        # Monday 2025-01-06, Tuesday 2025-01-07
+        fake_now = datetime(2025, 1, 7, 2, 0, 0, tzinfo=et)  # 02:00 ET Tuesday
+        with patch("livewire_scripts.daily_update.datetime") as mock_dt:
+            mock_dt.now.return_value = fake_now
+            result = _et_today()
+        assert result == date(2025, 1, 6)  # previous trading day = Monday
+
+    def test_after_close_returns_et_today(self):
+        # 17:00 ET Tuesday — session closed, want today
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        et = ZoneInfo("America/New_York")
+        fake_now = datetime(2025, 1, 7, 17, 0, 0, tzinfo=et)  # 17:00 ET Tuesday
+        with patch("livewire_scripts.daily_update.datetime") as mock_dt:
+            mock_dt.now.return_value = fake_now
+            result = _et_today()
+        assert result == date(2025, 1, 7)
 
 
 class TestResolveTargetDate:
@@ -559,6 +585,16 @@ class TestMakeContract:
     def test_volatility_returns_index(self):
         contract = _make_contract("VIX", "volatility")
         assert isinstance(contract, Index)
+        assert contract.exchange == "CBOE"
+
+    def test_volatility_rut_uses_russell_exchange(self):
+        contract = _make_contract("RUT", "volatility")
+        assert isinstance(contract, Index)
+        assert contract.exchange == "RUSSELL"
+
+    def test_volatility_explicit_exchange_overrides_map(self):
+        contract = _make_contract("RUT", "volatility", exchange="CBOE")
+        assert contract.exchange == "CBOE"
 
     def test_default_is_equity(self):
         contract = _make_contract("AAPL")
@@ -855,7 +891,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=date(2025, 1, 3)),
             patch(
                 "livewire_scripts.daily_update.IBClient",
                 side_effect=AssertionError("IB should not open"),
@@ -867,9 +903,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = date(2025, 1, 3)
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             assert main() == 0
 
         with BronzeClient(bronze_dir=bronze_dir) as bronze:
@@ -914,7 +947,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=date(2025, 1, 3)),
             patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
@@ -922,9 +955,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = date(2025, 1, 3)
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             assert main() == 0
 
         assert mock_massive.get_daily_bars.call_count == 1
@@ -954,7 +984,7 @@ class TestMain:
                 "livewire_scripts.daily_update.previous_trading_day",
                 return_value=date(2025, 1, 2),
             ),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=date(2025, 1, 3)),
             patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
@@ -962,9 +992,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = date(2025, 1, 3)
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             assert main() == 0
 
         with BronzeClient(bronze_dir=bronze_dir) as bronze:
@@ -996,7 +1023,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=date(2025, 1, 3)),
             patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
@@ -1004,9 +1031,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = date(2025, 1, 3)
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             assert main() == 1
 
     @pytest.mark.integration
@@ -1045,7 +1069,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=date(2025, 1, 3)),
             patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
@@ -1053,9 +1077,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = date(2025, 1, 3)
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             assert main() == 1
 
     @pytest.mark.integration
@@ -1089,13 +1110,10 @@ class TestMain:
         mock_massive = _mock_massive_instance({"AAPL": [_make_bar(date="2025-01-03")]})
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=date(2025, 1, 3)),
             patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
             patch("livewire_scripts.daily_update.BronzeClient", CompatStorage),
         ):
-            mock_date.today.return_value = date(2025, 1, 3)
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             assert main() == 0
         assert CompatStorage.written
 
@@ -1169,7 +1187,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=date(2025, 1, 3)),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
             patch(
@@ -1182,9 +1200,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = date(2025, 1, 3)
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             assert main() == 0
 
         mock_fallback.get_daily_bar.assert_not_called()
@@ -1218,7 +1233,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=date(2025, 1, 3)),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
             patch(
@@ -1232,9 +1247,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = date(2025, 1, 3)
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             assert main() == 0
 
         kwargs = quality_mock.call_args.kwargs
@@ -1293,13 +1305,9 @@ class TestMain:
         today = date(2025, 1, 3)
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.BronzeClient") as MockBronze,
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
-
             mock_bronze = MagicMock()
             mock_bronze.__enter__ = MagicMock(return_value=mock_bronze)
             mock_bronze.__exit__ = MagicMock(return_value=False)
@@ -1315,13 +1323,9 @@ class TestMain:
         today = date(2025, 1, 3)
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.BronzeClient") as MockBronze,
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
-
             mock_bronze = MagicMock()
             mock_bronze.__enter__ = MagicMock(return_value=mock_bronze)
             mock_bronze.__exit__ = MagicMock(return_value=False)
@@ -1360,7 +1364,7 @@ class TestMain:
 
         today = date(2025, 1, 6)
         with (
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -1368,9 +1372,6 @@ class TestMain:
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
             patch("livewire_scripts.daily_update.console.print") as print_mock,
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
@@ -1415,7 +1416,7 @@ class TestMain:
         mock_fallback = _mock_fallback_instance()
 
         with (
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -1427,9 +1428,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         with BronzeClient(bronze_dir=bronze_dir) as bronze:
@@ -1476,7 +1474,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -1488,9 +1486,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         with BronzeClient(bronze_dir=bronze_dir) as bronze:
@@ -1532,7 +1527,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -1541,9 +1536,6 @@ class TestMain:
             patch("livewire_scripts.daily_update.StorageClient", lambda **kw: storage),
             patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         assert storage.write_calls == [("AAPL", 1, tmp_path / "bronze" / "asset_class=equity")]
@@ -1590,7 +1582,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -1602,9 +1594,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         with BronzeClient(bronze_dir=bronze_dir, asset_class="fx") as bronze:
@@ -1643,7 +1632,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -1655,9 +1644,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         with BronzeClient(bronze_dir=bronze_dir) as bronze:
@@ -1693,7 +1679,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -1705,9 +1691,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         with BronzeClient(bronze_dir=bronze_dir) as bronze:
@@ -1755,7 +1738,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -1767,9 +1750,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         with BronzeClient(bronze_dir=bronze_dir) as bronze:
@@ -1808,7 +1788,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -1820,9 +1800,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         with BronzeClient(bronze_dir=bronze_dir) as bronze:
@@ -1870,7 +1847,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -1882,9 +1859,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         with BronzeClient(bronze_dir=bronze_dir) as bronze:
@@ -1931,7 +1905,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -1943,9 +1917,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         with BronzeClient(bronze_dir=bronze_dir) as bronze:
@@ -1996,7 +1967,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -2008,9 +1979,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         with BronzeClient(bronze_dir=bronze_dir) as bronze:
@@ -2066,16 +2034,13 @@ class TestMain:
         today = date(2025, 1, 3)
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()  # Should only report AAPL, not MSFT
 
     @pytest.mark.integration
@@ -2108,16 +2073,13 @@ class TestMain:
         today = date(2025, 1, 3)
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
     @pytest.mark.integration
@@ -2155,7 +2117,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -2167,9 +2129,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         # With batch-size=1 and 2 tickers, should have 2 ib.ib.run calls
@@ -2206,7 +2165,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -2218,9 +2177,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
     @pytest.mark.integration
@@ -2265,7 +2221,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -2277,9 +2233,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path / "data-lake"),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         with BronzeClient(bronze_dir=vol_bronze_dir) as bronze:
@@ -2339,7 +2292,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -2354,9 +2307,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path / "data-lake"),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         with BronzeClient(bronze_dir=fut_bronze_dir, asset_class="futures") as bronze:
@@ -2412,7 +2362,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -2424,9 +2374,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path / "data-lake"),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         mock_ib.connect.assert_called_once_with(host="192.168.1.50", port=4002)
@@ -2473,7 +2420,7 @@ class TestMain:
 
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
-            patch("livewire_scripts.daily_update.date") as mock_date,
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
@@ -2485,9 +2432,6 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path / "data-lake"),
         ):
-            mock_date.today.return_value = today
-            mock_date.fromisoformat = date.fromisoformat
-            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
             main()
 
         mock_ib.connect.assert_called_once_with(host="10.0.0.5", port=4002)

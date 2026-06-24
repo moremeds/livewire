@@ -1,7 +1,7 @@
 {
   "name": "volatility-intraday",
   "description": "Volatility/index IB-backed intraday bars (30m, derive 1h)",
-  "tickers": ["VIX", "SPX", "NDX", "RUT", "VXN", "RVX"],
+  "tickers": ["VIX", "SPX", "NDX", "RUT", "VXN", "RVX", "VVIX", "VIX3M", "OVX", "VXEEM", "VXGDX", "VXSLV", "COR1M", "COR3M"],
   "sector": "Volatility",
   "source": "Interactive Brokers CBOE Index contracts",
   "notes": "IB fetches 30m bars only. 1h is derived locally via timeframe aggregation. Daily volatility sync remains CBOE API via presets/volatility.json."

@@ -187,6 +187,27 @@ class TestHelpers:
         no_marker.write_text("started\nfailed\n", encoding="utf-8")
         assert log_has_completion_marker(no_marker) is False
 
+    def test_extract_error_summary_parses_structured_massive_failure(self, tmp_path):
+        log_file = tmp_path / "daily.log"
+        ticker_lines = "\n".join(f"  {t}: no bars from Massive" for t in ["AAPL", "MSFT", "GOOG", "AMZN", "NVDA"])
+        log_file.write_text(
+            "\n".join([
+                "=== Daily Update 2026-06-23T06:00:02Z ===",
+                "Daily Update  target_date=2026-06-23  force=False  asset_class=equity  source=massive  host=127.0.0.1  port=4001",
+                ticker_lines,
+                "Tickers updated:    0",
+                "Tickers failed:     5",
+                "=== Failed 2026-06-23T06:10:00Z after 3 attempt(s) ===",
+            ]),
+            encoding="utf-8",
+        )
+
+        summary = extract_error_summary(log_file)
+        assert "5/5 tickers failed" in summary
+        assert "target_date=2026-06-23" in summary
+        assert "source=massive" in summary
+        assert 'no bars from Massive' in summary
+
     def test_node_binary_exists(self):
         with patch("livewire_scripts.run_daily_update_job.Path.exists", return_value=True):
             assert node_binary_exists("/opt/homebrew/bin/node") is True

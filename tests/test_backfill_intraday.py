@@ -476,7 +476,7 @@ class TestMain:
 
         preset_path = Path("presets/volatility-intraday.json")
         preset = json.loads(preset_path.read_text(encoding="utf-8"))
-        assert preset["tickers"] == ["VIX", "SPX", "NDX", "RUT", "VXN", "RVX"]
+        assert preset["tickers"] == ["VIX", "SPX", "NDX", "RUT", "VXN", "RVX", "VVIX", "VIX3M", "OVX", "VXEEM", "VXGDX", "VXSLV", "COR1M", "COR3M"]
 
         with patch(
             "livewire_scripts.backfill_intraday.compute_intraday_chunks",
@@ -501,7 +501,7 @@ class TestMain:
         out = capsys.readouterr().out
         assert "asset_class=volatility" in out
         assert "source=ib" in out
-        assert "tickers=6" in out
+        assert "tickers=14" in out
         assert "VIX: 1 chunks of 5 mins" in out
         assert "SPX: 1 chunks of 5 mins" in out
         assert "NDX: 1 chunks of 5 mins" in out

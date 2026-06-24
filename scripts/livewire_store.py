@@ -18,6 +18,7 @@ COMMANDS = {
     "smoke-postgres": "livewire_scripts.smoke_postgres_analytical",
     "sync-r2": "livewire_scripts.sync_to_r2",
     "migrate-parquet": "livewire_scripts.migrate_parquet_filename",
+    "archive-otc": "livewire_scripts.archive_otc_symbols",
 }
 
 

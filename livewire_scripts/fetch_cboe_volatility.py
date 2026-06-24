@@ -35,6 +35,7 @@ CBOE_HISTORICAL_URL = "https://cdn.cboe.com/api/global/delayed_quotes/charts/his
 CBOE_DAILY_PRICE_CSV_URLS = {
     "VIX": "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv",
     "SPX": "https://cdn.cboe.com/api/global/us_indices/daily_prices/SPX_History.csv",
+    "RUT": "https://cdn.cboe.com/api/global/us_indices/daily_prices/RUT_History.csv",
 }
 
 DEFAULT_WAREHOUSE = Path.home() / "market-warehouse"

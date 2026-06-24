@@ -38,6 +38,7 @@ import sys
 from contextlib import ExitStack
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from ib_async import Contract, Forex, Future, Index, Stock  # noqa: F401
 from rich.console import Console
@@ -125,6 +126,23 @@ console = Console()
 
 
 # ── Trading calendar ───────────────────────────────────────────────────
+
+_ET = ZoneInfo("America/New_York")
+_NYSE_CLOSE_ET = time(16, 0)
+
+
+def _et_today() -> date:
+    """Return the most recently completed US trading session date.
+
+    Uses ET clock and NYSE close (16:00 ET) as the boundary: before close
+    the current session hasn't ended, so target the previous trading day.
+    This prevents the scheduler (which runs at 02:00 ET / 06:00 UTC) from
+    targeting today's date when Massive hasn't published today's data yet.
+    """
+    now_et = datetime.now(_ET)
+    if now_et.time() < _NYSE_CLOSE_ET:
+        return previous_trading_day(now_et.date())
+    return now_et.date()
 
 
 def get_early_close_days(year: int) -> dict[date, time]:
@@ -609,7 +627,7 @@ def main():  # pragma: no cover — only exercised by integration tests
         handlers=[RichHandler(console=console, rich_tracebacks=True)],
     )
 
-    today = date.today()
+    today = _et_today()
 
     # ── Trading day check ───────────────────────────────────────────
     target = resolve_target_date(today, args.target_date, args.force)

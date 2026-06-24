@@ -10,6 +10,10 @@ from pathlib import Path
 
 from ib_async import Contract, Forex, Future, Index, Stock
 
+VOLATILITY_EXCHANGE_MAP = {
+    "RUT": "RUSSELL",
+}
+
 ROOT_EXCHANGE_MAP = {
     "ES": "CME",
     "NQ": "CME",
@@ -101,7 +105,8 @@ def make_contract(ticker: str, asset_class: str = "equity", exchange: str | None
         source_pair, _ = resolve_fx_pair(ticker)
         return Forex(source_pair)
     if asset_class == "volatility":
-        return Index(ticker, exchange or "CBOE", "USD")
+        exch = exchange or VOLATILITY_EXCHANGE_MAP.get(ticker, "CBOE")
+        return Index(ticker, exch, "USD")
     return Stock(ticker, "SMART", "USD")
 
 

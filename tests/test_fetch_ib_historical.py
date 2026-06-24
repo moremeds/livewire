@@ -454,6 +454,12 @@ class TestMakeContract:
     def test_volatility_returns_index(self):
         contract = _make_contract("VIX", "volatility")
         assert isinstance(contract, Index)
+        assert contract.exchange == "CBOE"
+
+    def test_volatility_rut_uses_russell_exchange(self):
+        contract = _make_contract("RUT", "volatility")
+        assert isinstance(contract, Index)
+        assert contract.exchange == "RUSSELL"
 
     def test_default_is_equity(self):
         contract = _make_contract("AAPL")

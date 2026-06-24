@@ -117,6 +117,25 @@ class TestOfficialCsvBackup:
             }
         ]
 
+    def test_fetches_rut_close_only_csv_backup_as_ohlc_row(self):
+        mock_response = MagicMock()
+        mock_response.text = "DATE,RUT\n05/19/2026,2105.340000\n"
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=mock_response):
+            bars = fetch_cboe_official_csv_backup("RUT")
+
+        assert bars == [
+            {
+                "date": "2026-05-19",
+                "open": "2105.340000",
+                "high": "2105.340000",
+                "low": "2105.340000",
+                "close": "2105.340000",
+                "volume": "0.0",
+            }
+        ]
+
     def test_unsupported_symbol_has_no_csv_backup(self):
         assert fetch_cboe_official_csv_backup("VVIX") == []
 

@@ -185,10 +185,63 @@ def send_failure_alert(
 
 def extract_error_summary(log_file: Path) -> str:
     try:
-        lines = log_file.read_text(encoding="utf-8").splitlines()
+        text = log_file.read_text(encoding="utf-8")
     except FileNotFoundError:
         return "Daily update failed, and the log file was not found."
 
+    lines = text.splitlines()
+    if not lines:
+        return "Daily update failed with no error summary captured in the log."
+
+    import re
+    from collections import Counter
+
+    target_date = source = asset_class = None
+    tickers_updated = tickers_failed = None
+    error_counts: Counter[str] = Counter()
+
+    for line in lines:
+        m = re.search(r"target_date=(\S+)", line)
+        if m:
+            target_date = m.group(1)
+        m = re.search(r"\bsource=(\S+)", line)
+        if m:
+            source = m.group(1)
+        m = re.search(r"\basset_class=(\S+)", line)
+        if m:
+            asset_class = m.group(1)
+        m = re.search(r"Tickers updated:\s*(\d+)", line)
+        if m:
+            tickers_updated = int(m.group(1))
+        m = re.search(r"Tickers failed:\s*(\d+)", line)
+        if m:
+            tickers_failed = int(m.group(1))
+        # Per-ticker errors: "  AAPL: no bars from Massive"
+        m = re.match(r"\s+\S+:\s+(.+)", line)
+        if m:
+            err = m.group(1).strip()
+            if err and not err.startswith("==="):
+                error_counts[err] += 1
+
+    parts: list[str] = []
+    if tickers_failed is not None:
+        total = (tickers_failed or 0) + (tickers_updated or 0)
+        parts.append(f"{tickers_failed}/{total} tickers failed")
+    if target_date:
+        parts.append(f"target_date={target_date}")
+    if source:
+        parts.append(f"source={source}")
+    if asset_class:
+        parts.append(f"asset_class={asset_class}")
+    if error_counts:
+        top_err, count = error_counts.most_common(1)[0]
+        if count >= 5:
+            parts.append(f'dominant error ({count}x): "{top_err}"')
+
+    if parts:
+        return "Daily update failed — " + ", ".join(parts)
+
+    # Fallback: last meaningful line
     for line in reversed(lines):
         stripped = line.strip()
         if stripped and not stripped.startswith("==="):

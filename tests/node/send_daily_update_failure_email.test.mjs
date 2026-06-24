@@ -129,7 +129,8 @@ test("build report helpers create readable output", async () => {
     logTail: "timeout stack",
     error: new Error("Missing Cerebras key"),
   });
-  assert.match(fallback.probableCause, /AI summary unavailable/);
+  assert.ok(!fallback.probableCause.includes("AI summary unavailable"), "missing-key error must not surface Cerebras noise in probableCause");
+  assert.match(fallback.probableCause, /See raw error summary/);
 
   const reportBody = buildHumanReadableReport({
     options: {

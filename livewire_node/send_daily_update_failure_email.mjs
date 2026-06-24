@@ -208,13 +208,15 @@ export function buildHumanReadableReportPath(logFile) {
 }
 
 export function buildFallbackIncidentReport({ options, logTail, error }) {
-  const reason =
-    error?.message || "AI summary unavailable because no Cerebras result was returned.";
+  const isCerebrasKeyMissing = /Missing Cerebras/i.test(error?.message || "");
+  const probableCause = isCerebrasKeyMissing
+    ? "See raw error summary and log tail below."
+    : `AI summary unavailable: ${error?.message || "no Cerebras result was returned."}`;
   return {
     summary:
       options.errorSummary ||
       "The scheduled job failed, but only the raw error summary is available.",
-    probableCause: `AI summary unavailable: ${reason}`,
+    probableCause,
     proposedSolution:
       "Inspect the raw error summary and recent log tail, then rerun the job after correcting the failing dependency or configuration.",
     nextSteps: [

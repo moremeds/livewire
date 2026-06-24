@@ -329,11 +329,12 @@ def test_main_dispatch_summary(tmp_path, capsys):
 def test_main_dispatch_flap_with_source_filter(tmp_path, capsys):
     from livewire_scripts.data_quality_report import main
 
+    recent_ts = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     t = tmp_path / "telemetry.jsonl"
     t.write_text(
         json.dumps(
             {
-                "ts": "2026-05-17T00:00:00Z",
+                "ts": recent_ts,
                 "source": "ib",
                 "event": "farm_state",
                 "state": "ok",
@@ -343,7 +344,7 @@ def test_main_dispatch_flap_with_source_filter(tmp_path, capsys):
         + "\n"
         + json.dumps(
             {
-                "ts": "2026-05-17T00:00:00Z",
+                "ts": recent_ts,
                 "source": "uw",
                 "event": "farm_state",
                 "state": "broken",
@@ -375,11 +376,12 @@ def test_main_dispatch_flap_with_source_filter(tmp_path, capsys):
 def test_main_dispatch_quality_with_filter(tmp_path, capsys):
     from livewire_scripts.data_quality_report import main
 
+    recent_ts = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     a = tmp_path / "audit.jsonl"
     a.write_text(
         json.dumps(
             {
-                "ts": "2026-05-17T00:00:00Z",
+                "ts": recent_ts,
                 "source": "ib",
                 "ticker": "SMH",
                 "severity": "critical",
