@@ -873,9 +873,9 @@ class TestGapAwareCompleted:
         assert result == 1
 
     def test_no_registry_no_depth_info_returns_zero(self, tmp_path):
-        """When registry.json doesn't exist and cursor has no backfill_depth, return 0
-        to force a re-run (old cursor format cannot be trusted)."""
-        cursor_file = tmp_path / "cursor.json"
+        """When registry.json doesn't exist and a *backfill* cursor has no backfill_depth,
+        return 0 to force a re-run (old cursor format cannot be trusted)."""
+        cursor_file = tmp_path / "cursor_backfill_sp500.json"
         cursor_file.write_text(json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}}))
         result = gap_aware_completed(
             cursor_file,
@@ -885,9 +885,21 @@ class TestGapAwareCompleted:
         )
         assert result == 0
 
+    def test_no_registry_seed_cursor_trusts_count(self, tmp_path):
+        """Seed cursors (no 'backfill_' in name) skip depth check and return cursor count."""
+        cursor_file = tmp_path / "cursor_sp500.json"
+        cursor_file.write_text(json.dumps({"completed": {"AAPL": ["1d"], "MSFT": ["1d"]}}))
+        result = gap_aware_completed(
+            cursor_file,
+            total=2,
+            preset_path=None,
+            warehouse_dir=tmp_path,
+        )
+        assert result == 2
+
     def test_no_registry_deep_depth_counts_as_complete(self, tmp_path):
         """When registry is absent but cursor has deep backfill_depth, count as complete."""
-        cursor_file = tmp_path / "cursor.json"
+        cursor_file = tmp_path / "cursor_backfill_sp500.json"
         cursor_file.write_text(
             json.dumps(
                 {
@@ -911,7 +923,7 @@ class TestGapAwareCompleted:
 
     def test_no_registry_noop_entries_count_as_complete(self, tmp_path):
         """noop=True entries (IB confirmed no older data) count as complete."""
-        cursor_file = tmp_path / "cursor.json"
+        cursor_file = tmp_path / "cursor_backfill_sp500.json"
         cursor_file.write_text(
             json.dumps(
                 {
@@ -935,7 +947,7 @@ class TestGapAwareCompleted:
     def test_no_registry_shallow_depth_not_counted(self, tmp_path, monkeypatch):
         """Entries with oldest_date after MDW_BACKFILL_MIN_DEPTH_DATE are not counted."""
         monkeypatch.setenv("MDW_BACKFILL_MIN_DEPTH_DATE", "2010-01-01")
-        cursor_file = tmp_path / "cursor.json"
+        cursor_file = tmp_path / "cursor_backfill_sp500.json"
         cursor_file.write_text(
             json.dumps(
                 {
@@ -960,7 +972,7 @@ class TestGapAwareCompleted:
     def test_no_registry_mixed_deep_and_shallow(self, tmp_path, monkeypatch):
         """Mixed: deep + noop count; shallow does not."""
         monkeypatch.setenv("MDW_BACKFILL_MIN_DEPTH_DATE", "2010-01-01")
-        cursor_file = tmp_path / "cursor.json"
+        cursor_file = tmp_path / "cursor_backfill_sp500.json"
         cursor_file.write_text(
             json.dumps(
                 {
@@ -985,7 +997,7 @@ class TestGapAwareCompleted:
 
     def test_no_registry_no_preset_uses_depth_info_keys(self, tmp_path):
         """When no preset_path, tickers come from depth_info keys."""
-        cursor_file = tmp_path / "cursor.json"
+        cursor_file = tmp_path / "cursor_backfill_sp500.json"
         cursor_file.write_text(
             json.dumps(
                 {
@@ -1018,7 +1030,7 @@ class TestGapAwareCompleted:
 
     def test_no_registry_preset_unreadable_falls_back_to_depth_keys(self, tmp_path):
         """When preset_path is given but unreadable, fall back to depth_info keys."""
-        cursor_file = tmp_path / "cursor.json"
+        cursor_file = tmp_path / "cursor_backfill_sp500.json"
         cursor_file.write_text(
             json.dumps(
                 {
@@ -1177,7 +1189,7 @@ class TestGapAwareCompleted:
 
     def test_no_registry_cursor_read_error_returns_zero(self, tmp_path):
         """If cursor file read_text raises an OS-level error, depth_info is empty → return 0."""
-        cursor_file = tmp_path / "cursor.json"
+        cursor_file = tmp_path / "cursor_backfill_sp500.json"
         # Write a valid cursor so cursor_completed (which uses .open()) returns >= total.
         # Then patch read_text so the second read inside the registry-absent branch fails.
         cursor_file.write_text(json.dumps({"completed": {"AAPL": ["1d"]}}))
@@ -1193,7 +1205,7 @@ class TestGapAwareCompleted:
 
     def test_no_registry_ticker_not_in_depth_info_skipped(self, tmp_path):
         """Preset tickers absent from depth_info are skipped (not counted)."""
-        cursor_file = tmp_path / "cursor.json"
+        cursor_file = tmp_path / "cursor_backfill_sp500.json"
         cursor_file.write_text(
             json.dumps(
                 {
@@ -1218,7 +1230,7 @@ class TestGapAwareCompleted:
 
     def test_no_registry_bad_oldest_date_format_skipped(self, tmp_path):
         """Entries with malformed oldest_date don't crash and are not counted."""
-        cursor_file = tmp_path / "cursor.json"
+        cursor_file = tmp_path / "cursor_backfill_sp500.json"
         cursor_file.write_text(
             json.dumps(
                 {
@@ -1241,7 +1253,7 @@ class TestGapAwareCompleted:
 
     def test_no_registry_missing_oldest_date_key_skipped(self, tmp_path):
         """Entries missing the oldest_date key entirely don't crash and are not counted."""
-        cursor_file = tmp_path / "cursor.json"
+        cursor_file = tmp_path / "cursor_backfill_sp500.json"
         cursor_file.write_text(
             json.dumps(
                 {

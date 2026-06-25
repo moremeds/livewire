@@ -124,6 +124,12 @@ def gap_aware_completed(
     wh = warehouse_dir or Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
     registry_path = wh / "registry.json"
     if not registry_path.exists():
+        # Depth check only applies to backfill cursors (cursor_backfill_*.json).
+        # Seed cursors never accumulate backfill_depth entries, so skip the
+        # check for them and trust the cursor count directly.
+        if "backfill_" not in cursor_file.name:
+            return cursor_count
+
         min_depth = date.fromisoformat(os.getenv("MDW_BACKFILL_MIN_DEPTH_DATE", "2010-01-01"))
         try:
             cursor_data = json.loads(cursor_file.read_text(encoding="utf-8"))
