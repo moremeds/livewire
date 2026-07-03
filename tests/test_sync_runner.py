@@ -333,7 +333,13 @@ class TestRunSync:
         assert any("fred-rates" in c for c in joined)
         assert any("cboe-vol" in c for c in joined)
         assert any("flatfile-ingest catch-up" in c for c in joined)
+        assert any("flatfile-ingest-daily catch-up" in c for c in joined)
         assert any("--timeframe 30m" in c and "volatility" in c for c in joined)
+        # day_aggs lane runs before the intraday flatfile lane
+        labels = [c for c in joined]
+        day_aggs_idx = next(i for i, c in enumerate(labels) if "flatfile-ingest-daily" in c)
+        intraday_idx = next(i for i, c in enumerate(labels) if "flatfile-ingest catch-up" in c)
+        assert day_aggs_idx < intraday_idx
 
     def test_uses_target_date_from_config(self, tmp_path):
         config = _make_config(tmp_path)
@@ -419,8 +425,9 @@ class TestRunSync:
 
         with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
             run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
-        # 1 equity daily + 1 FRED + 1 CBOE + 1 full-market equity intraday + 2 vol intraday (30m, 5m)
-        assert len(commands) == 6
+        # 1 equity daily + 1 FRED + 1 CBOE + 1 day_aggs + 1 full-market equity
+        # intraday + 2 vol intraday (30m, 5m)
+        assert len(commands) == 7
 
 
 class TestMain:

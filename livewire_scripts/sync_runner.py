@@ -246,6 +246,28 @@ def run_sync(
     if rc != 0:
         failures.append("cboe_volatility")
 
+    # Phase 3b: Full-universe equity daily via Massive day_aggs flat files.
+    # This lane owns the ~20K SIP daily universe (and publishes 1d for symbols
+    # that only had intraday files); it went stale when nothing re-ran it.
+    day_aggs_days = int(os.getenv("MDW_DAILY_BACKFILL_DAY_AGGS_DAYS", "7"))
+    rc = run_phase(
+        "daily_backfill_equity_day_aggs",
+        [
+            py,
+            ingest,
+            "flatfile-ingest-daily",
+            "catch-up",
+            "--days",
+            str(day_aggs_days),
+            "--workers",
+            str(int(os.getenv("MDW_FLATFILE_DAILY_WORKERS", "4"))),
+        ],
+        config.log_dir,
+        runner=runner,
+    )
+    if rc != 0:
+        failures.append("equity_day_aggs")
+
     # Phase 4: Full-market equity intraday via Massive flat files
     rc = run_phase(
         "daily_backfill_intraday_equity_flatfiles",
