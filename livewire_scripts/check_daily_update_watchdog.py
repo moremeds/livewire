@@ -63,6 +63,23 @@ def determine_watchdog_error(log_file: Path, run_date: str) -> str:
     )
 
 
+def build_intraday_log_file(log_dir: Path, run_date: str) -> Path:
+    return log_dir / f"intraday_catchup_{run_date}.log"
+
+
+def determine_intraday_watchdog_error(log_file: Path, run_date: str) -> str:
+    if not log_file.exists():
+        return (
+            "Watchdog detected that the intraday catch-up did not start on "
+            f"{run_date}; expected log file {log_file} was not created."
+        )
+
+    return (
+        "Watchdog detected that the intraday catch-up did not complete "
+        f"successfully on {run_date}; no completion marker was found in {log_file}."
+    )
+
+
 def record_alert_marker(marker_file: Path, message: str) -> None:
     marker_file.parent.mkdir(parents=True, exist_ok=True)
     marker_file.write_text(f"{message}\n", encoding="utf-8")
@@ -76,23 +93,29 @@ def run_watchdog(
     runner: callable = subprocess.run,
 ) -> int:
     daily_log_file = build_daily_log_file(config.log_dir, run_date)
+    intraday_log_file = build_intraday_log_file(config.log_dir, run_date)
     watchdog_log_file = build_watchdog_log_file(config.log_dir, run_date)
     marker_file = build_watchdog_marker_file(config.warehouse_dir, run_date)
     quality_marker = config.log_dir / f"quality_summary_{run_date}.marker"
 
     daily_complete = log_has_completion_marker(daily_log_file)
     quality_complete = quality_marker.exists()
+    intraday_complete = log_has_completion_marker(intraday_log_file)
 
-    if daily_complete and quality_complete:
+    if daily_complete and quality_complete and intraday_complete:
         return 0
 
-    if daily_complete:
-        reason = (
+    reasons: list[str] = []
+    if not daily_complete:
+        reasons.append(determine_watchdog_error(daily_log_file, run_date))
+    elif not quality_complete:
+        reasons.append(
             f"Daily sync completed on {run_date} but the end-of-day quality "
             f"summary marker is missing at {quality_marker}."
         )
-    else:
-        reason = determine_watchdog_error(daily_log_file, run_date)
+    if not intraday_complete:
+        reasons.append(determine_intraday_watchdog_error(intraday_log_file, run_date))
+    reason = " ".join(reasons)
     append_log(watchdog_log_file, f"=== Daily Update Watchdog {run_date} ===")
     append_log(watchdog_log_file, reason)
 

@@ -74,6 +74,9 @@ class TestRunWatchdog:
             encoding="utf-8",
         )
         (config.log_dir / "quality_summary_2026-03-11.marker").write_text("ok\n")
+        (config.log_dir / "intraday_catchup_2026-03-11.log").write_text(
+            "=== Done 2026-03-11T05:02:29Z ===\n", encoding="utf-8"
+        )
 
         assert run_watchdog(config, run_date="2026-03-11", env={}) == 0
 
@@ -152,9 +155,47 @@ class TestQualitySummaryMarker:
         daily_log = build_daily_log_file(config.log_dir, "2026-05-18")
         daily_log.write_text("=== Done 2026-05-18T20:00:00Z (attempt 1/3) ===\n")
         (config.log_dir / "quality_summary_2026-05-18.marker").write_text("ok\n")
+        (config.log_dir / "intraday_catchup_2026-05-18.log").write_text(
+            "=== Done 2026-05-18T05:02:29Z ===\n", encoding="utf-8"
+        )
 
         rc = run_watchdog(config, run_date="2026-05-18")
         assert rc == 0
+
+    def test_alerts_when_intraday_marker_missing(self, tmp_path):
+        config = _config(tmp_path)
+        config.log_dir.mkdir(parents=True, exist_ok=True)
+        daily_log = build_daily_log_file(config.log_dir, "2026-05-18")
+        daily_log.write_text("=== Done 2026-05-18T20:00:00Z (attempt 1/3) ===\n")
+        (config.log_dir / "quality_summary_2026-05-18.marker").write_text("ok\n")
+        # intraday_catchup log intentionally absent
+        captured = {}
+
+        def _send(config_arg, request, log_file, env=None, runner=None):
+            captured["request"] = request
+            return SimpleNamespace(returncode=0, stdout="sent")
+
+        with patch(
+            "livewire_scripts.check_daily_update_watchdog.send_failure_alert",
+            side_effect=_send,
+        ):
+            rc = run_watchdog(config, run_date="2026-05-18", env={})
+
+        assert rc == WATCHDOG_ALERT_SENT_EXIT_CODE
+        assert "intraday catch-up did not start" in captured["request"].error_summary
+
+    def test_alerts_when_intraday_log_incomplete(self, tmp_path):
+        from livewire_scripts.check_daily_update_watchdog import (
+            build_intraday_log_file,
+            determine_intraday_watchdog_error,
+        )
+
+        config = _config(tmp_path)
+        config.log_dir.mkdir(parents=True, exist_ok=True)
+        intraday_log = build_intraday_log_file(config.log_dir, "2026-05-18")
+        intraday_log.write_text("started but never finished\n", encoding="utf-8")
+        msg = determine_intraday_watchdog_error(intraday_log, "2026-05-18")
+        assert "did not complete successfully" in msg
 
     def test_alerts_when_quality_marker_missing(self, tmp_path):
         config = _config(tmp_path)
