@@ -43,7 +43,7 @@ _REPO_ROOT = _SCRIPT_DIR.parent
 _INGEST_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ingest.py"
 _OPS_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ops.py"
 
-TIMEFRAMES: tuple[str, ...] = ("1d", "1m", "1h", "5m")
+TIMEFRAMES: tuple[str, ...] = ("1d", "1m", "1h", "5m", "30m")
 DEFAULT_THRESHOLD = float(os.getenv("MDW_COVERAGE_ALERT_THRESHOLD", "0.95"))
 DEFAULT_SAFETY_CAP = 100
 
@@ -74,14 +74,6 @@ def _filename_for(tf: str) -> str:
     return "1d.parquet" if tf == "1d" else INTRADAY_PARQUET_FILENAME[tf]
 
 
-def _list_symbols(tf: str, bronze_root: Path) -> set[str]:
-    bronze_dir = bronze_root / "asset_class=equity"
-    if not bronze_dir.exists():
-        return set()
-    fname = _filename_for(tf)
-    return {decode_symbol(p.parent.name.split("=", 1)[1]) for p in bronze_dir.glob(f"symbol=*/{fname}")}
-
-
 def _symbol_from_parquet_path(path: Path) -> str:
     return decode_symbol(path.parent.name.split("=", 1)[1])
 
@@ -102,6 +94,36 @@ def _raw_symbols_for_date(target_date: date, bronze_root: Path) -> set[str]:
 
 
 def _latest_date_in_parquet(path: Path, column_name: str) -> date | None:
+    """Return the latest value in *column_name* using parquet footer statistics.
+
+    Reads only the file's footer (row-group min/max stats) instead of the full
+    column — the whole-column read is what made coverage take hours over ~13K
+    symbols. Falls back to a full column read only when stats are unavailable.
+    """
+    md = pq.ParquetFile(path).metadata
+    col_idx = next(
+        (i for i in range(md.num_columns) if md.schema.column(i).path == column_name),
+        None,
+    )
+    if col_idx is not None:
+        max_value = None
+        for rg_idx in range(md.num_row_groups):
+            stats = md.row_group(rg_idx).column(col_idx).statistics
+            if stats is None or not stats.has_min_max:
+                max_value = None
+                break
+            candidate = stats.max
+            if max_value is None or candidate > max_value:
+                max_value = candidate
+        if max_value is not None:
+            if isinstance(max_value, datetime):
+                return max_value.date()
+            if isinstance(max_value, date):
+                return max_value
+            if isinstance(max_value, (str, bytes)):
+                raw = max_value.decode() if isinstance(max_value, bytes) else max_value
+                return date.fromisoformat(raw[:10])
+    # Fallback: stats unavailable -> full column read (rare).
     table = pq.read_table(path, columns=[column_name])
     values = table.column(column_name).to_pylist()
     if not values:
@@ -114,28 +136,23 @@ def compute_coverage(
     target_date: date,
     bronze_root: Path | None = None,
 ) -> dict[str, CoverageResult]:
-    """Return per-timeframe coverage as-of *target_date*."""
+    """Return per-timeframe coverage as-of *target_date*.
+
+    Denominator is the **active bronze universe for that timeframe** — the
+    symbols we actually carry — not the full provider SIP set. A symbol counts
+    as present if it is current through *target_date* OR it is absent from the
+    day's raw traded set (it simply did not trade; no-trade is not missing).
+    """
     bronze_root = bronze_root or _DATA_LAKE / "bronze"
     results: dict[str, CoverageResult] = {}
 
-    # Prefer the provider's exact target-day symbol set. Fall back to existing
-    # bronze only when that raw date has not been staged yet.
-    universe = _raw_symbols_for_date(target_date, bronze_root)
-    if not universe:
-        for tf in TIMEFRAMES:
-            universe |= _list_symbols(tf, bronze_root)
-    universe_size = len(universe)
+    # The provider's exact target-day traded set, used only to exclude
+    # instruments that did not trade from the "missing" count.
+    traded_today = _raw_symbols_for_date(target_date, bronze_root)
 
     for tf in TIMEFRAMES:
         parquet_paths = sorted((bronze_root / "asset_class=equity").glob(f"symbol=*/{_filename_for(tf)}"))
-        if not parquet_paths:
-            results[tf] = CoverageResult(
-                timeframe=tf,
-                total=universe_size,
-                present=0,
-                missing_symbols=sorted(universe),
-            )
-            continue
+        universe = {_symbol_from_parquet_path(path) for path in parquet_paths}
 
         column_name = "trade_date" if tf == "1d" else "bar_timestamp"
         latest_by_symbol = {
@@ -143,11 +160,16 @@ def compute_coverage(
             for path in parquet_paths
             if (latest := _latest_date_in_parquet(path, column_name)) is not None
         }
-        present_symbols = {symbol for symbol, latest in latest_by_symbol.items() if latest >= target_date}
+        present_symbols = {
+            symbol
+            for symbol in universe
+            if (latest_by_symbol.get(symbol) or date.min) >= target_date
+            or (traded_today and symbol not in traded_today)
+        }
         missing = sorted(universe - present_symbols)
         results[tf] = CoverageResult(
             timeframe=tf,
-            total=universe_size,
+            total=len(universe),
             present=len(present_symbols),
             missing_symbols=missing,
         )
