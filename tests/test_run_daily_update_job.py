@@ -270,6 +270,46 @@ class TestEndOfDayQualityReport:
         assert "report" in report_cmd
         assert "--email" in report_cmd
 
+    def test_coverage_and_weekly_spawned_after_successful_daily(self, tmp_path):
+        config = _config(tmp_path)
+        calls = []
+
+        def fake_runner(cmd, **kwargs):
+            calls.append(list(cmd))
+            return CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
+
+        rc = run_with_retries(
+            config,
+            daily_update_args=[],
+            runner=fake_runner,
+            sleep_fn=lambda s: None,
+            now_fn=lambda: datetime(2026, 5, 18, 20, 0, tzinfo=UTC),
+        )
+        assert rc == 0
+        quality_calls = [c for c in calls if any("livewire_quality.py" in str(x) for x in c)]
+        assert any(c[-1] == "coverage" or "coverage" in c for c in quality_calls)
+        assert any("weekly" in c for c in quality_calls)
+
+    def test_coverage_spawn_failure_does_not_fail_daily(self, tmp_path):
+        config = _config(tmp_path)
+
+        def fake_runner(cmd, **kwargs):
+            # Match the quality subcommand arg, not the worktree path (which
+            # itself contains the word "coverage").
+            is_coverage = any("livewire_quality.py" in str(x) for x in cmd) and "coverage" in cmd
+            return CompletedProcess(args=cmd, returncode=3 if is_coverage else 0, stdout=b"", stderr=b"")
+
+        rc = run_with_retries(
+            config,
+            daily_update_args=[],
+            runner=fake_runner,
+            sleep_fn=lambda s: None,
+            now_fn=lambda: datetime(2026, 5, 18, 20, 0, tzinfo=UTC),
+        )
+        assert rc == 0
+        log_file = build_log_file(config.log_dir, datetime(2026, 5, 18, 20, 0, tzinfo=UTC))
+        assert "WARNING: coverage report failed" in log_file.read_text(encoding="utf-8")
+
     def test_report_failure_does_not_fail_daily(self, tmp_path):
         config = _config(tmp_path)
         calls = []

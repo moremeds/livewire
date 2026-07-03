@@ -217,6 +217,24 @@ def extract_error_summary(log_file: Path) -> str:
     return "Daily update failed with no error summary captured in the log."
 
 
+def _spawn_post_success_quality(runner, log_file, args, label, timeout=120):
+    """Run a post-success quality subcommand; a failure logs a warning only.
+
+    These jobs must never flip a successful daily run to failure.
+    """
+    try:
+        result = runner(
+            [sys.executable, str(QUALITY_SCRIPT), *args],
+            timeout=timeout,
+            check=False,
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            append_log(log_file, f"WARNING: {label} failed: exit_code={result.returncode}")
+    except Exception as exc:  # pragma: no cover - logged but tolerated
+        append_log(log_file, f"WARNING: {label} failed: {exc}")
+
+
 def log_has_completion_marker(log_file: Path) -> bool:
     try:
         for line in log_file.read_text(encoding="utf-8").splitlines():
@@ -265,29 +283,22 @@ def run_with_retries(
                 log_file,
                 (f"=== Done {now_fn():%Y-%m-%dT%H:%M:%SZ} (attempt {attempt}/{config.max_attempts}) ==="),
             )
-            try:
-                report_result = runner(
-                    [
-                        sys.executable,
-                        str(QUALITY_SCRIPT),
-                        "report",
-                        "--view",
-                        "summary",
-                        "--since",
-                        "24h",
-                        "--email",
-                    ],
-                    timeout=120,
-                    check=False,
-                    capture_output=True,
-                )
-                if report_result.returncode != 0:
-                    append_log(
-                        log_file,
-                        (f"WARNING: end-of-day quality report failed: exit_code={report_result.returncode}"),
-                    )
-            except Exception as exc:  # pragma: no cover - logged but tolerated
-                append_log(log_file, f"WARNING: end-of-day quality report failed: {exc}")
+            _spawn_post_success_quality(
+                runner,
+                log_file,
+                ["report", "--view", "summary", "--since", "24h", "--email"],
+                "end-of-day quality report",
+            )
+            # Coverage + weekly were tied to a container entrypoint that no
+            # longer exists; run them here after a successful daily job so
+            # they resume daily. Coverage may launch a recovery subprocess,
+            # so give it a longer budget. weekly self-skips on non-Sunday.
+            _spawn_post_success_quality(
+                runner, log_file, ["coverage"], "coverage report", timeout=600
+            )
+            _spawn_post_success_quality(
+                runner, log_file, ["weekly"], "weekly quality report"
+            )
             return 0
 
         append_log(
