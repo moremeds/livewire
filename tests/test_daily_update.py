@@ -17,6 +17,7 @@ from ib_async import Contract, Forex, Future, Index, Stock
 
 from clients.bronze_client import BronzeClient
 from clients.massive_client import MassiveAPIError
+from livewire_scripts.daily_outcomes import parse_last_summary_json
 from livewire_scripts.daily_update import (
     _easter,
     _fallback_client,
@@ -1005,7 +1006,8 @@ class TestMain:
         mock_massive.get_daily_bars.assert_called_once_with("AAPL", date(2025, 1, 3), date(2025, 1, 3))
 
     @pytest.mark.integration
-    def test_massive_source_returns_failure_when_no_bars(self, tmp_path, monkeypatch):
+    def test_massive_source_no_bars_is_no_trade_and_exits_zero(self, tmp_path, monkeypatch, capsys):
+        """A ticker with zero bars returned is no_trade, not failure; run exits 0."""
         monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "massive"])
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
@@ -1036,10 +1038,16 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
-            assert main() == 1
+            assert main() == 0
+
+        summary = parse_last_summary_json(capsys.readouterr().out)
+        assert summary["no_trade"] == 1
+        assert summary["updated"] == 0
+        assert summary["errors"] == 0
 
     @pytest.mark.integration
-    def test_massive_source_reports_remaining_missing_dates(self, tmp_path, monkeypatch):
+    def test_massive_source_remaining_dates_is_partial_and_exits_zero(self, tmp_path, monkeypatch, capsys):
+        """Target-day bar published but older gap remains -> partial, exit 0."""
         monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "massive"])
         bronze_dir = tmp_path / "bronze"
         _seed_bronze(
@@ -1082,7 +1090,103 @@ class TestMain:
             ),
             patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
         ):
+            assert main() == 0
+
+        summary = parse_last_summary_json(capsys.readouterr().out)
+        assert summary["partial"] == 1
+        assert summary["updated"] == 0
+
+    @pytest.mark.integration
+    def test_massive_source_exception_is_error(self, tmp_path, monkeypatch, capsys):
+        """A per-ticker exception is isolated as error; a lone error among a success exits 0."""
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "massive"])
+        bronze_dir = tmp_path / "bronze"
+        for symbol in ("AAPL", "MSFT"):
+            _seed_bronze(
+                bronze_dir,
+                symbol,
+                [
+                    {
+                        "trade_date": "2025-01-02",
+                        "symbol_id": 1,
+                        "open": 150.0,
+                        "high": 155.0,
+                        "low": 149.0,
+                        "close": 153.0,
+                        "adj_close": 153.0,
+                        "volume": 1000000,
+                    }
+                ],
+            )
+
+        def _get_daily_bars(ticker, start, end):
+            if ticker == "MSFT":
+                raise RuntimeError("Massive boom")
+            return [_make_bar(date="2025-01-03", open=154.0, high=158.0, low=152.0, close=156.0)]
+
+        mock_massive = MagicMock()
+        mock_massive.__enter__ = MagicMock(return_value=mock_massive)
+        mock_massive.__exit__ = MagicMock(return_value=False)
+        mock_massive.get_daily_bars.side_effect = _get_daily_bars
+
+        with (
+            patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
+            patch("livewire_scripts.daily_update._et_today", return_value=date(2025, 1, 3)),
+            patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
+            patch(
+                "livewire_scripts.daily_update.BronzeClient",
+                lambda **kw: BronzeClient(bronze_dir=bronze_dir),
+            ),
+            patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
+        ):
+            assert main() == 0
+
+        summary = parse_last_summary_json(capsys.readouterr().out)
+        assert summary["errors"] == 1
+        assert summary["updated"] == 1
+        assert summary["top_errors"][0][0].startswith("RuntimeError")
+
+    @pytest.mark.integration
+    def test_massive_source_all_errors_exits_one(self, tmp_path, monkeypatch, capsys):
+        """Zero updates with any error is systemic failure -> exit 1."""
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "massive"])
+        bronze_dir = tmp_path / "bronze"
+        _seed_bronze(
+            bronze_dir,
+            "AAPL",
+            [
+                {
+                    "trade_date": "2025-01-02",
+                    "symbol_id": 1,
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 149.0,
+                    "close": 153.0,
+                    "adj_close": 153.0,
+                    "volume": 1000000,
+                }
+            ],
+        )
+        mock_massive = MagicMock()
+        mock_massive.__enter__ = MagicMock(return_value=mock_massive)
+        mock_massive.__exit__ = MagicMock(return_value=False)
+        mock_massive.get_daily_bars.side_effect = RuntimeError("Massive down")
+
+        with (
+            patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
+            patch("livewire_scripts.daily_update._et_today", return_value=date(2025, 1, 3)),
+            patch("livewire_scripts.daily_update.MassiveClient", return_value=mock_massive),
+            patch(
+                "livewire_scripts.daily_update.BronzeClient",
+                lambda **kw: BronzeClient(bronze_dir=bronze_dir),
+            ),
+            patch("livewire_scripts.daily_update.BRONZE_DIR", bronze_dir),
+        ):
             assert main() == 1
+
+        summary = parse_last_summary_json(capsys.readouterr().out)
+        assert summary["errors"] == 1
+        assert summary["updated"] == 0
 
     @pytest.mark.integration
     def test_massive_source_calls_compat_write_hook(self, monkeypatch):
