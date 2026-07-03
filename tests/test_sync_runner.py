@@ -341,6 +341,37 @@ class TestRunSync:
         intraday_idx = next(i for i, c in enumerate(labels) if "flatfile-ingest catch-up" in c)
         assert day_aggs_idx < intraday_idx
 
+    def test_emits_summary_json_with_phases(self, tmp_path, capsys):
+        from livewire_scripts.daily_outcomes import parse_last_summary_json
+
+        config = _make_config(tmp_path)
+
+        def capture(command, **kwargs):
+            return CompletedProcess(args=command, returncode=0)
+
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+            run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
+        summary = parse_last_summary_json(capsys.readouterr().out)
+        assert summary["job"] == "daily_backfill"
+        assert summary["failed"] == []
+        labels = [p["label"] for p in summary["phases"]]
+        assert "daily_backfill_equity_day_aggs" in labels
+        assert all("duration_s" in p and "exit" in p for p in summary["phases"])
+
+    def test_summary_json_lists_failed_phases(self, tmp_path, capsys):
+        from livewire_scripts.daily_outcomes import parse_last_summary_json
+
+        config = _make_config(tmp_path)
+
+        def selective(command, **kwargs):
+            rc = 1 if "fred-rates" in command else 0
+            return CompletedProcess(args=command, returncode=rc)
+
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+            run_sync(config, runner=selective, trading_day_fn=lambda: "2026-05-28")
+        summary = parse_last_summary_json(capsys.readouterr().out)
+        assert summary["failed"] == ["daily_backfill_fred_rates"]
+
     def test_uses_target_date_from_config(self, tmp_path):
         config = _make_config(tmp_path)
         commands: list[list[str]] = []

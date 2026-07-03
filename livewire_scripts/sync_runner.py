@@ -13,6 +13,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -22,6 +23,8 @@ from zoneinfo import ZoneInfo
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
+
+from livewire_scripts.daily_outcomes import SUMMARY_PREFIX
 
 logger = logging.getLogger("livewire.sync_runner")
 
@@ -186,8 +189,17 @@ def run_sync(
         logger.error("%s", exc)
         return 2
     failures: list[str] = []
+    phase_results: list[dict] = []
     target_date = config.target_date or trading_day_fn()
     equity_tickers = ticker_union(config.equity_presets)
+
+    def _phase(label: str, command: list[str], **kwargs) -> int:
+        start = time.monotonic()
+        rc = run_phase(label, command, config.log_dir, runner=runner, **kwargs)
+        phase_results.append(
+            {"label": label, "exit": rc, "duration_s": round(time.monotonic() - start, 1)}
+        )
+        return rc
 
     logger.info("=" * 60)
     logger.info("DAILY BACKFILL START")
@@ -203,7 +215,7 @@ def run_sync(
     store = str(config.store_script)
 
     # Phase 1: Equity daily via Massive
-    rc = run_phase(
+    rc = _phase(
         "daily_backfill_equity_union",
         [
             py,
@@ -219,29 +231,20 @@ def run_sync(
             target_date,
             "--force",
         ],
-        config.log_dir,
         allow_completed_summary=True,
-        runner=runner,
     )
     if rc != 0:
         failures.append("equity_daily")
 
     # Phase 2: FRED Treasury rates
-    rc = run_phase(
-        "daily_backfill_fred_rates",
-        [py, ingest, "fred-rates"],
-        config.log_dir,
-        runner=runner,
-    )
+    rc = _phase("daily_backfill_fred_rates", [py, ingest, "fred-rates"])
     if rc != 0:
         failures.append("fred_rates")
 
     # Phase 3: CBOE volatility daily
-    rc = run_phase(
+    rc = _phase(
         "daily_backfill_volatility_cboe",
         [py, ingest, "cboe-vol", "--preset", config.vol_daily_preset],
-        config.log_dir,
-        runner=runner,
     )
     if rc != 0:
         failures.append("cboe_volatility")
@@ -250,7 +253,7 @@ def run_sync(
     # This lane owns the ~20K SIP daily universe (and publishes 1d for symbols
     # that only had intraday files); it went stale when nothing re-ran it.
     day_aggs_days = int(os.getenv("MDW_DAILY_BACKFILL_DAY_AGGS_DAYS", "7"))
-    rc = run_phase(
+    rc = _phase(
         "daily_backfill_equity_day_aggs",
         [
             py,
@@ -262,14 +265,12 @@ def run_sync(
             "--workers",
             str(int(os.getenv("MDW_FLATFILE_DAILY_WORKERS", "4"))),
         ],
-        config.log_dir,
-        runner=runner,
     )
     if rc != 0:
         failures.append("equity_day_aggs")
 
     # Phase 4: Full-market equity intraday via Massive flat files
-    rc = run_phase(
+    rc = _phase(
         "daily_backfill_intraday_equity_flatfiles",
         [
             py,
@@ -281,8 +282,6 @@ def run_sync(
             "--workers",
             str(int(os.getenv("MDW_FLATFILE_WORKERS", "4"))),
         ],
-        config.log_dir,
-        runner=runner,
     )
     if rc != 0:
         failures.append("intraday_equity_flatfiles")
@@ -290,7 +289,7 @@ def run_sync(
     # Phase 5: Volatility intraday via IB
     vol_tickers = load_tickers(config.vol_preset)
     for tf in VOL_INTRADAY_TIMEFRAMES:
-        rc = run_phase(
+        rc = _phase(
             f"daily_backfill_intraday_{tf}_volatility",
             [
                 py,
@@ -307,8 +306,6 @@ def run_sync(
                 "--days",
                 str(config.intraday_days),
             ],
-            config.log_dir,
-            runner=runner,
         )
         if rc != 0:
             failures.append(f"vol_intraday_{tf}")
@@ -331,16 +328,28 @@ def run_sync(
             ),
             ("volatility", ["--asset-class", "volatility", "--timeframe", "1d"]),
         ]:
-            rc = run_phase(
+            rc = _phase(
                 f"daily_backfill_postgres_{suffix}",
                 [py, store, "rebuild-postgres", *ac_args],
-                config.log_dir,
-                runner=runner,
             )
             if rc != 0:
                 failures.append(f"postgres_{suffix}")
     else:
         logger.info("Postgres rebuild skipped — MDW_POSTGRES_DSN not set")
+
+    # Machine-readable per-phase summary for the nightly digest / watchdog.
+    print(
+        SUMMARY_PREFIX
+        + json.dumps(
+            {
+                "job": "daily_backfill",
+                "target_date": str(target_date),
+                "phases": phase_results,
+                "failed": [p["label"] for p in phase_results if p["exit"] != 0],
+            },
+            separators=(",", ":"),
+        )
+    )
 
     logger.info("=" * 60)
     if failures:
