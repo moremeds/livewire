@@ -4,6 +4,57 @@ This file preserves completed task lists that were previously in [todo.md](todo.
 
 ---
 
+# Intraday Catch-Up Failure Recovery
+
+## Goal
+
+Recover the 2026-06-25 `intraday_catchup` failure and prevent corrupt derived
+intraday parquet snapshots from aborting future Massive flat-file catch-up runs.
+
+## Dependency Graph
+
+- R0 -> R1
+- R1 -> R2
+- R2 -> R3
+- R0 -> R4
+
+## Tasks
+
+- [x] R0 Diagnose the alert from source logs.
+  depends_on: []
+  - Root cause was a corrupt derived snapshot:
+    `symbol=SONM/1h.parquet` raised `Parquet magic bytes not found in footer`
+    while publishing bucket 173.
+
+- [x] R1 Repair the live data file.
+  depends_on: [R0]
+  - Preserved the corrupt file as
+    `1h.parquet.corrupt-20260625-150121`.
+  - Rebuilt SONM `1h.parquet` from the readable SONM `1m.parquet`; rebuilt
+    file validated with 10,475 rows.
+
+- [x] R2 Rerun the resumable flat-file catch-up.
+  depends_on: [R1]
+  - `flatfile-ingest catch-up --days 7 --workers 4` resumed from the incomplete
+    scope and exited 0.
+  - Final state: 256/256 buckets complete, 12,591 tickers complete.
+
+- [x] R3 Verify the operator-facing outcome.
+  depends_on: [R2]
+  - Retry output: `Downloaded=0 skipped=5 published_tickers=3898`.
+  - The original scheduled alert remains in
+    `intraday_catchup_2026-06-25.log`, but the failed equity-intraday phase has
+    been repaired by the successful retry.
+
+- [x] R4 Add prevention coverage and code.
+  depends_on: [R0]
+  - Added a regression test for corrupt derived parquet recovery.
+  - Flat-file publishing now rebuilds corrupt derived `5m`, `30m`, or `1h`
+    snapshots from the already-merged `1m` source snapshot instead of aborting.
+  - Verification: focused tests `29 passed`; full coverage command was
+    interrupted after an unrelated idle SSL/proxy hang with `1070 passed, 1
+    skipped`.
+
 # Massive Flat-File Post-Ship Documentation
 
 ## Dependency Graph

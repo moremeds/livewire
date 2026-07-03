@@ -6,6 +6,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
+import logging
+
+import pyarrow as pa
 
 from clients.intraday_bronze_client import IntradayBronzeClient
 from clients.massive_flatfile_state import MassiveFlatfileState
@@ -14,6 +17,7 @@ from clients.symbol_ids import stable_symbol_id
 from clients.timeframe_aggregator import aggregate_bars
 
 DERIVED_TIMEFRAMES = ("5m", "30m", "1h")
+log = logging.getLogger(__name__)
 
 
 def _bronze_rows(ticker: str, rows: list[dict]) -> list[dict]:
@@ -24,6 +28,29 @@ def _bronze_rows(ticker: str, rows: list[dict]) -> list[dict]:
         row["symbol_id"] = stable_symbol_id(ticker)
         result.append(row)
     return result
+
+
+def _merge_or_rebuild_derived(
+    symbol: str,
+    timeframe: str,
+    derived_client: IntradayBronzeClient,
+    one_minute_client: IntradayBronzeClient,
+    rows: list[dict],
+) -> None:
+    try:
+        derived_client.merge_ticker_rows(symbol, rows, overwrite_existing=True)
+    except (OSError, pa.ArrowInvalid) as exc:
+        log_path = derived_client.bronze_dir / f"symbol={symbol}" / f"{timeframe}.parquet"
+
+        log.warning(
+            "%s: rebuilding corrupt %s from 1m snapshot after read failure: %s",
+            symbol,
+            log_path,
+            exc,
+        )
+        one_minute_rows = one_minute_client.read_symbol_rows(symbol)
+        rebuilt = aggregate_bars(one_minute_rows, source_tf="1m", target_tf=timeframe)
+        derived_client.replace_ticker_rows(symbol, rebuilt)
 
 
 def publish_dates(
@@ -76,7 +103,13 @@ def publish_dates(
                 local_rows += one_minute.merge_ticker_rows(ticker, rows, overwrite_existing=True)
                 for timeframe in DERIVED_TIMEFRAMES:
                     derived = aggregate_bars(rows, source_tf="1m", target_tf=timeframe)
-                    derived_clients[timeframe].merge_ticker_rows(ticker, derived, overwrite_existing=True)
+                    _merge_or_rebuild_derived(
+                        ticker,
+                        timeframe,
+                        derived_clients[timeframe],
+                        one_minute,
+                        derived,
+                    )
             local_published += 1
             state.mark_ticker_completed(scope, bucket, ticker)
         state.mark_bucket_completed(scope, bucket)
