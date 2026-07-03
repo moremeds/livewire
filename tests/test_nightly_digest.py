@@ -119,3 +119,5 @@ def test_main_email_invokes_node_script(tmp_path, monkeypatch):
     cmd = calls[0]
     assert "--mode" in cmd and "digest" in cmd
     assert "--body-file" in cmd
+    # Writes the marker the daily-update watchdog gates on.
+    assert (log_dir / "quality_summary_2026-07-02.marker").exists()

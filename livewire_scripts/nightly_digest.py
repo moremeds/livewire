@@ -137,6 +137,11 @@ def main(argv=None, runner=subprocess.run) -> int:
     body = build_digest(args.run_date, args.log_dir, args.data_lake)
     print(body)
     if args.email:
+        # The digest is the post-daily quality artifact; write the marker the
+        # watchdog gates on (previously written by report --view summary --email).
+        marker = args.log_dir / f"quality_summary_{args.run_date.isoformat()}.marker"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"nightly digest {args.run_date.isoformat()}\n", encoding="utf-8")
         node_bin = os.getenv("MDW_NODE_BIN") or shutil.which("node") or "/opt/homebrew/bin/node"
         return _send_email(body, args.run_date, node_bin, runner)
     return 0
