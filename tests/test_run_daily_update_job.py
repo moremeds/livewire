@@ -662,9 +662,10 @@ class TestMain:
                 with patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", side_effect=_run_cboe):
                     assert main(["--dry-run"]) == 0
 
-        # IB syncs equity and futures; volatility via CBOE
+        # IB syncs equity, futures, cmdty and fx; volatility via CBOE
         assert ib_calls == [["--dry-run", "--asset-class", ac] for ac in ASSET_CLASSES]
         assert cboe_called == [True]
+        assert "cmdty" in ASSET_CLASSES and "fx" in ASSET_CLASSES
 
     def test_main_explicit_asset_class_skips_cboe(self):
         config = _config(Path("/tmp/test"))

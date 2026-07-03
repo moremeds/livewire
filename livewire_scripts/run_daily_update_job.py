@@ -20,7 +20,10 @@ INGEST_SCRIPT = REPO_ROOT / "scripts" / "livewire_ingest.py"
 OPS_SCRIPT = REPO_ROOT / "scripts" / "livewire_ops.py"
 QUALITY_SCRIPT = REPO_ROOT / "scripts" / "livewire_quality.py"
 
-ASSET_CLASSES = ["equity", "futures"]  # Volatility now synced via CBOE directly
+# Volatility is synced via CBOE directly (run_cboe_volatility_sync); these are
+# the IB-backed asset classes the daily job iterates. cmdty/fx use IB MIDPOINT
+# contracts and had no owning lane before, so they went stale.
+ASSET_CLASSES = ["equity", "futures", "cmdty", "fx"]
 
 
 @dataclass(frozen=True)
