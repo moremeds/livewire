@@ -1,0 +1,11 @@
+{
+  "name": "futures-active",
+  "description": "Active COMEX/NYMEX metals + energy futures — GC (front GCN6 + second GCQ6), CL (CLQ6), BZ Brent (BZU6). Contract-month codes verified against live IB 2026-07-04.",
+  "asset_class": "futures",
+  "contracts": [
+    {"root": "GC", "exchange": "COMEX", "expiry": "202607"},
+    {"root": "GC", "exchange": "COMEX", "expiry": "202608"},
+    {"root": "CL", "exchange": "NYMEX", "expiry": "202608"},
+    {"root": "BZ", "exchange": "NYMEX", "expiry": "202609"}
+  ]
+}

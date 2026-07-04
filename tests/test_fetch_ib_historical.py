@@ -636,6 +636,12 @@ class TestMakeContract:
         assert contract.symbol == "ES"
         assert contract.lastTradeDateOrContractMonth == "202506"
         assert contract.exchange == "CME"
+        # Currency must land in the `currency` slot, not `localSymbol`.
+        # ib_async Future positional order is
+        # (symbol, lastTradeDateOrContractMonth, exchange, localSymbol, multiplier, currency);
+        # a positional "USD" would poison localSymbol and cause IB error 200.
+        assert contract.currency == "USD"
+        assert contract.localSymbol == ""
 
         # ZB maps to CBOT via ROOT_EXCHANGE_MAP
         contract_zb = _make_contract("ZB_202506", "futures")
