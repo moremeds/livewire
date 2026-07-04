@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-04
+
+### Added
+
+- Full-universe equity daily lane via Massive `day_aggs` flat files (~20K
+  tickers vs. the ~2.5K preset-driven `daily` command), re-enabled in the
+  nightly catch-up orchestrator.
+- `presets/futures-active.json` — GC (front + second month), CL, BZ Brent
+  futures; contract-month codes verified against live IB.
+- Backfill now tracks `oldest_date` per ticker to detect shallow history.
+- Warehouse health report command.
+- Daily-run observability: a machine-readable `SUMMARY_JSON` line per run with
+  per-ticker outcome classification (`updated` / `no_trade` / `partial` /
+  `error`) and a threshold-based exit policy, a nightly digest email replacing
+  the noisy per-ticker summary storm, and coverage tracking after every
+  successful daily run.
+
 ### Changed
 
 - Replaced all legacy ticker-filtered and REST equity-intraday ingestion with a
@@ -18,6 +35,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-equity asset classes.
 - Added mandatory preflight checks for Massive S3 credentials and a full-build
   storage-capacity gate.
+- Parallelized flat-file ingestion, defaulted equity to Massive, and improved
+  exFAT storage stability.
+- Bronze writes now use zstd-3 compression; intraday storage migrated to a
+  multi-file layout.
+- Shifted the daily sync and intraday catch-up schedules to clear IBC's
+  nightly 03:45 UTC auto-restart / 2FA window.
+- Removed Cerebras alert enrichment in favor of a static, truthful incident
+  report.
+
+### Fixed
+
+- **Futures never seeded**: `make_contract` passed `"USD"` positionally into
+  ib_async's `localSymbol` slot instead of `currency`, so every futures
+  contract request failed IB validation (error 200) and `asset_class=futures`
+  bronze stayed empty. Also repairs the existing futures-index/-energy/-metals/
+  -treasuries presets.
+- **`archive-otc` would have delisted live tickers**: it differenced bronze
+  against the day_aggs universe, which excludes warrants/units/rights/
+  preferreds that bronze actually carries via the minute_aggs lane — a live
+  dry-run flagged 286 actively-trading instruments. Rewritten to use the
+  minute_aggs `_symbols.parquet` set plus a data-driven staleness guard
+  (live dry-run now 286 → 0).
+- Backfill depth check no longer misfires on seed cursors in
+  `gap_aware_completed`.
+- Added NDX→NASDAQ to `VOLATILITY_EXCHANGE_MAP`; fixed RUT intraday, ET-aware
+  daily targets, and smarter failure alerts.
+- Added `5m` to the IB volatility intraday lane.
+- `daily_update` alert summaries now parse the structured `SUMMARY_JSON` line
+  instead of regexing per-ticker prose, fixing a false "277/277 failed" alarm
+  where a success message ("1 bar published from Massive") was miscounted as
+  the dominant error.
+- Restored the `quality_summary` completion marker (used by the watchdog)
+  after removing the old summary-email spawn.
 
 ## [0.2.1] - 2026-06-03
 
