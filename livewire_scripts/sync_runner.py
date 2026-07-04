@@ -196,9 +196,7 @@ def run_sync(
     def _phase(label: str, command: list[str], **kwargs) -> int:
         start = time.monotonic()
         rc = run_phase(label, command, config.log_dir, runner=runner, **kwargs)
-        phase_results.append(
-            {"label": label, "exit": rc, "duration_s": round(time.monotonic() - start, 1)}
-        )
+        phase_results.append({"label": label, "exit": rc, "duration_s": round(time.monotonic() - start, 1)})
         return rc
 
     logger.info("=" * 60)

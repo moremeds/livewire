@@ -10,13 +10,13 @@ import pyarrow.parquet as pq
 import pytest
 
 from livewire_scripts.archive_otc_symbols import (
+    _staleness_cutoff,
     archive_symbol,
     find_archivable_symbols,
     latest_1d_date,
     load_active_universe,
     main,
     run_archive,
-    _staleness_cutoff,
 )
 
 
@@ -268,9 +268,7 @@ class TestRunArchive:
         minute, bronze, delisted = self._setup(
             tmp_path, universe=["AAPL"], bronze_syms={"AAPL": "2026-07-02", "DEAD": "2020-01-02"}
         )
-        stats = run_archive(
-            bronze, delisted, minute, as_of=None, universe_days=20, staleness_days=30, dry_run=False
-        )
+        stats = run_archive(bronze, delisted, minute, as_of=None, universe_days=20, staleness_days=30, dry_run=False)
         assert stats["archived"] == 1
         assert (delisted / "symbol=DEAD").exists()
         assert (bronze / "symbol=AAPL").exists()
@@ -280,9 +278,7 @@ class TestRunArchive:
         minute, bronze, delisted = self._setup(
             tmp_path, universe=["AAPL"], bronze_syms={"AAPL": "2026-07-02", "WRNT": "2026-07-01"}
         )
-        stats = run_archive(
-            bronze, delisted, minute, as_of=None, universe_days=20, staleness_days=30, dry_run=False
-        )
+        stats = run_archive(bronze, delisted, minute, as_of=None, universe_days=20, staleness_days=30, dry_run=False)
         assert stats["archived"] == 0
         assert (bronze / "symbol=WRNT").exists()
 
@@ -290,9 +286,7 @@ class TestRunArchive:
         minute, bronze, delisted = self._setup(
             tmp_path, universe=["AAPL"], bronze_syms={"AAPL": "2026-07-02", "DEAD": "2020-01-02"}
         )
-        stats = run_archive(
-            bronze, delisted, minute, as_of=None, universe_days=20, staleness_days=30, dry_run=True
-        )
+        stats = run_archive(bronze, delisted, minute, as_of=None, universe_days=20, staleness_days=30, dry_run=True)
         assert stats["dry_run"] == 1
         assert (bronze / "symbol=DEAD").exists()
         assert not delisted.exists()
@@ -302,9 +296,7 @@ class TestRunArchive:
             tmp_path, universe=["AAPL"], bronze_syms={"AAPL": "2026-07-02", "DEAD": "2020-01-02"}
         )
         _make_bronze_sym(delisted, "DEAD", latest_date="2020-01-02")
-        stats = run_archive(
-            bronze, delisted, minute, as_of=None, universe_days=20, staleness_days=30, dry_run=False
-        )
+        stats = run_archive(bronze, delisted, minute, as_of=None, universe_days=20, staleness_days=30, dry_run=False)
         assert stats["skipped_exists"] == 1
         assert stats["archived"] == 0
 
@@ -312,9 +304,7 @@ class TestRunArchive:
         minute, bronze, delisted = self._setup(
             tmp_path, universe=["AAPL", "MSFT"], bronze_syms={"AAPL": "2026-07-02", "MSFT": "2026-07-02"}
         )
-        stats = run_archive(
-            bronze, delisted, minute, as_of=None, universe_days=20, staleness_days=30, dry_run=False
-        )
+        stats = run_archive(bronze, delisted, minute, as_of=None, universe_days=20, staleness_days=30, dry_run=False)
         assert stats == {"archived": 0, "skipped_exists": 0, "dry_run": 0}
 
 
@@ -332,39 +322,29 @@ class TestMain:
         return wh
 
     def test_archives_with_warehouse_flag(self, tmp_path):
-        wh = self._setup_warehouse(
-            tmp_path, ["AAPL"], {"AAPL": "2026-07-02", "DEAD": "2020-01-02"}
-        )
+        wh = self._setup_warehouse(tmp_path, ["AAPL"], {"AAPL": "2026-07-02", "DEAD": "2020-01-02"})
         rc = main(["--warehouse", str(wh)])
         assert rc == 0
         delisted = wh / "data-lake" / "bronze-delisted" / "asset_class=equity"
         assert (delisted / "symbol=DEAD").exists()
 
     def test_dry_run_flag(self, tmp_path):
-        wh = self._setup_warehouse(
-            tmp_path, ["AAPL"], {"AAPL": "2026-07-02", "DEAD": "2020-01-02"}
-        )
+        wh = self._setup_warehouse(tmp_path, ["AAPL"], {"AAPL": "2026-07-02", "DEAD": "2020-01-02"})
         bronze = wh / "data-lake" / "bronze" / "asset_class=equity"
         rc = main(["--warehouse", str(wh), "--dry-run"])
         assert rc == 0
         assert (bronze / "symbol=DEAD").exists()
 
     def test_as_of_and_window_flags(self, tmp_path):
-        wh = self._setup_warehouse(
-            tmp_path, ["AAPL"], {"AAPL": "2026-07-02", "DEAD": "2020-01-02"}
-        )
-        rc = main(
-            ["--warehouse", str(wh), "--as-of", "2026-07-02", "--universe-days", "5", "--staleness-days", "10"]
-        )
+        wh = self._setup_warehouse(tmp_path, ["AAPL"], {"AAPL": "2026-07-02", "DEAD": "2020-01-02"})
+        rc = main(["--warehouse", str(wh), "--as-of", "2026-07-02", "--universe-days", "5", "--staleness-days", "10"])
         assert rc == 0
         delisted = wh / "data-lake" / "bronze-delisted" / "asset_class=equity"
         assert (delisted / "symbol=DEAD").exists()
 
     def test_staleness_flag_spares_recent(self, tmp_path):
         # With a huge staleness window, even an old-ish symbol is spared.
-        wh = self._setup_warehouse(
-            tmp_path, ["AAPL"], {"AAPL": "2026-07-02", "RECENT": "2026-06-20"}
-        )
+        wh = self._setup_warehouse(tmp_path, ["AAPL"], {"AAPL": "2026-07-02", "RECENT": "2026-06-20"})
         bronze = wh / "data-lake" / "bronze" / "asset_class=equity"
         rc = main(["--warehouse", str(wh), "--staleness-days", "365"])
         assert rc == 0

@@ -1,4 +1,5 @@
 """Tests for livewire_scripts.daily_outcomes."""
+
 import json
 
 from livewire_scripts.daily_outcomes import (
@@ -12,9 +13,17 @@ from livewire_scripts.daily_outcomes import (
 
 def _line(**kw):
     base = dict(
-        job="daily_update", asset_class="equity", source="massive",
-        target_date="2026-07-02", updated=9091, no_trade=277, partial=95,
-        errors=0, bars_inserted=9186, validation_issues=0, top_errors=[],
+        job="daily_update",
+        asset_class="equity",
+        source="massive",
+        target_date="2026-07-02",
+        updated=9091,
+        no_trade=277,
+        partial=95,
+        errors=0,
+        bars_inserted=9186,
+        validation_issues=0,
+        top_errors=[],
     )
     base.update(kw)
     return build_summary_line(**base)
@@ -23,7 +32,7 @@ def _line(**kw):
 def test_build_summary_line_round_trips():
     line = _line(top_errors=[("HTTP 500 from Massive", 12)])
     assert line.startswith(SUMMARY_PREFIX)
-    payload = json.loads(line[len(SUMMARY_PREFIX):])
+    payload = json.loads(line[len(SUMMARY_PREFIX) :])
     assert payload["updated"] == 9091
     assert payload["no_trade"] == 277
     assert payload["top_errors"] == [["HTTP 500 from Massive", 12]]

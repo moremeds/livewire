@@ -192,9 +192,16 @@ class TestHelpers:
 
         log_file = tmp_path / "daily_update_2026-07-03.log"
         line = build_summary_line(
-            job="daily_update", asset_class="equity", source="massive",
-            target_date="2026-07-02", updated=9091, no_trade=277, partial=95,
-            errors=12, bars_inserted=9186, validation_issues=0,
+            job="daily_update",
+            asset_class="equity",
+            source="massive",
+            target_date="2026-07-02",
+            updated=9091,
+            no_trade=277,
+            partial=95,
+            errors=12,
+            bars_inserted=9186,
+            validation_issues=0,
             top_errors=[("ConnectionError: Massive timeout", 12)],
         )
         log_file.write_text("  AAPL: 1 bar published from Massive\n" + line + "\n", encoding="utf-8")

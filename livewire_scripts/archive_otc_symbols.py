@@ -63,9 +63,7 @@ def load_active_universe(
             tickers.update(tbl.column("ticker").to_pylist())
             dates_used.append(d.name.removeprefix("date="))
     if not dates_used:
-        raise FileNotFoundError(
-            f"No _symbols.parquet found in the last {universe_days} minute_aggs dates"
-        )
+        raise FileNotFoundError(f"No _symbols.parquet found in the last {universe_days} minute_aggs dates")
     return tickers, dates_used
 
 

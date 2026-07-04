@@ -291,12 +291,8 @@ def run_with_retries(
             # they resume daily. Coverage may launch a recovery subprocess,
             # so give it a longer budget. weekly self-skips on non-Sunday.
             # Run these before the digest so the digest sees fresh coverage.
-            _spawn_post_success_quality(
-                runner, log_file, ["coverage"], "coverage report", timeout=600
-            )
-            _spawn_post_success_quality(
-                runner, log_file, ["weekly"], "weekly quality report"
-            )
+            _spawn_post_success_quality(runner, log_file, ["coverage"], "coverage report", timeout=600)
+            _spawn_post_success_quality(runner, log_file, ["weekly"], "weekly quality report")
             # One trustworthy nightly digest replaces the noisy per-warrant
             # summary email.
             run_date = log_file.stem.removeprefix("daily_update_")

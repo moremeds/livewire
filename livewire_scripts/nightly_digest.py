@@ -9,6 +9,7 @@ a rare truthful failure mail only on systemic failure.
 Every section renders "(not found)" for missing inputs — build_digest never
 raises, so a missing log can never suppress the whole digest.
 """
+
 from __future__ import annotations
 
 import argparse

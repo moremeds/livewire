@@ -5,6 +5,7 @@ daily_update.py (producer) and the wrapper / digest (consumers). Downstream
 consumers parse this line instead of regexing human-readable prose — that
 regex is what once reported 9,091 success lines as the "dominant error".
 """
+
 from __future__ import annotations
 
 import json
@@ -54,7 +55,7 @@ def parse_last_summary_json(text: str) -> dict | None:
         if not stripped.startswith(SUMMARY_PREFIX):
             continue
         try:
-            result = json.loads(stripped[len(SUMMARY_PREFIX):])
+            result = json.loads(stripped[len(SUMMARY_PREFIX) :])
         except json.JSONDecodeError:
             continue
     return result
@@ -68,7 +69,7 @@ def parse_all_summary_json(text: str) -> list[dict]:
         if not stripped.startswith(SUMMARY_PREFIX):
             continue
         try:
-            results.append(json.loads(stripped[len(SUMMARY_PREFIX):]))
+            results.append(json.loads(stripped[len(SUMMARY_PREFIX) :]))
         except json.JSONDecodeError:
             continue
     return results

@@ -1,4 +1,5 @@
 """Tests for livewire_scripts.nightly_digest."""
+
 from __future__ import annotations
 
 from datetime import date
@@ -11,16 +12,24 @@ from livewire_scripts.nightly_digest import build_digest, main
 def _write_daily_log(log_dir, run, summaries):
     lines = ["=== Daily Update ==="]
     for s in summaries:
-        lines.append(f"  AAPL: 1 bar published from Massive")
+        lines.append("  AAPL: 1 bar published from Massive")
         lines.append(build_summary_line(**s))
     (log_dir / f"daily_update_{run}.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _daily_summary(**kw):
     base = dict(
-        job="daily_update", asset_class="equity", source="massive",
-        target_date="2026-07-02", updated=9091, no_trade=277, partial=95,
-        errors=0, bars_inserted=9186, validation_issues=0, top_errors=[],
+        job="daily_update",
+        asset_class="equity",
+        source="massive",
+        target_date="2026-07-02",
+        updated=9091,
+        no_trade=277,
+        partial=95,
+        errors=0,
+        bars_inserted=9186,
+        validation_issues=0,
+        top_errors=[],
     )
     base.update(kw)
     return base
@@ -31,7 +40,8 @@ def test_build_digest_renders_all_sections(tmp_path):
     log_dir.mkdir()
     run = "2026-07-02"
     _write_daily_log(
-        log_dir, run,
+        log_dir,
+        run,
         [_daily_summary(), _daily_summary(asset_class="futures", source="ib", updated=3, no_trade=0, partial=0)],
     )
     intraday = SUMMARY_PREFIX + (
@@ -81,6 +91,7 @@ def test_disk_tripwire_warns_under_reserve(tmp_path, monkeypatch):
     import importlib
 
     from livewire_scripts import nightly_digest
+
     importlib.reload(nightly_digest)
 
     class _Usage:
