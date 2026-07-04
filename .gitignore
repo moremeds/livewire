@@ -33,3 +33,6 @@ coverage.json
 
 # MCP tool working dir
 .serena/
+
+# worktrees (global rule: .worktrees/<branch-slug>/)
+.worktrees/
