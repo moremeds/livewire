@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -11,138 +11,184 @@ import pytest
 
 from livewire_scripts.archive_otc_symbols import (
     archive_symbol,
-    find_non_sip_symbols,
-    load_sip_universe,
+    find_archivable_symbols,
+    latest_1d_date,
+    load_active_universe,
     main,
     run_archive,
+    _staleness_cutoff,
 )
 
 
-def _write_ticker_parquet(path: Path, tickers: list[str]) -> None:
-    """Write a minimal day_aggs-style parquet file with a ticker column."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _write_minute_symbols(minute_base: Path, date: str, tickers: list[str]) -> None:
+    """Create a minute_aggs date dir with a _symbols.parquet ticker set."""
+    d = minute_base / f"date={date}"
+    d.mkdir(parents=True, exist_ok=True)
     tbl = pa.table({"ticker": pa.array(tickers, type=pa.string())})
-    pq.write_table(tbl, path)
+    pq.write_table(tbl, d / "_symbols.parquet")
 
 
-def _make_sip_date(raw_base: Path, date: str, tickers: list[str]) -> None:
-    """Create a single-bucket SIP date directory with given tickers."""
-    _write_ticker_parquet(raw_base / f"date={date}" / "bucket_000.parquet", tickers)
-
-
-def _make_bronze_sym(bronze_equity: Path, sym: str) -> None:
-    """Create a symbol directory with a stub 1d.parquet."""
+def _make_bronze_sym(
+    bronze_equity: Path,
+    sym: str,
+    latest_date: str | None = "2020-01-02",
+    *,
+    as_date_type: bool = False,
+    stub: bool = False,
+) -> None:
+    """Create a symbol dir. Writes a real 1d.parquet with *latest_date* unless
+    *stub* (writes unreadable bytes) or *latest_date* is None (empty table)."""
     sym_dir = bronze_equity / f"symbol={sym}"
     sym_dir.mkdir(parents=True, exist_ok=True)
-    (sym_dir / "1d.parquet").write_bytes(b"stub")
+    f = sym_dir / "1d.parquet"
+    if stub:
+        f.write_bytes(b"not a parquet file")
+        return
+    if latest_date is None:
+        tbl = pa.table({"trade_date": pa.array([], type=pa.string())})
+    elif as_date_type:
+        tbl = pa.table({"trade_date": pa.array([_dt.date.fromisoformat(latest_date)])})
+    else:
+        # include an older row so max() is meaningful
+        tbl = pa.table({"trade_date": pa.array(["2019-12-31", latest_date])})
+    pq.write_table(tbl, f)
 
 
-class TestLoadSipUniverse:
-    def test_loads_tickers_from_latest_date(self, tmp_path):
-        raw_base = tmp_path / "day_aggs_v1"
-        _make_sip_date(raw_base, "2026-06-10", ["AAPL", "MSFT"])
-        _make_sip_date(raw_base, "2026-06-11", ["AAPL", "NVDA"])
+# ── load_active_universe ──────────────────────────────────────────────
 
-        tickers, date_used = load_sip_universe(raw_base)
 
-        assert tickers == {"AAPL", "NVDA"}
-        assert date_used == "2026-06-11"
+class TestLoadActiveUniverse:
+    def test_unions_over_window(self, tmp_path):
+        base = tmp_path / "minute_aggs_v1"
+        _write_minute_symbols(base, "2026-06-09", ["AAPL", "WRNT"])
+        _write_minute_symbols(base, "2026-06-10", ["AAPL", "UNIT"])
+        _write_minute_symbols(base, "2026-06-11", ["AAPL", "MSFT"])
 
-    def test_loads_tickers_from_specific_date(self, tmp_path):
-        raw_base = tmp_path / "day_aggs_v1"
-        _make_sip_date(raw_base, "2026-06-10", ["AAPL", "MSFT"])
-        _make_sip_date(raw_base, "2026-06-11", ["AAPL", "NVDA"])
+        tickers, dates = load_active_universe(base, universe_days=3)
 
-        tickers, date_used = load_sip_universe(raw_base, date="2026-06-10")
+        assert tickers == {"AAPL", "WRNT", "UNIT", "MSFT"}
+        assert dates == ["2026-06-09", "2026-06-10", "2026-06-11"]
 
-        assert tickers == {"AAPL", "MSFT"}
-        assert date_used == "2026-06-10"
+    def test_window_limits_to_last_n_days(self, tmp_path):
+        base = tmp_path / "minute_aggs_v1"
+        _write_minute_symbols(base, "2026-06-09", ["OLD"])
+        _write_minute_symbols(base, "2026-06-10", ["MID"])
+        _write_minute_symbols(base, "2026-06-11", ["NEW"])
 
-    def test_merges_multiple_bucket_files(self, tmp_path):
-        raw_base = tmp_path / "day_aggs_v1"
-        date_dir = raw_base / "date=2026-06-11"
-        _write_ticker_parquet(date_dir / "bucket_000.parquet", ["AAPL", "MSFT"])
-        _write_ticker_parquet(date_dir / "bucket_001.parquet", ["NVDA", "GOOG"])
+        tickers, dates = load_active_universe(base, universe_days=2)
 
-        tickers, _ = load_sip_universe(raw_base)
+        assert tickers == {"MID", "NEW"}
+        assert dates == ["2026-06-10", "2026-06-11"]
 
-        assert tickers == {"AAPL", "MSFT", "NVDA", "GOOG"}
+    def test_as_of_filters_future_dates(self, tmp_path):
+        base = tmp_path / "minute_aggs_v1"
+        _write_minute_symbols(base, "2026-06-10", ["A"])
+        _write_minute_symbols(base, "2026-06-11", ["B"])
+        _write_minute_symbols(base, "2026-06-12", ["C"])
+
+        tickers, dates = load_active_universe(base, universe_days=5, as_of="2026-06-11")
+
+        assert tickers == {"A", "B"}
+        assert dates == ["2026-06-10", "2026-06-11"]
+
+    def test_skips_dates_missing_symbols_file(self, tmp_path):
+        base = tmp_path / "minute_aggs_v1"
+        _write_minute_symbols(base, "2026-06-10", ["A"])
+        (base / "date=2026-06-11").mkdir(parents=True)  # no _symbols.parquet
+        _write_minute_symbols(base, "2026-06-12", ["C"])
+
+        tickers, dates = load_active_universe(base, universe_days=5)
+
+        assert tickers == {"A", "C"}
+        assert dates == ["2026-06-10", "2026-06-12"]
 
     def test_raises_when_no_date_dirs(self, tmp_path):
-        raw_base = tmp_path / "day_aggs_v1"
-        raw_base.mkdir()
+        base = tmp_path / "minute_aggs_v1"
+        base.mkdir()
+        with pytest.raises(FileNotFoundError, match="No minute_aggs raw data"):
+            load_active_universe(base, universe_days=3)
 
-        with pytest.raises(FileNotFoundError, match="No day_aggs raw data"):
-            load_sip_universe(raw_base)
-
-    def test_raises_when_specific_date_missing(self, tmp_path):
-        raw_base = tmp_path / "day_aggs_v1"
-        _make_sip_date(raw_base, "2026-06-11", ["AAPL"])
-
-        with pytest.raises(FileNotFoundError, match="SIP date not found"):
-            load_sip_universe(raw_base, date="2026-06-01")
-
-    def test_raises_when_date_dir_has_no_parquet(self, tmp_path):
-        raw_base = tmp_path / "day_aggs_v1"
-        (raw_base / "date=2026-06-11").mkdir(parents=True)
-
-        with pytest.raises(FileNotFoundError, match="No parquet bucket files"):
-            load_sip_universe(raw_base)
-
-    def test_ignores_hidden_parquet_files(self, tmp_path):
-        raw_base = tmp_path / "day_aggs_v1"
-        date_dir = raw_base / "date=2026-06-11"
-        _write_ticker_parquet(date_dir / "bucket_000.parquet", ["AAPL"])
-        (date_dir / ".__symbols.parquet").write_bytes(b"not a real parquet file")
-
-        tickers, _ = load_sip_universe(raw_base)
-
-        assert tickers == {"AAPL"}
+    def test_raises_when_window_has_no_symbols_files(self, tmp_path):
+        base = tmp_path / "minute_aggs_v1"
+        (base / "date=2026-06-11").mkdir(parents=True)
+        with pytest.raises(FileNotFoundError, match="No _symbols.parquet"):
+            load_active_universe(base, universe_days=3)
 
 
-class TestFindNonSipSymbols:
-    def test_returns_symbols_absent_from_sip(self, tmp_path):
-        bronze_equity = tmp_path / "asset_class=equity"
-        for sym in ["AAPL", "OTC1", "MSFT", "PNKSH"]:
-            _make_bronze_sym(bronze_equity, sym)
+# ── latest_1d_date ────────────────────────────────────────────────────
 
-        result = find_non_sip_symbols(bronze_equity, {"AAPL", "MSFT"})
 
-        assert result == ["OTC1", "PNKSH"]
+class TestLatest1dDate:
+    def test_reads_max_string_date(self, tmp_path):
+        b = tmp_path / "asset_class=equity"
+        _make_bronze_sym(b, "AAPL", latest_date="2026-06-30")
+        assert latest_1d_date(b / "symbol=AAPL") == "2026-06-30"
 
-    def test_returns_empty_when_all_in_sip(self, tmp_path):
-        bronze_equity = tmp_path / "asset_class=equity"
-        _make_bronze_sym(bronze_equity, "AAPL")
+    def test_reads_max_date_type(self, tmp_path):
+        b = tmp_path / "asset_class=equity"
+        _make_bronze_sym(b, "AAPL", latest_date="2026-06-30", as_date_type=True)
+        assert latest_1d_date(b / "symbol=AAPL") == "2026-06-30"
 
-        result = find_non_sip_symbols(bronze_equity, {"AAPL", "MSFT"})
+    def test_returns_none_when_file_missing(self, tmp_path):
+        b = tmp_path / "asset_class=equity"
+        (b / "symbol=AAPL").mkdir(parents=True)
+        assert latest_1d_date(b / "symbol=AAPL") is None
 
-        assert result == []
+    def test_returns_none_when_unreadable(self, tmp_path):
+        b = tmp_path / "asset_class=equity"
+        _make_bronze_sym(b, "AAPL", stub=True)
+        assert latest_1d_date(b / "symbol=AAPL") is None
 
-    def test_returns_all_when_none_in_sip(self, tmp_path):
-        bronze_equity = tmp_path / "asset_class=equity"
-        for sym in ["OTC1", "OTC2"]:
-            _make_bronze_sym(bronze_equity, sym)
+    def test_returns_none_when_empty(self, tmp_path):
+        b = tmp_path / "asset_class=equity"
+        _make_bronze_sym(b, "AAPL", latest_date=None)
+        assert latest_1d_date(b / "symbol=AAPL") is None
 
-        result = find_non_sip_symbols(bronze_equity, {"AAPL"})
 
-        assert result == ["OTC1", "OTC2"]
+# ── find_archivable_symbols ───────────────────────────────────────────
 
-    def test_returns_sorted(self, tmp_path):
-        bronze_equity = tmp_path / "asset_class=equity"
-        for sym in ["ZZZ", "AAA", "MMM"]:
-            _make_bronze_sym(bronze_equity, sym)
 
-        result = find_non_sip_symbols(bronze_equity, set())
+class TestFindArchivableSymbols:
+    def test_absent_and_stale_is_archivable(self, tmp_path):
+        b = tmp_path / "asset_class=equity"
+        _make_bronze_sym(b, "DEAD", latest_date="2020-01-02")
+        assert find_archivable_symbols(b, set(), "2026-05-12") == ["DEAD"]
 
-        assert result == ["AAA", "MMM", "ZZZ"]
+    def test_present_in_universe_excluded(self, tmp_path):
+        b = tmp_path / "asset_class=equity"
+        _make_bronze_sym(b, "AAPL", latest_date="2020-01-02")
+        assert find_archivable_symbols(b, {"AAPL"}, "2026-05-12") == []
 
-    def test_returns_empty_when_bronze_is_empty(self, tmp_path):
-        bronze_equity = tmp_path / "asset_class=equity"
-        bronze_equity.mkdir(parents=True)
+    def test_absent_but_fresh_excluded(self, tmp_path):
+        b = tmp_path / "asset_class=equity"
+        # warrant that traded recently but is not in the universe set
+        _make_bronze_sym(b, "WRNT", latest_date="2026-07-01")
+        assert find_archivable_symbols(b, set(), "2026-05-12") == []
 
-        result = find_non_sip_symbols(bronze_equity, {"AAPL"})
+    def test_absent_unreadable_date_skipped(self, tmp_path):
+        b = tmp_path / "asset_class=equity"
+        _make_bronze_sym(b, "CORRUPT", stub=True)
+        assert find_archivable_symbols(b, set(), "2026-05-12") == []
 
-        assert result == []
+    def test_result_is_sorted(self, tmp_path):
+        b = tmp_path / "asset_class=equity"
+        for s in ["ZZZ", "AAA", "MMM"]:
+            _make_bronze_sym(b, s, latest_date="2020-01-02")
+        assert find_archivable_symbols(b, set(), "2026-05-12") == ["AAA", "MMM", "ZZZ"]
+
+
+# ── _staleness_cutoff ─────────────────────────────────────────────────
+
+
+class TestStalenessCutoff:
+    def test_subtracts_days_from_latest_date(self):
+        assert _staleness_cutoff(["2026-06-01", "2026-07-02"], 30) == "2026-06-02"
+
+    def test_uses_max_date_regardless_of_order(self):
+        assert _staleness_cutoff(["2026-07-02", "2026-06-01"], 0) == "2026-07-02"
+
+
+# ── archive_symbol (unchanged behaviour) ──────────────────────────────
 
 
 class TestArchiveSymbol:
@@ -204,127 +250,126 @@ class TestArchiveSymbol:
         assert (dst / "5m.parquet").exists()
 
 
+# ── run_archive ───────────────────────────────────────────────────────
+
+
 class TestRunArchive:
-    def _setup(self, tmp_path, sip_tickers, bronze_syms):
-        raw_base = tmp_path / "raw" / "day_aggs_v1"
-        _make_sip_date(raw_base, "2026-06-11", sip_tickers)
-        bronze_equity = tmp_path / "bronze" / "asset_class=equity"
-        for sym in bronze_syms:
-            _make_bronze_sym(bronze_equity, sym)
-        delisted_equity = tmp_path / "delisted" / "asset_class=equity"
-        return raw_base, bronze_equity, delisted_equity
+    def _setup(self, tmp_path, universe, bronze_syms):
+        """bronze_syms: dict[sym] = latest_date (str | None)."""
+        minute_base = tmp_path / "raw" / "minute_aggs_v1"
+        _write_minute_symbols(minute_base, "2026-07-02", universe)
+        bronze = tmp_path / "bronze" / "asset_class=equity"
+        for sym, latest in bronze_syms.items():
+            _make_bronze_sym(bronze, sym, latest_date=latest)
+        delisted = tmp_path / "delisted" / "asset_class=equity"
+        return minute_base, bronze, delisted
 
-    def test_archives_non_sip_tickers(self, tmp_path):
-        raw_base, bronze, delisted = self._setup(
-            tmp_path, sip_tickers=["AAPL"], bronze_syms=["AAPL", "OTC1", "OTC2"]
+    def test_archives_inactive_and_stale(self, tmp_path):
+        minute, bronze, delisted = self._setup(
+            tmp_path, universe=["AAPL"], bronze_syms={"AAPL": "2026-07-02", "DEAD": "2020-01-02"}
         )
-
-        stats = run_archive(bronze, delisted, raw_base, sip_date=None, dry_run=False)
-
-        assert stats["archived"] == 2
-        assert stats["skipped_exists"] == 0
-        assert (delisted / "symbol=OTC1").exists()
-        assert (delisted / "symbol=OTC2").exists()
+        stats = run_archive(
+            bronze, delisted, minute, as_of=None, universe_days=20, staleness_days=30, dry_run=False
+        )
+        assert stats["archived"] == 1
+        assert (delisted / "symbol=DEAD").exists()
         assert (bronze / "symbol=AAPL").exists()
 
-    def test_dry_run_does_not_move(self, tmp_path):
-        raw_base, bronze, delisted = self._setup(
-            tmp_path, sip_tickers=["AAPL"], bronze_syms=["AAPL", "OTC1"]
+    def test_spares_recently_traded_non_universe_symbol(self, tmp_path):
+        # A warrant absent from the universe but with a fresh bar must NOT be archived.
+        minute, bronze, delisted = self._setup(
+            tmp_path, universe=["AAPL"], bronze_syms={"AAPL": "2026-07-02", "WRNT": "2026-07-01"}
         )
+        stats = run_archive(
+            bronze, delisted, minute, as_of=None, universe_days=20, staleness_days=30, dry_run=False
+        )
+        assert stats["archived"] == 0
+        assert (bronze / "symbol=WRNT").exists()
 
-        stats = run_archive(bronze, delisted, raw_base, sip_date=None, dry_run=True)
-
+    def test_dry_run_does_not_move(self, tmp_path):
+        minute, bronze, delisted = self._setup(
+            tmp_path, universe=["AAPL"], bronze_syms={"AAPL": "2026-07-02", "DEAD": "2020-01-02"}
+        )
+        stats = run_archive(
+            bronze, delisted, minute, as_of=None, universe_days=20, staleness_days=30, dry_run=True
+        )
         assert stats["dry_run"] == 1
-        assert (bronze / "symbol=OTC1").exists()
+        assert (bronze / "symbol=DEAD").exists()
         assert not delisted.exists()
 
     def test_skips_already_delisted(self, tmp_path):
-        raw_base, bronze, delisted = self._setup(
-            tmp_path, sip_tickers=["AAPL"], bronze_syms=["AAPL", "OTC1"]
+        minute, bronze, delisted = self._setup(
+            tmp_path, universe=["AAPL"], bronze_syms={"AAPL": "2026-07-02", "DEAD": "2020-01-02"}
         )
-        _make_bronze_sym(delisted, "OTC1")
-
-        stats = run_archive(bronze, delisted, raw_base, sip_date=None, dry_run=False)
-
+        _make_bronze_sym(delisted, "DEAD", latest_date="2020-01-02")
+        stats = run_archive(
+            bronze, delisted, minute, as_of=None, universe_days=20, staleness_days=30, dry_run=False
+        )
         assert stats["skipped_exists"] == 1
         assert stats["archived"] == 0
 
     def test_returns_zeros_when_nothing_to_archive(self, tmp_path):
-        raw_base, bronze, delisted = self._setup(
-            tmp_path, sip_tickers=["AAPL", "MSFT"], bronze_syms=["AAPL", "MSFT"]
+        minute, bronze, delisted = self._setup(
+            tmp_path, universe=["AAPL", "MSFT"], bronze_syms={"AAPL": "2026-07-02", "MSFT": "2026-07-02"}
         )
-
-        stats = run_archive(bronze, delisted, raw_base, sip_date=None, dry_run=False)
-
+        stats = run_archive(
+            bronze, delisted, minute, as_of=None, universe_days=20, staleness_days=30, dry_run=False
+        )
         assert stats == {"archived": 0, "skipped_exists": 0, "dry_run": 0}
 
-    def test_passes_sip_date_to_loader(self, tmp_path):
-        raw_base, bronze, delisted = self._setup(
-            tmp_path, sip_tickers=["AAPL"], bronze_syms=["AAPL"]
-        )
-        _make_sip_date(raw_base, "2026-06-10", ["AAPL", "EXTRA"])
 
-        stats = run_archive(bronze, delisted, raw_base, sip_date="2026-06-10", dry_run=False)
-
-        assert stats["archived"] == 0
+# ── main ──────────────────────────────────────────────────────────────
 
 
 class TestMain:
-    def _setup_warehouse(self, tmp_path, sip_tickers, bronze_syms):
-        raw_base = (
-            tmp_path
-            / "market-warehouse"
-            / "data-lake"
-            / "raw"
-            / "massive"
-            / "us_stocks_sip"
-            / "day_aggs_v1"
-        )
-        _make_sip_date(raw_base, "2026-06-11", sip_tickers)
-        bronze = (
-            tmp_path / "market-warehouse" / "data-lake" / "bronze" / "asset_class=equity"
-        )
-        for sym in bronze_syms:
-            _make_bronze_sym(bronze, sym)
-        return tmp_path / "market-warehouse"
+    def _setup_warehouse(self, tmp_path, universe, bronze_syms):
+        wh = tmp_path / "market-warehouse"
+        minute_base = wh / "data-lake" / "raw" / "massive" / "us_stocks_sip" / "minute_aggs_v1"
+        _write_minute_symbols(minute_base, "2026-07-02", universe)
+        bronze = wh / "data-lake" / "bronze" / "asset_class=equity"
+        for sym, latest in bronze_syms.items():
+            _make_bronze_sym(bronze, sym, latest_date=latest)
+        return wh
 
     def test_archives_with_warehouse_flag(self, tmp_path):
-        warehouse = self._setup_warehouse(tmp_path, ["AAPL"], ["AAPL", "OTC1"])
-
-        rc = main(["--warehouse", str(warehouse)])
-
+        wh = self._setup_warehouse(
+            tmp_path, ["AAPL"], {"AAPL": "2026-07-02", "DEAD": "2020-01-02"}
+        )
+        rc = main(["--warehouse", str(wh)])
         assert rc == 0
-        delisted = warehouse / "data-lake" / "bronze-delisted" / "asset_class=equity"
-        assert (delisted / "symbol=OTC1").exists()
+        delisted = wh / "data-lake" / "bronze-delisted" / "asset_class=equity"
+        assert (delisted / "symbol=DEAD").exists()
 
     def test_dry_run_flag(self, tmp_path):
-        warehouse = self._setup_warehouse(tmp_path, ["AAPL"], ["AAPL", "OTC1"])
-        bronze = warehouse / "data-lake" / "bronze" / "asset_class=equity"
-
-        rc = main(["--warehouse", str(warehouse), "--dry-run"])
-
-        assert rc == 0
-        assert (bronze / "symbol=OTC1").exists()
-
-    def test_sip_date_flag(self, tmp_path):
-        warehouse = self._setup_warehouse(tmp_path, ["AAPL"], ["AAPL", "OTC1"])
-        raw_base = (
-            warehouse
-            / "data-lake"
-            / "raw"
-            / "massive"
-            / "us_stocks_sip"
-            / "day_aggs_v1"
+        wh = self._setup_warehouse(
+            tmp_path, ["AAPL"], {"AAPL": "2026-07-02", "DEAD": "2020-01-02"}
         )
-        _make_sip_date(raw_base, "2026-06-10", ["AAPL", "OTC1"])
-
-        rc = main(["--warehouse", str(warehouse), "--sip-date", "2026-06-10"])
-
+        bronze = wh / "data-lake" / "bronze" / "asset_class=equity"
+        rc = main(["--warehouse", str(wh), "--dry-run"])
         assert rc == 0
-        delisted = warehouse / "data-lake" / "bronze-delisted" / "asset_class=equity"
-        assert not (delisted / "symbol=OTC1").exists()
+        assert (bronze / "symbol=DEAD").exists()
+
+    def test_as_of_and_window_flags(self, tmp_path):
+        wh = self._setup_warehouse(
+            tmp_path, ["AAPL"], {"AAPL": "2026-07-02", "DEAD": "2020-01-02"}
+        )
+        rc = main(
+            ["--warehouse", str(wh), "--as-of", "2026-07-02", "--universe-days", "5", "--staleness-days", "10"]
+        )
+        assert rc == 0
+        delisted = wh / "data-lake" / "bronze-delisted" / "asset_class=equity"
+        assert (delisted / "symbol=DEAD").exists()
+
+    def test_staleness_flag_spares_recent(self, tmp_path):
+        # With a huge staleness window, even an old-ish symbol is spared.
+        wh = self._setup_warehouse(
+            tmp_path, ["AAPL"], {"AAPL": "2026-07-02", "RECENT": "2026-06-20"}
+        )
+        bronze = wh / "data-lake" / "bronze" / "asset_class=equity"
+        rc = main(["--warehouse", str(wh), "--staleness-days", "365"])
+        assert rc == 0
+        assert (bronze / "symbol=RECENT").exists()
 
     def test_returns_1_when_bronze_missing(self, tmp_path):
         rc = main(["--warehouse", str(tmp_path / "nonexistent")])
-
         assert rc == 1

@@ -1,63 +1,111 @@
-"""Archive OTC/pinksheet equity symbols to bronze-delisted.
+"""Archive genuinely-inactive equity symbols to bronze-delisted.
 
-Identifies equity tickers present in the bronze data lake but absent from
-the Massive SIP day_aggs universe, then moves their entire symbol directories
-to bronze-delisted so they are excluded from future syncs, backfills, and
-coverage tracking.
+Identifies equity tickers that are (a) absent from the Massive **minute_aggs**
+whole-market SIP universe over a recent lookback window AND (b) whose own latest
+bronze 1d bar is older than a staleness threshold, then moves their entire
+symbol directories to bronze-delisted so they are excluded from future syncs,
+backfills, and coverage tracking.
+
+Why minute_aggs (not day_aggs): the day_aggs universe excludes warrants, units,
+rights, and many preferred/special share classes, while bronze is fed by the
+whole-market minute_aggs lane which includes them. Differencing bronze against
+day_aggs therefore flags hundreds of *actively-trading* instruments as OTC. The
+minute_aggs `_symbols.parquet` set is the lane that actually feeds bronze, and
+the staleness guard is a second, data-driven safety net: a symbol is only
+archived when its own most-recent bar confirms it has stopped trading.
 
 Usage:
-    python scripts/livewire_store.py archive-otc            # Archive all non-SIP tickers
-    python scripts/livewire_store.py archive-otc --dry-run  # Preview without moving
-    python scripts/livewire_store.py archive-otc --sip-date 2026-06-11  # Specific SIP date
+    python scripts/livewire_store.py archive-otc --dry-run
+    python scripts/livewire_store.py archive-otc
+    python scripts/livewire_store.py archive-otc --universe-days 20 --staleness-days 30
+    python scripts/livewire_store.py archive-otc --as-of 2026-07-02
 """
 
 from __future__ import annotations
 
 import argparse
 import shutil
+from datetime import date, timedelta
 from pathlib import Path
 
 import pyarrow.parquet as pq
 
 _DEFAULT_WAREHOUSE = Path.home() / "market-warehouse"
+_DEFAULT_UNIVERSE_DAYS = 20
+_DEFAULT_STALENESS_DAYS = 30
 
 
-def load_sip_universe(raw_base: Path, date: str | None = None) -> tuple[set[str], str]:
-    """Return (tickers, date_used) from Massive SIP day_aggs raw parquet files.
+def load_active_universe(
+    minute_base: Path,
+    universe_days: int,
+    as_of: str | None = None,
+) -> tuple[set[str], list[str]]:
+    """Return (tickers, dates_used) from the minute_aggs SIP universe.
 
-    Picks the latest available date when *date* is None.
+    Unions the ``_symbols.parquet`` ticker set across the last *universe_days*
+    available date partitions at or before *as_of* (latest available when
+    *as_of* is None). Thinly-traded instruments do not print every day, so a
+    single day is not a reliable "active" set — the window captures them.
     """
-    date_dirs = sorted(raw_base.glob("date=*/"))
+    date_dirs = sorted(minute_base.glob("date=*"))
+    if as_of is not None:
+        date_dirs = [d for d in date_dirs if d.name.removeprefix("date=") <= as_of]
     if not date_dirs:
-        raise FileNotFoundError(f"No day_aggs raw data found under {raw_base}")
+        raise FileNotFoundError(f"No minute_aggs raw data found under {minute_base}")
 
-    if date is not None:
-        target = raw_base / f"date={date}"
-        if not target.is_dir():
-            raise FileNotFoundError(f"SIP date not found: {target}")
-        date_used = date
-    else:
-        target = date_dirs[-1]
-        date_used = target.name.removeprefix("date=")
-
-    bucket_files = sorted(f for f in target.glob("*.parquet") if not f.name.startswith("."))
-    if not bucket_files:
-        raise FileNotFoundError(f"No parquet bucket files in {target}")
-
+    window = date_dirs[-universe_days:]
     tickers: set[str] = set()
-    for f in bucket_files:
-        tbl = pq.read_table(f, columns=["ticker"])
-        tickers.update(tbl.column("ticker").to_pylist())
-    return tickers, date_used
+    dates_used: list[str] = []
+    for d in window:
+        symbols_file = d / "_symbols.parquet"
+        if symbols_file.exists():
+            tbl = pq.read_table(symbols_file, columns=["ticker"])
+            tickers.update(tbl.column("ticker").to_pylist())
+            dates_used.append(d.name.removeprefix("date="))
+    if not dates_used:
+        raise FileNotFoundError(
+            f"No _symbols.parquet found in the last {universe_days} minute_aggs dates"
+        )
+    return tickers, dates_used
 
 
-def find_non_sip_symbols(bronze_equity: Path, sip_universe: set[str]) -> list[str]:
-    """Return symbol names in bronze_equity absent from sip_universe, sorted."""
-    return sorted(
-        sym_dir.name.removeprefix("symbol=")
-        for sym_dir in bronze_equity.glob("symbol=*/")
-        if sym_dir.name.removeprefix("symbol=") not in sip_universe
-    )
+def latest_1d_date(sym_dir: Path) -> str | None:
+    """Return the max ``trade_date`` (ISO string) from ``sym_dir/1d.parquet``.
+
+    Returns None when the file is missing, unreadable, or empty. ``trade_date``
+    may be stored as a date or a string; both stringify to ``YYYY-MM-DD``.
+    """
+    f = sym_dir / "1d.parquet"
+    try:
+        values = pq.read_table(str(f), columns=["trade_date"]).column("trade_date").to_pylist()
+    except Exception:
+        return None
+    if not values:
+        return None
+    return max(str(v) for v in values)
+
+
+def find_archivable_symbols(
+    bronze_equity: Path,
+    active_universe: set[str],
+    staleness_cutoff: str,
+) -> list[str]:
+    """Return symbols eligible for archival, sorted.
+
+    A symbol qualifies only when it is absent from *active_universe* AND its
+    latest bronze 1d bar is strictly older than *staleness_cutoff* (ISO date).
+    Symbols whose latest date cannot be determined are conservatively skipped —
+    we never archive without positive evidence of staleness.
+    """
+    out: list[str] = []
+    for sym_dir in sorted(bronze_equity.glob("symbol=*/")):
+        sym = sym_dir.name.removeprefix("symbol=")
+        if sym in active_universe:
+            continue
+        latest = latest_1d_date(sym_dir)
+        if latest is not None and latest < staleness_cutoff:
+            out.append(sym)
+    return out
 
 
 def archive_symbol(
@@ -80,19 +128,32 @@ def archive_symbol(
     return "archived"
 
 
+def _staleness_cutoff(dates_used: list[str], staleness_days: int) -> str:
+    """ISO cutoff = latest universe date minus *staleness_days* calendar days."""
+    reference = date.fromisoformat(max(dates_used))
+    return (reference - timedelta(days=staleness_days)).isoformat()
+
+
 def run_archive(
     bronze_equity: Path,
     delisted_equity: Path,
-    raw_base: Path,
-    sip_date: str | None,
+    minute_base: Path,
+    as_of: str | None,
+    universe_days: int,
+    staleness_days: int,
     dry_run: bool,
 ) -> dict[str, int]:
-    """Identify and archive non-SIP tickers. Returns stats dict."""
-    sip_universe, date_used = load_sip_universe(raw_base, sip_date)
-    print(f"SIP universe: {len(sip_universe)} tickers (date={date_used})")
+    """Identify and archive inactive tickers. Returns stats dict."""
+    active_universe, dates_used = load_active_universe(minute_base, universe_days, as_of)
+    cutoff = _staleness_cutoff(dates_used, staleness_days)
+    print(
+        f"Active universe: {len(active_universe)} tickers "
+        f"({len(dates_used)} minute_aggs days, {dates_used[0]}..{dates_used[-1]})"
+    )
+    print(f"Staleness cutoff: latest 1d bar must be < {cutoff}")
 
-    candidates = find_non_sip_symbols(bronze_equity, sip_universe)
-    print(f"Non-SIP tickers in bronze: {len(candidates)}")
+    candidates = find_archivable_symbols(bronze_equity, active_universe, cutoff)
+    print(f"Archivable (inactive + stale) tickers: {len(candidates)}")
 
     if not candidates:
         print("Nothing to archive.")
@@ -113,14 +174,26 @@ def run_archive(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Archive OTC/pinksheet equity symbols to bronze-delisted"
+        description="Archive inactive equity symbols (absent from recent SIP + stale) to bronze-delisted"
     )
     parser.add_argument("--dry-run", action="store_true", help="Preview without moving files")
     parser.add_argument(
-        "--sip-date",
+        "--as-of",
         default=None,
         metavar="YYYY-MM-DD",
-        help="SIP day_aggs date to use as active universe (default: latest available)",
+        help="End of the minute_aggs universe window (default: latest available)",
+    )
+    parser.add_argument(
+        "--universe-days",
+        type=int,
+        default=_DEFAULT_UNIVERSE_DAYS,
+        help=f"Minute_aggs lookback window in trading days (default: {_DEFAULT_UNIVERSE_DAYS})",
+    )
+    parser.add_argument(
+        "--staleness-days",
+        type=int,
+        default=_DEFAULT_STALENESS_DAYS,
+        help=f"Archive only if latest 1d bar is older than this many days (default: {_DEFAULT_STALENESS_DAYS})",
     )
     parser.add_argument(
         "--warehouse",
@@ -131,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     warehouse = args.warehouse
-    raw_base = warehouse / "data-lake" / "raw" / "massive" / "us_stocks_sip" / "day_aggs_v1"
+    minute_base = warehouse / "data-lake" / "raw" / "massive" / "us_stocks_sip" / "minute_aggs_v1"
     bronze_equity = warehouse / "data-lake" / "bronze" / "asset_class=equity"
     delisted_equity = warehouse / "data-lake" / "bronze-delisted" / "asset_class=equity"
 
@@ -142,8 +215,10 @@ def main(argv: list[str] | None = None) -> int:
     run_archive(
         bronze_equity=bronze_equity,
         delisted_equity=delisted_equity,
-        raw_base=raw_base,
-        sip_date=args.sip_date,
+        minute_base=minute_base,
+        as_of=args.as_of,
+        universe_days=args.universe_days,
+        staleness_days=args.staleness_days,
         dry_run=args.dry_run,
     )
     return 0
