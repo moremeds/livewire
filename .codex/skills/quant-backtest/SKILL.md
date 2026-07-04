@@ -1,6 +1,6 @@
 ---
 name: quant-backtest
-description: Institutional-grade Python backtesting framework builder for Codex. Use this skill whenever the user mentions backtesting, quant strategy, alpha model, trading system, signal engine, portfolio backtest, walk-forward optimization, strategy performance, Sharpe ratio calculation, look-ahead bias, transaction cost modeling, or building any systematic trading infrastructure. Also trigger on mentions of vectorized signals, position sizing, mark-to-market, risk metrics (VaR, Sortino, Calmar), regime filters, or factor attribution. If the user says "backtest this idea" or "test my trading strategy", use this skill.
+description: Institutional-grade Python backtesting framework builder for Codex. Use ONLY when the user explicitly asks to build, extend, or run a backtest or systematic strategy test (e.g. "backtest this idea", "test my trading strategy", "build a walk-forward harness"). Do NOT trigger on incidental mentions of signals, positions, risk, coverage, Sharpe, or other market vocabulary during ordinary data-warehouse work in this repo.
 ---
 
 # Quant Backtesting Framework

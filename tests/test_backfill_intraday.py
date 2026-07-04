@@ -476,7 +476,22 @@ class TestMain:
 
         preset_path = Path("presets/volatility-intraday.json")
         preset = json.loads(preset_path.read_text(encoding="utf-8"))
-        assert preset["tickers"] == ["VIX", "SPX", "NDX", "RUT", "VXN", "RVX", "VVIX", "VIX3M", "OVX", "VXEEM", "VXGDX", "VXSLV", "COR1M", "COR3M"]
+        assert preset["tickers"] == [
+            "VIX",
+            "SPX",
+            "NDX",
+            "RUT",
+            "VXN",
+            "RVX",
+            "VVIX",
+            "VIX3M",
+            "OVX",
+            "VXEEM",
+            "VXGDX",
+            "VXSLV",
+            "COR1M",
+            "COR3M",
+        ]
 
         with patch(
             "livewire_scripts.backfill_intraday.compute_intraday_chunks",

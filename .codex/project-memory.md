@@ -52,8 +52,7 @@ Use this file for:
 - `IBClient.connect()` already retries successive `clientId` values after IB error `326`.
 - `PostgresClient.replace_equities_from_parquet()` recreates the selected analytical tables from scratch on rebuild so repeat Postgres rebuilds are replayable from bronze.
 - Roadmap naming decision: **Sub-F is Silver** and owns the reproducible cleaned/adjusted layer derived from canonical bronze. **Sub-G is Gold** and owns factors, analytics, and strategy-ready derived tables. Sub-B Postgres remains the replayable SQL publish target and should not be described as silver by itself.
-- Preferred IBC startup on macOS is the machine-local secure service installed by `scripts/livewire_ops.py ibc-install`, which writes wrappers under `~/ibc/bin`, a LaunchAgent under `~/Library/LaunchAgents/local.ibc-gateway.plist`, and renders a temporary runtime config from `~/ibc/config.secure.ini` plus Keychain secrets instead of storing IB credentials in plaintext config.
-- For this repo, the secure IBC service is a required machine-local dependency for IB-backed workflows, but the service itself is global to the user's Mac rather than scoped to this repo.
+- **IB Gateway + IBC run on the Mac mini, not this MacBook** (as of 2026-07-04). Earlier machine-local IBC stories (`/opt/ibc/` trading-stack install, `~/ibc/` secure service via `livewire_ops.py ibc-install`) no longer apply to this machine — livewire connects remotely via `MDW_IB_HOST`/`MDW_IB_PORT` and never manages the Gateway.
 - `symbol_id` for new symbols is a stable 53-bit `blake2b(symbol)`-derived value.
 - The native macOS client has been extracted to the standalone **Sift** app at `~/dev/apps/util/sift/`.
 - The repo-local quant backtesting skill lives at `.codex/skills/quant-backtest/` and should be used for future backtesting or systematic strategy tasks in this repo.
