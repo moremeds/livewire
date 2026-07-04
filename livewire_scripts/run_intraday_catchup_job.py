@@ -109,12 +109,23 @@ def _node_binary_exists(node_bin: str) -> bool:
 
 
 def _extract_error_summary(log_file: Path) -> str:
-    """Return the last non-blank, non-header line of log_file as a one-line summary."""
+    """Summarize an intraday-catchup failure.
+
+    Prefers the structured SUMMARY_JSON line emitted by daily-backfill (naming
+    the phases that failed); falls back to the last meaningful log line.
+    """
     try:
-        lines = log_file.read_text(encoding="utf-8").splitlines()
+        text = log_file.read_text(encoding="utf-8")
     except FileNotFoundError:
         return "Intraday catchup failed, and the log file was not found."
-    for line in reversed(lines):
+
+    from livewire_scripts.daily_outcomes import parse_last_summary_json
+
+    summary = parse_last_summary_json(text)
+    if summary is not None and summary.get("failed"):
+        return "Intraday catchup failed — phases failed: " + ", ".join(summary["failed"])
+
+    for line in reversed(text.splitlines()):
         stripped = line.strip()
         if stripped and not stripped.startswith("==="):
             return stripped

@@ -5,8 +5,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildDigestMessage,
   buildFailureMessage,
-  buildFallbackIncidentReport,
+  buildStaticIncidentReport,
   buildHumanReadableReport,
   buildHumanReadableReportPath,
   main,
@@ -121,16 +122,16 @@ test("build report helpers create readable output", async () => {
   const reportPath = buildHumanReadableReportPath("/tmp/daily_update_2026-03-11.log");
   assert.equal(reportPath, "/tmp/daily_update_2026-03-11.human.md");
 
-  const fallback = buildFallbackIncidentReport({
+  const staticReport = buildStaticIncidentReport({
     options: {
       logFile: "/tmp/daily.log",
       errorSummary: "Gateway timed out",
     },
     logTail: "timeout stack",
-    error: new Error("Missing Cerebras key"),
   });
-  assert.ok(!fallback.probableCause.includes("AI summary unavailable"), "missing-key error must not surface Cerebras noise in probableCause");
-  assert.match(fallback.probableCause, /See raw error summary/);
+  assert.ok(!staticReport.probableCause.includes("AI summary"), "no AI noise in probableCause");
+  assert.match(staticReport.probableCause, /See the raw error summary/);
+  assert.equal(staticReport.summary, "Gateway timed out");
 
   const reportBody = buildHumanReadableReport({
     options: {
@@ -201,7 +202,7 @@ test("sendFailureAlert can render with nodemailer stream transport", async () =>
   assert.equal(info.messageId.startsWith("<"), true);
 });
 
-test("runFailureAlert wires AI summary, report writing, and send function together", async () => {
+test("runFailureAlert wires static report, report writing, and send function together", async () => {
   let received;
   let reportWrite;
   const tmpdir = await mkdtemp(path.join(os.tmpdir(), "mdw-alert-flow-"));
@@ -229,7 +230,7 @@ test("runFailureAlert wires AI summary, report writing, and send function togeth
     },
     {
       readLogTail: async () => "tail line 1\ntail line 2",
-      generateIncidentReport: async () => baseIncidentReport,
+      buildStaticIncidentReport: () => baseIncidentReport,
       writeHumanReadableReport: async (reportPath, reportBody) => {
         reportWrite = { reportPath, reportBody };
         return reportPath;
@@ -251,23 +252,17 @@ test("runFailureAlert wires AI summary, report writing, and send function togeth
   assert.equal(result.humanReportPath, path.join(tmpdir, "daily.human.md"));
 });
 
-test("runFailureAlert falls back cleanly when AI generation fails", async () => {
+test("runFailureAlert uses a static incident report by default (no AI)", async () => {
   let received;
 
-  const result = await runFailureAlert(
+  await runFailureAlert(
     [
       "--run-date",
       "2026-03-11",
       "--log-file",
       "/tmp/daily.log",
-      "--attempts",
-      "3",
-      "--exit-code",
-      "1",
       "--error-summary",
       "Failed to connect",
-      "--repo-root",
-      "/repo",
     ],
     {
       MDW_ALERT_EMAIL_FROM: "from@example.com",
@@ -276,22 +271,57 @@ test("runFailureAlert falls back cleanly when AI generation fails", async () => 
     },
     {
       readLogTail: async () => "tail line 1\ntail line 2",
-      generateIncidentReport: async () => {
-        throw new Error("Cerebras unavailable");
-      },
       writeHumanReadableReport: async (reportPath) => reportPath,
       sendFailureAlert: async ({ message }) => {
         received = message;
-        return { messageId: "mid-fallback" };
+        return { messageId: "mid-static" };
       },
       hostname: "warehouse.local",
       generatedAt: "2026-03-11T20:05:48Z",
     },
   );
 
-  assert.equal(result.info.messageId, "mid-fallback");
-  assert.match(received.text, /AI summary unavailable: Cerebras unavailable/);
-  assert.match(received.html, /AI summary unavailable: Cerebras unavailable/);
+  assert.match(received.text, /Failed to connect/);
+  assert.ok(!/AI summary/.test(received.text), "no AI language in failure email");
+});
+
+test("digest mode sends the body as a pre block", async () => {
+  const tmpdir = await mkdtemp(path.join(os.tmpdir(), "mdw-digest-"));
+  const bodyFile = path.join(tmpdir, "digest.txt");
+  await writeFile(bodyFile, "Livewire nightly digest — 2026-07-02\nequity updated=9091", "utf8");
+  let received;
+
+  const result = await runFailureAlert(
+    ["--mode", "digest", "--run-date", "2026-07-02", "--body-file", bodyFile],
+    {
+      MDW_ALERT_EMAIL_FROM: "from@example.com",
+      MDW_ALERT_EMAIL_TO: "to@example.com",
+      MDW_ALERT_SMTP_URL: "smtp://user:pass@mail.example.com:587",
+    },
+    {
+      sendFailureAlert: async ({ message }) => {
+        received = message;
+        return { messageId: "mid-digest" };
+      },
+    },
+  );
+
+  assert.equal(result.mode, "digest");
+  assert.match(received.subject, /\[Livewire\] nightly digest 2026-07-02/);
+  assert.match(received.html, /<pre/);
+  assert.match(received.html, /updated=9091/);
+  assert.match(received.text, /Livewire nightly digest/);
+});
+
+test("digest mode requires a body file", () => {
+  assert.throws(() => parseArgs(["--mode", "digest", "--run-date", "2026-07-02"]),
+    /body-file is required/);
+});
+
+test("buildDigestMessage escapes html", () => {
+  const msg = buildDigestMessage({ runDate: "2026-07-02", body: "a <b> & c" });
+  assert.match(msg.html, /a &lt;b&gt; &amp; c/);
+  assert.equal(msg.text, "a <b> & c");
 });
 
 test("runFailureAlert survives report write failures", async () => {

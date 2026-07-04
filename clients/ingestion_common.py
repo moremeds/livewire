@@ -94,7 +94,7 @@ def make_contract(ticker: str, asset_class: str = "equity", exchange: str | None
     if asset_class == "futures":
         root, expiry = ticker.rsplit("_", 1)
         exch = exchange or ROOT_EXCHANGE_MAP.get(root, "CME")
-        return Future(root, expiry, exch, "USD")
+        return Future(root, expiry, exch, currency="USD")
     if asset_class == "cmdty":
         return Contract(
             secType="CMDTY",

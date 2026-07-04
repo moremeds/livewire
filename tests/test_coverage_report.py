@@ -132,13 +132,105 @@ class TestComputeCoverage:
             assert results[tf].missing_symbols == []
             assert results[tf].ratio == 1.0
 
-    def test_target_day_raw_symbols_define_universe(self, seeded_bronze):
+    def test_denominator_is_bronze_universe_not_raw_set(self, seeded_bronze):
+        # The raw traded set lists only AAPL, but bronze carries AAPL + MSFT.
+        # The denominator is the bronze universe (2), not the raw set (1).
         target = date(2026, 4, 6)
-        _write_raw_symbols(seeded_bronze, target, ["AAPL"])
+        _write_raw_symbols(seeded_bronze, target, ["AAPL", "MSFT"])
         results = compute_coverage(target, bronze_root=seeded_bronze)
-        for result in results.values():
-            assert result.total == 1
-            assert result.missing_symbols == []
+        assert results["1d"].total == 2
+        assert results["1d"].present == 2
+
+    def test_no_trade_symbol_counts_present(self, tmp_path):
+        # WLIIU is stale but absent from the day's traded set -> it did not
+        # trade, so it is not "missing".
+        root = tmp_path / "bronze"
+        target = date(2026, 4, 6)
+        _write_daily(root, "AAPL", [target])
+        _write_daily(root, "WLIIU", [date(2026, 3, 30)])  # stale
+        _write_raw_symbols(root, target, ["AAPL"])  # WLIIU did not trade
+        results = compute_coverage(target, bronze_root=root)
+        assert results["1d"].total == 2
+        assert results["1d"].present == 2
+        assert results["1d"].missing_symbols == []
+
+    def test_stale_traded_symbol_counts_missing(self, tmp_path):
+        # AAPL is stale AND present in the traded set -> genuinely missing.
+        root = tmp_path / "bronze"
+        target = date(2026, 4, 6)
+        _write_daily(root, "AAPL", [date(2026, 3, 30)])  # stale
+        _write_raw_symbols(root, target, ["AAPL"])
+        results = compute_coverage(target, bronze_root=root)
+        assert results["1d"].present == 0
+        assert results["1d"].missing_symbols == ["AAPL"]
+
+    def test_latest_date_uses_footer_stats_without_full_read(self, tmp_path):
+        # _latest_date_in_parquet must resolve via footer statistics and never
+        # fall through to a full column read when stats are present.
+        from livewire_scripts import coverage_report
+
+        root = tmp_path / "bronze"
+        target = date(2026, 4, 6)
+        _write_daily(root, "AAPL", [date(2026, 4, 3), target])
+        path = root / "asset_class=equity" / "symbol=AAPL" / "1d.parquet"
+
+        with patch.object(
+            coverage_report.pq,
+            "read_table",
+            side_effect=AssertionError("full column read must not happen"),
+        ):
+            latest = coverage_report._latest_date_in_parquet(path, "trade_date")
+        assert latest == target
+
+    def test_latest_date_from_string_column_stats(self, tmp_path):
+        # Some bronze snapshots store trade_date as a string; footer stats then
+        # come back as strings and must be parsed via date.fromisoformat.
+        from livewire_scripts import coverage_report
+
+        sym_dir = tmp_path / "asset_class=equity" / "symbol=AAPL"
+        sym_dir.mkdir(parents=True)
+        path = sym_dir / "1d.parquet"
+        pq.write_table(
+            pa.table({"trade_date": pa.array(["2026-04-03", "2026-04-06"], type=pa.string())}),
+            path,
+        )
+        assert coverage_report._latest_date_in_parquet(path, "trade_date") == date(2026, 4, 6)
+
+    def test_latest_date_falls_back_when_stats_absent(self, tmp_path):
+        # When the file has no column statistics, fall back to a full read.
+        from livewire_scripts import coverage_report
+
+        sym_dir = tmp_path / "asset_class=equity" / "symbol=AAPL"
+        sym_dir.mkdir(parents=True)
+        path = sym_dir / "1d.parquet"
+        pq.write_table(
+            pa.table({"trade_date": pa.array([date(2026, 4, 3), date(2026, 4, 6)], type=pa.date32())}),
+            path,
+            write_statistics=False,
+        )
+        assert coverage_report._latest_date_in_parquet(path, "trade_date") == date(2026, 4, 6)
+
+    def test_latest_date_empty_parquet_returns_none(self, tmp_path):
+        from livewire_scripts import coverage_report
+
+        sym_dir = tmp_path / "asset_class=equity" / "symbol=AAPL"
+        sym_dir.mkdir(parents=True)
+        path = sym_dir / "1d.parquet"
+        pq.write_table(
+            pa.table({"trade_date": pa.array([], type=pa.date32())}),
+            path,
+            write_statistics=False,
+        )
+        assert coverage_report._latest_date_in_parquet(path, "trade_date") is None
+
+    def test_tracks_30m_timeframe(self, tmp_path):
+        root = tmp_path / "bronze"
+        target = date(2026, 4, 6)
+        _write_intraday(root, "AAPL", "30m", [target])
+        results = compute_coverage(target, bronze_root=root)
+        assert "30m" in results
+        assert results["30m"].total == 1
+        assert results["30m"].present == 1
 
     def test_one_symbol_stale_at_5m(self, tmp_path):
         root = tmp_path / "bronze"
@@ -153,17 +245,18 @@ class TestComputeCoverage:
         assert results["1d"].present == 1
 
     def test_missing_timeframe_file(self, tmp_path):
-        # Symbol exists for 1d only — intraday parquet absent
+        # Symbol exists for 1d only. The denominator is per-timeframe, so a
+        # symbol with no intraday file is simply absent from that timeframe's
+        # universe (total 0), not counted as a missing symbol.
         root = tmp_path / "bronze"
         target = date(2026, 4, 6)
         _write_daily(root, "AAPL", [target])
         results = compute_coverage(target, bronze_root=root)
         assert results["1d"].present == 1
-        assert results["1m"].present == 0
-        assert results["1m"].missing_symbols == ["AAPL"]
-        assert results["1h"].present == 0
-        assert results["1h"].missing_symbols == ["AAPL"]
-        assert results["5m"].missing_symbols == ["AAPL"]
+        for tf in ("1m", "1h", "5m", "30m"):
+            assert results[tf].total == 0
+            assert results[tf].present == 0
+            assert results[tf].missing_symbols == []
 
     def test_empty_bronze(self, tmp_path):
         results = compute_coverage(date(2026, 4, 6), bronze_root=tmp_path / "empty")
@@ -208,6 +301,7 @@ class TestFormatters:
             "1m": CoverageResult("1m", 20, 20, []),
             "1h": CoverageResult("1h", 20, 20, []),
             "5m": CoverageResult("5m", 20, 19, ["X"]),
+            "30m": CoverageResult("30m", 20, 20, []),
         }
         blocks = format_missing_blocks(results, max_listed=3)
         assert any("1d missing: S0, S1, S2, ... (15 total)" in b for b in blocks)
@@ -284,8 +378,9 @@ class TestAutoRecover:
 
     def test_partial_recovery_path(self, seeded_bronze):
         target = date(2026, 4, 6)
-        (seeded_bronze / "asset_class=equity" / "symbol=AAPL" / "5m.parquet").unlink()
-        (seeded_bronze / "asset_class=equity" / "symbol=MSFT" / "5m.parquet").unlink()
+        # Both stale (file present, old date) so both are in the 5m universe.
+        _write_intraday(seeded_bronze, "AAPL", "5m", [date(2026, 3, 1)])
+        _write_intraday(seeded_bronze, "MSFT", "5m", [date(2026, 3, 1)])
 
         def fake_run(cmd, **kwargs):
             # Only AAPL gets repaired
@@ -408,7 +503,8 @@ class TestMain:
         _write_daily(root, "AAPL", [target])
         _write_intraday(root, "AAPL", "1m", [target])
         _write_intraday(root, "AAPL", "1h", [target])
-        # 5m intentionally absent
+        _write_intraday(root, "AAPL", "30m", [target])
+        _write_intraday(root, "AAPL", "5m", [date(2026, 3, 1)])  # stale -> triggers recovery
         monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
 
         def fake_run(cmd, **kwargs):
@@ -438,7 +534,9 @@ class TestMain:
         _write_daily(root, "MSFT", [target])
         _write_intraday(root, "AAPL", "1h", [target])
         _write_intraday(root, "MSFT", "1h", [target])
-        # Both missing 5m
+        # Both stale at 5m (file present, old date)
+        _write_intraday(root, "AAPL", "5m", [date(2026, 3, 1)])
+        _write_intraday(root, "MSFT", "5m", [date(2026, 3, 1)])
         monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
 
         def fake_run(cmd, **kwargs):
@@ -463,11 +561,12 @@ class TestMain:
     def test_safety_cap_path_in_main(self, tmp_path, monkeypatch):
         root = tmp_path / "bronze"
         target = date(2026, 4, 6)
-        # 200 symbols all missing 5m
+        # 200 symbols all stale at 5m (present in the 5m universe, over the cap)
         for i in range(200):
             sym = f"S{i:03d}"
             _write_daily(root, sym, [target])
             _write_intraday(root, sym, "1h", [target])
+            _write_intraday(root, sym, "5m", [date(2026, 3, 1)])
         monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
 
         with patch(

@@ -4,12 +4,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { generateHumanReadableIncidentReport } from "./cerebras_client.mjs";
-
 const DEFAULT_TAIL_LINES = 40;
 const DEFAULT_JOB_NAME = "daily_update";
 const DEFAULT_SUBJECT_PREFIX = "[Livewire]";
-const MODES = new Set(["failure", "flag-alert", "daily-summary"]);
+const MODES = new Set(["failure", "flag-alert", "daily-summary", "digest"]);
 
 function usage() {
   return [
@@ -24,8 +22,9 @@ function usage() {
     "  --repo-root /absolute/path/to/repo",
     "  --job-name NAME",
     "  --tail-lines N",
-    "  --mode failure|flag-alert|daily-summary",
+    "  --mode failure|flag-alert|daily-summary|digest",
     "  --payload JSON",
+    "  --body-file /absolute/path/to/digest.txt   (mode digest)",
   ].join("\n");
 }
 
@@ -118,6 +117,9 @@ export function parseArgs(argv) {
       case "payload":
         options.payloadRaw = value;
         break;
+      case "body-file":
+        options.bodyFile = value;
+        break;
       default:
         throw new Error(`Unknown option: --${key}`);
     }
@@ -129,6 +131,10 @@ export function parseArgs(argv) {
     }
     options.payload = JSON.parse(options.payloadRaw);
     delete options.payloadRaw;
+  }
+
+  if (options.mode === "digest" && !options.bodyFile) {
+    throw new Error("--body-file is required for mode digest");
   }
 
   return options;
@@ -207,16 +213,12 @@ export function buildHumanReadableReportPath(logFile) {
   return path.join(parsed.dir, `${parsed.name}.human.md`);
 }
 
-export function buildFallbackIncidentReport({ options, logTail, error }) {
-  const isCerebrasKeyMissing = /Missing Cerebras/i.test(error?.message || "");
-  const probableCause = isCerebrasKeyMissing
-    ? "See raw error summary and log tail below."
-    : `AI summary unavailable: ${error?.message || "no Cerebras result was returned."}`;
+export function buildStaticIncidentReport({ options, logTail }) {
   return {
     summary:
       options.errorSummary ||
       "The scheduled job failed, but only the raw error summary is available.",
-    probableCause,
+    probableCause: "See the raw error summary and recent log tail below.",
     proposedSolution:
       "Inspect the raw error summary and recent log tail, then rerun the job after correcting the failing dependency or configuration.",
     nextSteps: [
@@ -524,6 +526,30 @@ export function buildDailySummaryMessage(payload) {
   return { subject, html, text };
 }
 
+export function buildDigestMessage({ runDate, body }) {
+  const subject = `${DEFAULT_SUBJECT_PREFIX} nightly digest ${runDate || ""}`.trim();
+  const html = `<html><body><pre style="font-family:ui-monospace,Menlo,monospace;font-size:13px;">${escapeHtml(body)}</pre></body></html>`;
+  return { subject, html, text: body };
+}
+
+async function runDigest(options, env = process.env, deps = {}) {
+  const alertConfig = resolveAlertConfig(env);
+  const body = await (deps.readBodyFile || fs.readFile)(options.bodyFile, "utf8");
+  const message = {
+    from: alertConfig.from,
+    to: alertConfig.to,
+    cc: alertConfig.cc,
+    bcc: alertConfig.bcc,
+    replyTo: alertConfig.replyTo,
+    ...buildDigestMessage({ runDate: options.runDate, body }),
+  };
+  const info = await (deps.sendFailureAlert || sendFailureAlert)({
+    transportOptions: alertConfig.transportOptions,
+    message,
+  });
+  return { mode: "digest", info, message };
+}
+
 export async function sendFailureAlert({ transportOptions, message }) {
   const { default: nodemailer } = await import("nodemailer");
   const transport = nodemailer.createTransport(transportOptions);
@@ -583,6 +609,9 @@ export async function runFailureAlert(argv, env = process.env, deps = {}) {
   if (options.mode === "daily-summary") {
     return runDailySummary(options, env, deps);
   }
+  if (options.mode === "digest") {
+    return runDigest(options, env, deps);
+  }
 
   const alertConfig = resolveAlertConfig(env);
   const generatedAt = deps.generatedAt || new Date().toISOString();
@@ -592,26 +621,10 @@ export async function runFailureAlert(argv, env = process.env, deps = {}) {
     options.tailLines,
   );
 
-  let incidentReport;
-  try {
-    incidentReport = await (deps.generateIncidentReport ||
-      generateHumanReadableIncidentReport)(
-      {
-        jobName: options.jobName,
-        runDate: options.runDate,
-        attempts: options.attempts,
-        exitCode: options.exitCode,
-        repoRoot: options.repoRoot,
-        logFile: options.logFile,
-        errorSummary: options.errorSummary,
-        logTail,
-      },
-      env,
-      deps.cerebrasDeps || {},
-    );
-  } catch (error) {
-    incidentReport = buildFallbackIncidentReport({ options, logTail, error });
-  }
+  let incidentReport = (deps.buildStaticIncidentReport || buildStaticIncidentReport)({
+    options,
+    logTail,
+  });
 
   const humanReportPath =
     (deps.buildHumanReadableReportPath || buildHumanReadableReportPath)(
@@ -674,6 +687,10 @@ export async function main(argv = process.argv.slice(2), env = process.env, deps
   }
   if (result.mode === "daily-summary") {
     console.log(`Sent daily quality summary: ${result.message.subject}`);
+    return result;
+  }
+  if (result.mode === "digest") {
+    console.log(`Sent nightly digest: ${result.message.subject}`);
     return result;
   }
 

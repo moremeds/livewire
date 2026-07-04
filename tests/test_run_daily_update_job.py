@@ -187,28 +187,35 @@ class TestHelpers:
         no_marker.write_text("started\nfailed\n", encoding="utf-8")
         assert log_has_completion_marker(no_marker) is False
 
-    def test_extract_error_summary_parses_structured_massive_failure(self, tmp_path):
-        log_file = tmp_path / "daily.log"
-        ticker_lines = "\n".join(f"  {t}: no bars from Massive" for t in ["AAPL", "MSFT", "GOOG", "AMZN", "NVDA"])
-        log_file.write_text(
-            "\n".join(
-                [
-                    "=== Daily Update 2026-06-23T06:00:02Z ===",
-                    "Daily Update  target_date=2026-06-23  force=False  asset_class=equity  source=massive  host=127.0.0.1  port=4001",
-                    ticker_lines,
-                    "Tickers updated:    0",
-                    "Tickers failed:     5",
-                    "=== Failed 2026-06-23T06:10:00Z after 3 attempt(s) ===",
-                ]
-            ),
-            encoding="utf-8",
+    def test_extract_error_summary_prefers_summary_json(self, tmp_path):
+        from livewire_scripts.daily_outcomes import build_summary_line
+
+        log_file = tmp_path / "daily_update_2026-07-03.log"
+        line = build_summary_line(
+            job="daily_update",
+            asset_class="equity",
+            source="massive",
+            target_date="2026-07-02",
+            updated=9091,
+            no_trade=277,
+            partial=95,
+            errors=12,
+            bars_inserted=9186,
+            validation_issues=0,
+            top_errors=[("ConnectionError: Massive timeout", 12)],
         )
+        log_file.write_text("  AAPL: 1 bar published from Massive\n" + line + "\n", encoding="utf-8")
 
         summary = extract_error_summary(log_file)
-        assert "5/5 tickers failed" in summary
-        assert "target_date=2026-06-23" in summary
-        assert "source=massive" in summary
-        assert "no bars from Massive" in summary
+        assert "updated=9091" in summary
+        assert "no_trade=277" in summary
+        assert 'dominant error (12x): "ConnectionError: Massive timeout"' in summary
+        assert "1 bar published" not in summary  # success lines never surface as errors
+
+    def test_extract_error_summary_legacy_fallback_no_ticker_counting(self, tmp_path):
+        log_file = tmp_path / "x.log"
+        log_file.write_text("  AAPL: 1 bar published from Massive\nsome tail line\n", encoding="utf-8")
+        assert extract_error_summary(log_file) == "some tail line"
 
     def test_node_binary_exists(self):
         with patch("livewire_scripts.run_daily_update_job.Path.exists", return_value=True):
@@ -248,7 +255,7 @@ class TestSubprocessPaths:
 
 
 class TestEndOfDayQualityReport:
-    def test_report_invoked_after_successful_daily(self, tmp_path):
+    def test_digest_invoked_after_successful_daily(self, tmp_path):
         config = _config(tmp_path)
         calls = []
 
@@ -264,20 +271,61 @@ class TestEndOfDayQualityReport:
             now_fn=lambda: datetime(2026, 5, 18, 20, 0, tzinfo=UTC),
         )
         assert rc == 0
-        assert len(calls) >= 2
-        report_cmd = calls[1]
-        assert any("livewire_quality.py" in str(c) for c in report_cmd)
-        assert "report" in report_cmd
-        assert "--email" in report_cmd
+        quality_calls = [c for c in calls if any("livewire_quality.py" in str(x) for x in c)]
+        # The emailed nightly digest replaces the old report --view summary email.
+        digest_cmd = next(c for c in quality_calls if "digest" in c)
+        assert "--email" in digest_cmd
+        assert "--run-date" in digest_cmd
+        assert not any("report" in c and "summary" in c for c in quality_calls)
 
-    def test_report_failure_does_not_fail_daily(self, tmp_path):
+    def test_coverage_and_weekly_spawned_after_successful_daily(self, tmp_path):
+        config = _config(tmp_path)
+        calls = []
+
+        def fake_runner(cmd, **kwargs):
+            calls.append(list(cmd))
+            return CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
+
+        rc = run_with_retries(
+            config,
+            daily_update_args=[],
+            runner=fake_runner,
+            sleep_fn=lambda s: None,
+            now_fn=lambda: datetime(2026, 5, 18, 20, 0, tzinfo=UTC),
+        )
+        assert rc == 0
+        quality_calls = [c for c in calls if any("livewire_quality.py" in str(x) for x in c)]
+        assert any(c[-1] == "coverage" or "coverage" in c for c in quality_calls)
+        assert any("weekly" in c for c in quality_calls)
+
+    def test_coverage_spawn_failure_does_not_fail_daily(self, tmp_path):
+        config = _config(tmp_path)
+
+        def fake_runner(cmd, **kwargs):
+            # Match the quality subcommand arg, not the worktree path (which
+            # itself contains the word "coverage").
+            is_coverage = any("livewire_quality.py" in str(x) for x in cmd) and "coverage" in cmd
+            return CompletedProcess(args=cmd, returncode=3 if is_coverage else 0, stdout=b"", stderr=b"")
+
+        rc = run_with_retries(
+            config,
+            daily_update_args=[],
+            runner=fake_runner,
+            sleep_fn=lambda s: None,
+            now_fn=lambda: datetime(2026, 5, 18, 20, 0, tzinfo=UTC),
+        )
+        assert rc == 0
+        log_file = build_log_file(config.log_dir, datetime(2026, 5, 18, 20, 0, tzinfo=UTC))
+        assert "WARNING: coverage report failed" in log_file.read_text(encoding="utf-8")
+
+    def test_digest_failure_does_not_fail_daily(self, tmp_path):
         config = _config(tmp_path)
         calls = []
 
         def fake_runner(cmd, **kwargs):
             calls.append(list(cmd))
             rc = 0 if "livewire_ingest.py" in " ".join(str(c) for c in cmd) else 2
-            return CompletedProcess(args=cmd, returncode=rc, stdout=b"", stderr=b"report failed")
+            return CompletedProcess(args=cmd, returncode=rc, stdout=b"", stderr=b"digest failed")
 
         rc = run_with_retries(
             config,
@@ -291,7 +339,7 @@ class TestEndOfDayQualityReport:
             config.log_dir,
             datetime(2026, 5, 18, 20, 0, tzinfo=UTC),
         )
-        assert "WARNING: end-of-day quality report failed" in log_file.read_text(encoding="utf-8")
+        assert "WARNING: nightly digest failed" in log_file.read_text(encoding="utf-8")
 
     def test_send_failure_alert_skips_when_node_missing(self, tmp_path):
         config = _config(tmp_path, node_bin="/missing/node")
@@ -621,9 +669,10 @@ class TestMain:
                 with patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", side_effect=_run_cboe):
                     assert main(["--dry-run"]) == 0
 
-        # IB syncs equity and futures; volatility via CBOE
+        # IB syncs equity, futures, cmdty and fx; volatility via CBOE
         assert ib_calls == [["--dry-run", "--asset-class", ac] for ac in ASSET_CLASSES]
         assert cboe_called == [True]
+        assert "cmdty" in ASSET_CLASSES and "fx" in ASSET_CLASSES
 
     def test_main_explicit_asset_class_skips_cboe(self):
         config = _config(Path("/tmp/test"))

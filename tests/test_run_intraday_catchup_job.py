@@ -287,6 +287,19 @@ class TestExtractErrorSummary:
         result = _extract_error_summary(log)
         assert "no error summary" in result
 
+    def test_prefers_summary_json_failed_phases(self, tmp_path):
+        from livewire_scripts.daily_outcomes import SUMMARY_PREFIX
+
+        log = tmp_path / "test.log"
+        summary = SUMMARY_PREFIX + (
+            '{"job":"daily_backfill","target_date":"2026-07-02",'
+            '"phases":[{"label":"daily_backfill_fred_rates","exit":1,"duration_s":0.1}],'
+            '"failed":["daily_backfill_fred_rates"]}'
+        )
+        log.write_text("some noise\n" + summary + "\n", encoding="utf-8")
+        result = _extract_error_summary(log)
+        assert result == "Intraday catchup failed — phases failed: daily_backfill_fred_rates"
+
 
 class TestRunIntradayCatchupAdditional:
     def test_failure_with_alert_script_missing_skips_alert(self, tmp_path):

@@ -25,7 +25,7 @@ livewire/                           # Git repo
 │   ├── livewire_ops.py             # Ops subcommands: scheduled job, alerts
 │   └── livewire_store.py           # Storage subcommands: Postgres rebuild, smoke checks, R2 sync, parquet migration
 ├── livewire_scripts/               # Importable implementations behind the script entrypoints
-├── livewire_node/                  # Nodemailer + Cerebras alert helpers
+├── livewire_node/                  # Nodemailer alert helpers (failure + nightly digest)
 ├── launchd/                        # macOS launchd templates
 ├── tools/                          # Developer hooks and helper shell tools
 ├── tests/
@@ -200,7 +200,7 @@ python scripts/livewire.py sync --full           # Same as daily-backfill
 
 `backfill-all` (`livewire_scripts/backfill_runner.py`) is the default warehouse build. It runs equity daily seed/backfill for `sp500`, `ndx100`, and `r2k`; the older-history daily phase remains IB-backed through `--source auto`. It then syncs FRED Treasury rates and runs one maximum-entitled-history, full-market Massive flat-file equity-intraday build in parallel with the CBOE/IB volatility lane. If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables.
 
-`daily-backfill` (`livewire_scripts/sync_runner.py`) is the routine catch-up runner. It uses Massive for recent equity daily gaps and one whole-market flat-file catch-up over the default 7 calendar days (`MDW_DAILY_BACKFILL_INTRADAY_DAYS`). Side lanes stay on their existing sources: FRED rates, CBOE daily volatility, IB volatility intraday, and optional Postgres rebuild.
+`daily-backfill` (`livewire_scripts/sync_runner.py`) is the routine catch-up runner. It uses Massive for recent equity daily gaps and one whole-market flat-file catch-up over the default 7 calendar days (`MDW_DAILY_BACKFILL_INTRADAY_DAYS`). It also runs the full-universe `flatfile-ingest-daily catch-up` day_aggs lane (`MDW_DAILY_BACKFILL_DAY_AGGS_DAYS`, default 7) before the intraday flatfile phase — this lane owns the ~20K SIP daily universe and heals symbols that have intraday but no `1d`. Side lanes stay on their existing sources: FRED rates, CBOE daily volatility, IB volatility intraday, and optional Postgres rebuild. At the end it prints one `SUMMARY_JSON` line (per-phase label/exit/duration + failed list) that the intraday-catchup wrapper and nightly digest consume.
 
 Output: per-ticker bronze Parquet at `data-lake/bronze/asset_class=equity/symbol=<ticker>/{1d,1m,5m,30m,1h}.parquet` and volatility/index bronze Parquet under `data-lake/bronze/asset_class=volatility/symbol=<ticker>/`. Postgres is rebuilt only when `MDW_POSTGRES_DSN` is configured.
 
@@ -249,7 +249,7 @@ launchctl load ~/Library/LaunchAgents/com.livewire.daily-update.plist
 launchctl load ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
 launchctl load ~/Library/LaunchAgents/com.livewire.intraday-catchup.plist
 ```
-`scripts/livewire_ops.py run-daily-job` loads `~/.secrets`, repo `.env`, and `~/market-warehouse/.env` before invoking the retrying scheduled runner. This preserves the old launchd wrapper behavior for API keys like `CEREBRAS_API_KEY`. The runner automatically syncs equities and futures via IB, then all volatility indices via CBOE's public API in a single invocation; pass `--asset-class <name>` to run only one IB asset class (skips CBOE volatility sync).
+`scripts/livewire_ops.py run-daily-job` loads `~/.secrets`, repo `.env`, and `~/market-warehouse/.env` before invoking the retrying scheduled runner. The runner automatically syncs equities, futures, cmdty, and fx via IB, then all volatility indices via CBOE's public API in a single invocation; pass `--asset-class <name>` to run only one IB asset class (skips CBOE volatility sync). After a successful run it also spawns coverage + weekly quality reports and sends the nightly digest email.
 
 A second scheduled job, `com.livewire.intraday-catchup`, runs at 05:00 UTC daily (= 01:00 ET EDT / 00:00 ET EST) and invokes `scripts/livewire_ops.py run-intraday-catchup-job`. This calls the existing `daily-backfill` orchestrator so equity daily + intraday parquet (1m/5m/30m/1h), FRED Treasury rates, CBOE volatility daily, and IB volatility intraday (30m and 5m, with 1h derived locally from 30m) all refresh. Equity intraday requires `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY`; missing credentials fail the orchestrator before any phases run, and there is no REST or IB equity-intraday fallback. The wrapper is single-attempt because `daily-backfill` owns its phase execution and activity-based stall detection; on terminal failure the wrapper sends one alert through the same Nodemailer pipeline as the daily-update wrapper, tagged `--job-name intraday_catchup`. Logs land at `~/market-warehouse/logs/intraday_catchup_YYYY-MM-DD.log` (UTC date). The default 7-day `MDW_DAILY_BACKFILL_INTRADAY_DAYS` lookback absorbs a single missed run; widen via `~/market-warehouse/.env` if you need more headroom. 05:00 UTC is well after Massive's empirical whole-market SIP minute-aggregate publish (file for trade-date D appears shortly after midnight ET on D+1) and gives a 1h15m buffer after IBC's `AutoRestartTime=11:45` ET nightly restart (= 03:45 UTC), which requires 2FA approval before port 4001 is available.
 
@@ -264,12 +264,11 @@ The main sync runs at 06:00 UTC daily (= 02:00 ET EDT / 01:00 ET EST, ~12h after
 - The active sync universe is the canonical bronze tree only; archive delisted symbols outside that tree if they should stop participating in future syncs/backfills
 - Recovery path for unresolved target-day gaps (equity only): `daily --source massive` fetches the missing target-date bars directly from Massive; the default IB daily path can still compare against Massive when configured and then falls back to Nasdaq historical quote API (`stocks`, then `etf`) and Stooq `symbol.us`; fallback is skipped for non-equity asset classes (volatility, futures, CMDTY, FX)
 - Fallback bars use the same validation and bronze merge path as IB bars
-- Run summary exposes `Fallback attempts`, `Fallback successes`, `Fallback symbols`, and per-source counts
+- Per-ticker outcomes are classified as `updated` / `no_trade` (no bars returned — the instrument didn't trade, not a failure) / `partial` (target day filled, older gaps remain) / `error` (exception/HTTP failure). The run emits one machine-readable `SUMMARY_JSON` line (schema in `livewire_scripts/daily_outcomes.py`) plus the human table.
+- Exit code is threshold-based (`resolve_exit_code`): a run fails only on systemic failure — `error` count over `max(50, 5% of processed)`, or zero updates with any error. `no_trade`/`partial` never fail a run, so an illiquid warrant no longer fails the whole job.
 - Pure-Python NYSE trading calendar — no new dependencies
 - Logs to `~/market-warehouse/logs/daily_update_YYYY-MM-DD.log`
-- Terminal scheduled failures use the Nodemailer CLI at `scripts/livewire_ops.py send-alert`
-- Failure alerts can write a sibling `.human.md` incident report and optionally enrich the email body with a Cerebras-generated summary plus proposed remediation
-- Failure emails can include Cerebras-generated human-readable incident summaries and write a sibling `*.human.md` incident report beside the raw log
+- Terminal scheduled failures use the Nodemailer CLI at `scripts/livewire_ops.py send-alert`; the failure email uses a static, truthful incident report (parsed from `SUMMARY_JSON`) and writes a sibling `*.human.md` report. There is no AI enrichment — Cerebras was removed.
 
 ### Reliability tooling
 
@@ -300,7 +299,7 @@ python scripts/livewire_quality.py report --view quality --since 24h --severity 
 python scripts/livewire_quality.py report --view summary --since 24h --email
 ```
 
-Views are `summary`, `flap`, and `quality`; `--source` accepts `all`, `ib`, `uw`, or `massive`. `--email` sends the daily-summary Nodemailer mode and writes `quality_summary_YYYY-MM-DD.marker` for the watchdog. Quality flags are emitted beside parquet as `<parquet>.meta.json`; the sidecar schema and central audit JSONL schema are specified in `docs/superpowers/specs/2026-05-17-mdw-reliability-foundation-design.md`.
+Views are `summary`, `flap`, and `quality`; `--source` accepts `all`, `ib`, `uw`, or `massive`. `report --email` sends the daily-summary Nodemailer mode. The routine post-daily email is now the **nightly digest** (`scripts/livewire_quality.py digest --run-date YYYY-MM-DD --email`), which the daily-job wrapper spawns on success — it assembles one plain-text report from the per-job `SUMMARY_JSON` lines (outcome table per asset class, intraday phase table, coverage line, disk headroom) and writes `quality_summary_YYYY-MM-DD.marker` for the watchdog. Quality flags are emitted beside parquet as `<parquet>.meta.json`; the sidecar schema and central audit JSONL schema are specified in `docs/superpowers/specs/2026-05-17-mdw-reliability-foundation-design.md`.
 
 ### IB intraday backfill (non-equity)
 
@@ -371,7 +370,7 @@ side-by-side — they use separate raw paths and separate cursors.
 
 ### Coverage tracking + auto-recovery
 
-`scripts/livewire_quality.py coverage` runs every day after the upload step in the container entrypoint. For each tracked timeframe (`1d`, `1m`, `1h`, `5m`) it counts how many symbols have bars current as-of the target trading day, writes a one-line summary to `~/market-warehouse/logs/coverage_YYYY-MM-DD.log`, and — when coverage drops below `MDW_COVERAGE_ALERT_THRESHOLD` (default `0.95`) — triggers a targeted backfill subprocess and re-checks.
+`scripts/livewire_quality.py coverage` runs after each successful daily job (spawned by `run-daily-job`). For each tracked timeframe (`1d`, `1m`, `1h`, `5m`, `30m`) it counts how many symbols in the **active bronze universe for that timeframe** have bars current as-of the target trading day, using parquet footer statistics (not a full column read). A symbol counts as present if it is current OR absent from the day's raw traded set (no-trade is not missing). It writes a one-line summary to `~/market-warehouse/logs/coverage_YYYY-MM-DD.log`, and — when coverage drops below `MDW_COVERAGE_ALERT_THRESHOLD` (default `0.95`) — triggers a targeted backfill subprocess and re-checks.
 
 ```bash
 python scripts/livewire_quality.py coverage                                # Today's coverage + auto-recovery

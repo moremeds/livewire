@@ -239,7 +239,7 @@ class IntradayBronzeClient:
 
     def _normalize_rows(self, rows: list[dict[str, Any]], symbol: str) -> list[dict[str, Any]]:
         # Use the row's own symbol_id if provided, otherwise derive a stable one.
-        fallback_symbol_id = self.get_symbol_id(symbol)
+        fallback_symbol_id = None if all("symbol_id" in row for row in rows) else self.get_symbol_id(symbol)
         normalized: dict[datetime, dict[str, Any]] = {}
 
         for row in rows:
@@ -249,7 +249,7 @@ class IntradayBronzeClient:
             if ts.tzinfo is None or ts.tzinfo.utcoffset(ts) is None:
                 raise ValueError(f"{symbol}: bar_timestamp must be tz-aware (got naive {ts!r})")
             ts_utc = ts.astimezone(UTC)
-            sid = int(row["symbol_id"]) if "symbol_id" in row else fallback_symbol_id
+            sid = int(row["symbol_id"]) if "symbol_id" in row else int(fallback_symbol_id)
             normalized[ts_utc] = {
                 "bar_timestamp": ts_utc,
                 "symbol_id": sid,
