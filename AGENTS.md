@@ -91,7 +91,7 @@ Current live shape:
 
 Common traps — check these before investigating further:
 
-- **IB Gateway availability**: the Gateway runs on the Mac mini — check `nc -z $MDW_IB_HOST ${MDW_IB_PORT:-4001}` before assuming IB is reachable; do not attempt restarts from this machine.
+- **IB Gateway availability**: the Gateway runs on the Mac mini — check `nc -z "${MDW_IB_HOST:?set MDW_IB_HOST to the Mac mini host}" "${MDW_IB_PORT:-4001}"` before assuming IB is reachable; do not attempt restarts from this machine.
 - **Analytical publish targets**: Live ingestion writes bronze parquet only. Rebuild Postgres explicitly when SQL access needs refreshed analytical tables.
 - **Empty IB head timestamps**: IB returns empty head timestamps for some symbols. The fallback to `IB_EARLIEST_DATE` is intentional — do not treat it as an error.
 - **IB error 326 (client ID in use)**: Handled by auto-retry in `IBClient.connect()`. Do not manually reassign client IDs.

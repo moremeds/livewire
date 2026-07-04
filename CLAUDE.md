@@ -477,7 +477,7 @@ Catches: AWS keys, API key/secret/password assignments, private key headers, Git
 
 Common traps that derail debugging sessions — check these before investigating further:
 
-- **IB Gateway availability**: the Gateway runs on the Mac mini — check reachability with `nc -z $MDW_IB_HOST ${MDW_IB_PORT:-4001}` before assuming IB is up. Do NOT attempt restarts from this machine: failures usually mean 2FA, IBKR maintenance, or session conflict, not something livewire should recover.
+- **IB Gateway availability**: the Gateway runs on the Mac mini — check reachability with `nc -z "${MDW_IB_HOST:?set MDW_IB_HOST to the Mac mini host}" "${MDW_IB_PORT:-4001}"` before assuming IB is up. Do NOT attempt restarts from this machine: failures usually mean 2FA, IBKR maintenance, or session conflict, not something livewire should recover.
 - **Empty IB head timestamps**: IB returns empty head timestamps for some symbols. The fallback to `IB_EARLIEST_DATE` is intentional — don't treat it as an error.
 - **IB error 326 (client ID in use)**: Handled by auto-retry in `IBClient.connect()`. Don't manually reassign client IDs.
 - **Weekend/holiday runs**: IB returns no data on non-trading days. These are harmless no-ops — don't debug "no data returned" on weekends or holidays.
