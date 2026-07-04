@@ -19,6 +19,7 @@ from clients.bronze_client import BronzeClient
 from clients.massive_client import MassiveAPIError
 from livewire_scripts.daily_update import (
     _easter,
+    _et_today,
     _fallback_client,
     _make_contract,
     _resolve_fx_pair,
@@ -32,7 +33,6 @@ from livewire_scripts.daily_update import (
     fetch_massive_bars,
     fetch_ticker_update,
     get_missing_trading_dates,
-    _et_today,
     get_nyse_holidays,
     is_trading_day,
     load_preset,
@@ -210,6 +210,7 @@ class TestEtToday:
         # 02:00 ET Tuesday — session hasn't closed yet, want Monday
         from datetime import datetime
         from zoneinfo import ZoneInfo
+
         et = ZoneInfo("America/New_York")
         # Monday 2025-01-06, Tuesday 2025-01-07
         fake_now = datetime(2025, 1, 7, 2, 0, 0, tzinfo=et)  # 02:00 ET Tuesday
@@ -222,6 +223,7 @@ class TestEtToday:
         # 17:00 ET Tuesday — session closed, want today
         from datetime import datetime
         from zoneinfo import ZoneInfo
+
         et = ZoneInfo("America/New_York")
         fake_now = datetime(2025, 1, 7, 17, 0, 0, tzinfo=et)  # 17:00 ET Tuesday
         with patch("livewire_scripts.daily_update.datetime") as mock_dt:

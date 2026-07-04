@@ -47,13 +47,12 @@ Current live shape:
 ## Testing Expectations
 
 - All code in `clients/` and `scripts/` needs tests.
-- The repo enforces `100%` coverage for the configured source set.
-- Before finishing meaningful changes, run:
-  - `source ~/market-warehouse/.venv/bin/activate`
-  - `python -m pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing`
+- The repo enforces `95%` coverage for the configured source set (`fail_under = 95`, CI `--cov-fail-under=95`).
+- Before finishing meaningful changes, run (matches CI):
+  - `uv run pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing`
 - The native macOS client tests are now in the standalone Sift repo at `~/dev/apps/util/sift/`
 - When script tests mock async runners such as `ib.ib.run(...)`, also run:
-  - `python -m pytest tests -q -W error::RuntimeWarning`
+  - `uv run pytest tests -q -W error::RuntimeWarning`
 - When fixing a bug, add or update a regression test if it fits.
 
 ## Bug Fixing
@@ -65,9 +64,7 @@ Current live shape:
 
 ## Operational Facts
 
-- IB Gateway is expected on `127.0.0.1:4001` by default, configurable via `MDW_IB_HOST`/`MDW_IB_PORT` env vars or `--host`/`--port` CLI flags.
-- Gateway is owned by the separate **trading-stack** project at `~/trading-stack/`. IBC installed at `/opt/ibc/`, watchdog LaunchAgent `local.ibc-watchdog` runs `~/trading-stack/scripts/ibc_watchdog_launchd.sh` every 5 min. Status via `~/trading-stack/scripts/ibc_gateway_status.sh`; combined bounce via `~/trading-stack/scripts/bounce_ibc_xenon.sh`. Authoritative runbook: `~/runbooks/trading-stack/ib-gateway-ibc.md`.
-- IB Gateway is pinned to **10.45** (10.46 is incompatible). 2FA is approved manually in IBKR Mobile on every fresh login. Do not read `/opt/ibc/config.ini`, write order workflows, or auto-restart Gateway on failure.
+- **IB Gateway + IBC run on the Mac mini, not this MacBook** — livewire is a remote consumer and never installs/restarts the Gateway. Connect via `MDW_IB_HOST`/`MDW_IB_PORT` env vars or `--host`/`--port` flags (code default `127.0.0.1:4001`; point at the mini for real runs). Gateway pinned to **10.45**; 2FA approved manually in IBKR Mobile. Do not write order workflows or auto-restart the Gateway on failure.
 - `IBClient.connect()` already retries successive `clientId` values after IB error `326`.
 - `scripts/livewire_ingest.py daily` is the scheduled parquet-first daily sync and supports `--target-date YYYY-MM-DD` for fixed-date catch-up runs without publishing later bars.
 - `scripts/livewire_ingest.py cboe-vol` fetches all CBOE volatility indices directly from CBOE's public API. This is the authoritative daily sync source for VIX, VVIX, VXHYG, VXSMH, and all other volatility indices in `presets/volatility.json`; for `VIX` and `SPX`, it appends newer official daily-price CSV backup rows when the chart JSON lags.
@@ -94,7 +91,7 @@ Current live shape:
 
 Common traps — check these before investigating further:
 
-- **IB Gateway availability**: Check `~/ibc/logs/ibc-gateway-service.log` and port 4001 before assuming IB is reachable.
+- **IB Gateway availability**: the Gateway runs on the Mac mini — check `nc -z "${MDW_IB_HOST:?set MDW_IB_HOST to the Mac mini host}" "${MDW_IB_PORT:-4001}"` before assuming IB is reachable; do not attempt restarts from this machine.
 - **Analytical publish targets**: Live ingestion writes bronze parquet only. Rebuild Postgres explicitly when SQL access needs refreshed analytical tables.
 - **Empty IB head timestamps**: IB returns empty head timestamps for some symbols. The fallback to `IB_EARLIEST_DATE` is intentional — do not treat it as an error.
 - **IB error 326 (client ID in use)**: Handled by auto-retry in `IBClient.connect()`. Do not manually reassign client IDs.

@@ -8,17 +8,8 @@ Two directory trees: this **git repo** and the **data warehouse** at `~/market-w
 
 ```
 livewire/                           # Git repo
-├── clients/
-│   ├── __init__.py                 # Exports BronzeClient, DailyBarFallbackClient, IBClient, PostgresClient, MassiveFlatfileClient, aggregate_bars
-│   ├── bronze_client.py            # Canonical per-ticker bronze parquet client
-│   ├── daily_bar_fallback.py       # Public daily-bar fallback chain for U.S. equities/ETFs
-│   ├── ib_client.py                # Interactive Brokers API client (ib_async)
-│   ├── historical_provider.py       # HistoricalProvider abstraction (IBProvider, contract spec helpers)
-│   ├── massive_flatfile_client.py  # Massive S3 whole-market flat-file client
-│   ├── timeframe_aggregator.py     # Lossless OHLCV rollup (1m→5m/30m/1h, 30m→1h)
-│   ├── uw_client.py                # Unusual Whales REST API client (kept, not used for historical)
-│   ├── postgres_client.py          # Postgres analytical publish client
-│   └── postgres_schema.py          # Postgres md.* schema definitions
+├── clients/                        # ~30 client modules (bronze/IB/Massive/Postgres/FRED/quality/telemetry/…)
+│   └── __init__.py                 # Authoritative export list — check it rather than this tree
 ├── presets/
 │   ├── volatility.json             # CBOE Volatility Indices (VIX, VVIX, etc.)
 │   ├── volatility-intraday.json    # VIX/SPX/NDX/RUT/VXN/RVX IB-backed intraday (30m, 1h derived)
@@ -71,7 +62,7 @@ livewire/                           # Git repo
 - **Data lake tiers**: bronze (normalized Parquet) -> silver (cleaned) -> gold (derived)
 - **Postgres** is an optional analytical publish target rebuilt from bronze parquet and reliability JSONL; ingestion does not write Postgres
 - **ClickHouse** is optional, for production-style benchmarking and concurrency testing
-- **Python env** lives at `~/market-warehouse/.venv/` — activate with `source ~/market-warehouse/.venv/bin/activate`
+- **Python env**: dev/test runs go through `uv` (`uv sync --dev`, `uv run pytest` — matches CI). The launchd runtime venv lives at `~/market-warehouse/.venv/`; the `source …/bin/activate` + `python …` invocations in the operator examples below run against it
 
 ## Native macOS Client (Extracted)
 
@@ -85,25 +76,16 @@ Postgres publishes replayable `md.*` analytical tables from canonical bronze par
 
 ## IB Gateway / IBC
 
-IB Gateway runs only on this machine. It is managed by **IBC** (IB Controller) and operated by the separate **trading-stack** project at `~/trading-stack/` — livewire is a consumer of that infrastructure, not its owner.
+**IB Gateway + IBC run on the Mac mini, not on this MacBook.** Livewire is a remote consumer of that infrastructure — this repo does not install, configure, or restart the Gateway. (Earlier local-install notes here — `/opt/ibc/`, `~/ibc/`, local watchdog LaunchAgents — described a setup that no longer applies to this machine.)
 
-Authoritative runbook: `~/runbooks/trading-stack/ib-gateway-ibc.md`. Read it before changing anything IBC-related.
-
-- **IBC install**: `/opt/ibc/` (system-wide; not in `~`)
-- **IBC config**: `/opt/ibc/config.ini` (contains stored credentials; do not read or modify from livewire)
-- **IBC logs**: `/opt/ibc/logs/` (rotating daily files; watchdog log at `/opt/ibc/logs/ibc-watchdog.log`)
-- **Gateway app**: `~/Applications/IB Gateway 10.45/` — pinned to **10.45** (10.46 is incompatible; 10.46 installs are renamed `*.disabled`)
-- **Watchdog LaunchAgent**: `~/Library/LaunchAgents/local.ibc-watchdog.plist` → runs `~/trading-stack/scripts/ibc_watchdog_launchd.sh` every 5 min
-- **Gateway API port**: `127.0.0.1:4001` (live)
-- **Trading mode**: live
-- **2FA**: user manually approves in **IBKR Mobile** on every fresh login; livewire cannot bypass this
-- **Status check**: `~/trading-stack/scripts/ibc_gateway_status.sh` (key=value diagnostics, also called by livewire's preflight)
-- **Combined bounce (Gateway + Xenon)**: `~/trading-stack/scripts/bounce_ibc_xenon.sh` — stops watchdog, kills IBC/Gateway, restarts via Terminal launcher, waits for port 4001, then restarts Xenon containers
-- **Do NOT**: read `/opt/ibc/config.ini`, write order-management workflows, or repeatedly restart Gateway on failure (failures usually mean 2FA, IBKR maintenance, session conflict, or market-data permission — not something livewire should auto-recover)
+- **Connection**: `MDW_IB_HOST`/`MDW_IB_PORT` env vars or `--host`/`--port` flags. The code default is `127.0.0.1:4001`; point at the mini for real runs.
+- **Gateway version**: pinned to **10.45** (10.46 is incompatible)
+- **Trading mode**: live; **2FA** is approved manually in IBKR Mobile on every fresh login — livewire cannot bypass this
+- **Do NOT**: write order-management workflows, attempt to restart/manage the Gateway from this repo, or auto-retry on connection failure (failures usually mean 2FA, IBKR maintenance, session conflict, or market-data permission — not something livewire should recover)
 
 ## Data Ingestion
 
-Primary data source: **Interactive Brokers** via `ib_async`. Requires IB Gateway at `127.0.0.1:4001` — managed by trading-stack (see "IB Gateway / IBC" section above). IB-backed ingest commands run a preflight check before connecting; if the Gateway is down they print the trading-stack status and exit cleanly rather than burning a 4-min IB timeout. `daily --source massive` and `historical --backfill --source massive` are explicit non-IB equity paths and bypass IB preflight.
+Primary data source: **Interactive Brokers** via `ib_async`. Requires the IB Gateway on the Mac mini (see "IB Gateway / IBC" above). IB-backed ingest commands run a preflight check before connecting; if the Gateway is unreachable they report status and exit cleanly rather than burning a 4-min IB timeout. `daily --source massive` and `historical --backfill --source massive` are explicit non-IB equity paths and bypass IB preflight.
 
 - `IBClient` wraps `ib_async.IB` with connection management, historical data, and contract qualification
 - `IBClient.connect()` defaults to `clientId=0` and automatically retries successive `clientId` values if IB reports error `326` (`client id already in use`)
@@ -445,14 +427,13 @@ Postgres is a replayable publish target, not canonical storage. Rollback means d
 
 ## Testing
 
-**All new code in `clients/` and `scripts/` must have tests. Coverage is enforced at 100% for the source currently included by `pyproject.toml`; `clients/ib_client.py` is still omitted from the fail-under gate and covered by focused tests separately.**
+**All new code in `clients/` and `scripts/` must have tests. Coverage is enforced at 95% (`fail_under = 95` in `pyproject.toml`, `--cov-fail-under=95` in CI) for the source currently included by `pyproject.toml`; `clients/ib_client.py` is still omitted from the fail-under gate and covered by focused tests separately.**
 
 ```bash
-source ~/market-warehouse/.venv/bin/activate
-python -m pytest tests/ -v                                                        # Run all
-python -m pytest tests/ -v --cov=clients --cov=scripts --cov-report=term-missing  # With coverage
-python -m pytest tests/ -v -m "not integration"                                   # Unit tests only
-python -m pytest tests/ -v -W error::RuntimeWarning                               # Catch leaked coroutine warnings
+uv run pytest tests/ -v                                                        # Run all (matches CI)
+uv run pytest tests/ -v --cov=clients --cov=scripts --cov-report=term-missing  # With coverage
+uv run pytest tests/ -v -m "not integration"                                   # Unit tests only
+uv run pytest tests/ -v -W error::RuntimeWarning                               # Catch leaked coroutine warnings
 # Native macOS tests are now in the standalone Sift repo at ~/dev/apps/util/sift
 ```
 
@@ -462,9 +443,9 @@ python -m pytest tests/ -v -W error::RuntimeWarning                             
 2. Mock all external I/O (IB connections via `MagicMock`, file paths via `patch`)
 3. Use temp parquet roots or disposable Postgres DSNs for storage tests
 4. Mark DB tests with `@pytest.mark.integration`
-5. Run coverage and confirm 100% before committing
+5. Run coverage and confirm the 95% gate passes before committing
 6. Run `-W error::RuntimeWarning` at least once before committing when script tests mock async runners such as `ib.ib.run(...)`
-7. `pyproject.toml` enforces `fail_under = 100`; `if __name__ == "__main__"` blocks are excluded
+7. `pyproject.toml` enforces `fail_under = 95`; `if __name__ == "__main__"` blocks are excluded
 8. `clients/ib_client.py` is excluded from the coverage fail-under gate, but focused behavior tests now live in `tests/test_ib_client.py`
 
 ### Test deps
@@ -496,7 +477,7 @@ Catches: AWS keys, API key/secret/password assignments, private key headers, Git
 
 Common traps that derail debugging sessions — check these before investigating further:
 
-- **IB Gateway availability**: Run `~/trading-stack/scripts/ibc_gateway_status.sh` and `nc -z 127.0.0.1 4001` before assuming IB is reachable. If down: `tail -30 /opt/ibc/logs/ibc-watchdog.log`; if still stuck, full bounce via `~/trading-stack/scripts/bounce_ibc_xenon.sh` (touches Xenon too — coordinate). Do NOT auto-retry restarts: failures usually mean 2FA, IBKR maintenance, or session conflict, not transient.
+- **IB Gateway availability**: the Gateway runs on the Mac mini — check reachability with `nc -z "${MDW_IB_HOST:?set MDW_IB_HOST to the Mac mini host}" "${MDW_IB_PORT:-4001}"` before assuming IB is up. Do NOT attempt restarts from this machine: failures usually mean 2FA, IBKR maintenance, or session conflict, not something livewire should recover.
 - **Empty IB head timestamps**: IB returns empty head timestamps for some symbols. The fallback to `IB_EARLIEST_DATE` is intentional — don't treat it as an error.
 - **IB error 326 (client ID in use)**: Handled by auto-retry in `IBClient.connect()`. Don't manually reassign client IDs.
 - **Weekend/holiday runs**: IB returns no data on non-trading days. These are harmless no-ops — don't debug "no data returned" on weekends or holidays.
