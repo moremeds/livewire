@@ -24,7 +24,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from livewire_scripts.daily_outcomes import SUMMARY_PREFIX
+from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, parse_last_summary_json
 
 logger = logging.getLogger("livewire.sync_runner")
 
@@ -117,6 +117,7 @@ def run_phase(
 ) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"{label}.log"
+    offset = log_file.stat().st_size if log_file.exists() else 0
     logger.info("CMD %s: %s", label, _format_command(command))
 
     with log_file.open("a", encoding="utf-8") as fh:
@@ -131,10 +132,13 @@ def run_phase(
     if result.returncode != 0:
         if allow_completed_summary:
             try:
-                content = log_file.read_text(encoding="utf-8")
-                if "Daily Update Complete" in content:
+                with log_file.open(encoding="utf-8") as fh:
+                    fh.seek(offset)
+                    content = fh.read()
+                summary = parse_last_summary_json(content)
+                if summary and int(summary.get("updated", 0)) > 0 and int(summary.get("errors", 0)) == 0:
                     logger.warning(
-                        "%s exited %d after completed summary; continuing",
+                        "%s exited %d after successful this-run summary; continuing",
                         label,
                         result.returncode,
                     )

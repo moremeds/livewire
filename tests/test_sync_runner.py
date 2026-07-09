@@ -24,6 +24,23 @@ from livewire_scripts.sync_runner import (
 )
 
 
+def _summary_line(*, updated: int = 1, errors: int = 0) -> str:
+    payload = {
+        "job": "daily_update",
+        "asset_class": "equity",
+        "source": "massive",
+        "target_date": "2026-05-28",
+        "updated": updated,
+        "no_trade": 0,
+        "partial": 0,
+        "errors": errors,
+        "bars_inserted": updated,
+        "validation_issues": 0,
+        "top_errors": [],
+    }
+    return "SUMMARY_JSON " + json.dumps(payload, separators=(",", ":")) + "\n"
+
+
 @pytest.fixture(autouse=True)
 def _flatfile_credentials(monkeypatch):
     monkeypatch.setenv("MASSIVE_S3_ACCESS_KEY", "test-access")
@@ -214,10 +231,10 @@ class TestRunPhase:
         assert rc == 1
 
     def test_failure_with_completed_summary(self, tmp_path):
-        def runner_with_marker(command, **kwargs):
+        def runner_with_summary(command, **kwargs):
             stdout = kwargs.get("stdout")
             if stdout is not None:
-                stdout.write("Daily Update Complete\n")
+                stdout.write(_summary_line(updated=1, errors=0))
             return CompletedProcess(args=command, returncode=1)
 
         rc = run_phase(
@@ -225,9 +242,38 @@ class TestRunPhase:
             ["cmd"],
             tmp_path,
             allow_completed_summary=True,
-            runner=runner_with_marker,
+            runner=runner_with_summary,
         )
         assert rc == 0
+
+    def test_stale_summary_from_previous_run_not_suppressed(self, tmp_path):
+        log_file = tmp_path / "test.log"
+        log_file.write_text(_summary_line(updated=4, errors=0) + "Daily Update Complete\n")
+
+        rc = run_phase(
+            "test",
+            ["cmd"],
+            tmp_path,
+            allow_completed_summary=True,
+            runner=_fail_runner,
+        )
+        assert rc == 1
+
+    def test_summary_with_errors_not_suppressed(self, tmp_path):
+        def runner_with_errors(command, **kwargs):
+            stdout = kwargs.get("stdout")
+            if stdout is not None:
+                stdout.write(_summary_line(updated=1, errors=2))
+            return CompletedProcess(args=command, returncode=1)
+
+        rc = run_phase(
+            "test",
+            ["cmd"],
+            tmp_path,
+            allow_completed_summary=True,
+            runner=runner_with_errors,
+        )
+        assert rc == 1
 
     def test_failure_without_marker_not_suppressed(self, tmp_path):
         rc = run_phase(
@@ -240,7 +286,7 @@ class TestRunPhase:
         assert rc == 1
 
     def test_completed_summary_log_file_missing(self, tmp_path):
-        """FileNotFoundError branch when log file vanishes between write and read."""
+        """FileNotFoundError branch when the log file vanishes before summary parse."""
         log_dir = tmp_path / "logs"
 
         def runner_that_deletes_log(command, **kwargs):

@@ -784,6 +784,7 @@ def main():  # pragma: no cover — only exercised by integration tests
                             console.print(f"  [red]{ticker}[/red]: ERROR {exc}")
                             continue
 
+            # Cosmetic only; wrappers consume the SUMMARY_JSON line below.
             console.print(f"\n{'═' * 60}")
             console.print("[bold]Daily Update Complete[/bold]")
             console.print(f"  Tickers updated:    {tickers_updated}")
@@ -958,6 +959,7 @@ def main():  # pragma: no cover — only exercised by integration tests
                         continue
 
     # ── Summary ─────────────────────────────────────────────────────
+    # Cosmetic only; wrappers consume the SUMMARY_JSON line below.
     console.print(f"\n{'═' * 60}")
     console.print("[bold]Daily Update Complete[/bold]")
     console.print(f"  Tickers updated:    {tickers_updated}")
