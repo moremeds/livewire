@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 from subprocess import CompletedProcess
 
 from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, build_summary_line
@@ -33,6 +34,10 @@ def _daily_summary(**kw):
     )
     base.update(kw)
     return base
+
+
+def _body_file_from_cmd(cmd) -> Path:
+    return Path(cmd[cmd.index("--body-file") + 1])
 
 
 def test_build_digest_renders_all_sections(tmp_path):
@@ -120,7 +125,6 @@ def test_main_email_invokes_node_script(tmp_path, monkeypatch):
         return CompletedProcess(args=cmd, returncode=0)
 
     log_dir = tmp_path / "logs"
-    monkeypatch.setattr("livewire_scripts.nightly_digest._LOG_DIR", log_dir)
     rc = main(
         ["--run-date", "2026-07-02", "--email", "--log-dir", str(log_dir), "--data-lake", str(tmp_path)],
         runner=fake_runner,
@@ -130,5 +134,49 @@ def test_main_email_invokes_node_script(tmp_path, monkeypatch):
     cmd = calls[0]
     assert "--mode" in cmd and "digest" in cmd
     assert "--body-file" in cmd
-    # Writes the marker the daily-update watchdog gates on.
+    body_file = _body_file_from_cmd(cmd)
+    assert body_file.parent == log_dir
+    assert body_file.exists()
+    assert "Livewire nightly digest" in body_file.read_text(encoding="utf-8")
+    # Writes the marker the daily-update watchdog gates on only after send success.
     assert (log_dir / "quality_summary_2026-07-02.marker").exists()
+
+
+def test_failed_send_does_not_write_marker(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_NODE_BIN", "node")
+
+    def fake_runner(cmd, **kwargs):
+        return CompletedProcess(args=cmd, returncode=1)
+
+    log_dir = tmp_path / "logs"
+    rc = main(
+        ["--run-date", "2026-07-02", "--email", "--log-dir", str(log_dir), "--data-lake", str(tmp_path)],
+        runner=fake_runner,
+    )
+
+    assert rc == 1
+    assert not (log_dir / "quality_summary_2026-07-02.marker").exists()
+
+
+def test_body_file_honors_log_dir_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_NODE_BIN", "node")
+    wrong_log_dir = tmp_path / "module_logs"
+    custom_log_dir = tmp_path / "custom_logs"
+    calls = []
+
+    def fake_runner(cmd, **kwargs):
+        calls.append(cmd)
+        return CompletedProcess(args=cmd, returncode=0)
+
+    monkeypatch.setattr("livewire_scripts.nightly_digest._LOG_DIR", wrong_log_dir)
+
+    rc = main(
+        ["--run-date", "2026-07-02", "--email", "--log-dir", str(custom_log_dir), "--data-lake", str(tmp_path)],
+        runner=fake_runner,
+    )
+
+    assert rc == 0
+    body_file = _body_file_from_cmd(calls[0])
+    assert body_file.parent == custom_log_dir
+    assert body_file.exists()
+    assert not (wrong_log_dir / "nightly_digest_2026-07-02.txt").exists()
