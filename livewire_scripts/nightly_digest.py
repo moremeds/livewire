@@ -107,8 +107,8 @@ def build_digest(run_date: date, log_dir: Path, data_lake: Path) -> str:
     return "\n\n".join("\n".join(section) for section in sections) + "\n"
 
 
-def _send_email(body: str, run_date: date, node_bin: str, runner) -> int:
-    body_file = _LOG_DIR / f"nightly_digest_{run_date.isoformat()}.txt"
+def _send_email(body: str, run_date: date, node_bin: str, log_dir: Path, runner) -> int:
+    body_file = log_dir / f"nightly_digest_{run_date.isoformat()}.txt"
     body_file.parent.mkdir(parents=True, exist_ok=True)
     body_file.write_text(body, encoding="utf-8")
     result = runner(
@@ -138,13 +138,15 @@ def main(argv=None, runner=subprocess.run) -> int:
     body = build_digest(args.run_date, args.log_dir, args.data_lake)
     print(body)
     if args.email:
-        # The digest is the post-daily quality artifact; write the marker the
-        # watchdog gates on (previously written by report --view summary --email).
-        marker = args.log_dir / f"quality_summary_{args.run_date.isoformat()}.marker"
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(f"nightly digest {args.run_date.isoformat()}\n", encoding="utf-8")
         node_bin = os.getenv("MDW_NODE_BIN") or shutil.which("node") or "/opt/homebrew/bin/node"
-        return _send_email(body, args.run_date, node_bin, runner)
+        rc = _send_email(body, args.run_date, node_bin, args.log_dir, runner)
+        if rc == 0:
+            # The digest is the post-daily quality artifact; write the marker
+            # only after the email path succeeds so the watchdog cannot mask a failed send.
+            marker = args.log_dir / f"quality_summary_{args.run_date.isoformat()}.marker"
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(f"nightly digest {args.run_date.isoformat()}\n", encoding="utf-8")
+        return rc
     return 0
 
 
