@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -238,14 +239,36 @@ def _spawn_post_success_quality(runner, log_file, args, label, timeout=120):
         append_log(log_file, f"WARNING: {label} failed: {exc}")
 
 
-def log_has_completion_marker(log_file: Path) -> bool:
+_LEGACY_DONE_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+
+def completed_scopes(log_file: Path) -> set[str]:
+    scopes: set[str] = set()
     try:
         for line in log_file.read_text(encoding="utf-8").splitlines():
             if line.startswith("=== Done "):
-                return True
+                remainder = line.removeprefix("=== Done ").strip()
+                if not remainder:
+                    continue
+                token = remainder.split(maxsplit=1)[0]
+                scopes.add("*" if _LEGACY_DONE_TIMESTAMP_RE.fullmatch(token) else token)
     except FileNotFoundError:
-        return False
-    return False
+        return set()
+    return scopes
+
+
+def log_has_completion_marker(log_file: Path) -> bool:
+    return bool(completed_scopes(log_file))
+
+
+def _completion_scope_from_args(args: Sequence[str]) -> str:
+    if "--asset-class" not in args:
+        return "daily"
+    index = args.index("--asset-class")
+    try:
+        return args[index + 1]
+    except IndexError:
+        return "daily"
 
 
 def run_with_retries(
@@ -255,10 +278,12 @@ def run_with_retries(
     sleep_fn: callable = time.sleep,
     runner: callable = subprocess.run,
     now_fn: callable = _utc_now,
+    completion_scope: str | None = None,
 ) -> int:
     started_at = now_fn()
     log_file = build_log_file(config.log_dir, started_at)
     command = tuple(build_daily_update_command(config, daily_update_args))
+    done_scope = completion_scope or _completion_scope_from_args(daily_update_args)
 
     append_log(log_file, f"=== Daily Update {started_at:%Y-%m-%dT%H:%M:%SZ} ===\n")
     append_log(log_file, f"Runner command: {' '.join(command)}")
@@ -284,7 +309,7 @@ def run_with_retries(
         if result.returncode == 0:
             append_log(
                 log_file,
-                (f"=== Done {now_fn():%Y-%m-%dT%H:%M:%SZ} (attempt {attempt}/{config.max_attempts}) ==="),
+                (f"=== Done {done_scope} {now_fn():%Y-%m-%dT%H:%M:%SZ} (attempt {attempt}/{config.max_attempts}) ==="),
             )
             # Coverage + weekly were tied to a container entrypoint that no
             # longer exists; run them here after a successful daily job so
@@ -377,7 +402,7 @@ def run_cboe_volatility_sync(
     if result.returncode == 0:
         append_log(
             log_file,
-            f"=== CBOE Volatility Sync Done {now_fn():%Y-%m-%dT%H:%M:%SZ} ===",
+            f"=== Done cboe {now_fn():%Y-%m-%dT%H:%M:%SZ} ===",
         )
     else:
         append_log(
@@ -395,12 +420,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # If --asset-class is explicitly specified, run just that one.
     if "--asset-class" in args:
-        return run_with_retries(config, args, env=env)
+        return run_with_retries(config, args, env=env, completion_scope=_completion_scope_from_args(args))
 
     # Otherwise, run all asset classes sequentially.
     final_code = 0
     for asset_class in ASSET_CLASSES:
-        code = run_with_retries(config, args + ["--asset-class", asset_class], env=env)
+        code = run_with_retries(
+            config,
+            args + ["--asset-class", asset_class],
+            env=env,
+            completion_scope=asset_class,
+        )
         if code != 0:
             final_code = code
 

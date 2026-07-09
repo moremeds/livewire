@@ -20,7 +20,7 @@ from livewire_scripts.check_daily_update_watchdog import (
     record_alert_marker,
     run_watchdog,
 )
-from livewire_scripts.run_daily_update_job import RunnerConfig
+from livewire_scripts.run_daily_update_job import ASSET_CLASSES, RunnerConfig
 
 
 def _config(tmp_path: Path, *, node_bin: str = "/opt/homebrew/bin/node") -> RunnerConfig:
@@ -36,6 +36,12 @@ def _config(tmp_path: Path, *, node_bin: str = "/opt/homebrew/bin/node") -> Runn
         max_attempts=3,
         retry_delay_seconds=300,
     )
+
+
+def _all_daily_done_markers() -> str:
+    lines = [f"=== Done {asset_class} 2026-03-11T20:05:09Z (attempt 1/3) ===" for asset_class in ASSET_CLASSES]
+    lines.append("=== Done cboe 2026-03-11T20:05:10Z ===")
+    return "\n".join(lines) + "\n"
 
 
 class TestHelpers:
@@ -69,10 +75,7 @@ class TestRunWatchdog:
         config = _config(tmp_path)
         log_file = build_daily_log_file(config.log_dir, "2026-03-11")
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        log_file.write_text(
-            "=== Done 2026-03-11T20:05:09Z (attempt 1/3) ===\n",
-            encoding="utf-8",
-        )
+        log_file.write_text(_all_daily_done_markers(), encoding="utf-8")
         (config.log_dir / "quality_summary_2026-03-11.marker").write_text("ok\n")
         (config.log_dir / "intraday_catchup_2026-03-11.log").write_text(
             "=== Done 2026-03-11T05:02:29Z ===\n", encoding="utf-8"
@@ -146,6 +149,34 @@ class TestRunWatchdog:
         assert "WARNING: watchdog failure alert returned non-zero exit code 2. smtp down" in watchdog_log.read_text(
             encoding="utf-8"
         )
+
+    def test_alerts_when_subset_of_asset_classes_done(self, tmp_path):
+        config = _config(tmp_path)
+        config.log_dir.mkdir(parents=True, exist_ok=True)
+        daily_log = build_daily_log_file(config.log_dir, "2026-03-11")
+        daily_log.write_text("=== Done equity 2026-03-11T20:05:09Z (attempt 1/3) ===\n", encoding="utf-8")
+        (config.log_dir / "quality_summary_2026-03-11.marker").write_text("ok\n", encoding="utf-8")
+        (config.log_dir / "intraday_catchup_2026-03-11.log").write_text(
+            "=== Done 2026-03-11T05:02:29Z ===\n", encoding="utf-8"
+        )
+        captured = {}
+
+        def _send(config_arg, request, log_file, env=None, runner=None):
+            captured["request"] = request
+            return SimpleNamespace(returncode=0, stdout="sent")
+
+        with patch(
+            "livewire_scripts.check_daily_update_watchdog.send_failure_alert",
+            side_effect=_send,
+        ):
+            rc = run_watchdog(config, run_date="2026-03-11", env={})
+
+        assert rc == WATCHDOG_ALERT_SENT_EXIT_CODE
+        assert "missing completion scopes" in captured["request"].error_summary
+        assert "futures" in captured["request"].error_summary
+        assert "cmdty" in captured["request"].error_summary
+        assert "fx" in captured["request"].error_summary
+        assert "cboe" in captured["request"].error_summary
 
 
 class TestQualitySummaryMarker:
