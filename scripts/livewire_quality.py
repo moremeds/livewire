@@ -13,6 +13,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from livewire_scripts.scheduled_env import load_scheduled_env
+
 COMMANDS = {
     "health": "livewire_scripts.health_check",
     "coverage": "livewire_scripts.coverage_report",
@@ -45,6 +47,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     args = parser.parse_args(argv[:1])
     rest = argv[1:]
+    if args.command == "watchdog":
+        # Launchd invokes watchdog cold; other email-capable quality commands
+        # currently inherit env from scheduled parent jobs.
+        load_scheduled_env(REPO_ROOT)
     return _dispatch_module(COMMANDS[args.command], rest, f"livewire_quality.py {args.command}")
 
 

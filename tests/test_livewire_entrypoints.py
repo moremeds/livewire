@@ -352,6 +352,43 @@ def test_quality_dispatches_argv_aware_module(monkeypatch) -> None:
     assert calls == [("livewire_scripts.data_quality_report", ["--view", "summary"])]
 
 
+def test_quality_watchdog_loads_scheduled_env(monkeypatch, tmp_path) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    loader_calls: list[Path] = []
+    monkeypatch.setattr(livewire_quality, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        livewire_quality.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+    monkeypatch.setattr(
+        livewire_quality,
+        "load_scheduled_env",
+        lambda repo_root: loader_calls.append(repo_root),
+    )
+
+    assert livewire_quality.main(["watchdog", "--run-date", "2026-07-09"]) == 7
+    assert loader_calls == [tmp_path]
+    assert calls == [("livewire_scripts.check_daily_update_watchdog", ["--run-date", "2026-07-09"])]
+
+
+def test_quality_other_commands_do_not_load_env(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_quality.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+    monkeypatch.setattr(
+        livewire_quality,
+        "load_scheduled_env",
+        lambda repo_root: (_ for _ in ()).throw(AssertionError("env should not load")),
+    )
+
+    assert livewire_quality.main(["health"]) == 7
+    assert calls == [("livewire_scripts.health_check", [])]
+
+
 def test_store_dispatches_storage_command(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(
