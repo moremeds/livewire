@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from livewire_scripts.paths import warehouse_dir as resolve_warehouse_dir
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 INGEST_SCRIPT = REPO_ROOT / "scripts" / "livewire_ingest.py"
@@ -65,7 +67,7 @@ def _read_positive_int_env(name: str, default: int) -> int:
 
 
 def build_config() -> RunnerConfig:
-    warehouse_dir = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))).expanduser()
+    warehouse_dir = resolve_warehouse_dir()
     log_dir = Path(os.getenv("MDW_DAILY_UPDATE_LOG_DIR", str(warehouse_dir / "logs"))).expanduser()
     node_bin = os.getenv("MDW_NODE_BIN") or shutil.which("node") or "/opt/homebrew/bin/node"
 

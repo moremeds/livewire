@@ -22,6 +22,9 @@ from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 
+from livewire_scripts.paths import cursor_dir, data_lake_dir, log_dir
+from livewire_scripts.paths import warehouse_dir as resolve_warehouse_dir
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -57,13 +60,12 @@ class BackfillConfig:
 
 def build_config(repo_root: Path | None = None) -> BackfillConfig:
     root = repo_root or _PROJECT_ROOT
-    warehouse = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
     return BackfillConfig(
         python_bin=os.getenv("MDW_PYTHON_BIN", sys.executable),
         ingest_script=root / "scripts" / "livewire_ingest.py",
         store_script=root / "scripts" / "livewire_store.py",
-        log_dir=Path(os.getenv("MDW_LOG_DIR", str(warehouse / "logs"))),
-        cursor_dir=Path(os.getenv("MDW_CURSOR_DIR", str(warehouse / "cursors"))),
+        log_dir=log_dir(),
+        cursor_dir=cursor_dir(),
         equity_presets=tuple(str(root / p) for p in EQUITY_PRESETS),
         vol_preset=str(root / VOL_PRESET),
         vol_daily_preset=str(root / VOL_DAILY_PRESET),
@@ -121,7 +123,7 @@ def gap_aware_completed(
     if cursor_count < total:
         return cursor_count
 
-    wh = warehouse_dir or Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
+    wh = warehouse_dir or resolve_warehouse_dir()
     registry_path = wh / "registry.json"
     if not registry_path.exists():
         # Depth check only applies to backfill cursors (cursor_backfill_*.json).
@@ -454,8 +456,8 @@ def _derive_vol_1h(
     with open(vol_preset, encoding="utf-8") as fh:
         tickers = json.load(fh).get("tickers", [])
 
-    wh = warehouse_dir or Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
-    bronze_dir = wh / "data-lake" / "bronze" / "asset_class=volatility"
+    lake = warehouse_dir / "data-lake" if warehouse_dir is not None else data_lake_dir()
+    bronze_dir = lake / "bronze" / "asset_class=volatility"
     derived = 0
 
     for ticker in tickers:

@@ -15,6 +15,8 @@ import os
 import sys
 from pathlib import Path
 
+from livewire_scripts.paths import data_lake_dir
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -168,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--data-lake",
         type=Path,
-        default=Path(os.getenv("MDW_DATA_LAKE", str(Path.home() / "market-warehouse" / "data-lake"))),
+        default=data_lake_dir(),
         help="Data lake root directory",
     )
     args = parser.parse_args(argv)

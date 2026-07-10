@@ -166,6 +166,40 @@ def test_include_reliability_imports_jsonl_paths(tmp_path: Path, monkeypatch: py
     assert ("replace_quality_flags_from_jsonl", quality) in FakePostgresClient.instances[0].calls
 
 
+def test_defaults_follow_warehouse_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    script = fake_client(monkeypatch)
+    warehouse = tmp_path / "warehouse"
+    bronze = warehouse / "data-lake" / "bronze" / "asset_class=equity"
+    touch_parquet(bronze, "AAPL", "1d.parquet")
+    monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(warehouse))
+    monkeypatch.delenv("MDW_DATA_LAKE", raising=False)
+    monkeypatch.delenv("MDW_LOG_DIR", raising=False)
+
+    assert (
+        script.main(
+            [
+                "--dsn",
+                "postgresql://example/livewire",
+                "--timeframe",
+                "1d",
+                "--include-reliability",
+            ]
+        )
+        == 0
+    )
+
+    calls = FakePostgresClient.instances[0].calls
+    assert ("replace_equities_from_parquet", bronze, "equity", "SMART") in calls
+    assert (
+        "replace_telemetry_from_jsonl",
+        warehouse / "logs" / "telemetry.jsonl",
+    ) in calls
+    assert (
+        "replace_quality_flags_from_jsonl",
+        warehouse / "logs" / "quality_audit.jsonl",
+    ) in calls
+
+
 def test_missing_bronze_dir_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     script = fake_client(monkeypatch)
 

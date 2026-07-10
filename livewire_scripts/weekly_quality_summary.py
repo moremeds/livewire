@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -27,11 +26,12 @@ if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
 
 from rich.console import Console
 
+from livewire_scripts.paths import log_dir
+
 log = logging.getLogger(__name__)
 console = Console()
 
-_WAREHOUSE_DIR = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
-_LOG_DIR = _WAREHOUSE_DIR / "logs"
+_LOG_DIR: Path | None = None
 
 _TIMEFRAMES: tuple[str, ...] = ("1d", "1m", "1h", "5m")
 
@@ -101,9 +101,10 @@ def parse_coverage_log(path: Path) -> CoverageEntry | None:
 def load_week(start_day: date) -> list[CoverageEntry]:
     """Load up to 7 daily coverage logs starting at *start_day* (Monday)."""
     entries: list[CoverageEntry] = []
+    resolved_log_dir = _LOG_DIR or log_dir()
     for offset in range(7):
         d = start_day + timedelta(days=offset)
-        path = _LOG_DIR / f"coverage_{d:%Y-%m-%d}.log"
+        path = resolved_log_dir / f"coverage_{d:%Y-%m-%d}.log"
         entry = parse_coverage_log(path)
         if entry is not None:
             entries.append(entry)
@@ -225,9 +226,10 @@ def render_markdown(week_label: str, entries: list[CoverageEntry]) -> str:
 
 
 def write_summary(markdown: str, week_iso: tuple[int, int]) -> Path:
-    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    resolved_log_dir = _LOG_DIR or log_dir()
+    resolved_log_dir.mkdir(parents=True, exist_ok=True)
     year, week = week_iso
-    out_path = _LOG_DIR / f"quality_weekly_{year}-{week:02d}.md"
+    out_path = resolved_log_dir / f"quality_weekly_{year}-{week:02d}.md"
     out_path.write_text(markdown, encoding="utf-8")
     return out_path
 

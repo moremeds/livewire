@@ -31,13 +31,13 @@ from rich.console import Console
 from clients.intraday_bronze_client import INTRADAY_PARQUET_FILENAME
 from clients.symbol_paths import decode_symbol
 from livewire_scripts.daily_update import is_trading_day, previous_trading_day
+from livewire_scripts.paths import data_lake_dir, log_dir
 
 log = logging.getLogger(__name__)
 console = Console()
 
-_WAREHOUSE_DIR = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
-_DATA_LAKE = _WAREHOUSE_DIR / "data-lake"
-_LOG_DIR = _WAREHOUSE_DIR / "logs"
+_DATA_LAKE: Path | None = None
+_LOG_DIR: Path | None = None
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPT_DIR.parent
 _INGEST_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ingest.py"
@@ -46,6 +46,14 @@ _OPS_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ops.py"
 TIMEFRAMES: tuple[str, ...] = ("1d", "1m", "1h", "5m", "30m")
 DEFAULT_THRESHOLD = float(os.getenv("MDW_COVERAGE_ALERT_THRESHOLD", "0.95"))
 DEFAULT_SAFETY_CAP = 100
+
+
+def _resolved_data_lake() -> Path:
+    return _DATA_LAKE or data_lake_dir()
+
+
+def _resolved_log_dir() -> Path:
+    return _LOG_DIR or log_dir()
 
 
 @dataclass
@@ -143,7 +151,7 @@ def compute_coverage(
     as present if it is current through *target_date* OR it is absent from the
     day's raw traded set (it simply did not trade; no-trade is not missing).
     """
-    bronze_root = bronze_root or _DATA_LAKE / "bronze"
+    bronze_root = bronze_root or _resolved_data_lake() / "bronze"
     results: dict[str, CoverageResult] = {}
 
     # The provider's exact target-day traded set, used only to exclude
@@ -202,8 +210,9 @@ def format_missing_blocks(results: dict[str, CoverageResult], max_listed: int = 
 
 
 def write_coverage_log(target_date: date, line: str, missing_blocks: Iterable[str]) -> Path:
-    _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = _LOG_DIR / f"coverage_{target_date:%Y-%m-%d}.log"
+    resolved_log_dir = _resolved_log_dir()
+    resolved_log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = resolved_log_dir / f"coverage_{target_date:%Y-%m-%d}.log"
     with log_path.open("a", encoding="utf-8") as fh:
         fh.write(line + "\n")
         for block in missing_blocks:

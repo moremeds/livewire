@@ -7,7 +7,6 @@ import logging
 import os
 from collections.abc import Sequence
 from datetime import date, timedelta
-from pathlib import Path
 
 from clients.massive_flatfile_client import MassiveFlatfileClient, require_flatfile_credentials
 from clients.massive_flatfile_state import MassiveFlatfileState
@@ -16,6 +15,7 @@ from clients.trading_calendar import trading_dates_in_range
 from livewire_scripts.flatfile_downloader import download_dates
 from livewire_scripts.flatfile_planner import discover_plan, require_capacity
 from livewire_scripts.flatfile_publisher import publish_dates
+from livewire_scripts.paths import cursor_dir, warehouse_dir
 
 log = logging.getLogger("livewire.ingest_flatfiles")
 
@@ -59,9 +59,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.getLogger("clients.intraday_bronze_client").setLevel(logging.WARNING)
     _require_credentials()
 
-    warehouse = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
+    warehouse = warehouse_dir()
     store = MassiveFlatfileStore(warehouse, bucket_count=int(os.getenv("MDW_FLATFILE_BUCKETS", "256")))
-    state = MassiveFlatfileState(Path(os.getenv("MDW_CURSOR_DIR", str(warehouse / "cursors"))))
+    state = MassiveFlatfileState(cursor_dir())
     with MassiveFlatfileClient() as client:
         plan = discover_plan(client, warehouse)
         log.info(

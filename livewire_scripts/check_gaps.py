@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -20,11 +19,12 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from clients import BronzeClient
 from clients.tag_registry import TagRegistry
 from clients.trading_calendar import is_trading_day
+from livewire_scripts.paths import data_lake_dir, warehouse_dir
 
 log = logging.getLogger(__name__)
 console = Console()
 
-_WAREHOUSE_DIR = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
+_WAREHOUSE_DIR: Path | None = None
 
 
 @dataclass
@@ -100,8 +100,10 @@ def main(argv: list[str] | None = None) -> None:
 
     logging.basicConfig(level=logging.INFO)
 
-    registry = TagRegistry(_WAREHOUSE_DIR / "registry.json")
-    bronze_dir = _WAREHOUSE_DIR / "data-lake" / "bronze" / "asset_class=equity"
+    warehouse = _WAREHOUSE_DIR or warehouse_dir()
+    registry = TagRegistry(warehouse / "registry.json")
+    lake = warehouse / "data-lake" if _WAREHOUSE_DIR else data_lake_dir()
+    bronze_dir = lake / "bronze" / "asset_class=equity"
     bronze = BronzeClient(bronze_dir=bronze_dir)
     all_dates = bronze.get_trade_dates_by_symbol()
 

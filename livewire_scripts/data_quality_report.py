@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import subprocess
 import sys
@@ -18,9 +17,9 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from livewire_scripts.paths import log_dir
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_TELEMETRY = Path.home() / "market-warehouse" / "logs" / "telemetry.jsonl"
-DEFAULT_AUDIT = Path.home() / "market-warehouse" / "logs" / "quality_audit.jsonl"
 _EMAIL_SCRIPT = REPO_ROOT / "scripts" / "livewire_ops.py"
 
 _SINCE_RE = re.compile(r"^(\d+)\s*([smhd])$")
@@ -45,8 +44,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--since", default="24h", type=_parse_since)
     p.add_argument("--source", default="all", choices=["all", "ib", "uw", "massive"])
     p.add_argument("--severity", default=None, choices=[None, "info", "warning", "critical"])
-    p.add_argument("--telemetry-path", type=Path, default=DEFAULT_TELEMETRY)
-    p.add_argument("--audit-path", type=Path, default=DEFAULT_AUDIT)
+    p.add_argument("--telemetry-path", type=Path, default=log_dir() / "telemetry.jsonl")
+    p.add_argument("--audit-path", type=Path, default=log_dir() / "quality_audit.jsonl")
     p.add_argument(
         "--email",
         action="store_true",
@@ -246,11 +245,7 @@ def render_quality_view(
 
 
 def _resolve_log_dir() -> Path:
-    raw = os.environ.get(
-        "MDW_LOG_DIR",
-        str(Path.home() / "market-warehouse" / "logs"),
-    )
-    return Path(raw).expanduser()
+    return log_dir()
 
 
 def _send_email(summary: dict) -> bool:

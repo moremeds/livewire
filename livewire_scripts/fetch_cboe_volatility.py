@@ -28,6 +28,7 @@ if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from clients.bronze_client import PARQUET_FILENAME
+from livewire_scripts.paths import warehouse_dir
 
 console = Console()
 
@@ -38,7 +39,6 @@ CBOE_DAILY_PRICE_CSV_URLS = {
     "RUT": "https://cdn.cboe.com/api/global/us_indices/daily_prices/RUT_History.csv",
 }
 
-DEFAULT_WAREHOUSE = Path.home() / "market-warehouse"
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_PRESET = SCRIPT_DIR.parent / "presets" / "volatility.json"
 ASSET_CLASS = "volatility"
@@ -241,8 +241,8 @@ def main() -> None:
     parser.add_argument(
         "--warehouse",
         type=Path,
-        default=DEFAULT_WAREHOUSE,
-        help=f"Warehouse directory (default: {DEFAULT_WAREHOUSE})",
+        default=warehouse_dir(),
+        help=f"Warehouse directory (default: {warehouse_dir()})",
     )
     args = parser.parse_args()
 

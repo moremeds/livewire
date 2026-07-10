@@ -78,6 +78,21 @@ def _make_config(tmp_path: Path) -> BackfillConfig:
     )
 
 
+def test_historical_cursor_writer_matches_backfill_runner_reader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import livewire_scripts.fetch_ib_historical as historical
+
+    monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
+    monkeypatch.delenv("MDW_LOG_DIR", raising=False)
+    monkeypatch.setattr(historical, "CURSOR_DIR", None)
+
+    config = build_config()
+
+    assert historical._cursor_path("sp500") == config.log_dir / "cursor_sp500.json"
+
+
 class _MockClock:
     """Controllable clock that advances with each sleep call."""
 

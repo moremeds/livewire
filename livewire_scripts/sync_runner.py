@@ -20,6 +20,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from livewire_scripts.paths import data_lake_dir, log_dir
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -50,12 +52,11 @@ class SyncConfig:
 
 def build_config(repo_root: Path | None = None) -> SyncConfig:
     root = repo_root or _PROJECT_ROOT
-    warehouse = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
     return SyncConfig(
         python_bin=os.getenv("MDW_PYTHON_BIN", sys.executable),
         ingest_script=root / "scripts" / "livewire_ingest.py",
         store_script=root / "scripts" / "livewire_store.py",
-        log_dir=Path(os.getenv("MDW_LOG_DIR", str(warehouse / "logs"))),
+        log_dir=log_dir(),
         equity_presets=tuple(str(root / p) for p in EQUITY_PRESETS),
         vol_preset=str(root / VOL_PRESET),
         vol_daily_preset=str(root / VOL_DAILY_PRESET),
@@ -160,8 +161,8 @@ def _derive_vol_1h(
     from clients.timeframe_aggregator import aggregate_bars
 
     tickers = load_tickers(vol_preset)
-    wh = warehouse_dir or Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
-    bronze_dir = wh / "data-lake" / "bronze" / "asset_class=volatility"
+    lake = warehouse_dir / "data-lake" if warehouse_dir is not None else data_lake_dir()
+    bronze_dir = lake / "bronze" / "asset_class=volatility"
     derived = 0
 
     for ticker in tickers:

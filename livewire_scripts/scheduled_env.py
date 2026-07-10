@@ -12,6 +12,8 @@ import os
 import shlex
 from pathlib import Path
 
+from livewire_scripts.paths import warehouse_dir
+
 
 def _load_env_file(path: Path) -> None:
     if not path.exists():
@@ -34,6 +36,6 @@ def _load_env_file(path: Path) -> None:
 
 
 def load_scheduled_env(repo_root: Path) -> None:
-    warehouse = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
+    warehouse = warehouse_dir()
     for env_file in (Path.home() / ".secrets", repo_root / ".env", warehouse / ".env"):
         _load_env_file(env_file.expanduser())

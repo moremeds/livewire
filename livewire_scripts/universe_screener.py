@@ -41,6 +41,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from clients import BronzeClient
 from clients.ib_client import IBClient
 from livewire_scripts.daily_update import is_trading_day
+from livewire_scripts.paths import data_lake_dir, log_dir
 
 # ── Constants ───────────────────────────────────────────────────────────────
 
@@ -50,19 +51,31 @@ MAX_REMOVALS = 50
 EMAIL_THRESHOLD = 10
 _SCANNER_THROTTLE_SECONDS = 1.0
 
-_WAREHOUSE_DIR = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
-_DATA_LAKE = _WAREHOUSE_DIR / "data-lake"
+_DATA_LAKE: Path | None = None
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _INGEST_SCRIPT = PROJECT_ROOT / "scripts" / "livewire_ingest.py"
 _OPS_SCRIPT = PROJECT_ROOT / "scripts" / "livewire_ops.py"
 _PRESET_PATH = PROJECT_ROOT / "presets" / "screened-universe.json"
 _CORE_ETFS_PATH = PROJECT_ROOT / "presets" / "core-etfs.json"
-_STATE_PATH = _WAREHOUSE_DIR / "logs" / "screener_state.json"
-_LOG_DIR = _WAREHOUSE_DIR / "logs"
+_STATE_PATH: Path | None = None
+_LOG_DIR: Path | None = None
 
 console = Console()
 log = logging.getLogger(__name__)
+
+
+def _resolved_data_lake() -> Path:
+    return _DATA_LAKE or data_lake_dir()
+
+
+def _resolved_log_dir() -> Path:
+    return _LOG_DIR or log_dir()
+
+
+def _resolved_state_path() -> Path:
+    return _STATE_PATH or _resolved_log_dir() / "screener_state.json"
+
 
 # ── Pure helper functions ───────────────────────────────────────────────────
 
@@ -291,13 +304,13 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(0)
 
     # ── Idempotency check ──────────────────────────────────────────────
-    state = load_screener_state(_STATE_PATH)
+    state = load_screener_state(_resolved_state_path())
     if not args.force and state is not None and state.get("run_date") == today.isoformat():
         log.info("Already ran today (%s), skipping. Use --force to override.", today)
         sys.exit(0)
 
     # ── Determine current bronze universe ──────────────────────────────
-    bronze_dir = _DATA_LAKE / "bronze" / "asset_class=equity"
+    bronze_dir = _resolved_data_lake() / "bronze" / "asset_class=equity"
     with BronzeClient(bronze_dir=bronze_dir) as bronze:
         current_universe = bronze.get_existing_symbols()
 
@@ -356,7 +369,7 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     # ── Log changes ────────────────────────────────────────────────────
-    log_path = log_changes(_LOG_DIR, today, additions, confirmed_removals)
+    log_path = log_changes(_resolved_log_dir(), today, additions, confirmed_removals)
     log.info("Change log written to: %s", log_path)
 
     if args.dry_run:
@@ -364,7 +377,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     # ── Archive confirmed removals to bronze-delisted ──────────────────
-    delisted_base = _DATA_LAKE / "bronze-delisted" / "asset_class=equity"
+    delisted_base = _resolved_data_lake() / "bronze-delisted" / "asset_class=equity"
     for ticker in sorted(confirmed_removals):
         src = bronze_dir / f"symbol={ticker}"
         dst = delisted_base / f"symbol={ticker}"
@@ -382,7 +395,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # ── Save state ─────────────────────────────────────────────────────
     save_screener_state(
-        _STATE_PATH,
+        _resolved_state_path(),
         {
             "run_date": today.isoformat(),
             "universe": sorted(new_universe),

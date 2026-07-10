@@ -30,7 +30,8 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-_DEFAULT_WAREHOUSE = Path.home() / "market-warehouse"
+from livewire_scripts.paths import warehouse_dir
+
 _DEFAULT_UNIVERSE_DAYS = 20
 _DEFAULT_STALENESS_DAYS = 30
 
@@ -196,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--warehouse",
         type=Path,
-        default=_DEFAULT_WAREHOUSE,
+        default=warehouse_dir(),
         help="Path to market-warehouse root (default: ~/market-warehouse)",
     )
     args = parser.parse_args(argv)
