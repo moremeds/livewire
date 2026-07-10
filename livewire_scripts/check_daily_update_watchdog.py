@@ -17,10 +17,12 @@ if str(REPO_ROOT) not in sys.path:  # pragma: no cover - direct script bootstrap
     sys.path.insert(0, str(REPO_ROOT))
 
 from livewire_scripts.run_daily_update_job import (
+    ASSET_CLASSES,
     AlertRequest,
     RunnerConfig,
     append_log,
     build_config,
+    completed_scopes,
     log_has_completion_marker,
     send_failure_alert,
 )
@@ -98,7 +100,10 @@ def run_watchdog(
     marker_file = build_watchdog_marker_file(config.warehouse_dir, run_date)
     quality_marker = config.log_dir / f"quality_summary_{run_date}.marker"
 
-    daily_complete = log_has_completion_marker(daily_log_file)
+    daily_scopes = completed_scopes(daily_log_file)
+    required_daily_scopes = set(ASSET_CLASSES) | {"cboe"}
+    missing_daily_scopes = sorted(required_daily_scopes - daily_scopes)
+    daily_complete = ("*" in daily_scopes) or not missing_daily_scopes
     quality_complete = quality_marker.exists()
     intraday_complete = log_has_completion_marker(intraday_log_file)
 
@@ -107,7 +112,10 @@ def run_watchdog(
 
     reasons: list[str] = []
     if not daily_complete:
-        reasons.append(determine_watchdog_error(daily_log_file, run_date))
+        reason = determine_watchdog_error(daily_log_file, run_date)
+        if "*" not in daily_scopes:
+            reason += f" missing completion scopes: {', '.join(missing_daily_scopes)}."
+        reasons.append(reason)
     elif not quality_complete:
         reasons.append(
             f"Daily sync completed on {run_date} but the end-of-day quality "

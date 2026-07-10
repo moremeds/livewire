@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from livewire_scripts import run_daily_update_job as daily_runner
 from livewire_scripts.run_daily_update_job import (
     ASSET_CLASSES,
     AlertRequest,
@@ -172,7 +173,7 @@ class TestHelpers:
                 [
                     "=== Daily Update 2026-03-11T20:05:07Z ===",
                     "Traceback: boom",
-                    "=== Done 2026-03-11T20:05:08Z (attempt 1/3) ===",
+                    "=== Done equity 2026-03-11T20:05:08Z (attempt 1/3) ===",
                 ]
             )
             + "\n",
@@ -186,6 +187,28 @@ class TestHelpers:
         no_marker = tmp_path / "no_marker.log"
         no_marker.write_text("started\nfailed\n", encoding="utf-8")
         assert log_has_completion_marker(no_marker) is False
+
+    def test_completed_scopes_parses_per_asset_markers(self, tmp_path):
+        log_file = tmp_path / "daily.log"
+        log_file.write_text(
+            "\n".join(
+                [
+                    "=== Done equity 2026-03-11T20:05:08Z (attempt 1/3) ===",
+                    "=== Done futures 2026-03-11T20:05:09Z (attempt 1/3) ===",
+                    "=== Done cboe 2026-03-11T20:05:10Z ===",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        assert daily_runner.completed_scopes(log_file) == {"equity", "futures", "cboe"}
+
+    def test_legacy_done_line_counts_as_wildcard(self, tmp_path):
+        log_file = tmp_path / "daily.log"
+        log_file.write_text("=== Done 2026-03-11T20:05:08Z (attempt 1/3) ===\n", encoding="utf-8")
+
+        assert daily_runner.completed_scopes(log_file) == {"*"}
 
     def test_extract_error_summary_prefers_summary_json(self, tmp_path):
         from livewire_scripts.daily_outcomes import build_summary_line
@@ -437,7 +460,7 @@ class TestRunWithRetries:
         assert rc == 0
         log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(encoding="utf-8")
         assert "Runner config: attempts=3 retry_delay_seconds=300 hostname=warehouse.local" in log_text
-        assert "=== Done 2026-03-11T20:05:09Z (attempt 1/3) ===" in log_text
+        assert "=== Done daily 2026-03-11T20:05:09Z (attempt 1/3) ===" in log_text
 
     def test_retry_then_success(self, tmp_path):
         config = RunnerConfig(**(_config(tmp_path).__dict__ | {"max_attempts": 2, "retry_delay_seconds": 7}))
@@ -623,7 +646,7 @@ class TestCboeVolatilitySync:
         assert rc == 0
         log_text = (config.log_dir / "daily_update_2026-03-18.log").read_text(encoding="utf-8")
         assert "CBOE Volatility Sync" in log_text
-        assert "CBOE Volatility Sync Done" in log_text
+        assert "=== Done cboe 2026-03-18T20:05:08Z ===" in log_text
 
     def test_run_cboe_volatility_sync_failure(self, tmp_path):
         config = _config(tmp_path)
@@ -656,8 +679,9 @@ class TestMain:
         ib_calls: list[list[str]] = []
         cboe_called = []
 
-        def _run_ib(cfg, args, env):
+        def _run_ib(cfg, args, env, completion_scope=None):
             ib_calls.append(args)
+            assert completion_scope == args[args.index("--asset-class") + 1]
             return 0
 
         def _run_cboe(cfg, env, **kwargs):
@@ -682,13 +706,18 @@ class TestMain:
                 with patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync") as cboe_mock:
                     assert main(["--dry-run", "--asset-class", "equity"]) == 0
 
-        run_mock.assert_called_once_with(config, ["--dry-run", "--asset-class", "equity"], env=os.environ.copy())
+        run_mock.assert_called_once_with(
+            config,
+            ["--dry-run", "--asset-class", "equity"],
+            env=os.environ.copy(),
+            completion_scope="equity",
+        )
         cboe_mock.assert_not_called()
 
     def test_main_returns_nonzero_if_any_asset_class_fails(self):
         config = _config(Path("/tmp/test"))
 
-        def _run(cfg, args, env):
+        def _run(cfg, args, env, completion_scope=None):
             if "--asset-class" in args and args[args.index("--asset-class") + 1] == "futures":
                 return 1
             return 0
