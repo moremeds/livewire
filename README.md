@@ -69,6 +69,10 @@ Raw → Bronze → Silver → Gold
 
 Live ingestion writes bronze Parquet only. Postgres is the replayable analytical target and can be dropped or rebuilt from bronze Parquet plus reliability JSONL artifacts.
 
+Daily and intraday bronze mutations are serialized per exact Parquet path with
+blocking advisory locks. Persistent `*.parquet.lock` sidecars coordinate writers;
+they are not market data and are excluded from discovery and R2 synchronization.
+
 ---
 
 ## Directory Structure

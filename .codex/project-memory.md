@@ -19,6 +19,11 @@ Use this file for:
 - Raw market/vendor data should land as Parquet first; databases are derived/replayable publish or query targets unless a future project explicitly says otherwise.
 - Postgres is an optional replayable analytical publish target rebuilt from bronze parquet and reliability JSONL; it is not canonical storage and live ingestion scripts do not write to it.
 - Live equity data is stored per ticker at `~/market-warehouse/data-lake/bronze/asset_class=equity/symbol=<ticker>/1d.parquet`.
+- Daily and intraday bronze replace/merge operations use blocking `fcntl.flock`
+  locks keyed by the exact target parquet path. Persistent `*.parquet.lock`
+  sidecars are expected coordination artifacts, ignored by discovery/sync paths,
+  and were verified to serialize both threads and processes on the local exFAT
+  data lake.
 - Delisted symbols that should no longer participate in future syncs or backfills are archived outside the canonical sync path under `~/market-warehouse/data-lake/bronze-delisted/asset_class=equity/symbol=<ticker>/1d.parquet`.
 - `scripts/livewire_ingest.py daily` is parquet-first and does not write to analytical databases.
 - `scripts/livewire_ingest.py daily` supports `--target-date YYYY-MM-DD` for fixed-date catch-up runs and only publishes bars with `latest < trade_date <= target`.
