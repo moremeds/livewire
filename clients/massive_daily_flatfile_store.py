@@ -15,6 +15,7 @@ import pyarrow.compute as pc
 import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
+from clients.massive_time import massive_timestamp_to_trade_date
 from clients.parquet_io import PARQUET_COMPRESSION, PARQUET_COMPRESSION_LEVEL
 from clients.symbol_ids import stable_symbol_id
 
@@ -89,7 +90,7 @@ class MassiveDailyFlatfileStore:
             )
             bucket_col = pc.take(bucket_lookup, ticker_dict.indices)
 
-            # window_start is ns since epoch (midnight UTC of trade date) → ISO date string.
+            # window_start is ns since epoch at midnight America/New_York.
             ts_us = pc.cast(
                 pc.divide(src["window_start"], pa.scalar(1000, type=pa.int64())),
                 pa.timestamp("us", tz="UTC"),
@@ -239,4 +240,4 @@ def _us_ts_to_iso_date(value: datetime | None) -> str:
         raise ValueError("daily flat-file row missing window_start")
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
-    return value.astimezone(UTC).date().isoformat()
+    return massive_timestamp_to_trade_date(value).isoformat()

@@ -8,7 +8,6 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import requests
 from requests.exceptions import (
@@ -18,13 +17,14 @@ from requests.exceptions import (
     Timeout as ReqTimeout,
 )
 
+from clients.massive_time import massive_timestamp_to_trade_date
+
 _DEFAULT_BASE_URL = "https://api.massive.com"
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_RETRIES = 3
 _DEFAULT_BACKOFF_FACTOR = 1.0
 _USER_AGENT = "livewire/1.0"
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
-_ET = ZoneInfo("America/New_York")
 
 
 class MassiveAPIError(Exception):
@@ -264,7 +264,7 @@ class MassiveClient:
         raw_ts = payload.get("t")
         if not isinstance(raw_ts, int):
             raise MassiveMalformedBarError("bar timestamp t must be an integer")
-        trade_date = datetime.fromtimestamp(raw_ts / 1000, UTC).astimezone(_ET).date()
+        trade_date = massive_timestamp_to_trade_date(datetime.fromtimestamp(raw_ts / 1000, UTC))
 
         open_px = MassiveClient._finite_float(payload, "o")
         high_px = MassiveClient._finite_float(payload, "h")
