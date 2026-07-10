@@ -4,6 +4,33 @@ This file preserves completed task lists that were previously in [todo.md](todo.
 
 ---
 
+# Plan 7: Massive Trade-Date Conversion
+
+## Dependency Graph
+
+- T1 -> T2 -> T3 -> T4 -> T5
+
+## Tasks
+
+- [x] T1 Establish matching REST and raw S3 timestamp semantics from live Massive data.
+  depends_on: []
+  - Six AAPL sessions covered standard time, daylight time, and both 2024 DST transitions.
+  - REST timestamps represent market close; S3 timestamps represent midnight Eastern.
+- [x] T2 Add a shared Eastern-calendar converter and cross-lane regression coverage.
+  depends_on: [T1]
+- [x] T3 Audit existing bronze for adjacent-date duplicate OHLCV rows.
+  depends_on: [T2]
+  - Scanned 18,945,253 bronze rows and 13,996,124 staged raw rows with no read errors.
+  - Found zero staged trade-date versus provider-partition mismatches; no parquet repair is required.
+- [x] T4 Run focused tests, static analysis, full tests, coverage, and smoke verification.
+  depends_on: [T3]
+  - Focused suite: 52 passed.
+  - Full non-integration suite: 1,317 passed, 1 skipped.
+  - Coverage: 98.96% against the required 95%.
+  - Ruff and formatting passed; Pyright reported zero errors.
+- [x] T5 Commit, push, and open pull request #43.
+  depends_on: [T4]
+
 # Plan 5: UTC Date-Key Consistency
 
 ## Dependency Graph

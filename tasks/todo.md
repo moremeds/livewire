@@ -2,17 +2,6 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
-## Plan 7: Massive trade-date conversion (2026-07-10)
-
-Dependency graph:
-- T1 -> T2 -> T3 -> T4 -> T5
-
-- [x] T1 `depends_on: []` Establish matching REST and raw S3 timestamp semantics from live Massive data.
-- [x] T2 `depends_on: [T1]` Add a shared Eastern-calendar converter and cross-lane regression coverage.
-- [x] T3 `depends_on: [T2]` Audit existing bronze for adjacent-date duplicate OHLCV rows.
-- [x] T4 `depends_on: [T3]` Run focused, static, full-suite, coverage, and smoke verification.
-- [ ] T5 `depends_on: [T4]` Commit, push, and open the Plan 7 pull request.
-
 ## Post-lift cleanups (2026-06-11)
 
 These were surfaced during the move of `data-lake/` from internal SSD to `/Volumes/DATA_LAKE` (exFAT, symlinked back).
