@@ -174,6 +174,9 @@ Postgres analytical publish environment variables:
 Current fetch behavior:
 - Normal mode atomically replaces the per-ticker bronze snapshot
 - Backfill mode merges older bars into the same per-ticker bronze snapshot
+- Daily and intraday mutations take a blocking advisory lock per exact parquet
+  path before read/replace/merge/publish; persistent `*.parquet.lock` sidecars are
+  coordination files and are excluded from symbol discovery.
 - The live service path writes bronze parquet only
 - If IB returns an empty head timestamp, the fetcher falls back to `IB_EARLIEST_DATE` instead of skipping the symbol
 - `--asset-class volatility` uses `Index('SYMBOL', 'CBOE')` contracts instead of `Stock('SYMBOL', 'SMART')` and writes to `data-lake/bronze/asset_class=volatility/`
@@ -469,6 +472,7 @@ Catches: AWS keys, API key/secret/password assignments, private key headers, Git
 - Empty IB head timestamps now fall back to the earliest supported IB historical date instead of skipping the symbol
 - Bronze Parquet uses per-ticker Hive-partitioned layout: `data-lake/bronze/asset_class=equity/symbol=AAPL/1d.parquet` (futures: `asset_class=futures/symbol=ES_202506/1d.parquet`)
 - Bronze publication is atomic at the file level: write temp parquet, validate it, then `os.replace()` into place
+- Bronze mutation is serialized per exact parquet path with `fcntl.flock`; this prevents concurrent writers from silently losing each other's updates while allowing different symbols and timeframes to proceed independently.
 - `BronzeClient` accepts `asset_class` constructor param (`"equity"`, `"volatility"`, or `"futures"`) to select the appropriate parquet schema. Default `"equity"` preserves all existing behavior.
 - `IBClient.connect()` auto-retries successive `clientId` values after IB error `326`, then records the actual connected ID
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
 import pyarrow as pa
@@ -24,6 +26,65 @@ def _row(trade_date: str, symbol_id: int, close: float) -> dict:
         "adj_close": close,
         "volume": 1000,
     }
+
+
+def test_concurrent_merges_preserve_both_updates(tmp_path, monkeypatch):
+    bronze = BronzeClient(bronze_dir=tmp_path)
+    symbol_id = bronze.get_symbol_id("AAPL")
+    bronze.replace_ticker_rows("AAPL", [_row("2025-01-06", symbol_id, 100.0)])
+
+    original_read = bronze.read_symbol_rows
+    first_read = threading.Event()
+    release_first = threading.Event()
+    second_done = threading.Event()
+    thread_state = threading.local()
+
+    def delayed_read(symbol: str):
+        rows = original_read(symbol)
+        if getattr(thread_state, "pause_after_read", False):
+            first_read.set()
+            assert release_first.wait(timeout=5)
+        return rows
+
+    monkeypatch.setattr(bronze, "read_symbol_rows", delayed_read)
+
+    def first_merge() -> int:
+        thread_state.pause_after_read = True
+        return bronze.merge_ticker_rows("AAPL", [_row("2025-01-07", symbol_id, 101.0)])
+
+    def second_merge() -> int:
+        try:
+            return bronze.merge_ticker_rows("AAPL", [_row("2025-01-08", symbol_id, 102.0)])
+        finally:
+            second_done.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(first_merge)
+        assert first_read.wait(timeout=5)
+        second = pool.submit(second_merge)
+        second_was_blocked = not second_done.wait(timeout=0.2)
+        release_first.set()
+        assert first.result(timeout=5) == 1
+        assert second.result(timeout=5) == 1
+
+    assert second_was_blocked
+    assert [row["trade_date"] for row in original_read("AAPL")] == [
+        "2025-01-06",
+        "2025-01-07",
+        "2025-01-08",
+    ]
+
+
+def test_lock_file_is_not_discovered_as_symbol(tmp_path):
+    bronze = BronzeClient(bronze_dir=tmp_path)
+    symbol_id = bronze.get_symbol_id("AAPL")
+    bronze.replace_ticker_rows("AAPL", [_row("2025-01-06", symbol_id, 100.0)])
+    lock_path = tmp_path / "symbol=LOCK_ONLY" / "1d.parquet.lock"
+    lock_path.parent.mkdir(parents=True)
+    lock_path.touch()
+
+    assert (tmp_path / "symbol=AAPL" / "1d.parquet.lock").exists()
+    assert bronze.get_existing_symbols() == {"AAPL"}
 
 
 class TestBronzeClient:
@@ -89,6 +150,7 @@ class TestBronzeClient:
     def test_replace_empty_snapshot_raises(self, bronze):
         with pytest.raises(ValueError, match="cannot publish an empty parquet snapshot"):
             bronze.replace_ticker_rows("AAPL", [])
+        assert not (bronze.bronze_dir / "symbol=AAPL").exists()
 
     @pytest.mark.integration
     def test_merge_ticker_rows_counts_only_new_dates(self, bronze):
@@ -114,6 +176,7 @@ class TestBronzeClient:
     @pytest.mark.integration
     def test_merge_empty_rows_returns_zero(self, bronze):
         assert bronze.merge_ticker_rows("AAPL", []) == 0
+        assert not (bronze.bronze_dir / "symbol=AAPL").exists()
 
     @pytest.mark.integration
     def test_get_symbol_id_reuses_existing_snapshot_id(self, bronze):

@@ -4,6 +4,34 @@ This file preserves completed task lists that were previously in [todo.md](todo.
 
 ---
 
+# Plan 8: Per-Symbol Bronze Merge Locking
+
+## Dependency Graph
+
+- T1 -> T2 -> T3 -> T4 -> T5
+
+## Tasks
+
+- [x] T1 Verify `fcntl.flock` across processes and threads on the actual exFAT
+  data lake.
+  depends_on: []
+  - Cross-process contender waited 0.387s; cross-thread contender waited 0.408s.
+- [x] T2 Add lock-helper and deterministic daily concurrent-merge regressions.
+  depends_on: [T1]
+- [x] T3 Lock daily replace/merge transactions per exact parquet path.
+  depends_on: [T2]
+- [x] T4 Lock intraday replace/merge transactions and verify persistent lock
+  sidecars stay outside symbol discovery.
+  depends_on: [T3]
+- [x] T5 Run static analysis, focused/full tests, coverage, and real-volume smoke.
+  depends_on: [T4]
+  - Focused daily/intraday/parquet suite: 61 passed.
+  - Ruff and formatting passed; Pyright reported zero errors.
+  - Full non-integration suite: 1,333 passed, 109 deselected.
+  - Coverage: 98.83% against the required 95%.
+  - Daily, intraday, and exception-release concurrency smoke passed directly on
+    the exFAT data lake; the isolated smoke directory was removed.
+
 # Plan 6: Unified Warehouse Path Resolution
 
 ## Dependency Graph

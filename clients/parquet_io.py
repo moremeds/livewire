@@ -8,8 +8,11 @@ specified sort column.
 
 from __future__ import annotations
 
+import fcntl
 import os
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 
@@ -24,6 +27,24 @@ import pyarrow.parquet as pq
 # lighter cold read pass on every subsequent merge-and-rewrite.
 PARQUET_COMPRESSION = "zstd"
 PARQUET_COMPRESSION_LEVEL = 3
+
+
+@contextmanager
+def symbol_lock(parquet_path: Path) -> Iterator[Path]:
+    """Serialize writers for one parquet path using a local POSIX lock.
+
+    The persistent sidecar is intentionally kept beside the parquet so separate
+    Livewire processes resolve the same lock. This requires a local filesystem
+    with working ``flock`` semantics; verified on the production exFAT data lake.
+    """
+    lock_path = parquet_path.with_suffix(parquet_path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield lock_path
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def publish_parquet(

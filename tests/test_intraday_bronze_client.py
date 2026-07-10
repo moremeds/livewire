@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -17,6 +19,74 @@ from clients.intraday_bronze_client import (
 
 _UTC = UTC
 _ET = ZoneInfo("America/New_York")
+
+
+def _row(timestamp: datetime, close: float) -> dict:
+    return {
+        "bar_timestamp": timestamp,
+        "symbol_id": 1,
+        "open": close - 1.0,
+        "high": close + 1.0,
+        "low": close - 2.0,
+        "close": close,
+        "volume": 100,
+    }
+
+
+def test_concurrent_intraday_merges_preserve_both_updates(tmp_path, monkeypatch):
+    client = IntradayBronzeClient(bronze_dir=tmp_path, timeframe="5m")
+    base = datetime(2026, 4, 6, 13, 30, tzinfo=_UTC)
+    first_ts = datetime(2026, 4, 6, 13, 35, tzinfo=_UTC)
+    second_ts = datetime(2026, 4, 6, 13, 40, tzinfo=_UTC)
+    client.replace_ticker_rows("AAPL", [_row(base, 100.0)])
+
+    original_read_table = pq.read_table
+    first_read = threading.Event()
+    release_first = threading.Event()
+    second_done = threading.Event()
+    thread_state = threading.local()
+
+    def delayed_read_table(*args, **kwargs):
+        table = original_read_table(*args, **kwargs)
+        columns = kwargs.get("columns")
+        if getattr(thread_state, "pause_after_read", False) and columns and "bar_timestamp" in columns:
+            first_read.set()
+            assert release_first.wait(timeout=5)
+        return table
+
+    monkeypatch.setattr("clients.intraday_bronze_client.pq.read_table", delayed_read_table)
+
+    def first_merge() -> int:
+        thread_state.pause_after_read = True
+        return client.merge_ticker_rows("AAPL", [_row(first_ts, 101.0)])
+
+    def second_merge() -> int:
+        try:
+            return client.merge_ticker_rows("AAPL", [_row(second_ts, 102.0)])
+        finally:
+            second_done.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(first_merge)
+        assert first_read.wait(timeout=5)
+        second = pool.submit(second_merge)
+        second_was_blocked = not second_done.wait(timeout=0.2)
+        release_first.set()
+        assert first.result(timeout=5) == 1
+        assert second.result(timeout=5) == 1
+
+    assert second_was_blocked
+    assert [row["bar_timestamp"] for row in client.read_symbol_rows("AAPL")] == [base, first_ts, second_ts]
+
+
+def test_intraday_lock_file_is_not_discovered(tmp_path):
+    client = IntradayBronzeClient(bronze_dir=tmp_path, timeframe="5m")
+    timestamp = datetime(2026, 4, 6, 13, 30, tzinfo=_UTC)
+
+    client.replace_ticker_rows("AAPL", [_row(timestamp, 100.0)])
+
+    assert (tmp_path / "symbol=AAPL" / "5m.parquet.lock").exists()
+    assert client.get_existing_symbols() == {"AAPL"}
 
 
 class TestConstants:
@@ -153,6 +223,7 @@ class TestRowNormalization:
         client = IntradayBronzeClient(bronze_dir=tmp_path, timeframe="5m")
         with pytest.raises(ValueError, match="cannot publish an empty"):
             client.replace_ticker_rows("AAPL", [])
+        assert not (tmp_path / "symbol=AAPL").exists()
         client.close()
 
     def test_merge_dedups_by_timestamp(self, tmp_path):
@@ -340,6 +411,7 @@ class TestRowNormalization:
         client = IntradayBronzeClient(bronze_dir=tmp_path, timeframe="5m")
         n = client.merge_ticker_rows("AAPL", [])
         assert n == 0
+        assert not (tmp_path / "symbol=AAPL").exists()
         client.close()
 
 

@@ -40,6 +40,24 @@ class TestPublishParquet:
         loaded = pq.read_table(out)
         assert loaded.num_rows == 2
 
+    def test_symbol_lock_creates_parent_and_is_reusable(self, tmp_path):
+        from clients.parquet_io import symbol_lock
+
+        parquet_path = tmp_path / "symbol=NEW" / "1d.parquet"
+
+        with symbol_lock(parquet_path):
+            assert parquet_path.with_suffix(".parquet.lock").exists()
+
+        with symbol_lock(parquet_path):
+            pass
+
+        with pytest.raises(RuntimeError, match="probe"):
+            with symbol_lock(parquet_path):
+                raise RuntimeError("probe")
+
+        with symbol_lock(parquet_path):
+            pass
+
     def test_no_temp_file_remains_on_success(self, tmp_path):
         out = tmp_path / "data.parquet"
         rows = [{"trade_date": date(2026, 1, 5), "symbol_id": 1, "value": 1.0}]

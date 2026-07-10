@@ -10,7 +10,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from clients.parquet_io import publish_parquet
+from clients.parquet_io import publish_parquet, symbol_lock
 from clients.symbol_ids import stable_symbol_id
 from clients.symbol_paths import decode_symbol, encode_symbol
 
@@ -205,30 +205,38 @@ class BronzeClient:
 
     def replace_ticker_rows(self, symbol: str, rows: list[dict[str, Any]]) -> int:
         """Atomically replace a symbol snapshot with *rows*."""
-        normalized = self._normalize_rows(rows, symbol)
-        if not normalized:
+        if not rows:
             raise ValueError(f"{symbol}: cannot publish an empty parquet snapshot")
+        with symbol_lock(self._symbol_path(symbol)):
+            normalized = self._normalize_rows(rows, symbol)
+            if not normalized:
+                raise ValueError(f"{symbol}: cannot publish an empty parquet snapshot")
 
-        self._publish_symbol_rows(symbol, normalized)
+            self._publish_symbol_rows(symbol, normalized)
         return len(normalized)
 
     def merge_ticker_rows(self, symbol: str, rows: list[dict[str, Any]]) -> int:
         """Merge *rows* into an existing symbol snapshot and publish atomically."""
-        incoming = self._normalize_rows(rows, symbol)
-        if not incoming:
+        if not rows:
             return 0
+        with symbol_lock(self._symbol_path(symbol)):
+            incoming = self._normalize_rows(rows, symbol)
+            if not incoming:
+                return 0
 
-        existing = self.read_symbol_rows(symbol)
-        existing_dates = {row["trade_date"] for row in existing}
-        merged: dict[str, dict[str, Any]] = {row["trade_date"]: row for row in existing}
+            existing = self.read_symbol_rows(symbol)
+            existing_dates = {row["trade_date"] for row in existing}
+            merged: dict[str, dict[str, Any]] = {row["trade_date"]: row for row in existing}
 
-        for row in incoming:
-            merged[row["trade_date"]] = row
+            for row in incoming:
+                merged[row["trade_date"]] = row
 
-        inserted = sum(1 for trade_date in {row["trade_date"] for row in incoming} if trade_date not in existing_dates)
-        ordered = [merged[trade_date] for trade_date in sorted(merged)]
-        self._publish_symbol_rows(symbol, ordered)
-        return inserted
+            inserted = sum(
+                1 for trade_date in {row["trade_date"] for row in incoming} if trade_date not in existing_dates
+            )
+            ordered = [merged[trade_date] for trade_date in sorted(merged)]
+            self._publish_symbol_rows(symbol, ordered)
+            return inserted
 
     def _symbol_path(self, symbol: str) -> Path:
         return self._bronze_dir / f"symbol={encode_symbol(symbol)}" / PARQUET_FILENAME
