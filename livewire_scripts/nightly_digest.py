@@ -25,10 +25,10 @@ if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from livewire_scripts.daily_outcomes import parse_all_summary_json, parse_last_summary_json
+from livewire_scripts.paths import data_lake_dir, log_dir
 
-_WAREHOUSE_DIR = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
-_LOG_DIR = _WAREHOUSE_DIR / "logs"
-_DATA_LAKE = _WAREHOUSE_DIR / "data-lake"
+_LOG_DIR: Path | None = None
+_DATA_LAKE: Path | None = None
 _FAILURE_EMAIL_SCRIPT = _PROJECT_ROOT / "livewire_node" / "send_daily_update_failure_email.mjs"
 _MIN_FREE_GB = float(os.getenv("MDW_FLATFILE_MIN_FREE_GB", "25"))
 _GIB = 1024**3
@@ -131,8 +131,8 @@ def main(argv=None, runner=subprocess.run) -> int:
     parser = argparse.ArgumentParser(description="Build the Livewire nightly digest")
     parser.add_argument("--run-date", type=date.fromisoformat, default=datetime.now(UTC).date())
     parser.add_argument("--email", action="store_true", help="Send the digest via Nodemailer")
-    parser.add_argument("--log-dir", type=Path, default=_LOG_DIR)
-    parser.add_argument("--data-lake", type=Path, default=_DATA_LAKE)
+    parser.add_argument("--log-dir", type=Path, default=_LOG_DIR or log_dir())
+    parser.add_argument("--data-lake", type=Path, default=_DATA_LAKE or data_lake_dir())
     args = parser.parse_args(argv)
 
     body = build_digest(args.run_date, args.log_dir, args.data_lake)

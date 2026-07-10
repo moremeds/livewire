@@ -17,8 +17,8 @@ if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
 from clients.bronze_client import BronzeClient
 from clients.fred_client import FRED_FREQUENCIES, FredClient, FredObservation
 from clients.symbol_ids import stable_symbol_id
+from livewire_scripts.paths import warehouse_dir
 
-DEFAULT_WAREHOUSE = Path.home() / "market-warehouse"
 ASSET_CLASS = "rates"
 DEFAULT_SERIES = {
     "DGS3": 3.0,
@@ -84,8 +84,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--warehouse",
         type=Path,
-        default=DEFAULT_WAREHOUSE,
-        help=f"Warehouse directory (default: {DEFAULT_WAREHOUSE})",
+        default=warehouse_dir(),
+        help=f"Warehouse directory (default: {warehouse_dir()})",
     )
     return parser.parse_args(list(argv) if argv is not None else None)
 

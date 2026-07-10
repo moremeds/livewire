@@ -14,7 +14,6 @@ import logging
 import os
 from collections.abc import Sequence
 from datetime import date, timedelta
-from pathlib import Path
 
 from clients.massive_daily_flatfile_store import MassiveDailyFlatfileStore
 from clients.massive_flatfile_client import S3_PREFIX_DAILY, MassiveFlatfileClient, require_flatfile_credentials
@@ -23,6 +22,7 @@ from clients.trading_calendar import trading_dates_in_range
 from livewire_scripts.daily_flatfile_publisher import publish_daily_dates
 from livewire_scripts.flatfile_downloader import download_dates
 from livewire_scripts.flatfile_planner import discover_plan, require_capacity
+from livewire_scripts.paths import cursor_dir, warehouse_dir
 
 log = logging.getLogger("livewire.ingest_daily_flatfiles")
 
@@ -72,10 +72,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.getLogger("clients.bronze_client").setLevel(logging.WARNING)
     _require_credentials()
 
-    warehouse = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
+    warehouse = warehouse_dir()
     store = MassiveDailyFlatfileStore(warehouse, bucket_count=args.buckets)
     state = MassiveFlatfileState(
-        Path(os.getenv("MDW_CURSOR_DIR", str(warehouse / "cursors"))),
+        cursor_dir(),
         name="massive_daily_flatfile",
     )
     with MassiveFlatfileClient(prefix=S3_PREFIX_DAILY) as client:

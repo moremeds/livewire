@@ -17,6 +17,7 @@ from datetime import UTC
 from pathlib import Path
 
 from clients.quality_detector import QualityFlag
+from livewire_scripts.paths import log_dir
 
 _logger = logging.getLogger("livewire.quality")
 
@@ -60,7 +61,7 @@ def _utc_iso() -> str:
 def _resolve_audit_path() -> Path:
     raw = os.environ.get(
         "MDW_QUALITY_AUDIT_PATH",
-        str(Path.home() / "market-warehouse" / "logs" / "quality_audit.jsonl"),
+        str(log_dir() / "quality_audit.jsonl"),
     )
     return Path(raw).expanduser()
 
@@ -120,7 +121,7 @@ def _resolve_rate_limit_seconds() -> int:
 def _resolve_undelivered_dir() -> Path:
     raw = os.environ.get(
         "MDW_UNDELIVERED_DIR",
-        str(Path.home() / "market-warehouse" / "logs" / "quality_alerts_undelivered"),
+        str(log_dir() / "quality_alerts_undelivered"),
     )
     p = Path(raw).expanduser()
     p.mkdir(parents=True, exist_ok=True)

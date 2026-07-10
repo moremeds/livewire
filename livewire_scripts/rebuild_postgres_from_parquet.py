@@ -13,10 +13,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients.postgres_client import PostgresClient
+from livewire_scripts.paths import data_lake_dir, log_dir
 
-DATA_LAKE = Path.home() / "market-warehouse" / "data-lake"
-DEFAULT_TELEMETRY_PATH = Path.home() / "market-warehouse" / "logs" / "telemetry.jsonl"
-DEFAULT_QUALITY_AUDIT_PATH = Path.home() / "market-warehouse" / "logs" / "quality_audit.jsonl"
+DATA_LAKE: Path | None = None
 VENUE_MAP = {"equity": "SMART", "volatility": "CBOE", "futures": "CME"}
 
 console = Console()
@@ -40,11 +39,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--bronze-dir", type=Path, default=None, help="Bronze parquet root")
     parser.add_argument("--include-reliability", action="store_true", help="Import telemetry and quality JSONL")
-    parser.add_argument("--telemetry-path", type=Path, default=DEFAULT_TELEMETRY_PATH)
-    parser.add_argument("--quality-audit-path", type=Path, default=DEFAULT_QUALITY_AUDIT_PATH)
+    parser.add_argument("--telemetry-path", type=Path, default=log_dir() / "telemetry.jsonl")
+    parser.add_argument("--quality-audit-path", type=Path, default=log_dir() / "quality_audit.jsonl")
     args = parser.parse_args(argv)
 
-    bronze_dir = args.bronze_dir or DATA_LAKE / "bronze" / f"asset_class={args.asset_class}"
+    lake = DATA_LAKE or data_lake_dir()
+    bronze_dir = args.bronze_dir or lake / "bronze" / f"asset_class={args.asset_class}"
     _validate_bronze_inputs(bronze_dir, args.asset_class, args.timeframe)
 
     venue = VENUE_MAP[args.asset_class]

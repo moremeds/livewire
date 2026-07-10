@@ -74,6 +74,19 @@ def test_append_audit_writes_one_jsonl_line(tmp_path, monkeypatch):
     assert record["category"] == "range_shortfall"
 
 
+def test_quality_paths_follow_warehouse_override(tmp_path, monkeypatch):
+    from clients.quality_flags import _resolve_audit_path, _resolve_undelivered_dir
+
+    warehouse = tmp_path / "warehouse"
+    monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(warehouse))
+    monkeypatch.delenv("MDW_LOG_DIR", raising=False)
+    monkeypatch.delenv("MDW_QUALITY_AUDIT_PATH", raising=False)
+    monkeypatch.delenv("MDW_UNDELIVERED_DIR", raising=False)
+
+    assert _resolve_audit_path() == warehouse / "logs" / "quality_audit.jsonl"
+    assert _resolve_undelivered_dir() == warehouse / "logs" / "quality_alerts_undelivered"
+
+
 def test_append_audit_rejects_invalid_source(tmp_path, monkeypatch):
     monkeypatch.setenv("MDW_QUALITY_AUDIT_PATH", str(tmp_path / "audit.jsonl"))
     with pytest.raises(ValueError, match="source must be one of"):

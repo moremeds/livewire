@@ -80,6 +80,7 @@ from clients.trading_calendar import (
     trading_days_between,
 )
 from livewire_scripts.daily_outcomes import build_summary_line, resolve_exit_code
+from livewire_scripts.paths import data_lake_dir
 
 _DEFAULT_STORAGE_CLIENT = BronzeClient
 StorageClient = BronzeClient
@@ -117,10 +118,14 @@ def _optional_massive_client():
 
 # ── Config ─────────────────────────────────────────────────────────────
 
-DATA_LAKE = Path(os.getenv("MDW_DATA_LAKE", str(Path.home() / "market-warehouse" / "data-lake")))
-BRONZE_DIR = DATA_LAKE / "bronze" / "asset_class=equity"
+DATA_LAKE: Path | None = None
+BRONZE_DIR: Path | None = None
 
 console = Console()
+
+
+def _resolved_data_lake() -> Path:
+    return DATA_LAKE or data_lake_dir()
 
 
 # ROOT_EXCHANGE_MAP, SUPPORTED_IB_FX_PAIRS, _resolve_fx_pair,
@@ -641,7 +646,7 @@ def main():  # pragma: no cover — only exercised by integration tests
         console.print("[red]--source massive is only supported for asset_class=equity.[/red]")
         return 2
 
-    bronze_dir = DATA_LAKE / "bronze" / f"asset_class={asset_class}"
+    bronze_dir = BRONZE_DIR or _resolved_data_lake() / "bronze" / f"asset_class={asset_class}"
 
     console.print(
         f"\n[bold]Daily Update[/bold]  target_date={target}  force={args.force}  "

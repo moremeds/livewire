@@ -43,6 +43,18 @@ def test_parse_args_invalid_env_uses_defaults(monkeypatch):
     assert args.timeout == 300
 
 
+def test_parse_args_paths_follow_warehouse_override(tmp_path, monkeypatch):
+    warehouse = tmp_path / "warehouse"
+    monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(warehouse))
+    monkeypatch.delenv("MDW_DATA_LAKE", raising=False)
+    monkeypatch.delenv("MDW_LOG_DIR", raising=False)
+
+    args = parse_args(["--preset", "presets/sp500.json", "--mode", "seed"])
+
+    assert args.bronze_dir == warehouse / "data-lake" / "bronze"
+    assert args.log_dir == warehouse / "logs"
+
+
 def test_load_tickers_from_preset(tmp_path):
     preset = tmp_path / "p.json"
     preset.write_text(json.dumps({"name": "test", "tickers": ["AAPL", "MSFT"]}))

@@ -4,6 +4,34 @@ This file preserves completed task lists that were previously in [todo.md](todo.
 
 ---
 
+# Plan 6: Unified Warehouse Path Resolution
+
+## Dependency Graph
+
+- T1 -> T2 -> T3 -> T4 -> T5
+
+## Tasks
+
+- [x] T1 Add resolver-contract tests for default, cascading override, specific
+  override, and call-time environment resolution.
+  depends_on: []
+- [x] T2 Implement `livewire_scripts.paths` and fix the three divergent sites:
+  historical cursor output, robust row counting, and Postgres rebuild defaults.
+  depends_on: [T1]
+- [x] T3 Migrate the approved `livewire_scripts` sweep while preserving explicit
+  CLI/function argument precedence and dedicated scheduler log variables.
+  depends_on: [T2]
+- [x] T4 Migrate telemetry and quality artifact fallback paths and verify the
+  hardcoded-path acceptance scan.
+  depends_on: [T3]
+- [x] T5 Run static analysis, tests, coverage, and custom-warehouse smoke checks.
+  depends_on: [T4]
+  - Ruff and formatting passed; Pyright reported zero errors.
+  - Full non-integration suite: 1,328 passed, 109 deselected.
+  - Warning-sensitive historical fetch suite: 135 passed.
+  - Coverage: 98.96% against the required 95%.
+  - `MDW_WAREHOUSE_DIR=/tmp/livewire-plan6-smoke` entrypoint smoke passed.
+
 # Plan 7: Massive Trade-Date Conversion
 
 ## Dependency Graph

@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from livewire_scripts.paths import warehouse_dir as resolve_warehouse_dir
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 INGEST_SCRIPT = REPO_ROOT / "scripts" / "livewire_ingest.py"
@@ -49,7 +51,7 @@ def _utc_now() -> datetime:
 
 
 def build_config() -> IntradayCatchupConfig:
-    warehouse_dir = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse"))).expanduser()
+    warehouse_dir = resolve_warehouse_dir()
     log_dir = Path(os.getenv("MDW_INTRADAY_CATCHUP_LOG_DIR", str(warehouse_dir / "logs"))).expanduser()
     node_bin = os.getenv("MDW_NODE_BIN") or shutil.which("node") or "/opt/homebrew/bin/node"
     return IntradayCatchupConfig(

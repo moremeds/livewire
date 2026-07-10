@@ -12,6 +12,8 @@ import argparse
 import os
 from pathlib import Path
 
+from livewire_scripts.paths import data_lake_dir
+
 
 def migrate_parquet_files(
     root_dir: Path,
@@ -50,7 +52,7 @@ def migrate_parquet_files(
 
 
 def main():
-    default_warehouse = Path.home() / "market-warehouse" / "data-lake"
+    default_warehouse = data_lake_dir()
     parser = argparse.ArgumentParser(description="Migrate parquet filenames from data.parquet to 1d.parquet")
     parser.add_argument("--dry-run", action="store_true", help="Preview renames without executing")
     parser.add_argument(

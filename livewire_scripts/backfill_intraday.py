@@ -45,14 +45,14 @@ from clients.quality_detector import _normalize_bars_for_detection, detect_all
 from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
 from livewire_scripts.daily_update import validate_intraday_bar
 from livewire_scripts.fetch_ib_historical import compute_intraday_chunks
+from livewire_scripts.paths import cursor_dir, data_lake_dir, log_dir
 
 log = logging.getLogger("backfill_intraday")
 console = Console()
 
-_WAREHOUSE_DIR = Path(os.environ.get("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
-_DATA_LAKE = _WAREHOUSE_DIR / "data-lake"
-_LOG_DIR = _WAREHOUSE_DIR / "logs"
-_CURSOR_DIR = _WAREHOUSE_DIR / "cursors"
+_DATA_LAKE: Path | None = None
+_LOG_DIR: Path | None = None
+_CURSOR_DIR: Path | None = None
 
 # IB error codes that mean "skip ticker, do not retry"
 _NO_DATA_ERRORS = {162, 200}
@@ -73,7 +73,7 @@ class TickerOutcome:
 
 
 def _cursor_path(timeframe: str, name: str) -> Path:
-    return _CURSOR_DIR / f"cursor_intraday_{timeframe}_{name}.json"
+    return (_CURSOR_DIR or cursor_dir()) / f"cursor_intraday_{timeframe}_{name}.json"
 
 
 def load_cursor(timeframe: str, name: str) -> set[str]:
@@ -389,7 +389,7 @@ def main() -> None:
     if args.max_tickers is not None:
         pending = pending[: args.max_tickers]
 
-    bronze_dir = _DATA_LAKE / "bronze" / f"asset_class={args.asset_class}"
+    bronze_dir = (_DATA_LAKE or data_lake_dir()) / "bronze" / f"asset_class={args.asset_class}"
     bronze = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe=args.timeframe)
     if args.existing_only:
         existing_symbols = bronze.get_existing_symbols()
@@ -418,8 +418,9 @@ def main() -> None:
         console.print("[green]All tickers already completed for this cursor.[/green]")
         return
 
-    _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = _LOG_DIR / f"backfill_intraday_{args.timeframe}_{date.today():%Y-%m-%d}.log"
+    resolved_log_dir = _LOG_DIR or log_dir()
+    resolved_log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = resolved_log_dir / f"backfill_intraday_{args.timeframe}_{date.today():%Y-%m-%d}.log"
     log_handler = logging.FileHandler(log_path)
     log_handler.setLevel(logging.INFO)
     log.addHandler(log_handler)

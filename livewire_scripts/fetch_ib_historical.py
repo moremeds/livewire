@@ -83,6 +83,7 @@ from clients.ingestion_common import (
 from clients.massive_client import MassiveAPIError, MassiveClient
 from clients.quality_detector import _normalize_bars_for_detection, detect_all
 from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
+from livewire_scripts.paths import data_lake_dir, log_dir
 
 _DEFAULT_STORAGE_CLIENT = BronzeClient
 StorageClient = BronzeClient
@@ -99,9 +100,9 @@ def _storage_client():
 
 # ── Config ─────────────────────────────────────────────────────────────
 
-DATA_LAKE = Path(os.getenv("MDW_DATA_LAKE", str(Path.home() / "market-warehouse" / "data-lake")))
-BRONZE_DIR = DATA_LAKE / "bronze" / "asset_class=equity"
-CURSOR_DIR = Path.home() / "market-warehouse" / "logs"
+DATA_LAKE: Path | None = None
+BRONZE_DIR: Path | None = None
+CURSOR_DIR: Path | None = None
 
 MAG7 = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
 
@@ -122,12 +123,20 @@ _QUALITY_ENABLED = True
 # ── Preset & cursor helpers ───────────────────────────────────────────
 
 
+def _resolved_data_lake() -> Path:
+    return DATA_LAKE or data_lake_dir()
+
+
+def _resolved_bronze_dir(asset_class: str = "equity") -> Path:
+    return BRONZE_DIR or _resolved_data_lake() / "bronze" / f"asset_class={asset_class}"
+
+
 # load_preset → imported from clients.ingestion_common
 
 
 def _cursor_path(name: str) -> Path:
     """Return the cursor file path for a given run name."""
-    return CURSOR_DIR / f"cursor_{name}.json"
+    return (CURSOR_DIR or log_dir()) / f"cursor_{name}.json"
 
 
 def load_cursor(name: str) -> dict[str, list[str]]:
@@ -478,9 +487,9 @@ async def fetch_all_tickers(
 
 
 def _bronze_parquet_path(ticker: str, bronze: BronzeClient) -> Path:
-    base = getattr(bronze, "bronze_dir", BRONZE_DIR)
+    base = getattr(bronze, "bronze_dir", _resolved_bronze_dir())
     if not isinstance(base, (str, Path)):
-        base = BRONZE_DIR
+        base = _resolved_bronze_dir()
     return Path(base) / f"symbol={ticker}" / "1d.parquet"
 
 
@@ -568,7 +577,7 @@ def fetch_ticker(
         rows = bars_to_rows(bars, symbol_id)
     inserted = bronze.replace_ticker_rows(ticker, rows)
     if hasattr(bronze, "write_ticker_parquet"):
-        bronze.write_ticker_parquet(ticker, symbol_id, BRONZE_DIR)
+        bronze.write_ticker_parquet(ticker, symbol_id, _resolved_bronze_dir(asset_class))
     return inserted
 
 
@@ -625,7 +634,7 @@ def backfill_ticker(
         rows = bars_to_rows(bars, symbol_id)
     inserted = bronze.merge_ticker_rows(ticker, rows)
     if hasattr(bronze, "write_ticker_parquet"):
-        bronze.write_ticker_parquet(ticker, symbol_id, BRONZE_DIR)
+        bronze.write_ticker_parquet(ticker, symbol_id, _resolved_bronze_dir(asset_class))
     return inserted
 
 
@@ -774,7 +783,7 @@ def main():  # pragma: no cover — only exercised by integration tests
     # ── Live bronze publication ───────────────────────────────────────
     run_t0 = time.monotonic()
     asset_class = args.asset_class
-    bronze_dir = DATA_LAKE / "bronze" / f"asset_class={asset_class}"
+    bronze_dir = _resolved_bronze_dir(asset_class)
 
     with _storage_client()(bronze_dir=bronze_dir, asset_class=asset_class) as bronze:
         if args.backfill and resolved_source == "massive":

@@ -24,17 +24,15 @@ import pyarrow.parquet as pq
 
 from clients.intraday_bronze_client import INTRADAY_TIMEFRAMES
 from livewire_scripts.daily_update import is_trading_day, previous_trading_day, session_close_time
+from livewire_scripts.paths import data_lake_dir, warehouse_dir
 
-_WAREHOUSE_DIR = Path(os.getenv("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
-_DEFAULT_BRONZE_ROOT = _WAREHOUSE_DIR / "data-lake" / "bronze"
-_DEFAULT_OUTPUT = _WAREHOUSE_DIR / "reports" / "warehouse_health.html"
 _ET = ZoneInfo("America/New_York")
 _INTRADAY_STEPS = {"1m": timedelta(minutes=1), "5m": timedelta(minutes=5), "1h": timedelta(hours=1)}
 
 
 @dataclass(frozen=True)
 class ScanOptions:
-    bronze_root: Path = _DEFAULT_BRONZE_ROOT
+    bronze_root: Path | None = None
     target_date: date | None = None
 
 
@@ -139,7 +137,7 @@ class RepairOutcome:
 def scan_warehouse(options: ScanOptions | None = None) -> list[SnapshotHealth]:
     """Scan actual bronze parquet snapshots and return per-file health rows."""
     options = options or ScanOptions()
-    bronze_root = Path(options.bronze_root).expanduser()
+    bronze_root = Path(options.bronze_root or data_lake_dir() / "bronze").expanduser()
     target_date = options.target_date or date.today()
     snapshots: list[SnapshotHealth] = []
 
@@ -163,11 +161,12 @@ def build_report(options: ScanOptions | None = None) -> WarehouseReport:
     """Build the report model from scanned parquet snapshots."""
     options = options or ScanOptions()
     target_date = options.target_date or _default_target_date()
-    resolved_options = ScanOptions(bronze_root=options.bronze_root, target_date=target_date)
+    bronze_root = Path(options.bronze_root or data_lake_dir() / "bronze").expanduser()
+    resolved_options = ScanOptions(bronze_root=bronze_root, target_date=target_date)
     snapshots = scan_warehouse(resolved_options)
     return WarehouseReport(
         generated_at=datetime.now(UTC),
-        bronze_root=Path(options.bronze_root).expanduser(),
+        bronze_root=bronze_root,
         target_date=target_date,
         snapshots=snapshots,
         by_asset=_summarize(snapshots, lambda item: item.asset_class),
@@ -627,18 +626,20 @@ def render_html(report: WarehouseReport) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    default_bronze_root = data_lake_dir() / "bronze"
+    default_output = warehouse_dir() / "reports" / "warehouse_health.html"
     parser = argparse.ArgumentParser(description="Generate a static HTML warehouse health report")
     parser.add_argument(
         "--bronze-root",
         type=Path,
-        default=_DEFAULT_BRONZE_ROOT,
-        help=f"Bronze root to scan (default: {_DEFAULT_BRONZE_ROOT})",
+        default=default_bronze_root,
+        help=f"Bronze root to scan (default: {default_bronze_root})",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=_DEFAULT_OUTPUT,
-        help=f"HTML output path (default: {_DEFAULT_OUTPUT})",
+        default=default_output,
+        help=f"HTML output path (default: {default_output})",
     )
     parser.add_argument(
         "--target-date",
@@ -928,7 +929,7 @@ def _run_repair_action(action: RepairAction) -> int:
 
 def _build_repair_env() -> dict[str, str]:
     env = dict(os.environ)
-    warehouse = Path(env.get("MDW_WAREHOUSE_DIR", str(Path.home() / "market-warehouse")))
+    warehouse = warehouse_dir()
     for env_file in (PROJECT_ROOT / ".env", warehouse / ".env"):
         _merge_env_file(env, env_file.expanduser())
     return env

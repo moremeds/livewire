@@ -12,6 +12,8 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from livewire_scripts.paths import log_dir
+
 _VALID_SOURCES = {"ib", "uw", "massive"}
 
 _logger = logging.getLogger("livewire.telemetry")
@@ -24,7 +26,7 @@ def _utc_iso() -> str:
 def _resolve_default_path() -> Path | None:
     raw = os.environ.get(
         "MDW_TELEMETRY_PATH",
-        str(Path.home() / "market-warehouse" / "logs" / "telemetry.jsonl"),
+        str(log_dir() / "telemetry.jsonl"),
     )
     if raw.strip().lower() in {"none", "off", "disabled", ""}:
         return None

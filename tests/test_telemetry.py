@@ -90,6 +90,17 @@ def test_resolve_default_path_uses_explicit_path(monkeypatch, tmp_path):
     assert _resolve_default_path() == tmp_path / "x.jsonl"
 
 
+def test_resolve_default_path_follows_warehouse_override(monkeypatch, tmp_path):
+    from clients.telemetry import _resolve_default_path
+
+    warehouse = tmp_path / "warehouse"
+    monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(warehouse))
+    monkeypatch.delenv("MDW_LOG_DIR", raising=False)
+    monkeypatch.delenv("MDW_TELEMETRY_PATH", raising=False)
+
+    assert _resolve_default_path() == warehouse / "logs" / "telemetry.jsonl"
+
+
 def test_invalid_source_rejected(tmp_path):
     with pytest.raises(ValueError, match="source must be one of"):
         BaseTelemetry(source="bogus", jsonl_path=tmp_path / "t.jsonl")

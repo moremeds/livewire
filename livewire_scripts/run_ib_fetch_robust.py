@@ -22,9 +22,9 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
+from livewire_scripts.paths import data_lake_dir, log_dir
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_BRONZE_DIR = Path.home() / "market-warehouse" / "data-lake" / "bronze"
-DEFAULT_LOG_DIR = Path.home() / "market-warehouse" / "logs"
 
 _logger = logging.getLogger("livewire.orchestrator")
 
@@ -71,8 +71,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=_env_int("MDW_ORCHESTRATOR_COOLDOWN_SECONDS", 60),
     )
-    p.add_argument("--bronze-dir", type=Path, default=DEFAULT_BRONZE_DIR)
-    p.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)
+    p.add_argument("--bronze-dir", type=Path, default=data_lake_dir() / "bronze")
+    p.add_argument("--log-dir", type=Path, default=log_dir())
     return p.parse_args(argv)
 
 
