@@ -17,7 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -129,7 +129,7 @@ def _send_email(body: str, run_date: date, node_bin: str, log_dir: Path, runner)
 
 def main(argv=None, runner=subprocess.run) -> int:
     parser = argparse.ArgumentParser(description="Build the Livewire nightly digest")
-    parser.add_argument("--run-date", type=date.fromisoformat, default=date.today())
+    parser.add_argument("--run-date", type=date.fromisoformat, default=datetime.now(UTC).date())
     parser.add_argument("--email", action="store_true", help="Send the digest via Nodemailer")
     parser.add_argument("--log-dir", type=Path, default=_LOG_DIR)
     parser.add_argument("--data-lake", type=Path, default=_DATA_LAKE)

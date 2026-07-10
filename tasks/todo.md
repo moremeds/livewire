@@ -2,6 +2,16 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Plan 5: UTC date-key consistency (2026-07-10)
+
+Dependency graph:
+- T1 -> T2 -> T3 -> T4
+
+- [x] T1 `depends_on: []` Add regression tests that distinguish local dates from UTC dates.
+- [x] T2 `depends_on: [T1]` Use UTC defaults for watchdog, daily-log, digest, and coverage date keys.
+- [x] T3 `depends_on: [T2]` Run focused tests, static analysis, full tests, coverage, and smoke verification.
+- [ ] T4 `depends_on: [T3]` Commit, push, and open the Plan 5 pull request.
+
 ## Post-lift cleanups (2026-06-11)
 
 These were surfaced during the move of `data-lake/` from internal SSD to `/Volumes/DATA_LAKE` (exFAT, symlinked back).

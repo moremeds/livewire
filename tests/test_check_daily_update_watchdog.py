@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from subprocess import CompletedProcess
 from types import SimpleNamespace
@@ -262,3 +263,21 @@ class TestMain:
             run_date="2026-03-11",
             env=os.environ.copy(),
         )
+
+    def test_default_run_date_is_utc(self, tmp_path):
+        config = _config(tmp_path)
+
+        class FrozenDateTime:
+            @classmethod
+            def now(cls, tz=None):
+                if tz is UTC:
+                    return datetime(2026, 4, 6, 1, 0, tzinfo=UTC)
+                return datetime(2026, 4, 5, 18, 0)
+
+        with patch("livewire_scripts.check_daily_update_watchdog.datetime", FrozenDateTime):
+            with patch("livewire_scripts.check_daily_update_watchdog.build_config", return_value=config):
+                with patch("livewire_scripts.check_daily_update_watchdog.sys.argv", ["watchdog"]):
+                    with patch("livewire_scripts.check_daily_update_watchdog.run_watchdog", return_value=0) as run_mock:
+                        assert main([]) == 0
+
+        assert run_mock.call_args.kwargs["run_date"] == "2026-04-06"

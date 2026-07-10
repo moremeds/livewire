@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -35,7 +35,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Alert if today's scheduled daily update did not complete.")
     parser.add_argument(
         "--run-date",
-        help="Run date to inspect in YYYY-MM-DD format. Defaults to today in local time.",
+        help="Run date to inspect in YYYY-MM-DD format. Defaults to today in UTC.",
     )
     return parser.parse_args(list(argv))
 
@@ -173,7 +173,7 @@ def run_watchdog(
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
-    run_date = args.run_date or datetime.now().strftime("%Y-%m-%d")
+    run_date = args.run_date or datetime.now(UTC).strftime("%Y-%m-%d")
     config = build_config()
     return run_watchdog(config, run_date=run_date, env=os.environ.copy())
 

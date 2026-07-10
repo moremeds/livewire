@@ -109,6 +109,17 @@ class TestHelpers:
         current = datetime(2026, 3, 11, 13, 5, tzinfo=UTC)
         assert build_log_file(tmp_path, current) == tmp_path / "daily_update_2026-03-11.log"
 
+    def test_build_log_file_defaults_to_utc(self, tmp_path):
+        class FrozenDateTime:
+            @classmethod
+            def now(cls, tz=None):
+                if tz is UTC:
+                    return datetime(2026, 4, 6, 1, 0, tzinfo=UTC)
+                return datetime(2026, 4, 5, 18, 0)
+
+        with patch("livewire_scripts.run_daily_update_job.datetime", FrozenDateTime):
+            assert build_log_file(tmp_path) == tmp_path / "daily_update_2026-04-06.log"
+
     def test_append_log_adds_newline(self, tmp_path):
         log_file = tmp_path / "logs" / "daily.log"
         append_log(log_file, "line one")

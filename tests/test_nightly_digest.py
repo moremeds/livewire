@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -114,6 +114,24 @@ def test_main_prints_and_no_email_by_default(tmp_path, capsys):
     rc = main(["--run-date", "2026-07-02", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path)])
     assert rc == 0
     assert "Livewire nightly digest" in capsys.readouterr().out
+
+
+def test_default_run_date_is_utc(tmp_path, capsys, monkeypatch):
+    from livewire_scripts import nightly_digest
+
+    class FrozenDateTime:
+        @classmethod
+        def now(cls, tz=None):
+            if tz is UTC:
+                return datetime(2026, 4, 6, 1, 0, tzinfo=UTC)
+            return datetime(2026, 4, 5, 18, 0)
+
+    monkeypatch.setattr(nightly_digest, "datetime", FrozenDateTime, raising=False)
+
+    rc = nightly_digest.main(["--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path)])
+
+    assert rc == 0
+    assert "Livewire nightly digest — 2026-04-06" in capsys.readouterr().out
 
 
 def test_main_email_invokes_node_script(tmp_path, monkeypatch):
