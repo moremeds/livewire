@@ -18,7 +18,7 @@ import subprocess
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -232,6 +232,8 @@ def auto_recover(
             reason=f"safety_cap (>{safety_cap} missing symbols)",
         )
 
+    effective_target = target_date or datetime.now(UTC).date()
+
     if timeframe == "1d":
         cmd = [
             sys.executable,
@@ -241,7 +243,7 @@ def auto_recover(
             "massive",
             "--force",
             "--target-date",
-            (target_date or date.today()).isoformat(),
+            effective_target.isoformat(),
             "--tickers",
             *missing_symbols,
         ]
@@ -252,13 +254,12 @@ def auto_recover(
             "flatfile-ingest",
             "repair",
             "--dates",
-            (target_date or date.today()).isoformat(),
+            effective_target.isoformat(),
         ]
     console.print(f"[cyan]Auto-recover {timeframe}: launching backfill for {len(missing_symbols)} symbols[/cyan]")
     subprocess.run(cmd, check=False)
 
-    target = target_date or date.today()
-    rechecked = compute_coverage(target, bronze_root=bronze_root)[timeframe]
+    rechecked = compute_coverage(effective_target, bronze_root=bronze_root)[timeframe]
     still_missing = [s for s in missing_symbols if s in rechecked.missing_symbols]
     recovered = len(missing_symbols) - len(still_missing)
     return RecoveryOutcome(
@@ -305,7 +306,7 @@ def _send_alert(
 def _resolve_target_date(force: bool, override: date | None) -> date | None:
     if override is not None:
         return override
-    today = date.today()
+    today = datetime.now(UTC).date()
     if is_trading_day(today):
         return today
     if force:

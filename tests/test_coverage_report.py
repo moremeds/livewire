@@ -376,6 +376,35 @@ class TestAutoRecover:
         assert "--tickers" in cmd
         assert "--timeframe" not in cmd
 
+    def test_default_recovery_date_is_utc(self, tmp_path):
+        from livewire_scripts import coverage_report
+
+        class FrozenDateTime:
+            @classmethod
+            def now(cls, tz=None):
+                if tz is UTC:
+                    return datetime(2026, 4, 6, 1, 0, tzinfo=UTC)
+                return datetime(2026, 4, 5, 18, 0)
+
+        class FrozenLocalDate(date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 4, 5)
+
+        rechecked = {
+            "5m": CoverageResult("5m", total=1, present=0, missing_symbols=["AAPL"]),
+        }
+        with patch.object(coverage_report, "datetime", FrozenDateTime):
+            with patch.object(coverage_report, "date", FrozenLocalDate):
+                with patch.object(coverage_report, "compute_coverage", return_value=rechecked) as compute_mock:
+                    with patch.object(coverage_report.subprocess, "run") as run_mock:
+                        outcome = auto_recover("5m", ["AAPL"], bronze_root=tmp_path)
+
+        command = run_mock.call_args.args[0]
+        assert command[command.index("--dates") + 1] == "2026-04-06"
+        compute_mock.assert_called_once_with(date(2026, 4, 6), bronze_root=tmp_path)
+        assert outcome.still_missing == ["AAPL"]
+
     def test_partial_recovery_path(self, seeded_bronze):
         target = date(2026, 4, 6)
         # Both stale (file present, old date) so both are in the 5m universe.
@@ -432,22 +461,41 @@ class TestResolveTargetDate:
     def test_explicit_override_wins(self):
         assert _resolve_target_date(force=False, override=date(2026, 4, 6)) == date(2026, 4, 6)
 
+    def test_default_uses_utc_today(self):
+        from livewire_scripts import coverage_report
+
+        class FrozenDateTime:
+            @classmethod
+            def now(cls, tz=None):
+                if tz is UTC:
+                    return datetime(2026, 4, 6, 1, 0, tzinfo=UTC)
+                return datetime(2026, 4, 5, 18, 0)
+
+        class FrozenLocalDate(date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 4, 5)
+
+        with patch.object(coverage_report, "datetime", FrozenDateTime):
+            with patch.object(coverage_report, "date", FrozenLocalDate):
+                with patch.object(coverage_report, "is_trading_day", return_value=True):
+                    assert _resolve_target_date(False, None) == date(2026, 4, 6)
+
     def test_trading_day_today(self):
-        with patch("livewire_scripts.coverage_report.date") as mock_date:
-            mock_date.today.return_value = date(2026, 4, 6)  # Monday
-            mock_date.fromisoformat = date.fromisoformat
+        with patch("livewire_scripts.coverage_report.datetime") as mock_datetime:
+            mock_datetime.now.return_value = datetime(2026, 4, 6, 12, 0, tzinfo=UTC)  # Monday
             with patch("livewire_scripts.coverage_report.is_trading_day", return_value=True):
                 assert _resolve_target_date(False, None) == date(2026, 4, 6)
 
     def test_non_trading_day_without_force(self):
-        with patch("livewire_scripts.coverage_report.date") as mock_date:
-            mock_date.today.return_value = date(2026, 4, 5)  # Sunday
+        with patch("livewire_scripts.coverage_report.datetime") as mock_datetime:
+            mock_datetime.now.return_value = datetime(2026, 4, 5, 12, 0, tzinfo=UTC)  # Sunday
             with patch("livewire_scripts.coverage_report.is_trading_day", return_value=False):
                 assert _resolve_target_date(False, None) is None
 
     def test_non_trading_day_with_force_falls_back(self):
-        with patch("livewire_scripts.coverage_report.date") as mock_date:
-            mock_date.today.return_value = date(2026, 4, 5)
+        with patch("livewire_scripts.coverage_report.datetime") as mock_datetime:
+            mock_datetime.now.return_value = datetime(2026, 4, 5, 12, 0, tzinfo=UTC)
             with patch("livewire_scripts.coverage_report.is_trading_day", return_value=False):
                 with patch(
                     "livewire_scripts.coverage_report.previous_trading_day",

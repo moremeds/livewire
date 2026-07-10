@@ -4,6 +4,28 @@ This file preserves completed task lists that were previously in [todo.md](todo.
 
 ---
 
+# Plan 5: UTC Date-Key Consistency
+
+## Dependency Graph
+
+- T1 -> T2 -> T3 -> T4
+
+## Tasks
+
+- [x] T1 Add regression tests that distinguish local dates from UTC dates.
+  depends_on: []
+- [x] T2 Use UTC defaults for watchdog, daily-log, digest, and coverage date keys.
+  depends_on: [T1]
+- [x] T3 Run focused tests, static analysis, full tests, coverage, and smoke verification.
+  depends_on: [T2]
+  - Focused affected suite: 93 passed.
+  - Full non-integration suite: 1,302 passed, 1 skipped.
+  - Coverage: 98.96% against the required 95%.
+  - Ruff, formatting, and Pyright passed.
+  - Los Angeles timezone-boundary smoke confirmed UTC date selection across all four paths.
+- [x] T4 Commit, push, and open pull request #42.
+  depends_on: [T3]
+
 # Intraday Catch-Up Failure Recovery
 
 ## Goal

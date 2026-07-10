@@ -87,7 +87,7 @@ def build_config() -> RunnerConfig:
 
 
 def build_log_file(log_dir: Path, now: datetime | None = None) -> Path:
-    current = now or datetime.now()
+    current = now or datetime.now(UTC)
     return log_dir / f"daily_update_{current:%Y-%m-%d}.log"
 
 
