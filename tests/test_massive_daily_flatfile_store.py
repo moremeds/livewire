@@ -1,12 +1,13 @@
 import csv
 import gzip
-from datetime import date
+from datetime import UTC, date, datetime
+from unittest.mock import patch
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from clients.massive_daily_flatfile_store import RAW_DAILY_SCHEMA, MassiveDailyFlatfileStore
+from clients.massive_daily_flatfile_store import RAW_DAILY_SCHEMA, MassiveDailyFlatfileStore, _us_ts_to_iso_date
 
 
 def _write_day(path, rows):
@@ -32,9 +33,22 @@ def _row(ticker, ts_ns, vol=10):
     }
 
 
-# Midnight UTC of 2024-06-03 and 2024-06-04 in epoch ns.
-_TS_20240603 = 1717372800_000_000_000
-_TS_20240604 = 1717459200_000_000_000
+# Observed AAPL window_start values: midnight America/New_York in epoch ns.
+_TS_20240603 = 1717387200_000_000_000
+_TS_20240604 = 1717473600_000_000_000
+
+
+def test_flatfile_timestamp_uses_shared_trade_date_converter():
+    observed = datetime.fromtimestamp(_TS_20240603 / 1_000_000_000, UTC)
+
+    with patch(
+        "clients.massive_daily_flatfile_store.massive_timestamp_to_trade_date",
+        return_value=date(2024, 6, 3),
+    ) as convert:
+        result = _us_ts_to_iso_date(observed)
+
+    convert.assert_called_once_with(observed)
+    assert result == "2024-06-03"
 
 
 def test_stage_gzip_writes_buckets_and_symbols(tmp_path):

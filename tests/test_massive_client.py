@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, datetime
-from zoneinfo import ZoneInfo
+from datetime import UTC, date, datetime
+from unittest.mock import patch
 
 import pytest
 import responses
@@ -31,8 +31,7 @@ def _url(endpoint: str) -> str:
     return f"{_DEFAULT_BASE_URL}/{endpoint.lstrip('/')}"
 
 
-def _ms(et_dt: datetime) -> int:
-    return int(et_dt.replace(tzinfo=ZoneInfo("America/New_York")).timestamp() * 1000)
+_REST_T_20240603 = 1717444800000
 
 
 class _Telemetry:
@@ -66,7 +65,7 @@ def _payload(*results, adjusted=False):
 
 def _bar(**kwargs):
     data = {
-        "t": _ms(datetime(2026, 5, 11)),
+        "t": _REST_T_20240603,
         "o": 210.0,
         "h": 215.0,
         "l": 209.5,
@@ -111,16 +110,16 @@ def test_context_manager_closes_telemetry():
 
 @responses.activate
 def test_get_daily_bars_uses_custom_aggregate_endpoint_and_normalizes():
-    endpoint = "/v2/aggs/ticker/AAPL/range/1/day/2026-05-11/2026-05-11"
+    endpoint = "/v2/aggs/ticker/AAPL/range/1/day/2024-06-03/2024-06-03"
     responses.add(responses.GET, _url(endpoint), json=_payload(_bar()), status=200)
 
     with _make_client() as client:
-        bars = client.get_daily_bars("aapl", date(2026, 5, 11), date(2026, 5, 11))
+        bars = client.get_daily_bars("aapl", date(2024, 6, 3), date(2024, 6, 3))
 
     assert len(bars) == 1
     bar = bars[0]
-    assert bar.date == "2026-05-11"
-    assert bar.trade_date == date(2026, 5, 11)
+    assert bar.date == "2024-06-03"
+    assert bar.trade_date == date(2024, 6, 3)
     assert bar.open == 210.0
     assert bar.high == 215.0
     assert bar.low == 209.5
@@ -138,20 +137,33 @@ def test_get_daily_bars_uses_custom_aggregate_endpoint_and_normalizes():
 
 @responses.activate
 def test_get_grouped_daily_uses_grouped_endpoint_and_ticker_field():
-    grouped_bar = _bar(T="MSFT", t=_ms(datetime(2026, 5, 15, 16)))
-    endpoint = "/v2/aggs/grouped/locale/us/market/stocks/2026-05-15"
+    grouped_bar = _bar(T="MSFT")
+    endpoint = "/v2/aggs/grouped/locale/us/market/stocks/2024-06-03"
     responses.add(responses.GET, _url(endpoint), json=_payload(grouped_bar), status=200)
 
     with _make_client() as client:
-        bars = client.get_grouped_daily(date(2026, 5, 15))
+        bars = client.get_grouped_daily(date(2024, 6, 3))
 
     assert list(bars) == ["MSFT"]
-    assert bars["MSFT"].date == "2026-05-15"
+    assert bars["MSFT"].date == "2024-06-03"
     assert bars["MSFT"].source == "massive"
     request = responses.calls[0].request
     assert request.url is not None
     assert "adjusted=false" in request.url
     assert "include_otc=false" in request.url
+
+
+def test_normalize_daily_bar_uses_shared_trade_date_converter():
+    observed_t_ms = 1717444800000
+
+    with patch(
+        "clients.massive_client.massive_timestamp_to_trade_date",
+        return_value=date(2024, 6, 3),
+    ) as convert:
+        bar = MassiveClient.normalize_daily_bar(_bar(t=observed_t_ms), ticker="AAPL")
+
+    convert.assert_called_once_with(datetime.fromtimestamp(observed_t_ms / 1000, UTC))
+    assert bar.trade_date == date(2024, 6, 3)
 
 
 @responses.activate
@@ -283,7 +295,7 @@ def test_record_rate_limit_ignores_missing_or_invalid_headers():
 @pytest.mark.parametrize(
     "bad_bar, message",
     [
-        ({"t": _ms(datetime(2026, 5, 11)), "o": 1, "h": 1, "l": 1, "c": 1}, "v"),
+        ({"t": _REST_T_20240603, "o": 1, "h": 1, "l": 1, "c": 1}, "v"),
         (_bar(o=0), "positive"),
         (_bar(h=1, l=2), "high"),
         (_bar(h=1000, l=999), "low"),
