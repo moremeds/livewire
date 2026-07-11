@@ -137,8 +137,7 @@ def audit_bucket(
 def staged_days(store: MassiveDailyFlatfileStore) -> list[date]:
     """Return complete staged dates without recursively scanning the raw lake."""
     return sorted(
-        date.fromisoformat(path.parent.name.removeprefix("date="))
-        for path in store.raw_root.glob("date=*/_SUCCESS")
+        date.fromisoformat(path.parent.name.removeprefix("date=")) for path in store.raw_root.glob("date=*/_SUCCESS")
     )
 
 
@@ -155,9 +154,7 @@ def audit_to_directory(
     if not selected_days:
         raise ValueError("no complete staged daily aggregate dates found")
     output_dir.mkdir(parents=True, exist_ok=True)
-    existing_symbols = BronzeClient(
-        bronze_dir=bronze_dir, asset_class="equity"
-    ).get_existing_symbols()
+    existing_symbols = BronzeClient(bronze_dir=bronze_dir, asset_class="equity").get_existing_symbols()
     totals = AuditStats()
     for bucket in range(store.bucket_count):
         mismatches, stats = audit_bucket(store, bronze_dir, existing_symbols, bucket, selected_days)
