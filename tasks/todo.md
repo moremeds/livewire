@@ -2,6 +2,26 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Daily partial-bar audit and repair (2026-07-11)
+
+Dependency graph: `T1 -> T2 -> T3 -> T4 -> T5 -> T6`
+
+- [x] **T1** (`depends_on: []`): Confirm QQQ against staged day aggregates,
+  summed minute data, REST, and ingestion logs; identify the pre-close target-date
+  root cause and verify the June 24 prevention fix.
+- [x] **T2** (`depends_on: [T1]`): Add tested tooling to audit staged `day_aggs`
+  against every existing equity `1d.parquet`, write a rollback-capable mismatch
+  manifest, and apply only manifest rows through locked atomic merges.
+- [x] **T3** (`depends_on: [T2]`): Run the complete read-only overlap audit and
+  review mismatch counts, date range, field distribution, and symbol scope.
+- [x] **T4** (`depends_on: [T3]`): Repair only audited mismatches from staged
+  authoritative rows and preserve the original values in the manifest.
+- [x] **T5** (`depends_on: [T4]`): Re-run the complete audit and require zero
+  remaining staged-overlap mismatches; validate QQQ and a liquid-ticker sample.
+- [x] **T6** (`depends_on: [T5]`): Validate full-history structure and REST overlap
+  for common and deterministic uncommon ticker samples, write the repair report,
+  run repository gates, and prepare the PR.
+
 ## Post-lift cleanups (2026-06-11)
 
 These were surfaced during the move of `data-lake/` from internal SSD to `/Volumes/DATA_LAKE` (exFAT, symlinked back).
