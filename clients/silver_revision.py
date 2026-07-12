@@ -44,6 +44,28 @@ class SilverRevision:
     artifacts: tuple[ManifestArtifact, ...]
 
 
+@dataclass
+class SilverRevisionTransaction:
+    publisher: SilverRevisionPublisher
+    current: SilverRevision | None
+    revision: int
+    _committed: bool = False
+
+    def commit(
+        self,
+        artifacts: list[PublishedArtifact],
+        affected: list[AffectedSymbol],
+        actions_as_of: datetime,
+    ) -> SilverRevision:
+        if self._committed:
+            raise RuntimeError("Silver revision transaction already committed")
+        result = self.publisher._publish_locked(artifacts, affected, actions_as_of)
+        if result.revision != self.revision:
+            raise RuntimeError("reserved Silver revision was not committed")
+        self._committed = True
+        return result
+
+
 class SilverRevisionPublisher:
     """Advance ``current.json`` only after all artifact checks pass."""
 
@@ -61,6 +83,18 @@ class SilverRevisionPublisher:
     ) -> SilverRevision:
         with self._lock():
             return self._publish_locked(artifacts, affected, actions_as_of)
+
+    def read_current(self) -> SilverRevision | None:
+        """Read the current committed revision without creating the Silver root."""
+        return self._read_current()
+
+    @contextmanager
+    def transaction(self) -> Iterator[SilverRevisionTransaction]:
+        """Reserve the next revision while holding the cross-process publish lock."""
+        with self._lock():
+            current = self._read_current()
+            revision = 1 if current is None else current.revision + 1
+            yield SilverRevisionTransaction(self, current, revision)
 
     def _publish_locked(
         self,

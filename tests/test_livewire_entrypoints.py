@@ -57,6 +57,18 @@ def test_quality_dispatches_warehouse_report(monkeypatch) -> None:
     assert calls == [("livewire_scripts.warehouse_health_report", ["--output", "report.html"])]
 
 
+def test_store_dispatches_rebuild_silver(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_store.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+
+    assert livewire_store.main(["rebuild-silver", "--tickers", "NVDA"]) == 7
+    assert calls == [("livewire_scripts.rebuild_silver", ["--tickers", "NVDA"])]
+
+
 def test_ingest_daily_massive_bypasses_ib_preflight(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import asdict, dataclass
+from datetime import date
 from pathlib import Path
 
 import pyarrow as pa
@@ -68,6 +69,15 @@ class SilverClient:
         if not revisions or min(revisions) <= 0 or len(revisions) != 1:
             raise ValueError("daily rows require one positive adjustment revision")
         ordered = sorted(rows, key=lambda row: row["trade_date"])
+        ordered = [
+            {
+                **row,
+                "trade_date": (
+                    row["trade_date"] if isinstance(row["trade_date"], date) else date.fromisoformat(row["trade_date"])
+                ),
+            }
+            for row in ordered
+        ]
         table = pa.Table.from_pylist(ordered, schema=self.daily_schema)
         return self._publish(self.daily_path(symbol), table, "trade_date")
 

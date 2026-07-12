@@ -12,7 +12,7 @@ Dependency graph: `T1 -> T2 -> T3 -> T4 -> T5`
   intervals as validated, checksummed Silver Parquet artifacts.
 - [x] **T3** (`depends_on: [T2]`): Publish locked, monotonic, transactional Silver
   revision manifests with `current.json` as the final commit record.
-- [ ] **T4** (`depends_on: [T3]`): Add targeted/full/dry-run Silver rebuild CLI,
+- [x] **T4** (`depends_on: [T3]`): Add targeted/full/dry-run Silver rebuild CLI,
   batch validation, no-op detection, counters, and manifest publication.
 - [ ] **T5** (`depends_on: [T4]`): Integrate scheduled reconciliation, implement
   the four-symbol canary, update durable/operator docs, and run all gates.
