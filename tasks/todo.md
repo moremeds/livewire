@@ -8,7 +8,7 @@ Dependency graph: `T1 -> T2 -> T3 -> T4 -> T5`
 
 - [x] **T1** (`depends_on: []`): Implement the pure Decimal-based adjustment
   engine and exhaustive factor intervals with example/property tests.
-- [ ] **T2** (`depends_on: [T1]`): Publish adjusted daily bars and compact factor
+- [x] **T2** (`depends_on: [T1]`): Publish adjusted daily bars and compact factor
   intervals as validated, checksummed Silver Parquet artifacts.
 - [ ] **T3** (`depends_on: [T2]`): Publish locked, monotonic, transactional Silver
   revision manifests with `current.json` as the final commit record.

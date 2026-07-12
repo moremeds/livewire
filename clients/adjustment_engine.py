@@ -18,6 +18,7 @@ class FactorInterval:
     effective_end: date
     price_adjustment_factor: Decimal
     split_volume_factor: Decimal
+    adjustment_revision: int = 0
 
 
 def _date(value: date | str) -> date:

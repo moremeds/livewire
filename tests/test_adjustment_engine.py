@@ -125,6 +125,7 @@ def test_intervals_are_exhaustive_ordered_and_non_overlapping():
         (date(2026, 1, 1), date(2026, 1, 2)),
         (date(2026, 1, 3), date(2026, 1, 3)),
     ]
+    assert all(item.adjustment_revision == 0 for item in intervals)
 
 
 @given(
