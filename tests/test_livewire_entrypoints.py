@@ -69,6 +69,18 @@ def test_store_dispatches_rebuild_silver(monkeypatch) -> None:
     assert calls == [("livewire_scripts.rebuild_silver", ["--tickers", "NVDA"])]
 
 
+def test_store_dispatches_price_basis_migration(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_store.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+
+    assert livewire_store.main(["migrate-price-basis", "--tickers", "AAPL"]) == 7
+    assert calls == [("livewire_scripts.migrate_equity_price_basis", ["--tickers", "AAPL"])]
+
+
 def test_ingest_daily_massive_bypasses_ib_preflight(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(
