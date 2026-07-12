@@ -13,7 +13,7 @@ Dependency graph: `T1 -> T2 -> T3 -> T4`
   publication, and focused tests.
 - [x] **T3** (`depends_on: [T2]`): Add targeted/universe reconciliation CLI,
   dry-run behavior, telemetry counters, dispatch coverage, and focused tests.
-- [ ] **T4** (`depends_on: [T3]`): Document operation and scheduling boundaries,
+- [x] **T4** (`depends_on: [T3]`): Document operation and scheduling boundaries,
   run focused and CI-equivalent verification, and prepare the implementation PR.
 
 ## Daily partial-bar audit and repair (2026-07-11)
