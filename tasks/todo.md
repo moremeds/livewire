@@ -2,6 +2,19 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Silver causal canary hardening (2026-07-13)
+
+Dependency graph: `T1 -> T2 -> T3 -> T4`
+
+- [x] **T1** (`depends_on: []`): Cover future splits, exact ex-date activation,
+  calendar gaps, and shared multi-symbol cutoffs.
+- [x] **T2** (`depends_on: [T1]`): Expose rebuild and validation as-of,
+  effective-action, and future-action counters.
+- [x] **T3** (`depends_on: [T2]`): Recompute causal factor expectations in the
+  canary and reject contaminated but internally consistent artifacts.
+- [x] **T4** (`depends_on: [T3]`): Run repository gates and the five-symbol
+  local sweep, self-review, commit, and update PR #50 without merging.
+
 ## Silver future-action cutoff (2026-07-13)
 
 Dependency graph: `T1 -> T2 -> T3`

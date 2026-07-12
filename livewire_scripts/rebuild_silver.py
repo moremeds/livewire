@@ -161,12 +161,17 @@ def run(
     current = publisher.read_current()
     current_revision = 0 if current is None else current.revision
     action_count = sum(len(item.actions) for item in staged)
+    effective_action_count = sum(action.ex_date <= effective_as_of for item in staged for action in item.actions)
+    future_action_count = action_count - effective_action_count
     earliest = min((item.earliest_date for item in staged), default=None)
     if failed:
         _summary(
             action_count=action_count,
+            as_of_date=effective_as_of.isoformat(),
             earliest_affected_date=None if earliest is None else earliest.isoformat(),
+            effective_action_count=effective_action_count,
             failed=failed,
+            future_action_count=future_action_count,
             rebuilt=0,
             revision=current_revision,
             unchanged=0,
@@ -179,8 +184,11 @@ def run(
     if args.dry_run:
         _summary(
             action_count=action_count,
+            as_of_date=effective_as_of.isoformat(),
             earliest_affected_date=None if earliest is None else earliest.isoformat(),
+            effective_action_count=effective_action_count,
             failed=0,
+            future_action_count=future_action_count,
             rebuilt=len(changed),
             revision=predicted_revision,
             unchanged=unchanged,
@@ -190,8 +198,11 @@ def run(
     if not changed:
         _summary(
             action_count=action_count,
+            as_of_date=effective_as_of.isoformat(),
             earliest_affected_date=None if earliest is None else earliest.isoformat(),
+            effective_action_count=effective_action_count,
             failed=0,
+            future_action_count=future_action_count,
             rebuilt=0,
             revision=current_revision,
             unchanged=unchanged,
@@ -223,8 +234,11 @@ def run(
 
     _summary(
         action_count=action_count,
+        as_of_date=effective_as_of.isoformat(),
         earliest_affected_date=None if earliest is None else earliest.isoformat(),
+        effective_action_count=effective_action_count,
         failed=0,
+        future_action_count=future_action_count,
         rebuilt=rebuilt,
         revision=revision,
         unchanged=unchanged,

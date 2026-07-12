@@ -61,7 +61,7 @@ def test_targeted_rebuild_publishes_daily_factors_and_manifest(tmp_path, capsys)
     assert (silver / "revisions/current.json").exists()
 
 
-def test_targeted_rebuild_excludes_announced_future_dividend(tmp_path):
+def test_targeted_rebuild_excludes_announced_future_dividend(tmp_path, capsys):
     _bronze(tmp_path, "MSFT")
     dividend = MassiveDividend(
         provider_event_id="future-dividend",
@@ -96,6 +96,11 @@ def test_targeted_rebuild_excludes_announced_future_dividend(tmp_path):
     assert daily.column("price_adjustment_factor").to_pylist() == [1.0, 1.0, 1.0]
     factors = pq.ParquetFile(silver / "adjustments/asset_class=equity/symbol=MSFT/factors.parquet").read()
     assert factors.column("price_adjustment_factor").to_pylist() == [1.0]
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["as_of_date"] == "2026-01-03"
+    assert summary["action_count"] == 1
+    assert summary["effective_action_count"] == 0
+    assert summary["future_action_count"] == 1
 
 
 def test_multi_symbol_rebuild_uses_injected_cutoff_for_every_symbol(tmp_path):
