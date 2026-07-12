@@ -81,6 +81,32 @@ def test_store_dispatches_price_basis_migration(monkeypatch) -> None:
     assert calls == [("livewire_scripts.migrate_equity_price_basis", ["--tickers", "AAPL"])]
 
 
+def test_quality_dispatches_split_basis_audit(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_quality.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+
+    assert livewire_quality.main(["audit-split-basis", "--tickers", "AAPL", "--output", "audit.json"]) == 7
+    assert calls == [
+        ("livewire_scripts.audit_split_basis", ["--tickers", "AAPL", "--output", "audit.json"])
+    ]
+
+
+def test_store_dispatches_split_basis_repair(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_store.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+
+    assert livewire_store.main(["repair-split-basis", "--manifest", "audit.json"]) == 7
+    assert calls == [("livewire_scripts.repair_split_basis", ["--manifest", "audit.json"])]
+
+
 def test_ingest_daily_massive_bypasses_ib_preflight(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(

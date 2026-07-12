@@ -19,6 +19,7 @@ COMMANDS = {
     "sync-r2": "livewire_scripts.sync_to_r2",
     "migrate-parquet": "livewire_scripts.migrate_parquet_filename",
     "migrate-price-basis": "livewire_scripts.migrate_equity_price_basis",
+    "repair-split-basis": "livewire_scripts.repair_split_basis",
     "archive-otc": "livewire_scripts.archive_otc_symbols",
     "rebuild-silver": "livewire_scripts.rebuild_silver",
 }
