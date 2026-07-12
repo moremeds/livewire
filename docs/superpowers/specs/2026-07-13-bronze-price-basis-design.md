@@ -4,7 +4,8 @@
 
 Livewire's canonical equity Bronze files do not record row provenance or price
 basis. Equity IB requests use `whatToShow="TRADES"`; IB documents those bars as
-split-adjusted but not dividend-adjusted. Massive daily requests explicitly use
+split-adjusted but not dividend-adjusted, but live calibration proves that this
+is inconsistent across its historical archive. Massive daily requests explicitly use
 `adjusted=false` and therefore return raw corporate-action discontinuities.
 
 Historical merges and repairs have created mixed basis inside individual
@@ -16,6 +17,10 @@ symbols. Local evidence includes:
   and 2024 boundaries that appear raw;
 - MSFT 2003 data that appears raw.
 
+Direct IB calibration confirmed the same mixture: AAPL 2020 and NVDA 2024 are
+split-adjusted, while MSFT 2003 retains its raw 2:1 discontinuity. IB source
+identity therefore cannot determine row basis by itself.
+
 The Silver adjustment engine currently assumes every Bronze row is raw. It can
 therefore double-adjust already split-adjusted history. This is independent of
 the future-action cutoff fixed in PR #50.
@@ -23,8 +28,9 @@ the future-action cutoff fixed in PR #50.
 ## Architecture
 
 Bronze remains the canonical raw layer. Every new equity daily row will carry
-explicit provenance and price-basis metadata. IB rows will be normalized to raw
-before publication; Massive `adjusted=false` rows are raw by contract. Existing
+explicit provenance and price-basis metadata. IB rows will be staged, classified
+per effective split event, and normalized to raw before publication; Massive
+`adjusted=false` rows are raw by contract. Existing
 ambiguous history will be migrated to an unknown state, audited against split
 events and authoritative raw data, then repaired through a stale-safe manifest.
 
@@ -50,8 +56,9 @@ New rows must satisfy:
 
 - Massive REST/grouped/flat-file daily data requested with `adjusted=false` is
   published as `source=massive`, `price_basis=raw`;
-- IB `TRADES` data enters normalization as split-adjusted and may be published
-  as `source=ib`, `price_basis=raw` only after successful normalization;
+- IB `TRADES` data enters staging with unknown basis and may be published as
+  `source=ib`, `price_basis=raw` only after every applicable split event is
+  classified and any incorporated adjustments are reversed;
 - Nasdaq and Stooq fallback rows are labelled with their provider, and their
   basis must be verified by provider calibration before being declared raw;
 - pre-migration rows are `source=legacy`, `price_basis=unknown` until audited or
@@ -62,36 +69,48 @@ must never retain provenance from the old row while replacing its prices.
 
 ## Provider Calibration Gate
 
-Implementation cannot assume IB's historical volume convention. Before volume
-normalization is coded, a calibration command will compare IB `TRADES`, Massive
+Implementation cannot assume one IB historical price or volume convention.
+The calibration command compares IB `TRADES`, Massive
 `adjusted=false`, and Massive `adjusted=true` for known 2:1, 4:1, and 10:1 split
 windows such as MSFT 2003, AAPL 2020, and NVDA 2024.
 
 The calibration records OHLC and volume on both sides of each event and derives
-the exact reversible transformation. If credentials or IB connectivity are
-unavailable, implementation may proceed for schema and price-only logic, but
-the IB publisher must fail closed rather than publish unverified volume as raw.
+an event classification. Live calibration established `adjusted` for AAPL 2020
+and NVDA 2024, and `raw` for MSFT 2003. If a boundary cannot be classified
+confidently, the IB publisher fails closed rather than publishing the affected
+interval as raw.
 
 ## IB Raw Normalization
 
-For one IB batch, the normalizer receives the rows, active effective split
-events, and one New York as-of date. For each row it computes the cumulative
-split factor from events strictly after the row date through the as-of date.
-It reverses IB's split price adjustment using Decimal arithmetic to restore raw
-historical OHLC. Volume is transformed according to the verified calibration
-contract.
+For one IB batch, the classifier receives the rows, active effective split
+events, and one New York as-of date. For each event it compares the nearest
+sessions around the boundary. An observed price ratio near the corporate-action
+factor classifies that event as `raw`; a ratio near one classifies it as
+`adjusted`; any other result is `ambiguous`.
+
+Classification uses logarithmic distance from the raw and adjusted hypotheses
+with explicit tolerances. It records the observed ratio, both errors, selected
+classification, and confidence in an audit artifact.
+
+For each row, the normalizer composes only later events classified `adjusted`
+and reverses their cumulative price factor using Decimal arithmetic. Events
+classified `raw` contribute identity because their discontinuity is already
+present. Volume is reversed alongside price for adjusted events; live AAPL and
+NVDA calibration shows continuous adjusted volume, while absolute IB and
+Massive volumes may differ because IB filters trades.
 
 The normalizer rejects:
 
 - missing or malformed split ratios;
-- unknown provider basis;
+- any ambiguous applicable event;
+- a split event lacking sessions on both sides within the permitted search window;
 - required split history that is unavailable for the covered period;
 - non-finite or non-positive normalized prices;
-- a volume convention that has not passed calibration.
+- an event classification set that does not cover every applicable split.
 
 Normalization is deterministic and idempotence is enforced at the boundary:
-only rows explicitly marked `split_adjusted` may enter it, and its output is
-always `raw`. A raw row cannot be normalized twice.
+only staged IB rows with a complete event-classification set may enter it, and
+its output is always `raw`. A raw row cannot be normalized twice.
 
 ## Legacy Schema Migration
 
@@ -118,9 +137,11 @@ event and records:
 - original row values and source Parquet SHA-256;
 - proposed replacement values and metadata.
 
-Ratio inference is diagnostic only. It may identify likely mixed segments but
-cannot authorize a repair by itself. An approved replacement must come from an
-authoritative unadjusted provider response.
+Ratio inference may identify likely mixed segments but cannot authorize legacy
+repair by itself. An approved replacement should come from authoritative
+unadjusted provider data when available. For history outside Massive
+entitlement, a reviewed manifest may use the calibrated event-level IB inverse
+only when every event is non-ambiguous and rollback data is complete.
 
 The audit manifest is deterministic, versioned, and contains enough original
 data to perform rollback. Audit execution never writes Bronze or Silver.
@@ -181,10 +202,11 @@ engine or repair authorization.
 
 ### Provider calibration
 
-- Compare IB, Massive raw, and Massive adjusted OHLCV around representative
-  2:1, 4:1, and 10:1 splits.
-- Prove the transformation reproduces Massive raw values within tolerance.
-- Block IB publication if volume semantics remain unverified.
+- Compare IB and available Massive raw OHLCV around representative 2:1, 4:1,
+  and 10:1 splits.
+- Require AAPL 2020 and NVDA 2024 to classify as adjusted and MSFT 2003 as raw.
+- Prove adjusted events reverse to raw discontinuities and raw events remain unchanged.
+- Block IB publication for ambiguous or uncovered events.
 
 ### Unit and schema tests
 

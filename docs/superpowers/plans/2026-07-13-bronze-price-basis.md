@@ -4,7 +4,7 @@
 
 **Goal:** Make equity Bronze provably raw, repair existing mixed-basis history safely, and make Silver enforce row-level price basis.
 
-**Architecture:** Extend only the equity-daily Bronze schema with source and basis metadata. Normalize split-adjusted IB input through a pure corporate-action transform, migrate legacy rows to unknown, repair them from manifest-approved Massive raw data, and make Silver fail closed on unresolved split-affected rows.
+**Architecture:** Extend only the equity-daily Bronze schema with source and basis metadata. Classify IB treatment per split event, reverse only incorporated adjustments, migrate legacy rows to unknown, repair them from reviewed manifests, and make Silver fail closed on unresolved split-affected rows.
 
 **Tech Stack:** Python 3.13, Decimal, PyArrow, IB TWS API, Massive REST, pytest, Ruff, Pyright.
 
@@ -14,7 +14,7 @@
 - Do not mutate production Bronze or advance production Silver without a later explicit go-ahead.
 - Preserve atomic Parquet replacement and per-symbol locking.
 - Ratio inference is diagnostic only and never authorizes repair.
-- IB volume normalization must be calibrated before IB rows can be published as raw.
+- Every applicable IB split event must classify as raw or adjusted before its rows can be published as raw.
 - Non-equity and intraday schemas remain unchanged.
 - Maintain at least 95 percent configured test coverage.
 
@@ -49,14 +49,15 @@
 - Modify: IB equity publication call sites.
 
 **Interfaces:**
-- Produce `normalize_split_adjusted_rows(rows, actions, as_of_date, *, volume_mode) -> list[dict]`.
-- Produce calibration JSON containing provider rows, inferred OHLC transform, volume mode, and pass/fail per split window.
+- Produce `classify_split_events(rows, actions, as_of_date, *, tolerance) -> list[SplitClassification]`.
+- Produce `normalize_ib_rows(rows, classifications) -> list[dict]`.
+- Produce calibration JSON containing observed ratios, hypothesis errors, classification, confidence, and pass/fail per split window.
 
 - [ ] Add failing Decimal tests for 2:1, 3:2, 4:1, 7:1, 10:1, cumulative, reverse, future/cancelled, calendar-gap, malformed, and idempotence cases.
-- [ ] Implement price normalization and a fail-closed `volume_mode="unverified"` path.
+- [ ] Implement event classification, selective cumulative normalization, and ambiguous-event failure.
 - [ ] Add calibration CLI tests using deterministic provider fixtures.
 - [ ] Run real calibration against MSFT 2003, AAPL 2020, and NVDA 2024 when credentials/connectivity are available.
-- [ ] Enable IB publication only for the calibrated volume mode; otherwise fail before Bronze mutation.
+- [ ] Enable IB publication only when every applicable event is covered and non-ambiguous; otherwise fail before Bronze mutation.
 - [ ] Run focused/static gates and commit with `feat: normalize IB daily prices to raw`.
 
 ### Task 3: Atomic legacy migration

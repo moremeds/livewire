@@ -8,8 +8,8 @@ Dependency graph: `T1 -> T2 -> T3 -> T4 -> T5 -> T6`
 
 - [x] **T1** (`depends_on: []`): Add strict row-level equity Bronze source and
   price-basis metadata across every daily producer.
-- [ ] **T2** (`depends_on: [T1]`): Calibrate provider OHLCV semantics and
-  normalize IB split-adjusted daily bars to canonical raw rows.
+- [ ] **T2** (`depends_on: [T1]`): Classify IB treatment per split event and
+  selectively normalize incorporated adjustments to canonical raw rows.
 - [ ] **T3** (`depends_on: [T2]`): Add atomic, resumable legacy schema migration
   to `legacy/unknown` with hashes and dry-run support.
 - [ ] **T4** (`depends_on: [T3]`): Add read-only split-basis audit plus stale-safe,
