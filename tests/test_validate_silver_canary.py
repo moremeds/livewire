@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -11,6 +14,18 @@ from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.massive_client import MassiveSplit
 from livewire_scripts import rebuild_silver, validate_silver_canary
+
+
+def test_canary_script_is_directly_executable_from_outside_repo(tmp_path):
+    script = Path(validate_silver_canary.__file__)
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _bronze(root, symbol, closes):

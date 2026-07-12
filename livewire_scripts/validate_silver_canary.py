@@ -8,12 +8,17 @@ import hashlib
 import json
 import math
 import os
+import sys
 from collections.abc import Sequence
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 import pyarrow.parquet as pq
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:  # pragma: no cover - direct script bootstrap
+    sys.path.insert(0, str(REPO_ROOT))
 
 from clients.corporate_action_store import CorporateActionStore
 from clients.symbol_paths import encode_symbol
