@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
@@ -108,7 +109,8 @@ class CorporateActionStore:
             raise ValueError("corporate action ticker does not match reconciliation symbol")
 
         path = self.path_for(symbol)
-        with symbol_lock(path):
+        lock = nullcontext() if dry_run else symbol_lock(path)
+        with lock:
             rows = self._read(path)
             latest = self._latest_by_provider_id(rows)
             inserted = revised = unchanged = cancelled = 0

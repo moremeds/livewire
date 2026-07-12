@@ -66,6 +66,15 @@ def test_unchanged_payload_is_noop(tmp_path):
     assert store.path_for("NVDA").read_bytes() == original
 
 
+def test_dry_run_compares_without_creating_artifacts(tmp_path):
+    store = CorporateActionStore(tmp_path)
+
+    result = store.reconcile("NVDA", [_split()], FETCHED_AT, dry_run=True)
+
+    assert result.inserted == 1
+    assert not store.path_for("NVDA").parent.exists()
+
+
 def test_corrected_payload_creates_revision_lineage(tmp_path):
     store = CorporateActionStore(tmp_path)
     store.reconcile("NVDA", [_split()], FETCHED_AT)
