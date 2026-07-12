@@ -11,7 +11,7 @@ Dependency graph: `T1 -> T2 -> T3 -> T4`
 - [x] **T2** (`depends_on: [T1]`): Add the revision-aware canonical corporate
   action store with correction lineage, safe cancellation semantics, atomic
   publication, and focused tests.
-- [ ] **T3** (`depends_on: [T2]`): Add targeted/universe reconciliation CLI,
+- [x] **T3** (`depends_on: [T2]`): Add targeted/universe reconciliation CLI,
   dry-run behavior, telemetry counters, dispatch coverage, and focused tests.
 - [ ] **T4** (`depends_on: [T3]`): Document operation and scheduling boundaries,
   run focused and CI-equivalent verification, and prepare the implementation PR.

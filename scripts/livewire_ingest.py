@@ -19,6 +19,7 @@ COMMANDS = {
     "robust": "livewire_scripts.run_ib_fetch_robust",
     "cboe-vol": "livewire_scripts.fetch_cboe_volatility",
     "fred-rates": "livewire_scripts.fetch_fred_rates",
+    "corporate-actions": "livewire_scripts.sync_corporate_actions",
     "intraday-backfill": "livewire_scripts.backfill_intraday",
     "flatfile-ingest": "livewire_scripts.ingest_flatfiles",
     "flatfile-ingest-daily": "livewire_scripts.ingest_daily_flatfiles",

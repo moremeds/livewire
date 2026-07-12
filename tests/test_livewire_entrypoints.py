@@ -243,6 +243,23 @@ def test_ingest_universe_sync_bypasses_ib_preflight(monkeypatch) -> None:
     assert calls == [("livewire_scripts.universe_sync", [])]
 
 
+def test_ingest_dispatches_corporate_actions_without_ib_preflight(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_ingest.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+    monkeypatch.setattr(
+        ib_gateway_preflight,
+        "assert_gateway_up",
+        lambda: (_ for _ in ()).throw(AssertionError("preflight should not run")),
+    )
+
+    assert livewire_ingest.main(["corporate-actions", "--tickers", "NVDA"]) == 7
+    assert calls == [("livewire_scripts.sync_corporate_actions", ["--tickers", "NVDA"])]
+
+
 def test_ingest_preserves_nonzero_system_exit(monkeypatch) -> None:
     def fake_module(name):
         def main():
