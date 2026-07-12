@@ -574,7 +574,7 @@ def fetch_ticker(
     elif asset_class in {"cmdty", "fx"}:
         rows = bars_to_midpoint_rows(bars, symbol_id, invert=asset_class == "fx" and _is_inverted_fx_pair(ticker))
     else:
-        rows = bars_to_rows(bars, symbol_id)
+        rows = bars_to_rows(bars, symbol_id, source="ib", price_basis="split_adjusted")
     inserted = bronze.replace_ticker_rows(ticker, rows)
     if hasattr(bronze, "write_ticker_parquet"):
         bronze.write_ticker_parquet(ticker, symbol_id, _resolved_bronze_dir(asset_class))
@@ -631,7 +631,12 @@ def backfill_ticker(
     elif asset_class in {"cmdty", "fx"}:
         rows = bars_to_midpoint_rows(bars, symbol_id, invert=asset_class == "fx" and _is_inverted_fx_pair(ticker))
     else:
-        rows = bars_to_rows(bars, symbol_id)
+        rows = bars_to_rows(
+            bars,
+            symbol_id,
+            source=source,
+            price_basis="split_adjusted" if source == "ib" else "unknown",
+        )
     inserted = bronze.merge_ticker_rows(ticker, rows)
     if hasattr(bronze, "write_ticker_parquet"):
         bronze.write_ticker_parquet(ticker, symbol_id, _resolved_bronze_dir(asset_class))

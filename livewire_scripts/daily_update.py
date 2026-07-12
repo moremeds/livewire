@@ -751,7 +751,12 @@ def main():  # pragma: no cover — only exercised by integration tests
                                 continue
 
                             symbol_id = bronze.get_symbol_id(ticker)
-                            rows = bars_to_rows(valid_bars, symbol_id)
+                            rows = bars_to_rows(
+                                valid_bars,
+                                symbol_id,
+                                source="massive",
+                                price_basis="raw",
+                            )
                             parquet_path = bronze_dir / f"symbol={ticker}" / "1d.parquet"
                             # No expected_start on the Massive path: for thin instruments a
                             # later actual_start just means "didn't trade", and ib_head_timestamp
@@ -926,7 +931,12 @@ def main():  # pragma: no cover — only exercised by integration tests
                                 invert=asset_class == "fx" and _is_inverted_fx_pair(ticker),
                             )
                         else:
-                            rows = bars_to_rows(valid_bars, symbol_id)
+                            rows = bars_to_rows(
+                                valid_bars,
+                                symbol_id,
+                                source="ib",
+                                price_basis="split_adjusted",
+                            )
                         parquet_path = bronze_dir / f"symbol={ticker}" / "1d.parquet"
                         _run_quality_detection(
                             ticker=ticker,

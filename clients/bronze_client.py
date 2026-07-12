@@ -31,6 +31,11 @@ _BASE_COLUMNS = (
     "volume",
 )
 
+_EQUITY_COLUMNS = (*_BASE_COLUMNS, "source", "price_basis")
+
+EQUITY_SOURCES = frozenset({"ib", "massive", "nasdaq", "stooq", "legacy"})
+PRICE_BASES = frozenset({"raw", "split_adjusted", "unknown"})
+
 _PARQUET_SCHEMA = pa.schema(
     [
         ("trade_date", pa.date32()),
@@ -41,6 +46,21 @@ _PARQUET_SCHEMA = pa.schema(
         ("close", pa.float64()),
         ("adj_close", pa.float64()),
         ("volume", pa.int64()),
+    ]
+)
+
+_EQUITY_PARQUET_SCHEMA = pa.schema(
+    [
+        pa.field("trade_date", pa.date32(), nullable=False),
+        pa.field("symbol_id", pa.int64(), nullable=False),
+        pa.field("open", pa.float64(), nullable=False),
+        pa.field("high", pa.float64(), nullable=False),
+        pa.field("low", pa.float64(), nullable=False),
+        pa.field("close", pa.float64(), nullable=False),
+        pa.field("adj_close", pa.float64(), nullable=False),
+        pa.field("volume", pa.int64(), nullable=False),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("price_basis", pa.string(), nullable=False),
     ]
 )
 
@@ -93,7 +113,7 @@ _RATES_PARQUET_SCHEMA = pa.schema(
 )
 
 _SCHEMA_PROFILES = {
-    "equity": (_BASE_COLUMNS, _PARQUET_SCHEMA, "symbol_id"),
+    "equity": (_EQUITY_COLUMNS, _EQUITY_PARQUET_SCHEMA, "symbol_id"),
     "volatility": (_BASE_COLUMNS, _PARQUET_SCHEMA, "symbol_id"),
     "cmdty": (_BASE_COLUMNS, _PARQUET_SCHEMA, "symbol_id"),
     "fx": (_BASE_COLUMNS, _PARQUET_SCHEMA, "symbol_id"),
@@ -186,9 +206,16 @@ class BronzeClient:
         if not path.exists():
             return []
 
-        table = pq.read_table(path, columns=list(self._columns))
+        columns = list(self._columns)
+        if self._asset_class == "equity":
+            available = set(pq.ParquetFile(path).schema_arrow.names)
+            columns = [column for column in columns if column in available]
+        table = pq.read_table(path, columns=columns)
         rows = table.to_pylist()
         for row in rows:
+            if self._asset_class == "equity":
+                row.setdefault("source", "legacy")
+                row.setdefault("price_basis", "unknown")
             trade_date = row["trade_date"]
             if isinstance(trade_date, date):
                 row["trade_date"] = trade_date.isoformat()
@@ -265,7 +292,7 @@ class BronzeClient:
         for row in rows:
             trade_date = self._normalize_trade_date(row["trade_date"])
             trade_date_str = trade_date.isoformat()
-            normalized[trade_date_str] = {
+            normalized_row = {
                 "trade_date": trade_date_str,
                 "symbol_id": symbol_id,
                 "open": float(row["open"]),
@@ -275,6 +302,16 @@ class BronzeClient:
                 "adj_close": float(row["adj_close"]),
                 "volume": int(row["volume"]),
             }
+            if self._asset_class == "equity":
+                source = str(row.get("source", "legacy"))
+                price_basis = str(row.get("price_basis", "unknown"))
+                if source not in EQUITY_SOURCES:
+                    raise ValueError(f"invalid equity source: {source!r}")
+                if price_basis not in PRICE_BASES:
+                    raise ValueError(f"invalid equity price_basis: {price_basis!r}")
+                normalized_row["source"] = source
+                normalized_row["price_basis"] = price_basis
+            normalized[trade_date_str] = normalized_row
 
         return [normalized[trade_date] for trade_date in sorted(normalized)]
 
@@ -358,8 +395,9 @@ class BronzeClient:
             ]
             return pa.Table.from_pylist(payload, schema=self._schema)
 
-        payload = [
-            {
+        payload = []
+        for row in rows:
+            item = {
                 "trade_date": self._normalize_trade_date(row["trade_date"]),
                 "symbol_id": int(row["symbol_id"]),
                 "open": float(row["open"]),
@@ -369,8 +407,10 @@ class BronzeClient:
                 "adj_close": float(row["adj_close"]),
                 "volume": int(row["volume"]),
             }
-            for row in rows
-        ]
+            if self._asset_class == "equity":
+                item["source"] = str(row["source"])
+                item["price_basis"] = str(row["price_basis"])
+            payload.append(item)
         return pa.Table.from_pylist(payload, schema=self._schema)
 
     def _normalize_trade_date(self, value: Any) -> date:

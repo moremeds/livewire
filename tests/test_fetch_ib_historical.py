@@ -80,6 +80,8 @@ class TestBarsToRows:
             "close": 153.0,
             "adj_close": 153.0,
             "volume": 1000000,
+            "source": "legacy",
+            "price_basis": "unknown",
         }
 
     def test_converts_multiple_bars(self):
@@ -95,6 +97,35 @@ class TestBarsToRows:
 
     def test_empty_bars(self):
         assert bars_to_rows([], symbol_id=1) == []
+
+    def test_records_explicit_source_and_price_basis(self):
+        rows = bars_to_rows(
+            [_make_bar()],
+            symbol_id=42,
+            source="ib",
+            price_basis="split_adjusted",
+        )
+
+        assert rows[0]["source"] == "ib"
+        assert rows[0]["price_basis"] == "split_adjusted"
+
+    def test_uses_per_bar_recovery_source_and_safe_basis(self):
+        massive = _make_bar(date="2025-01-02")
+        massive.source = "massive"
+        nasdaq = _make_bar(date="2025-01-03")
+        nasdaq.source = "nasdaq:stocks"
+
+        rows = bars_to_rows(
+            [massive, nasdaq],
+            symbol_id=42,
+            source="ib",
+            price_basis="split_adjusted",
+        )
+
+        assert [(row["source"], row["price_basis"]) for row in rows] == [
+            ("massive", "raw"),
+            ("nasdaq", "unknown"),
+        ]
 
 
 # ══════════════════════════════════════════════════════════════════════

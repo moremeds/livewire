@@ -535,7 +535,12 @@ def main() -> None:
                         rows = bars_to_futures_rows(valid_bars, contract_id, root_symbol, expiry_date)
                     else:
                         symbol_id = bronze.get_symbol_id(symbol)
-                        rows = bars_to_rows(valid_bars, symbol_id)
+                        rows = bars_to_rows(
+                            valid_bars,
+                            symbol_id,
+                            source="ib",
+                            price_basis="split_adjusted",
+                        )
 
                     symbol_rows.extend(rows)
 
@@ -560,7 +565,12 @@ def main() -> None:
                         fb_bars, _ = fetch_fallback_bars(symbol, sorted(remaining_set), fallback)
                         if fb_bars:
                             symbol_id = bronze.get_symbol_id(symbol)
-                            fb_rows = bars_to_rows(fb_bars, symbol_id)
+                            fb_rows = bars_to_rows(
+                                fb_bars,
+                                symbol_id,
+                                source="legacy",
+                                price_basis="unknown",
+                            )
                             fb_inserted = bronze.merge_ticker_rows(symbol, fb_rows)
                             fallback_repaired += fb_inserted
                             console.print(f"  [cyan]{symbol}: +{fb_inserted} bars repaired via fallback[/cyan]")
