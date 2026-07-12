@@ -126,6 +126,51 @@ def test_future_dividend_is_excluded_until_its_ex_date():
     assert effective_on_ex_date[1].effective_start == date(2026, 1, 3)
 
 
+def test_future_split_is_excluded_until_its_ex_date():
+    bars = _bars()
+    split = _action(
+        "announced-split",
+        date(2026, 1, 3),
+        action_type="split",
+        split_from=1,
+        split_to=2,
+    )
+
+    before_ex_date = build_factor_intervals(bars, [split], date(2026, 1, 2))
+    effective_on_ex_date = build_factor_intervals(bars, [split], date(2026, 1, 3))
+
+    assert [item.price_adjustment_factor for item in before_ex_date] == [Decimal("1")]
+    assert [item.split_volume_factor for item in before_ex_date] == [Decimal("1")]
+    assert [item.price_adjustment_factor for item in effective_on_ex_date] == [
+        Decimal("0.5"),
+        Decimal("1"),
+    ]
+    assert [item.split_volume_factor for item in effective_on_ex_date] == [
+        Decimal("2"),
+        Decimal("1"),
+    ]
+
+
+def test_effective_action_without_ex_date_bar_adjusts_only_earlier_sessions():
+    bars = _bars((100.0, 100.0), start=date(2026, 1, 2))
+    bars[1]["trade_date"] = date(2026, 1, 5)
+    split = _action(
+        "weekend-split",
+        date(2026, 1, 4),
+        action_type="split",
+        split_from=1,
+        split_to=2,
+    )
+
+    intervals = build_factor_intervals(bars, [split], date(2026, 1, 4))
+
+    assert [(item.effective_start, item.effective_end) for item in intervals] == [
+        (date(2026, 1, 2), date(2026, 1, 2)),
+        (date(2026, 1, 5), date(2026, 1, 5)),
+    ]
+    assert [item.price_adjustment_factor for item in intervals] == [Decimal("0.5"), Decimal("1")]
+
+
 def test_recurring_dividends_compound_for_older_rows():
     bars = _bars((100.0, 100.0, 100.0, 100.0))
     actions = [

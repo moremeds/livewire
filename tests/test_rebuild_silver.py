@@ -98,6 +98,41 @@ def test_targeted_rebuild_excludes_announced_future_dividend(tmp_path):
     assert factors.column("price_adjustment_factor").to_pylist() == [1.0]
 
 
+def test_multi_symbol_rebuild_uses_injected_cutoff_for_every_symbol(tmp_path):
+    for symbol in ("MSFT", "AAPL"):
+        _bronze(tmp_path, symbol)
+        split = MassiveSplit(
+            provider_event_id=f"{symbol}-future-split",
+            ticker=symbol,
+            execution_date=date(2026, 1, 4),
+            split_from=Decimal("1"),
+            split_to=Decimal("2"),
+            payload_hash=f"{symbol}-future-split-hash",
+        )
+        CorporateActionStore(tmp_path).reconcile(
+            symbol,
+            [split],
+            datetime(2026, 1, 2, tzinfo=UTC),
+        )
+
+    assert (
+        rebuild_silver.run(
+            ["--tickers", "MSFT", "AAPL"],
+            data_lake_root=tmp_path,
+            silver_root=tmp_path / "silver",
+            as_of_date=date(2026, 1, 3),
+        )
+        == 0
+    )
+
+    for symbol in ("MSFT", "AAPL"):
+        factors = pq.ParquetFile(
+            tmp_path / f"silver/adjustments/asset_class=equity/symbol={symbol}/factors.parquet"
+        ).read()
+        assert factors.column("price_adjustment_factor").to_pylist() == [1.0]
+        assert factors.column("split_volume_factor").to_pylist() == [1.0]
+
+
 def test_full_rebuild_discovers_all_equity_bronze_symbols(tmp_path, capsys):
     _bronze(tmp_path, "NVDA")
     _bronze(tmp_path, "AAPL", closes=(10.0, 10.0, 10.0))
