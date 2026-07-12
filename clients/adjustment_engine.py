@@ -38,6 +38,7 @@ def _decimal(value: Any, label: str) -> Decimal:
 def build_factor_intervals(
     bars: list[dict],
     actions: list[CorporateAction],
+    as_of_date: date,
 ) -> list[FactorInterval]:
     """Build exhaustive factor intervals over the supplied bronze sessions."""
     if not bars:
@@ -48,7 +49,7 @@ def build_factor_intervals(
         raise ValueError("duplicate bronze trade dates")
 
     active_actions = sorted(
-        (action for action in actions if action.status == "active"),
+        (action for action in actions if action.status == "active" and action.ex_date <= as_of_date),
         key=lambda action: (action.ex_date, 0 if action.action_type == "split" else 1, action.action_id),
     )
     factors_by_action: dict[str, tuple[Decimal, Decimal]] = {}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 from hypothesis import given
@@ -66,7 +67,7 @@ def test_cumulative_four_for_one_and_ten_for_one_splits():
         _action("split-10", date(2020, 1, 4), action_type="split", split_from=1, split_to=10),
     ]
 
-    adjusted = adjust_daily_rows(bars, build_factor_intervals(bars, actions), revision=7)
+    adjusted = adjust_daily_rows(bars, build_factor_intervals(bars, actions, date.max), revision=7)
 
     assert adjusted[0]["close"] == pytest.approx(10.0)
     assert adjusted[0]["volume"] == 40_000
@@ -87,12 +88,42 @@ def test_dividend_adjusts_price_not_volume():
         currency="USD",
     )
 
-    adjusted = adjust_daily_rows(bars, build_factor_intervals(bars, [dividend]), revision=1)
+    adjusted = adjust_daily_rows(bars, build_factor_intervals(bars, [dividend], date.max), revision=1)
 
     assert adjusted[0]["close"] == pytest.approx(99.0)
     assert adjusted[0]["volume"] == 1_000
     assert adjusted[1]["close"] == pytest.approx(99.0)
     assert adjusted[2]["close"] == pytest.approx(100.0)
+
+
+def test_future_dividend_is_excluded_until_its_ex_date():
+    bars = _bars()
+    dividend = _action(
+        "announced-dividend",
+        date(2026, 1, 3),
+        action_type="cash_dividend",
+        cash_amount=1,
+        currency="USD",
+    )
+
+    before_ex_date = build_factor_intervals(
+        bars,
+        [dividend],
+        as_of_date=date(2026, 1, 2),
+    )
+    effective_on_ex_date = build_factor_intervals(
+        bars,
+        [dividend],
+        as_of_date=date(2026, 1, 3),
+    )
+
+    assert [item.price_adjustment_factor for item in before_ex_date] == [Decimal("1")]
+    assert [item.price_adjustment_factor for item in effective_on_ex_date] == [
+        Decimal("0.99"),
+        Decimal("1"),
+    ]
+    assert effective_on_ex_date[0].effective_end == date(2026, 1, 2)
+    assert effective_on_ex_date[1].effective_start == date(2026, 1, 3)
 
 
 def test_recurring_dividends_compound_for_older_rows():
@@ -101,7 +132,7 @@ def test_recurring_dividends_compound_for_older_rows():
         _action("div-1", date(2026, 1, 3), action_type="cash_dividend", cash_amount=1, currency="USD"),
         _action("div-2", date(2026, 1, 4), action_type="cash_dividend", cash_amount=2, currency="USD"),
     ]
-    adjusted = adjust_daily_rows(bars, build_factor_intervals(bars, actions), revision=1)
+    adjusted = adjust_daily_rows(bars, build_factor_intervals(bars, actions, date.max), revision=1)
     assert adjusted[0]["close"] == pytest.approx(100 * 0.99 * 0.98)
     assert adjusted[2]["close"] == pytest.approx(98.0)
 
@@ -112,7 +143,7 @@ def test_same_day_split_is_applied_before_dividend_reference_close():
         _action("div", date(2026, 1, 2), action_type="cash_dividend", cash_amount=1, currency="USD"),
         _action("split", date(2026, 1, 2), action_type="split", split_from=1, split_to=2),
     ]
-    adjusted = adjust_daily_rows(bars, build_factor_intervals(bars, actions), revision=1)
+    adjusted = adjust_daily_rows(bars, build_factor_intervals(bars, actions, date.max), revision=1)
     assert adjusted[0]["close"] == pytest.approx(49.0)
     assert adjusted[0]["volume"] == 2_000
 
@@ -120,7 +151,7 @@ def test_same_day_split_is_applied_before_dividend_reference_close():
 def test_intervals_are_exhaustive_ordered_and_non_overlapping():
     bars = _bars()
     action = _action("split", date(2026, 1, 3), action_type="split", split_from=1, split_to=2)
-    intervals = build_factor_intervals(bars, [action])
+    intervals = build_factor_intervals(bars, [action], date.max)
     assert [(item.effective_start, item.effective_end) for item in intervals] == [
         (date(2026, 1, 1), date(2026, 1, 2)),
         (date(2026, 1, 3), date(2026, 1, 3)),
@@ -137,7 +168,7 @@ def test_no_action_identity_property(closes, volumes):
     bars = _bars(tuple(closes[:size]))
     for row, volume in zip(bars, volumes[:size], strict=True):
         row["volume"] = volume
-    adjusted = adjust_daily_rows(bars, build_factor_intervals(bars, []), revision=3)
+    adjusted = adjust_daily_rows(bars, build_factor_intervals(bars, [], date.max), revision=3)
     assert [row["close"] for row in adjusted] == [row["close"] for row in bars]
     assert [row["volume"] for row in adjusted] == [row["volume"] for row in bars]
 
@@ -146,7 +177,7 @@ def test_duplicate_bar_dates_are_rejected():
     bars = _bars()
     bars.append(dict(bars[-1]))
     with pytest.raises(ValueError, match="duplicate"):
-        build_factor_intervals(bars, [])
+        build_factor_intervals(bars, [], date.max)
 
 
 def test_missing_previous_close_blocks_dividend():
@@ -158,7 +189,7 @@ def test_missing_previous_close_blocks_dividend():
         currency="USD",
     )
     with pytest.raises(ValueError, match="previous close"):
-        build_factor_intervals(_bars(), [dividend])
+        build_factor_intervals(_bars(), [dividend], date.max)
 
 
 def test_currency_mismatch_blocks_dividend():
@@ -170,7 +201,7 @@ def test_currency_mismatch_blocks_dividend():
         currency="CAD",
     )
     with pytest.raises(ValueError, match="currency"):
-        build_factor_intervals(_bars(currency="USD"), [dividend])
+        build_factor_intervals(_bars(currency="USD"), [dividend], date.max)
 
 
 @pytest.mark.parametrize(
@@ -189,4 +220,4 @@ def test_currency_mismatch_blocks_dividend():
 )
 def test_invalid_event_values_are_rejected(action, message):
     with pytest.raises(ValueError, match=message):
-        build_factor_intervals(_bars(), [action])
+        build_factor_intervals(_bars(), [action], date.max)

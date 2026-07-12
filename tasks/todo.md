@@ -2,6 +2,17 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Silver future-action cutoff (2026-07-13)
+
+Dependency graph: `T1 -> T2 -> T3`
+
+- [x] **T1** (`depends_on: []`): Add failing engine and rebuild regression
+  coverage for announced-but-not-yet-effective dividends.
+- [x] **T2** (`depends_on: [T1]`): Apply one explicit New York as-of cutoff to
+  every factor calculation in a Silver rebuild.
+- [x] **T3** (`depends_on: [T2]`): Run focused and CI-equivalent gates, repeat
+  the real MSFT/Apex smoke test, self-review, and commit the fix.
+
 ## Silver adjustment engine R3 (2026-07-13)
 
 Dependency graph: `T1 -> T2 -> T3 -> T4 -> T5`

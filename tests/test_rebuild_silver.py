@@ -61,6 +61,43 @@ def test_targeted_rebuild_publishes_daily_factors_and_manifest(tmp_path, capsys)
     assert (silver / "revisions/current.json").exists()
 
 
+def test_targeted_rebuild_excludes_announced_future_dividend(tmp_path):
+    _bronze(tmp_path, "MSFT")
+    dividend = MassiveDividend(
+        provider_event_id="future-dividend",
+        ticker="MSFT",
+        ex_dividend_date=date(2026, 1, 4),
+        cash_amount=Decimal("1"),
+        currency="USD",
+        declaration_date=date(2026, 1, 1),
+        record_date=None,
+        pay_date=None,
+        payload_hash="future-dividend-hash",
+    )
+    CorporateActionStore(tmp_path).reconcile(
+        "MSFT",
+        [dividend],
+        datetime(2026, 1, 2, tzinfo=UTC),
+    )
+    silver = tmp_path / "silver"
+
+    assert (
+        rebuild_silver.run(
+            ["--tickers", "MSFT"],
+            data_lake_root=tmp_path,
+            silver_root=silver,
+            as_of_date=date(2026, 1, 3),
+        )
+        == 0
+    )
+
+    daily = pq.ParquetFile(silver / "asset_class=equity/symbol=MSFT/1d.parquet").read()
+    assert daily.column("close").to_pylist() == [100.0, 100.0, 50.0]
+    assert daily.column("price_adjustment_factor").to_pylist() == [1.0, 1.0, 1.0]
+    factors = pq.ParquetFile(silver / "adjustments/asset_class=equity/symbol=MSFT/factors.parquet").read()
+    assert factors.column("price_adjustment_factor").to_pylist() == [1.0]
+
+
 def test_full_rebuild_discovers_all_equity_bronze_symbols(tmp_path, capsys):
     _bronze(tmp_path, "NVDA")
     _bronze(tmp_path, "AAPL", closes=(10.0, 10.0, 10.0))

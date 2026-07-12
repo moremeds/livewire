@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pyarrow.parquet as pq
 
@@ -22,6 +23,7 @@ from clients.silver_revision import AffectedSymbol, SilverRevisionPublisher
 from livewire_scripts.paths import data_lake_dir
 
 TIMEFRAMES = ("1d", "1m", "5m", "30m", "1h")
+NEW_YORK = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,7 @@ def run(
     *,
     data_lake_root: Path | None = None,
     silver_root: Path | None = None,
+    as_of_date: date | None = None,
 ) -> int:
     args = parse_args(argv)
     root = Path(data_lake_root) if data_lake_root is not None else data_lake_dir()
@@ -131,6 +134,7 @@ def run(
     )
     if not symbols:
         raise SystemExit("no equity bronze symbols found")
+    effective_as_of = as_of_date or datetime.now(NEW_YORK).date()
 
     staged: list[StagedSymbol] = []
     failed = 0
@@ -140,7 +144,7 @@ def run(
             if not rows:
                 raise ValueError("missing equity bronze rows")
             actions = action_store.latest_active(symbol)
-            intervals = build_factor_intervals(rows, actions)
+            intervals = build_factor_intervals(rows, actions, effective_as_of)
             staged.append(
                 StagedSymbol(
                     symbol,
