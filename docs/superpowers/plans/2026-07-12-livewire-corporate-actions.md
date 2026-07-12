@@ -17,6 +17,31 @@
 - Provider revisions and cancellations remain auditable; only latest active versions feed Silver.
 - All code in `clients/` and `scripts/` receives tests and the 95% coverage gate.
 
+## Reality check (verified 2026-07-12)
+
+Grounding facts confirmed against the current `main`:
+
+- `clients/massive_client.py` has `MassiveClient` with `_get()` (retry/backoff +
+  status→exception mapping) and reads `MASSIVE_API_KEY`, but has **no pagination
+  code today** — `_get_paginated` is net-new, not a refactor of an existing
+  `next_url` loop. Base URL default is `https://api.massive.com`
+  (`clients/massive_client.py:21`).
+- The provider endpoints are real and were probed live 2026-05-20:
+  `GET /v3/reference/splits?ticker={t}` and `GET /v3/reference/dividends?ticker={t}`
+  both return 200 with the envelope `{status, request_id, results:[...], next_url?}`
+  (see `docs/massive_endpoint_probe_log.md`, `docs/massive_fundamentals_coverage.md`).
+  Massive's REST surface is Polygon-shaped. The dividends endpoint also returns
+  provider adjustment factors, but Silver computes its own factors from raw
+  splits/dividends (design §6) — treat the provider factor only as a cross-check.
+- `publish_parquet(out_path, table, sort_column)` (`clients/parquet_io.py:29`) and
+  `encode_symbol`/`decode_symbol` (`clients/symbol_paths.py:10`) exist and are
+  reusable as the tasks below assume; a **new** `corporate_action_store.py` (not a
+  `BronzeClient` asset-class) is correct because `BronzeClient._SCHEMA_PROFILES`
+  is OHLCV-shaped and rejects event-shaped rows.
+- Adding `corporate-actions` to the `COMMANDS` dict in `scripts/livewire_ingest.py`
+  matches the existing `.main()`-dispatch pattern (`cboe-vol`, `fred-rates`).
+- `.codex/project-memory.md` exists (Task 4 target is valid).
+
 ---
 
 ### Task 1: Massive reference endpoint models and pagination
@@ -31,7 +56,7 @@
 
 - [ ] Write failing tests for two-page responses, auth preservation, malformed ratios, malformed dates, and dividend currency/amount validation.
 - [ ] Run `uv run pytest tests/test_massive_client.py -q -k 'split or dividend or pagination'`; expect failure for missing APIs.
-- [ ] Implement `_get_paginated(endpoint, params) -> list[dict]`, following only HTTPS `api.massive.com` `next_url` values and reusing `_get` error mapping.
+- [ ] Implement `_get_paginated(endpoint, params) -> list[dict]` as **new** code (the client has no existing pagination): loop following only HTTPS `api.massive.com` `next_url` values, cap iterations, and reuse `_get` error mapping. Envelope is `{status, request_id, results, next_url?}`.
 - [ ] Normalize ratios with `Decimal`, require `split_from > 0`, `split_to > 0`, `cash_amount >= 0`, ISO dates, provider IDs, and uppercase ticker.
 - [ ] Run the focused tests; expect PASS.
 - [ ] Commit with `git commit -m "feat: fetch Massive corporate actions"`.

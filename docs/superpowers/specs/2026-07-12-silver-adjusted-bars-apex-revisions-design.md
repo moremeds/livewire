@@ -327,9 +327,15 @@ R0 revision contract
 
 - **R0 `depends_on: []`:** freeze this manifest contract and matching fixtures in
   both repositories.
-- **R1 `depends_on: [R0]`:** Apex poller, targeted invalidation, tick buffering,
-  recompute, atomic state swap, health, and fixture-driven tests. This is the
-  first implementation PR and does not wait for the engine.
+- **R1 `depends_on: [R0]` — MERGED (2026-07-12):** Apex poller, targeted
+  invalidation, tick buffering, recompute, atomic state swap, health, and
+  fixture-driven tests. Apex PR
+  [#150](https://github.com/moremeds/apex/pull/150) merged to `master` at
+  `af959a881f19ac9c9cb4a37523f282739fe02c58`; review hardening added
+  thread-safe tick buffering, failed-symbol carry-forward, honest fully-applied
+  revision accounting, capped exponential backoff, and expanded health state.
+  This was the first implementation PR and did not wait for the engine. See
+  `docs/superpowers/plans/2026-07-12-apex-silver-revision-watcher.md`.
 - **R2 `depends_on: [R0]`:** Livewire Massive corporate-action client, canonical
   store, pagination, revisions, reconciliation, and CLI.
 - **R3 `depends_on: [R2]`:** factor engine, adjusted daily publisher, interval
@@ -341,10 +347,16 @@ R0 revision contract
 - **R6 `depends_on: [R5]`:** adjusted-by-default cutover, raw diagnostic mode,
   documentation, alerts, and canary removal.
 
-The existing 17-item audit plan set does not contain Silver work. R1 can start
-immediately. New Silver paths must use the same warehouse-root resolution rules
-as the planned path-consolidation work, but Silver is not blocked on completion
-of every audit plan. Plan overlap is resolved explicitly before each PR.
+The existing 17-item audit plan set does not contain Silver work. R1 is merged
+(see above); R2 (Livewire corporate-action ingestion) is the next
+start and depends only on R0. New Silver paths should follow the warehouse-root
+resolution convention that audit Plan 6 (`unify-warehouse-path-resolution`) and
+the lock convention that audit Plan 8 (`add-bronze-merge-locking`) establish —
+both plans have now landed on `main`. Silver work should reuse
+`livewire_scripts.paths.data_lake_dir()` and `clients.parquet_io.symbol_lock`
+where their scopes fit, while retaining a separate root-level publication lock
+for multi-artifact Silver revisions. Plan overlap is resolved explicitly before
+each PR.
 
 ## 12. PR Boundaries
 

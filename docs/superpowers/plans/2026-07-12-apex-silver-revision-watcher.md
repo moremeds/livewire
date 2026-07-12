@@ -2,6 +2,45 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+## Status — MERGED (verified 2026-07-13)
+
+**This plan (R1) is complete.** Apex PR
+[#150](https://github.com/moremeds/apex/pull/150) merged to `master` on
+2026-07-12 at merge commit `af959a881f19ac9c9cb4a37523f282739fe02c58`.
+The original five implementation commits map 1:1 to the tasks and match the
+prescribed commit messages (`feat(livewire): validate Silver
+revisions` → Task 1, `feat(signals): replace revised symbol history` → Task 2,
+`feat(subscriptions): reseed revised Silver history` → Task 3, `feat(api): watch
+Silver revisions` → Task 4, plus a `fix(signals): preserve revision result
+typing` follow-up). Review hardening and CI-formatting commits were added before
+merge.
+
+Verification run 2026-07-12:
+- R1 unit scope (`tests/unit/infrastructure/livewire`, `.../application/subscriptions`,
+  `.../api`, `.../signals`) — **491 passed, 23 skipped**.
+- Full Apex suite — **2238 passed, 5 failed**; those 5 (`tests/partial/*`,
+  `test_vix_alert`, `test_validation_runner`) fail identically on `master` and
+  are unrelated to this branch. R1 introduces **zero** new failures.
+- Implementation review notes:
+  - Per-symbol `asyncio.Lock` in `SubscriptionManager._refresh_locks` — matches
+    Task 3's intent (the pre-existing global `_lock` is *not* reused for refresh,
+    so no cross-symbol contention during reseed).
+  - `IndicatorEngine.replace_symbol_histories` also purges `_previous_states` for
+    the affected `(symbol, timeframe)` keys — prevents stale indicator-delta
+    leakage across a reseed; correct and slightly beyond the written plan.
+  - New symbol-level `RLock` (`_get_symbol_lock`) wraps all history mutation so
+    every timeframe becomes visible together (Task 2 intent, done).
+  - Manifest reader enforces path-escape rejection, UTC-only timestamps, and
+    SHA-256 checksum verification per the R0 contract.
+
+Review hardening closed the two original observations: failed symbols carry
+forward across later revisions until successfully reseeded, and consecutive
+poll failures use capped exponential backoff. Health now reports pending symbols
+and consecutive failures; the tick buffer is protected for cross-thread dispatch.
+
+**Next action is R2 corporate-action ingestion in Livewire, not R1
+re-implementation.**
+
 **Goal:** Make continuously running Apex detect Livewire Silver revisions and atomically reseed affected active subscriptions without restarting Docker.
 
 **Architecture:** Add a strict manifest reader and polling service at the Livewire adapter boundary. Add true replace-history APIs through IndicatorEngine, TASignalService, and SubscriptionManager; buffer affected-symbol ticks during replacement and replay them after an atomic state swap. Wire watcher lifecycle and health into FastAPI.

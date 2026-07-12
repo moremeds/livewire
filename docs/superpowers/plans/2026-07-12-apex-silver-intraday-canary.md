@@ -16,6 +16,23 @@
 - Trading-date factor joins use `America/New_York` for intraday timestamps.
 - Existing supported timeframes remain `1m`, `5m`, `30m`, `1h`, and `1d`.
 
+## Reality check (verified 2026-07-12)
+
+- Real class is `LivewireOhlcProvider` in `src/infrastructure/adapters/livewire/ohlc_provider.py`,
+  single-rooted today (`__init__(self, bronze_root: Path)`), reading Parquet via
+  DuckDB (`read_parquet`). Adding `silver_root` + `price_mode` is additive.
+- **Construction goes through `src/infrastructure/adapters/livewire/factory.py`**
+  (builds the provider from `config.livewire_bronze_root`) — Task 2/3 must update
+  the factory too, not only `ohlc_provider.py`.
+- Apex has **no central pydantic Settings module**; env vars are read inline via
+  `os.environ.get(...)` in `src/api/server.py`'s `lifespan`. Wire the new vars there.
+- **R1 already reads `APEX_LIVEWIRE_SILVER_ROOT` in `server.py`** (for the revision
+  watcher) and already extends `/health` with a `silver_revision` block. Task 3
+  here *extends* that wiring for the provider/price-mode — it does not introduce
+  `APEX_LIVEWIRE_SILVER_ROOT` from scratch. Reuse the one shared provider instance.
+- `SUPPORTED_TIMEFRAMES = ("1m","5m","30m","1h","1d")` lives in `paths.py`; DuckDB
+  is already a first-class dependency used in this exact provider file.
+
 ---
 
 ### Task 1: Dual-root path contract

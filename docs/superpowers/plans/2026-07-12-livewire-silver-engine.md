@@ -18,6 +18,27 @@
 - Manifest `current.json` advances only after every listed artifact is valid.
 - Coordinate `MDW_SILVER_DIR` with uplift Plan 6 path resolution and lock conventions with Plan 8.
 
+## Reality check (verified 2026-07-12)
+
+- **`hypothesis` is NOT yet a dev dependency.** `pyproject.toml` dev deps are
+  `pytest`, `pytest-cov`, `responses`, `ruff`, `pyright`. Task 1's property tests
+  require adding `hypothesis` to `[dependency-groups].dev` (or equivalent) and
+  `uv sync --dev` **before** writing them — do this as the first step of Task 1.
+- **Plan 6 (`unify-warehouse-path-resolution`) and Plan 8
+  (`add-bronze-merge-locking`) have landed on `main`.** Resolve the Silver default
+  from `livewire_scripts.paths.data_lake_dir()` while honoring an explicit
+  `MDW_SILVER_DIR`. Reuse `clients.parquet_io.symbol_lock` for per-artifact
+  mutation. The Silver revision publication lock remains a **new, coarser**
+  root-level lock because one revision atomically covers multiple artifacts;
+  implement it with the same persistent sidecar + `fcntl.flock` convention.
+- `publish_parquet(..., sort_column=...)` (`clients/parquet_io.py:29`) and
+  `encode_symbol` (`clients/symbol_paths.py:10`) exist and are reusable. New
+  `clients/{adjustment_engine,silver_client,silver_revision}.py` are all inside
+  the 95% coverage gate (only `ib_client.py`/`historical_provider.py` are omitted).
+- `livewire_scripts/run_daily_update_job.py` exists; its `_spawn_post_success_quality`
+  fire-and-log seam (called from `main()`) is the insertion point for the
+  post-ingestion Silver reconciliation in Task 5.
+
 ---
 
 ### Task 1: Pure adjustment factor engine
@@ -30,6 +51,7 @@
 - Produces: `build_factor_intervals(bars, actions) -> list[FactorInterval]`.
 - Produces: `adjust_daily_rows(rows, intervals, revision) -> list[dict]`.
 
+- [ ] Add `hypothesis` to dev dependencies and run `uv sync --dev` (it is not currently installed).
 - [ ] Write example and Hypothesis tests for 4:1 and 10:1 cumulative NVDA-style splits, recurring dividends, same-day split/dividend ordering, no-action identity, volume invariance under dividends, duplicate dates, missing prior close, currency mismatch, and invalid event values.
 - [ ] Run `uv run pytest tests/test_adjustment_engine.py -q`; expect import failure.
 - [ ] Implement factors with `Decimal(str(value))`, stable action ordering `(ex_date, split-before-dividend, action_id)`, and conversion to float only at artifact boundaries.
