@@ -93,6 +93,7 @@ Primary data source: **Interactive Brokers** via `ib_async`. Requires the IB Gat
 - `BronzeClient` is the live service storage client: it discovers symbols from parquet, merges or replaces per-ticker snapshots, and publishes with `temp -> validate -> os.replace()`
 - `DailyBarFallbackClient` is a narrow recovery client for unresolved target-day gaps in the current U.S. equity universe. Provider order: Nasdaq `assetclass=stocks`, Nasdaq `assetclass=etf`, then Stooq U.S. daily CSV.
 - `MassiveClient` is the optional daily U.S. equity accelerator and validation reference. It uses `MASSIVE_API_KEY`, stores `adjusted=false` bars with `adj_close = close`, and is not used for equity intraday or broker-specific asset classes.
+- `MassiveClient` also exposes paginated split and cash-dividend reference data. `scripts/livewire_ingest.py corporate-actions` reconciles those events into revision-aware per-symbol bronze histories; corrections and cancellations remain auditable, while only latest active revisions feed the future Silver engine.
 - `MassiveFlatfileClient` is the only equity-intraday provider path. It uses Massive S3 credentials and downloads whole-market SIP minute files.
 - `adj_close` is set to `close` (IB TRADES data doesn't provide adjusted prices)
 - **CBOE volatility indices** are fetched directly from CBOE's public API (`cdn.cboe.com/api/global/delayed_quotes/charts/historical/`) via `scripts/livewire_ingest.py cboe-vol`, not IB. This is the authoritative source for VIX, VVIX, VXHYG, VXSMH, and all other CBOE volatility indices. For `VIX` and `SPX`, `cboe-vol` also appends newer rows from CBOE's official daily-price CSV backup when the chart JSON lags. The writer normalizes stale parquet schemas on merge (drops extra columns from older schema versions) and rewrites files to fix schema drift even when no new data is available.
@@ -139,12 +140,22 @@ python scripts/livewire_ingest.py historical --preset presets/sp500.json --backf
 python scripts/livewire_ingest.py historical --preset presets/volatility.json --asset-class volatility  # CBOE vol indices (IB backfill)
 python scripts/livewire_ingest.py cboe-vol                                                        # CBOE vol indices (daily sync, preferred)
 python scripts/livewire_ingest.py fred-rates                                                      # FRED Treasury yields (DGS3/DGS5/DGS10/DGS30)
+python scripts/livewire_ingest.py corporate-actions --tickers NVDA AAPL SPY                       # Targeted Massive split/dividend reconciliation
+python scripts/livewire_ingest.py corporate-actions --full-reconcile                             # Whole equity-bronze universe; may infer cancellations
+python scripts/livewire_ingest.py corporate-actions --dry-run                                    # Compare without publishing
 python scripts/livewire_ingest.py historical --preset presets/futures-index.json --asset-class futures  # CME/CBOT index futures
 python scripts/livewire_ingest.py historical --preset presets/futures-energy.json --asset-class futures  # NYMEX energy futures
 python scripts/livewire_ingest.py historical --host 192.168.1.50 --port 4001 --tickers AAPL            # Remote IB Gateway
 ```
 
 IB connection defaults to `127.0.0.1:4001`, configurable via `--host`/`--port` flags or `MDW_IB_HOST`/`MDW_IB_PORT` environment variables.
+
+Corporate-action artifacts live at
+`data-lake/bronze/asset_class=corporate_action/symbol=<encoded_symbol>/events.parquet`.
+Provider corrections increment `event_revision` and link through
+`supersedes_action_id`; full reconciliations may append cancellation revisions,
+while targeted runs never infer disappearance by default. Scheduling is deferred
+to the Silver engine work so event reconciliation precedes adjusted-bar publication.
 
 Reliability foundation environment variables:
 - `MDW_TELEMETRY_PATH` (default `~/market-warehouse/logs/telemetry.jsonl`): telemetry JSONL append path; set to `none` to disable telemetry.

@@ -10,7 +10,7 @@ from clients.intraday_bronze_client import (
     INTRADAY_TIMEFRAMES,
     IntradayBronzeClient,
 )
-from clients.massive_client import MassiveClient
+from clients.massive_client import MassiveClient, MassiveDividend, MassiveSplit
 from clients.massive_flatfile_client import MassiveFlatfileClient
 from clients.postgres_client import PostgresClient
 from clients.tag_registry import TagRegistry
@@ -21,6 +21,8 @@ __all__ = [
     "DailyBarFallbackClient",
     "FredClient",
     "MassiveClient",
+    "MassiveDividend",
+    "MassiveSplit",
     "MassiveFlatfileClient",
     "IBClient",
     "PostgresClient",

@@ -214,6 +214,7 @@ Subcommand map:
 
 ```text
 livewire_ingest.py   daily | historical | robust | cboe-vol | fred-rates |
+                     corporate-actions |
                      intraday-backfill | flatfile-ingest | universe |
                      universe-sync | backfill-all | daily-backfill
 livewire_quality.py  health | coverage | report | weekly | watchdog | warehouse
@@ -241,6 +242,34 @@ nc -z 127.0.0.1 4001
 ---
 
 ## Data Ingestion
+
+### Corporate actions
+
+Massive split and cash-dividend events are reconciled independently from OHLCV
+bars and stored at
+`data-lake/bronze/asset_class=corporate_action/symbol=<ticker>/events.parquet`.
+Each provider correction creates a new canonical revision linked to the prior
+`action_id`; cancelled events remain in the audit history but are excluded from
+the latest active view.
+
+```bash
+# Explicit symbols or a preset
+python scripts/livewire_ingest.py corporate-actions --tickers NVDA AAPL SPY
+python scripts/livewire_ingest.py corporate-actions --preset presets/sp500.json
+
+# Discover all existing equity-bronze symbols and compare without writing
+python scripts/livewire_ingest.py corporate-actions --dry-run
+
+# A complete unfiltered provider fetch may infer cancellations
+python scripts/livewire_ingest.py corporate-actions --full-reconcile
+```
+
+Targeted and preset runs do not infer cancellations unless
+`--full-reconcile` is explicitly supplied. The command prints aggregate JSON
+counters for `inserted`, `revised`, `cancelled`, `unchanged`, and `failed`, and
+returns nonzero if any symbol fails. Automated scheduling intentionally lands
+with the Silver engine so corporate-action ingestion and adjusted-bar
+publication are ordered together.
 
 ### Prerequisites
 
