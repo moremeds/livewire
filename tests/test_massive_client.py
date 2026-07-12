@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
@@ -329,3 +330,134 @@ def test_delayed_payload_returns_results():
 def test_non_ok_payload_raises():
     with pytest.raises(MassiveAPIError, match="NOT_AUTHORIZED"):
         MassiveClient._extract_results({"status": "NOT_AUTHORIZED"})
+
+
+@responses.activate
+def test_get_splits_follows_same_origin_pagination_and_preserves_auth():
+    endpoint = "/v3/reference/splits"
+    next_url = _url(f"{endpoint}?cursor=next")
+    responses.add(
+        responses.GET,
+        _url(endpoint),
+        json={
+            "status": "OK",
+            "results": [
+                {
+                    "id": "split-1",
+                    "ticker": "nvda",
+                    "execution_date": "2024-06-10",
+                    "split_from": 1,
+                    "split_to": 10,
+                }
+            ],
+            "next_url": next_url,
+        },
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        next_url,
+        json={
+            "status": "OK",
+            "results": [
+                {
+                    "id": "split-2",
+                    "ticker": "NVDA",
+                    "execution_date": "2021-07-20",
+                    "split_from": "1",
+                    "split_to": "4",
+                }
+            ],
+        },
+        status=200,
+    )
+
+    with _make_client() as client:
+        splits = client.get_splits("nvda")
+
+    assert [event.provider_event_id for event in splits] == ["split-1", "split-2"]
+    assert splits[0].ticker == "NVDA"
+    assert splits[0].execution_date == date(2024, 6, 10)
+    assert splits[0].split_to == Decimal("10")
+    assert all(call.request.headers["Authorization"] == "Bearer test-token" for call in responses.calls)
+    assert "apiKey" not in responses.calls[1].request.url
+
+
+@responses.activate
+def test_get_dividends_normalizes_dates_currency_and_amount():
+    responses.add(
+        responses.GET,
+        _url("/v3/reference/dividends"),
+        json={
+            "status": "OK",
+            "results": [
+                {
+                    "id": "div-1",
+                    "ticker": "spy",
+                    "ex_dividend_date": "2026-06-20",
+                    "cash_amount": "1.7611",
+                    "currency": "usd",
+                    "declaration_date": "2026-06-05",
+                    "record_date": "2026-06-20",
+                    "pay_date": "2026-07-31",
+                }
+            ],
+        },
+        status=200,
+    )
+
+    with _make_client() as client:
+        dividends = client.get_dividends("spy")
+
+    assert dividends[0].ticker == "SPY"
+    assert dividends[0].cash_amount == Decimal("1.7611")
+    assert dividends[0].currency == "USD"
+    assert dividends[0].declaration_date == date(2026, 6, 5)
+
+
+@pytest.mark.parametrize(
+    "method,payload,message",
+    [
+        ("get_splits", {"id": "x", "ticker": "NVDA", "execution_date": "bad", "split_from": 1, "split_to": 10}, "date"),
+        (
+            "get_splits",
+            {"id": "x", "ticker": "NVDA", "execution_date": "2024-06-10", "split_from": 0, "split_to": 10},
+            "positive",
+        ),
+        (
+            "get_dividends",
+            {"id": "x", "ticker": "SPY", "ex_dividend_date": "2026-06-20", "cash_amount": -1, "currency": "USD"},
+            "non-negative",
+        ),
+        (
+            "get_dividends",
+            {"id": "x", "ticker": "SPY", "ex_dividend_date": "2026-06-20", "cash_amount": 1, "currency": ""},
+            "currency",
+        ),
+    ],
+)
+@responses.activate
+def test_corporate_action_validation_rejects_malformed_payloads(method, payload, message):
+    resource = "splits" if method == "get_splits" else "dividends"
+    responses.add(
+        responses.GET,
+        _url(f"/v3/reference/{resource}"),
+        json={"status": "OK", "results": [payload]},
+        status=200,
+    )
+    with _make_client() as client:
+        with pytest.raises(MassiveAPIError, match=message):
+            getattr(client, method)(payload["ticker"])
+
+
+@responses.activate
+def test_pagination_rejects_cross_origin_next_url():
+    responses.add(
+        responses.GET,
+        _url("/v3/reference/splits"),
+        json={"status": "OK", "results": [], "next_url": "https://evil.example/steal"},
+        status=200,
+    )
+    with _make_client() as client:
+        with pytest.raises(MassiveAPIError, match="pagination URL"):
+            client.get_splits("NVDA")

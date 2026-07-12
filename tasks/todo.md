@@ -2,6 +2,20 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Corporate-action ingestion R2 (2026-07-13)
+
+Dependency graph: `T1 -> T2 -> T3 -> T4`
+
+- [x] **T1** (`depends_on: []`): Add strict Massive split/dividend models,
+  bounded same-origin pagination, validation, exports, and focused tests.
+- [ ] **T2** (`depends_on: [T1]`): Add the revision-aware canonical corporate
+  action store with correction lineage, safe cancellation semantics, atomic
+  publication, and focused tests.
+- [ ] **T3** (`depends_on: [T2]`): Add targeted/universe reconciliation CLI,
+  dry-run behavior, telemetry counters, dispatch coverage, and focused tests.
+- [ ] **T4** (`depends_on: [T3]`): Document operation and scheduling boundaries,
+  run focused and CI-equivalent verification, and prepare the implementation PR.
+
 ## Daily partial-bar audit and repair (2026-07-11)
 
 Dependency graph: `T1 -> T2 -> T3 -> T4 -> T5 -> T6`

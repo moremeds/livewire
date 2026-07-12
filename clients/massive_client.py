@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
 import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import parse_qsl, urlparse
 
 import requests
 from requests.exceptions import (
@@ -65,6 +69,10 @@ class MassiveMalformedBarError(MassiveAPIError):
     """Massive returned a bar that cannot be stored safely."""
 
 
+class MassiveMalformedCorporateActionError(MassiveAPIError):
+    """Massive returned a corporate action that cannot be stored safely."""
+
+
 @dataclass(frozen=True)
 class MassiveDailyBar:
     """Normalized Massive daily bar."""
@@ -83,6 +91,29 @@ class MassiveDailyBar:
     def date(self) -> str:
         """Expose an IB BarData-like date attribute for daily update reuse."""
         return self.trade_date.isoformat()
+
+
+@dataclass(frozen=True)
+class MassiveSplit:
+    provider_event_id: str
+    ticker: str
+    execution_date: date
+    split_from: Decimal
+    split_to: Decimal
+    payload_hash: str
+
+
+@dataclass(frozen=True)
+class MassiveDividend:
+    provider_event_id: str
+    ticker: str
+    ex_dividend_date: date
+    cash_amount: Decimal
+    currency: str
+    declaration_date: date | None
+    record_date: date | None
+    pay_date: date | None
+    payload_hash: str
 
 
 class MassiveClient:
@@ -162,6 +193,28 @@ class MassiveClient:
         )
         bars = [self.normalize_daily_bar(row, ticker=None) for row in self._extract_results(payload)]
         return {bar.ticker or "": bar for bar in bars}
+
+    def get_splits(self, ticker: str) -> list[MassiveSplit]:
+        rows = self._get_paginated("/v3/reference/splits", {"ticker": ticker.upper(), "limit": 1000})
+        return [self.normalize_split(row) for row in rows]
+
+    def get_dividends(self, ticker: str) -> list[MassiveDividend]:
+        rows = self._get_paginated("/v3/reference/dividends", {"ticker": ticker.upper(), "limit": 1000})
+        return [self.normalize_dividend(row) for row in rows]
+
+    def _get_paginated(self, endpoint: str, params: dict[str, Any]) -> list[dict]:
+        results: list[dict] = []
+        payload = self._get(endpoint, params=params)
+        for _ in range(100):
+            results.extend(self._extract_results(payload))
+            next_url = payload.get("next_url")
+            if not next_url:
+                return results
+            parsed = urlparse(str(next_url))
+            if parsed.scheme != "https" or parsed.hostname != "api.massive.com":
+                raise MassiveAPIError("invalid pagination URL")
+            payload = self._get(parsed.path, params=dict(parse_qsl(parsed.query)))
+        raise MassiveAPIError("pagination exceeded 100 pages")
 
     def _get(self, endpoint: str, params: dict[str, Any] | None = None) -> dict:
         endpoint = "/" + endpoint.lstrip("/")
@@ -301,6 +354,77 @@ class MassiveClient:
             ticker=str(symbol).upper(),
             metadata=metadata,
         )
+
+    @staticmethod
+    def normalize_split(payload: dict) -> MassiveSplit:
+        event_id, ticker = MassiveClient._corporate_action_identity(payload)
+        split_from = MassiveClient._decimal(payload, "split_from")
+        split_to = MassiveClient._decimal(payload, "split_to")
+        if split_from <= 0 or split_to <= 0:
+            raise MassiveMalformedCorporateActionError("split ratios must be positive")
+        return MassiveSplit(
+            provider_event_id=event_id,
+            ticker=ticker,
+            execution_date=MassiveClient._iso_date(payload, "execution_date"),
+            split_from=split_from,
+            split_to=split_to,
+            payload_hash=MassiveClient._payload_hash(payload),
+        )
+
+    @staticmethod
+    def normalize_dividend(payload: dict) -> MassiveDividend:
+        event_id, ticker = MassiveClient._corporate_action_identity(payload)
+        cash_amount = MassiveClient._decimal(payload, "cash_amount")
+        if cash_amount < 0:
+            raise MassiveMalformedCorporateActionError("cash amount must be non-negative")
+        currency = str(payload.get("currency", "")).upper()
+        if len(currency) != 3 or not currency.isalpha():
+            raise MassiveMalformedCorporateActionError("currency must be a three-letter code")
+        return MassiveDividend(
+            provider_event_id=event_id,
+            ticker=ticker,
+            ex_dividend_date=MassiveClient._iso_date(payload, "ex_dividend_date"),
+            cash_amount=cash_amount,
+            currency=currency,
+            declaration_date=MassiveClient._optional_iso_date(payload, "declaration_date"),
+            record_date=MassiveClient._optional_iso_date(payload, "record_date"),
+            pay_date=MassiveClient._optional_iso_date(payload, "pay_date"),
+            payload_hash=MassiveClient._payload_hash(payload),
+        )
+
+    @staticmethod
+    def _corporate_action_identity(payload: dict) -> tuple[str, str]:
+        event_id = str(payload.get("id", "")).strip()
+        ticker = str(payload.get("ticker", "")).strip().upper()
+        if not event_id or not ticker:
+            raise MassiveMalformedCorporateActionError("corporate action requires provider id and ticker")
+        return event_id, ticker
+
+    @staticmethod
+    def _decimal(payload: dict, key: str) -> Decimal:
+        try:
+            value = Decimal(str(payload[key]))
+        except (KeyError, InvalidOperation, ValueError) as exc:
+            raise MassiveMalformedCorporateActionError(f"{key} must be decimal") from exc
+        if not value.is_finite():
+            raise MassiveMalformedCorporateActionError(f"{key} must be finite")
+        return value
+
+    @staticmethod
+    def _iso_date(payload: dict, key: str) -> date:
+        try:
+            return date.fromisoformat(str(payload[key]))
+        except (KeyError, ValueError) as exc:
+            raise MassiveMalformedCorporateActionError(f"{key} must be an ISO date") from exc
+
+    @staticmethod
+    def _optional_iso_date(payload: dict, key: str) -> date | None:
+        return None if payload.get(key) in (None, "") else MassiveClient._iso_date(payload, key)
+
+    @staticmethod
+    def _payload_hash(payload: dict) -> str:
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+        return hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
     def _finite_float(payload: dict, key: str) -> float:
