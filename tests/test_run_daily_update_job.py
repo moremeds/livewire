@@ -21,8 +21,10 @@ from livewire_scripts.run_daily_update_job import (
     build_alert_command,
     build_cboe_volatility_command,
     build_config,
+    build_corporate_action_command,
     build_daily_update_command,
     build_log_file,
+    build_silver_rebuild_command,
     extract_error_summary,
     log_has_completion_marker,
     main,
@@ -153,6 +155,17 @@ class TestHelpers:
         ]
         assert "--attempts" in full_command
         assert "--exit-code" in full_command
+
+        assert build_corporate_action_command(config, full_reconcile=False, dry_run=False) == [
+            "/usr/bin/python3",
+            str(daily_runner.INGEST_SCRIPT),
+            "corporate-actions",
+        ]
+        assert build_corporate_action_command(config, full_reconcile=True, dry_run=True)[-2:] == [
+            "--full-reconcile",
+            "--dry-run",
+        ]
+        assert build_silver_rebuild_command(config, dry_run=True)[-2:] == ["--full", "--dry-run"]
 
         watchdog_request = AlertRequest(
             run_date="2026-03-11",
@@ -684,7 +697,99 @@ class TestCboeVolatilitySync:
         assert "CBOE Volatility Sync Failed" in log_text
 
 
+class TestSilverScheduledLanes:
+    def test_sunday_action_sync_requests_full_reconciliation(self, tmp_path):
+        config = _config(tmp_path)
+        calls = []
+
+        def runner(command, stdout, stderr, text, env, check):
+            calls.append(command)
+            return SimpleNamespace(returncode=0)
+
+        assert (
+            daily_runner.run_corporate_action_sync(
+                config,
+                dry_run=False,
+                env={},
+                runner=runner,
+                now_fn=lambda: datetime(2026, 7, 12, 6, 0, tzinfo=UTC),
+            )
+            == 0
+        )
+        assert "--full-reconcile" in calls[0]
+
+
 class TestMain:
+    def test_main_orders_actions_before_ingestion_and_silver_after_all_success(self):
+        config = _config(Path("/tmp/test"))
+        calls = []
+
+        def actions(*args, **kwargs):
+            calls.append("actions")
+            return 0
+
+        def daily(cfg, args, env, completion_scope=None):
+            calls.append(completion_scope)
+            return 0
+
+        def cboe(*args, **kwargs):
+            calls.append("cboe")
+            return 0
+
+        def silver(*args, **kwargs):
+            calls.append("silver")
+            return 0
+
+        with (
+            patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
+            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", side_effect=actions),
+            patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=daily),
+            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", side_effect=cboe),
+            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", side_effect=silver),
+        ):
+            assert main(["--dry-run"]) == 0
+
+        assert calls == ["actions", *ASSET_CLASSES, "cboe", "silver"]
+
+    def test_failed_action_sync_prevents_silver_rebuild(self):
+        config = _config(Path("/tmp/test"))
+        with (
+            patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
+            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=2),
+            patch("livewire_scripts.run_daily_update_job.run_with_retries", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild") as silver,
+        ):
+            assert main([]) == 2
+        silver.assert_not_called()
+
+    def test_failed_ingestion_prevents_silver_rebuild(self):
+        config = _config(Path("/tmp/test"))
+
+        def daily(cfg, args, env, completion_scope=None):
+            return 3 if completion_scope == "equity" else 0
+
+        with (
+            patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
+            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=daily),
+            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild") as silver,
+        ):
+            assert main([]) == 3
+        silver.assert_not_called()
+
+    def test_failed_silver_publication_fails_scheduled_job(self):
+        config = _config(Path("/tmp/test"))
+        with (
+            patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
+            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_with_retries", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", return_value=4),
+        ):
+            assert main([]) == 4
+
     def test_main_runs_all_asset_classes_and_cboe_by_default(self):
         config = _config(Path("/tmp/test"))
         ib_calls: list[list[str]] = []
@@ -699,10 +804,14 @@ class TestMain:
             cboe_called.append(True)
             return 0
 
-        with patch("livewire_scripts.run_daily_update_job.build_config", return_value=config):
-            with patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=_run_ib):
-                with patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", side_effect=_run_cboe):
-                    assert main(["--dry-run"]) == 0
+        with (
+            patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
+            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=_run_ib),
+            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", side_effect=_run_cboe),
+            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", return_value=0),
+        ):
+            assert main(["--dry-run"]) == 0
 
         # IB syncs equity, futures, cmdty and fx; volatility via CBOE
         assert ib_calls == [["--dry-run", "--asset-class", ac] for ac in ASSET_CLASSES]
@@ -733,15 +842,25 @@ class TestMain:
                 return 1
             return 0
 
-        with patch("livewire_scripts.run_daily_update_job.build_config", return_value=config):
-            with patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=_run):
-                with patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0):
-                    assert main([]) == 1
+        with (
+            patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
+            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=_run),
+            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild") as silver,
+        ):
+            assert main([]) == 1
+        silver.assert_not_called()
 
     def test_main_returns_nonzero_if_cboe_fails(self):
         config = _config(Path("/tmp/test"))
 
-        with patch("livewire_scripts.run_daily_update_job.build_config", return_value=config):
-            with patch("livewire_scripts.run_daily_update_job.run_with_retries", return_value=0):
-                with patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=1):
-                    assert main([]) == 1
+        with (
+            patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
+            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_with_retries", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=1),
+            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild") as silver,
+        ):
+            assert main([]) == 1
+        silver.assert_not_called()

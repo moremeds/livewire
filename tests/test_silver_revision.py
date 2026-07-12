@@ -129,3 +129,19 @@ def test_concurrent_publishers_serialize_revision_assignment(tmp_path):
 
     assert sorted(revisions) == [1, 2]
     assert json.loads((tmp_path / "revisions/current.json").read_text())["revision"] == 2
+
+
+@pytest.mark.parametrize(
+    "affected, message",
+    [
+        ([], "affected"),
+        ([*AFFECTED, *AFFECTED], "duplicate affected"),
+        ([AffectedSymbol("NVDA", date(1999, 1, 22), ("1d", "1d"))], "duplicate timeframe"),
+        ([AffectedSymbol("NVDA", date(1999, 1, 22), ("2h",))], "unsupported timeframe"),
+    ],
+)
+def test_invalid_affected_contract_is_rejected(tmp_path, affected, message):
+    publisher = SilverRevisionPublisher(tmp_path)
+    with pytest.raises(ValueError, match=message):
+        publisher.publish([_artifact(tmp_path, "a.parquet", b"valid")], affected, ACTIONS_AS_OF)
+    assert not (tmp_path / "revisions/current.json").exists()

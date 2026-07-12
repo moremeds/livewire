@@ -14,7 +14,7 @@ Dependency graph: `T1 -> T2 -> T3 -> T4 -> T5`
   revision manifests with `current.json` as the final commit record.
 - [x] **T4** (`depends_on: [T3]`): Add targeted/full/dry-run Silver rebuild CLI,
   batch validation, no-op detection, counters, and manifest publication.
-- [ ] **T5** (`depends_on: [T4]`): Integrate scheduled reconciliation, implement
+- [x] **T5** (`depends_on: [T4]`): Integrate scheduled reconciliation, implement
   the four-symbol canary, update durable/operator docs, and run all gates.
 
 ## Corporate-action ingestion R2 (2026-07-13)

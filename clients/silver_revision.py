@@ -18,6 +18,7 @@ from clients.silver_client import PublishedArtifact
 
 _THREAD_LOCKS: dict[Path, threading.RLock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
+_SUPPORTED_TIMEFRAMES = frozenset({"1d", "1m", "5m", "30m", "1h"})
 
 
 @dataclass(frozen=True)
@@ -103,12 +104,7 @@ class SilverRevisionPublisher:
         actions_as_of: datetime,
     ) -> SilverRevision:
         manifest_artifacts = self._validate_artifacts(artifacts)
-        normalized_affected = tuple(
-            sorted(
-                (AffectedSymbol(item.symbol.upper(), item.earliest_date, tuple(item.timeframes)) for item in affected),
-                key=lambda item: item.symbol,
-            )
-        )
+        normalized_affected = self._validate_affected(affected)
         current = self._read_current()
         if current and current.artifacts == manifest_artifacts and current.affected == normalized_affected:
             return current
@@ -159,6 +155,24 @@ class SilverRevisionPublisher:
         if len({item.path for item in manifest}) != len(manifest):
             raise ValueError("duplicate Silver artifact path")
         return tuple(sorted(manifest, key=lambda item: item.path))
+
+    @staticmethod
+    def _validate_affected(affected: list[AffectedSymbol]) -> tuple[AffectedSymbol, ...]:
+        if not affected:
+            raise ValueError("at least one affected symbol is required")
+        normalized = [
+            AffectedSymbol(item.symbol.upper(), item.earliest_date, tuple(item.timeframes)) for item in affected
+        ]
+        symbols = [item.symbol for item in normalized]
+        if len(symbols) != len(set(symbols)):
+            raise ValueError("duplicate affected symbol")
+        for item in normalized:
+            if len(item.timeframes) != len(set(item.timeframes)):
+                raise ValueError(f"duplicate timeframe for {item.symbol}")
+            unsupported = set(item.timeframes) - _SUPPORTED_TIMEFRAMES
+            if unsupported:
+                raise ValueError(f"unsupported timeframe for {item.symbol}: {sorted(unsupported)}")
+        return tuple(sorted(normalized, key=lambda item: item.symbol))
 
     def _read_current(self) -> SilverRevision | None:
         if not self.current_path.exists():
