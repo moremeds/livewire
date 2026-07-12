@@ -20,6 +20,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--rollback", action="store_true")
+    parser.add_argument("--data-lake-root", type=Path)
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -47,12 +48,18 @@ def _restore_exact(backup: Path, target: Path) -> None:
 
 def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None) -> int:
     args = parse_args(argv)
-    root = Path(data_lake_root) if data_lake_root is not None else data_lake_dir()
+    root = Path(data_lake_root) if data_lake_root is not None else args.data_lake_root or data_lake_dir()
+    root = root.resolve()
     bronze_root = (root / "bronze/asset_class=equity").resolve()
     manifest_path = args.manifest.resolve()
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     if payload.get("schema_version") != 1:
         raise ValueError("unsupported manifest schema")
+    manifest_root = Path(payload.get("data_lake_root", "")).resolve()
+    if manifest_root != root:
+        raise ValueError(
+            f"manifest data-lake root {manifest_root} does not match active root {root}"
+        )
     client = BronzeClient(bronze_root, "equity")
     changed = 0
     for item in payload["symbols"]:

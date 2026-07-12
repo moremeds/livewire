@@ -88,16 +88,25 @@ def build_factor_intervals(
             raise ValueError("cash dividend must be less than positive previous close")
         factors_by_action[action.action_id] = ((reference_close - cash) / reference_close, ONE)
 
-    action_factors = [(action.ex_date, *factors_by_action[action.action_id]) for action in active_actions]
+    action_factors = [(action, *factors_by_action[action.action_id]) for action in active_actions]
 
     factors_by_date: list[tuple[date, Decimal, Decimal]] = []
-    for bar_date in dates:
+    for row, bar_date in zip(ordered_bars, dates, strict=True):
         price_factor = ONE
         volume_factor = ONE
-        for ex_date, action_price, action_volume in action_factors:
-            if ex_date > bar_date:
-                price_factor *= action_price
-                volume_factor *= action_volume
+        for action, action_price, action_volume in action_factors:
+            if action.ex_date <= bar_date:
+                continue
+            if action.action_type == "split":
+                price_basis = str(row.get("price_basis", "unknown"))
+                if price_basis == "unknown":
+                    raise ValueError(f"unknown price_basis for split-affected row {bar_date}")
+                if price_basis == "split_adjusted":
+                    continue
+                if price_basis != "raw":
+                    raise ValueError(f"unsupported price_basis: {price_basis!r}")
+            price_factor *= action_price
+            volume_factor *= action_volume
         factors_by_date.append((bar_date, price_factor, volume_factor))
 
     intervals: list[FactorInterval] = []

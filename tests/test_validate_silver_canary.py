@@ -39,6 +39,8 @@ def _bronze(root, symbol, closes):
             "close": close,
             "adj_close": close,
             "volume": 1_000,
+            "source": "massive",
+            "price_basis": "raw",
         }
         for index, close in enumerate(closes)
     ]
@@ -157,3 +159,32 @@ def test_canary_rejects_internally_consistent_future_action_contamination(tmp_pa
     assert report["future_action_count"] == 1
     assert report["symbols"]["AAPL"]["future_action_count"] == 1
     assert "factor intervals do not match causal expectation" in report["symbols"]["AAPL"]["errors"]
+
+
+def test_canary_rejects_mechanical_split_jump_after_adjustment(tmp_path, capsys):
+    _bronze(tmp_path, "NVDA", (100.0, 100.0, 100.0))
+    for symbol in ("AAPL", "SPY", "CONTROL"):
+        _bronze(tmp_path, symbol, (100.0, 101.0, 102.0))
+    split = MassiveSplit(
+        provider_event_id="nvda-split",
+        ticker="NVDA",
+        execution_date=date(2026, 1, 3),
+        split_from=Decimal("1"),
+        split_to=Decimal("2"),
+        payload_hash="split",
+    )
+    CorporateActionStore(tmp_path).reconcile("NVDA", [split], datetime(2026, 1, 4, tzinfo=UTC))
+    assert rebuild_silver.run(["--full"], data_lake_root=tmp_path, silver_root=tmp_path / "silver") == 0
+    capsys.readouterr()
+
+    assert (
+        validate_silver_canary.run(
+            ["--tickers", "NVDA", "AAPL", "SPY", "--control", "CONTROL"],
+            data_lake_root=tmp_path,
+            silver_root=tmp_path / "silver",
+        )
+        == 1
+    )
+
+    report = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert "mechanical split jump remains after adjustment" in report["symbols"]["NVDA"]["errors"]

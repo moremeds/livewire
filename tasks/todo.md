@@ -12,7 +12,7 @@ Dependency graph: `T1 -> T2 -> T3 -> T4 -> T5 -> T6`
   selectively normalize incorporated adjustments to canonical raw rows.
 - [ ] **T3** (`depends_on: [T2]`): Add atomic, resumable legacy schema migration
   to `legacy/unknown` with hashes and dry-run support.
-- [ ] **T4** (`depends_on: [T3]`): Add read-only split-basis audit plus stale-safe,
+- [x] **T4** (`depends_on: [T3]`): Add read-only split-basis audit plus stale-safe,
   rollback-capable manifest repair and rehearse it in a disposable lake.
 - [ ] **T5** (`depends_on: [T4]`): Make Silver and its canary basis-aware and
   verify known AAPL, NVDA, and MSFT split boundaries through local Apex.

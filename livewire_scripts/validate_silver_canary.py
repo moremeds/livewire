@@ -156,15 +156,23 @@ def run(
             if not prior_dates or action.ex_date not in bronze_by_date or action.ex_date not in daily_by_date:
                 continue
             previous_date = prior_dates[-1]
+            adjusted_ratio = daily_by_date[action.ex_date]["close"] / daily_by_date[previous_date]["close"]
             ex_date_returns.append(
                 {
                     "action_id": action.action_id,
                     "ex_date": action.ex_date.isoformat(),
                     "raw_return": bronze_by_date[action.ex_date]["close"] / bronze_by_date[previous_date]["close"] - 1,
-                    "adjusted_return": daily_by_date[action.ex_date]["close"] / daily_by_date[previous_date]["close"]
-                    - 1,
+                    "adjusted_return": adjusted_ratio - 1,
                 }
             )
+            if action.action_type == "split":
+                split_factor = float(action.split_from / action.split_to)
+                mechanical_error = min(
+                    abs(math.log(adjusted_ratio / split_factor)),
+                    abs(math.log(adjusted_ratio * split_factor)),
+                )
+                if mechanical_error <= 0.15:
+                    errors.append("mechanical split jump remains after adjustment")
         identity_control = (
             symbol == control
             and not actions

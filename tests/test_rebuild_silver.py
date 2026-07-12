@@ -23,6 +23,8 @@ def _bronze(root, symbol, closes=(100.0, 100.0, 50.0)):
             "close": close,
             "adj_close": close,
             "volume": 1_000,
+            "source": "massive",
+            "price_basis": "raw",
         }
         for index, close in enumerate(closes)
     ]

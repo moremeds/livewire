@@ -28,6 +28,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     scope.add_argument("--tickers", nargs="+")
     scope.add_argument("--full", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--data-lake-root", type=Path)
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -59,7 +60,8 @@ def run(
     as_of_date: date | None = None,
 ) -> int:
     args = parse_args(argv)
-    root = Path(data_lake_root) if data_lake_root is not None else data_lake_dir()
+    root = Path(data_lake_root) if data_lake_root is not None else args.data_lake_root or data_lake_dir()
+    root = root.resolve()
     bronze_root = root / "bronze/asset_class=equity"
     bronze = BronzeClient(bronze_root, "equity")
     actions = CorporateActionStore(root)
@@ -100,6 +102,7 @@ def run(
         )
     payload = {
         "as_of_date": effective_as_of.isoformat(),
+        "data_lake_root": str(root),
         "schema_version": 1,
         "symbols": manifest_symbols,
     }
