@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 import pytest
 
 from clients.corporate_action_store import CorporateAction
-from clients.price_basis import normalize_split_adjusted_rows
+from clients.price_basis import classify_split_events, normalize_ib_rows, normalize_split_adjusted_rows
 
 
 def _split(action_id: str, ex_date: date, split_from: float, split_to: float) -> CorporateAction:
@@ -48,7 +48,14 @@ def _row(trade_date: date, close: float = 25.0, volume: int = 400) -> dict:
 
 @pytest.mark.parametrize(
     "split_from,split_to,adjusted,raw",
-    [(1, 2, 50.0, 100.0), (2, 3, 60.0, 90.0), (1, 4, 25.0, 100.0), (1, 7, 10.0, 70.0), (1, 10, 12.0, 120.0), (2, 1, 200.0, 100.0)],
+    [
+        (1, 2, 50.0, 100.0),
+        (2, 3, 60.0, 90.0),
+        (1, 4, 25.0, 100.0),
+        (1, 7, 10.0, 70.0),
+        (1, 10, 12.0, 120.0),
+        (2, 1, 200.0, 100.0),
+    ],
 )
 def test_normalizes_split_adjusted_prices(split_from, split_to, adjusted, raw):
     rows = [_row(date(2026, 1, 2), adjusted)]
@@ -120,3 +127,76 @@ def test_malformed_split_is_rejected():
             date(2026, 1, 3),
             volume_mode="raw",
         )
+
+
+def test_classifies_adjusted_split_boundary():
+    rows = [_row(date(2020, 8, 28), 124.81), _row(date(2020, 8, 31), 129.04)]
+
+    result = classify_split_events(rows, [_split("aapl", date(2020, 8, 31), 1, 4)], date(2020, 8, 31))
+
+    assert result[0].treatment == "adjusted"
+    assert result[0].observed_ratio == pytest.approx(129.04 / 124.81)
+    assert result[0].adjusted_error < result[0].raw_error
+
+
+def test_classifies_raw_split_boundary():
+    rows = [_row(date(2003, 2, 14), 48.30), _row(date(2003, 2, 18), 24.96)]
+
+    result = classify_split_events(rows, [_split("msft", date(2003, 2, 18), 1, 2)], date(2003, 2, 18))
+
+    assert result[0].treatment == "raw"
+    assert result[0].raw_error < result[0].adjusted_error
+
+
+def test_classification_is_ambiguous_when_neither_hypothesis_is_close():
+    rows = [_row(date(2026, 1, 2), 100.0), _row(date(2026, 1, 3), 70.0)]
+
+    result = classify_split_events(rows, [_split("split", date(2026, 1, 3), 1, 2)], date(2026, 1, 3))
+
+    assert result[0].treatment == "ambiguous"
+
+
+def test_classification_is_ambiguous_without_bars_on_both_sides():
+    result = classify_split_events(
+        [_row(date(2026, 1, 2), 100.0)],
+        [_split("split", date(2026, 1, 3), 1, 2)],
+        date(2026, 1, 3),
+    )
+
+    assert result[0].treatment == "ambiguous"
+    assert result[0].observed_ratio is None
+
+
+def test_selective_normalization_reverses_only_adjusted_events():
+    rows = [_row(date(2026, 1, 1), 25.0, volume=400)]
+    actions = [
+        _split("raw", date(2026, 1, 2), 1, 2),
+        _split("adjusted", date(2026, 1, 3), 1, 4),
+    ]
+    classifications = classify_split_events(
+        [
+            _row(date(2026, 1, 1), 25.0),
+            _row(date(2026, 1, 2), 12.5),
+            _row(date(2026, 1, 3), 12.6),
+        ],
+        actions,
+        date(2026, 1, 3),
+    )
+
+    result = normalize_ib_rows(rows, classifications)
+
+    assert [item.treatment for item in classifications] == ["raw", "adjusted"]
+    assert result[0]["close"] == pytest.approx(100.0)
+    assert result[0]["volume"] == 100
+    assert result[0]["price_basis"] == "raw"
+
+
+def test_selective_normalization_rejects_ambiguous_event():
+    classifications = classify_split_events(
+        [_row(date(2026, 1, 2), 100.0)],
+        [_split("split", date(2026, 1, 3), 1, 2)],
+        date(2026, 1, 3),
+    )
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        normalize_ib_rows([_row(date(2026, 1, 2), 100.0)], classifications)
