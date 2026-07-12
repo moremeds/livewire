@@ -2,6 +2,21 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Silver adjustment engine R3 (2026-07-13)
+
+Dependency graph: `T1 -> T2 -> T3 -> T4 -> T5`
+
+- [x] **T1** (`depends_on: []`): Implement the pure Decimal-based adjustment
+  engine and exhaustive factor intervals with example/property tests.
+- [x] **T2** (`depends_on: [T1]`): Publish adjusted daily bars and compact factor
+  intervals as validated, checksummed Silver Parquet artifacts.
+- [x] **T3** (`depends_on: [T2]`): Publish locked, monotonic, transactional Silver
+  revision manifests with `current.json` as the final commit record.
+- [x] **T4** (`depends_on: [T3]`): Add targeted/full/dry-run Silver rebuild CLI,
+  batch validation, no-op detection, counters, and manifest publication.
+- [x] **T5** (`depends_on: [T4]`): Integrate scheduled reconciliation, implement
+  the four-symbol canary, update durable/operator docs, and run all gates.
+
 ## Corporate-action ingestion R2 (2026-07-13)
 
 Dependency graph: `T1 -> T2 -> T3 -> T4`

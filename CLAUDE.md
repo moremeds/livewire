@@ -93,7 +93,8 @@ Primary data source: **Interactive Brokers** via `ib_async`. Requires the IB Gat
 - `BronzeClient` is the live service storage client: it discovers symbols from parquet, merges or replaces per-ticker snapshots, and publishes with `temp -> validate -> os.replace()`
 - `DailyBarFallbackClient` is a narrow recovery client for unresolved target-day gaps in the current U.S. equity universe. Provider order: Nasdaq `assetclass=stocks`, Nasdaq `assetclass=etf`, then Stooq U.S. daily CSV.
 - `MassiveClient` is the optional daily U.S. equity accelerator and validation reference. It uses `MASSIVE_API_KEY`, stores `adjusted=false` bars with `adj_close = close`, and is not used for equity intraday or broker-specific asset classes.
-- `MassiveClient` also exposes paginated split and cash-dividend reference data. `scripts/livewire_ingest.py corporate-actions` reconciles those events into revision-aware per-symbol bronze histories; corrections and cancellations remain auditable, while only latest active revisions feed the future Silver engine.
+- `MassiveClient` also exposes paginated split and cash-dividend reference data. `scripts/livewire_ingest.py corporate-actions` reconciles those events into revision-aware per-symbol bronze histories; corrections and cancellations remain auditable, while only latest active revisions feed the Silver engine.
+- `scripts/livewire_store.py rebuild-silver` derives fully back-adjusted daily bars and compact intraday factor intervals under `data-lake/silver/`, then advances `revisions/current.json` atomically after every artifact validates. Bronze is read-only; splits adjust price and volume, while dividends adjust price only.
 - `MassiveFlatfileClient` is the only equity-intraday provider path. It uses Massive S3 credentials and downloads whole-market SIP minute files.
 - `adj_close` is set to `close` (IB TRADES data doesn't provide adjusted prices)
 - **CBOE volatility indices** are fetched directly from CBOE's public API (`cdn.cboe.com/api/global/delayed_quotes/charts/historical/`) via `scripts/livewire_ingest.py cboe-vol`, not IB. This is the authoritative source for VIX, VVIX, VXHYG, VXSMH, and all other CBOE volatility indices. For `VIX` and `SPX`, `cboe-vol` also appends newer rows from CBOE's official daily-price CSV backup when the chart JSON lags. The writer normalizes stale parquet schemas on merge (drops extra columns from older schema versions) and rewrites files to fix schema drift even when no new data is available.
@@ -143,6 +144,9 @@ python scripts/livewire_ingest.py fred-rates                                    
 python scripts/livewire_ingest.py corporate-actions --tickers NVDA AAPL SPY                       # Targeted Massive split/dividend reconciliation
 python scripts/livewire_ingest.py corporate-actions --full-reconcile                             # Whole equity-bronze universe; may infer cancellations
 python scripts/livewire_ingest.py corporate-actions --dry-run                                    # Compare without publishing
+python scripts/livewire_store.py rebuild-silver --tickers NVDA AAPL SPY                          # Targeted adjusted daily/factor rebuild
+python scripts/livewire_store.py rebuild-silver --full --dry-run                                 # Full comparison without publishing
+python livewire_scripts/validate_silver_canary.py --tickers NVDA AAPL SPY --control SYMBOL       # Read-only factor/OHLCV/bronze-integrity canary
 python scripts/livewire_ingest.py historical --preset presets/futures-index.json --asset-class futures  # CME/CBOT index futures
 python scripts/livewire_ingest.py historical --preset presets/futures-energy.json --asset-class futures  # NYMEX energy futures
 python scripts/livewire_ingest.py historical --host 192.168.1.50 --port 4001 --tickers AAPL            # Remote IB Gateway
@@ -154,8 +158,15 @@ Corporate-action artifacts live at
 `data-lake/bronze/asset_class=corporate_action/symbol=<encoded_symbol>/events.parquet`.
 Provider corrections increment `event_revision` and link through
 `supersedes_action_id`; full reconciliations may append cancellation revisions,
-while targeted runs never infer disappearance by default. Scheduling is deferred
-to the Silver engine work so event reconciliation precedes adjusted-bar publication.
+while targeted runs never infer disappearance by default. The scheduled daily
+job reconciles actions first (full provider reconciliation on Sunday), runs all
+market-data lanes, and rebuilds Silver only when every prerequisite succeeds.
+
+Silver artifacts are published beneath `MDW_SILVER_DIR` (default
+`data-lake/silver`). Daily files preserve Apex-required OHLCV names and add
+`price_adjustment_factor`, `split_volume_factor`, and `adjustment_revision`;
+factor files contain exhaustive date intervals. Immutable revision manifests are
+written before `current.json`, which is the final cross-file commit record.
 
 Reliability foundation environment variables:
 - `MDW_TELEMETRY_PATH` (default `~/market-warehouse/logs/telemetry.jsonl`): telemetry JSONL append path; set to `none` to disable telemetry.

@@ -22,6 +22,7 @@ REPO_ROOT = SCRIPT_DIR.parent
 INGEST_SCRIPT = REPO_ROOT / "scripts" / "livewire_ingest.py"
 OPS_SCRIPT = REPO_ROOT / "scripts" / "livewire_ops.py"
 QUALITY_SCRIPT = REPO_ROOT / "scripts" / "livewire_quality.py"
+STORE_SCRIPT = REPO_ROOT / "scripts" / "livewire_store.py"
 
 # Volatility is synced via CBOE directly (run_cboe_volatility_sync); these are
 # the IB-backed asset classes the daily job iterates. cmdty/fx use IB MIDPOINT
@@ -108,6 +109,27 @@ def build_daily_update_command(config: RunnerConfig, daily_update_args: Sequence
 def build_cboe_volatility_command(config: RunnerConfig) -> list[str]:
     """Build command for CBOE volatility sync (uses preset by default)."""
     return [config.python_bin, str(INGEST_SCRIPT), "cboe-vol"]
+
+
+def build_corporate_action_command(
+    config: RunnerConfig,
+    *,
+    full_reconcile: bool,
+    dry_run: bool,
+) -> list[str]:
+    command = [config.python_bin, str(INGEST_SCRIPT), "corporate-actions"]
+    if full_reconcile:
+        command.append("--full-reconcile")
+    if dry_run:
+        command.append("--dry-run")
+    return command
+
+
+def build_silver_rebuild_command(config: RunnerConfig, *, dry_run: bool) -> list[str]:
+    command = [config.python_bin, str(STORE_SCRIPT), "rebuild-silver", "--full"]
+    if dry_run:
+        command.append("--dry-run")
+    return command
 
 
 def build_alert_command(config: RunnerConfig, request: AlertRequest) -> list[str]:
@@ -415,6 +437,75 @@ def run_cboe_volatility_sync(
     return result.returncode
 
 
+def _run_scheduled_lane(
+    config: RunnerConfig,
+    command: list[str],
+    label: str,
+    done_scope: str,
+    *,
+    env: dict[str, str] | None,
+    runner: callable,
+    now_fn: callable,
+) -> int:
+    started_at = now_fn()
+    log_file = build_log_file(config.log_dir, started_at)
+    append_log(log_file, f"=== {label} {started_at:%Y-%m-%dT%H:%M:%SZ} ===")
+    append_log(log_file, f"Command: {' '.join(command)}")
+    result = run_daily_update_attempt(command, log_file, env=env, runner=runner)
+    if result.returncode == 0:
+        append_log(log_file, f"=== Done {done_scope} {now_fn():%Y-%m-%dT%H:%M:%SZ} ===")
+    else:
+        append_log(
+            log_file,
+            f"=== {label} Failed {now_fn():%Y-%m-%dT%H:%M:%SZ} (exit_code={result.returncode}) ===",
+        )
+    return result.returncode
+
+
+def run_corporate_action_sync(
+    config: RunnerConfig,
+    *,
+    dry_run: bool,
+    env: dict[str, str] | None = None,
+    runner: callable = subprocess.run,
+    now_fn: callable = _utc_now,
+) -> int:
+    now = now_fn()
+    command = build_corporate_action_command(
+        config,
+        full_reconcile=now.weekday() == 6,
+        dry_run=dry_run,
+    )
+    return _run_scheduled_lane(
+        config,
+        command,
+        "Corporate Action Sync",
+        "corporate-actions",
+        env=env,
+        runner=runner,
+        now_fn=lambda: now,
+    )
+
+
+def run_silver_rebuild(
+    config: RunnerConfig,
+    *,
+    dry_run: bool,
+    env: dict[str, str] | None = None,
+    runner: callable = subprocess.run,
+    now_fn: callable = _utc_now,
+) -> int:
+    return _run_scheduled_lane(
+        config,
+        build_silver_rebuild_command(config, dry_run=dry_run),
+        "Silver Rebuild",
+        "silver",
+        env=env,
+        runner=runner,
+        now_fn=now_fn,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     config = build_config()
     args = list(argv or sys.argv[1:])
@@ -424,8 +515,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if "--asset-class" in args:
         return run_with_retries(config, args, env=env, completion_scope=_completion_scope_from_args(args))
 
+    dry_run = "--dry-run" in args
+    action_code = run_corporate_action_sync(config, dry_run=dry_run, env=env)
+
     # Otherwise, run all asset classes sequentially.
-    final_code = 0
+    final_code = action_code
     for asset_class in ASSET_CLASSES:
         code = run_with_retries(
             config,
@@ -440,6 +534,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     cboe_code = run_cboe_volatility_sync(config, env=env)
     if cboe_code != 0:
         final_code = cboe_code
+
+    if final_code == 0:
+        silver_code = run_silver_rebuild(config, dry_run=dry_run, env=env)
+        if silver_code != 0:
+            final_code = silver_code
 
     return final_code
 

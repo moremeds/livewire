@@ -219,7 +219,7 @@ livewire_ingest.py   daily | historical | robust | cboe-vol | fred-rates |
                      universe-sync | backfill-all | daily-backfill
 livewire_quality.py  health | coverage | report | weekly | watchdog | warehouse
 livewire_ops.py      run-daily-job | run-intraday-catchup-job | send-alert
-livewire_store.py    rebuild-postgres | smoke-postgres | sync-r2 | migrate-parquet
+livewire_store.py    rebuild-postgres | rebuild-silver | smoke-postgres | sync-r2 | migrate-parquet
 ```
 
 ---
@@ -267,9 +267,36 @@ python scripts/livewire_ingest.py corporate-actions --full-reconcile
 Targeted and preset runs do not infer cancellations unless
 `--full-reconcile` is explicitly supplied. The command prints aggregate JSON
 counters for `inserted`, `revised`, `cancelled`, `unchanged`, and `failed`, and
-returns nonzero if any symbol fails. Automated scheduling intentionally lands
-with the Silver engine so corporate-action ingestion and adjusted-bar
-publication are ordered together.
+returns nonzero if any symbol fails. The scheduled daily job runs this lane
+before market-data ingestion, requests a full provider reconciliation on Sunday,
+and advances Silver only after every ingestion lane succeeds.
+
+### Silver adjusted bars
+
+Silver is the reproducible adjusted layer derived from immutable bronze bars and
+canonical corporate actions:
+
+```text
+data-lake/silver/asset_class=equity/symbol=<ticker>/1d.parquet
+data-lake/silver/adjustments/asset_class=equity/symbol=<ticker>/factors.parquet
+data-lake/silver/revisions/{revision=<n>.json,current.json}
+```
+
+```bash
+# Targeted, full-universe, and read-only comparison
+python scripts/livewire_store.py rebuild-silver --tickers NVDA AAPL SPY
+python scripts/livewire_store.py rebuild-silver --full
+python scripts/livewire_store.py rebuild-silver --full --dry-run
+
+# Read-only four-symbol canary; choose a control with no active actions
+python livewire_scripts/validate_silver_canary.py \
+  --tickers NVDA AAPL SPY --control <NO_ACTION_SYMBOL>
+```
+
+The publisher holds a Silver-root lock, stamps one revision across all changed
+artifacts, writes immutable `revision=<n>.json`, and atomically replaces
+`current.json` last. A failed batch never advances the pointer. `MDW_SILVER_DIR`
+overrides the default `data-lake/silver` root.
 
 ### Prerequisites
 
@@ -699,7 +726,8 @@ Detects API keys, credentials, private keys, and `.env` leaks.
 
 ### Split-Adjusted Volume
 
-All volume is **split-adjusted** to ensure consistency across time.
+Bronze volume is raw provider data and is never rewritten for corporate
+actions. Silver daily volume is split-adjusted; dividends never change volume.
 
 ### Timeframe Aggregation
 
