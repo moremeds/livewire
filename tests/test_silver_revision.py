@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import threading
+from datetime import UTC, date, datetime
+from pathlib import Path
+
+import pytest
+
+from clients.silver_client import PublishedArtifact
+from clients.silver_revision import AffectedSymbol, SilverRevisionPublisher
+
+ACTIONS_AS_OF = datetime(2026, 7, 13, 2, 0, tzinfo=UTC)
+AFFECTED = [AffectedSymbol("NVDA", date(1999, 1, 22), ("1d", "1m", "5m", "30m", "1h"))]
+
+
+def _artifact(root: Path, name: str, content: bytes) -> PublishedArtifact:
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return PublishedArtifact(path, hashlib.sha256(content).hexdigest(), 1)
+
+
+def test_publish_creates_monotonic_immutable_manifests_and_current_pointer(tmp_path):
+    publisher = SilverRevisionPublisher(tmp_path)
+    first = publisher.publish([_artifact(tmp_path, "a.parquet", b"one")], AFFECTED, ACTIONS_AS_OF)
+    second = publisher.publish([_artifact(tmp_path, "b.parquet", b"two")], AFFECTED, ACTIONS_AS_OF)
+
+    assert (first.revision, second.revision) == (1, 2)
+    assert (tmp_path / "revisions/revision=1.json").exists()
+    assert (tmp_path / "revisions/revision=2.json").exists()
+    current = json.loads((tmp_path / "revisions/current.json").read_text())
+    assert current["revision"] == 2
+    assert current["schema_version"] == 1
+    assert current["affected"][0]["timeframes"] == ["1d", "1m", "5m", "30m", "1h"]
+    assert current["artifacts"][0]["path"] == "b.parquet"
+
+
+def test_unchanged_artifacts_are_noop(tmp_path):
+    publisher = SilverRevisionPublisher(tmp_path)
+    artifact = _artifact(tmp_path, "a.parquet", b"same")
+    first = publisher.publish([artifact], AFFECTED, ACTIONS_AS_OF)
+    current_bytes = (tmp_path / "revisions/current.json").read_bytes()
+
+    second = publisher.publish([artifact], AFFECTED, ACTIONS_AS_OF.replace(minute=1))
+
+    assert second == first
+    assert (tmp_path / "revisions/current.json").read_bytes() == current_bytes
+    assert not (tmp_path / "revisions/revision=2.json").exists()
+
+
+def test_checksum_mismatch_preserves_current(tmp_path):
+    publisher = SilverRevisionPublisher(tmp_path)
+    publisher.publish([_artifact(tmp_path, "a.parquet", b"valid")], AFFECTED, ACTIONS_AS_OF)
+    current_bytes = (tmp_path / "revisions/current.json").read_bytes()
+    bad = _artifact(tmp_path, "b.parquet", b"actual")
+    bad = PublishedArtifact(bad.path, "0" * 64, bad.row_count)
+
+    with pytest.raises(ValueError, match="checksum"):
+        publisher.publish([bad], AFFECTED, ACTIONS_AS_OF)
+
+    assert (tmp_path / "revisions/current.json").read_bytes() == current_bytes
+    assert not (tmp_path / "revisions/revision=2.json").exists()
+
+
+def test_missing_artifact_preserves_current(tmp_path):
+    publisher = SilverRevisionPublisher(tmp_path)
+    publisher.publish([_artifact(tmp_path, "a.parquet", b"valid")], AFFECTED, ACTIONS_AS_OF)
+    current_bytes = (tmp_path / "revisions/current.json").read_bytes()
+    missing = PublishedArtifact(tmp_path / "missing.parquet", hashlib.sha256(b"").hexdigest(), 0)
+
+    with pytest.raises(ValueError, match="missing"):
+        publisher.publish([missing], AFFECTED, ACTIONS_AS_OF)
+
+    assert (tmp_path / "revisions/current.json").read_bytes() == current_bytes
+
+
+def test_failed_current_replace_removes_uncommitted_manifest_and_preserves_pointer(tmp_path, monkeypatch):
+    publisher = SilverRevisionPublisher(tmp_path)
+    publisher.publish([_artifact(tmp_path, "a.parquet", b"valid")], AFFECTED, ACTIONS_AS_OF)
+    current_path = tmp_path / "revisions/current.json"
+    current_bytes = current_path.read_bytes()
+    real_replace = __import__("os").replace
+
+    def fail_current(source, destination):
+        if Path(destination) == current_path:
+            raise RuntimeError("current replace failed")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr("clients.silver_revision.os.replace", fail_current)
+    with pytest.raises(RuntimeError, match="current replace"):
+        publisher.publish([_artifact(tmp_path, "b.parquet", b"new")], AFFECTED, ACTIONS_AS_OF)
+
+    assert current_path.read_bytes() == current_bytes
+    assert not (tmp_path / "revisions/revision=2.json").exists()
+
+
+def test_existing_next_manifest_is_immutable(tmp_path):
+    publisher = SilverRevisionPublisher(tmp_path)
+    revisions = tmp_path / "revisions"
+    revisions.mkdir()
+    (revisions / "revision=1.json").write_text("occupied")
+
+    with pytest.raises(FileExistsError):
+        publisher.publish([_artifact(tmp_path, "a.parquet", b"valid")], AFFECTED, ACTIONS_AS_OF)
+
+    assert not (revisions / "current.json").exists()
+
+
+def test_concurrent_publishers_serialize_revision_assignment(tmp_path):
+    publisher = SilverRevisionPublisher(tmp_path)
+    artifacts = [
+        [_artifact(tmp_path, "a.parquet", b"one")],
+        [_artifact(tmp_path, "b.parquet", b"two")],
+    ]
+    barrier = threading.Barrier(2)
+    revisions: list[int] = []
+
+    def publish(index):
+        barrier.wait()
+        revisions.append(publisher.publish(artifacts[index], AFFECTED, ACTIONS_AS_OF).revision)
+
+    threads = [threading.Thread(target=publish, args=(index,)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(revisions) == [1, 2]
+    assert json.loads((tmp_path / "revisions/current.json").read_text())["revision"] == 2

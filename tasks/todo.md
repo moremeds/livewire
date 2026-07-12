@@ -10,7 +10,7 @@ Dependency graph: `T1 -> T2 -> T3 -> T4 -> T5`
   engine and exhaustive factor intervals with example/property tests.
 - [x] **T2** (`depends_on: [T1]`): Publish adjusted daily bars and compact factor
   intervals as validated, checksummed Silver Parquet artifacts.
-- [ ] **T3** (`depends_on: [T2]`): Publish locked, monotonic, transactional Silver
+- [x] **T3** (`depends_on: [T2]`): Publish locked, monotonic, transactional Silver
   revision manifests with `current.json` as the final commit record.
 - [ ] **T4** (`depends_on: [T3]`): Add targeted/full/dry-run Silver rebuild CLI,
   batch validation, no-op detection, counters, and manifest publication.
