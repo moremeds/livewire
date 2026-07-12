@@ -335,7 +335,8 @@ def test_non_ok_payload_raises():
 @responses.activate
 def test_get_splits_follows_same_origin_pagination_and_preserves_auth():
     endpoint = "/v3/reference/splits"
-    next_url = _url(f"{endpoint}?cursor=next")
+    next_url = _url(f"{endpoint}?cursor=next&apiKey=provider-leak")
+    safe_next_url = _url(f"{endpoint}?cursor=next")
     responses.add(
         responses.GET,
         _url(endpoint),
@@ -356,7 +357,7 @@ def test_get_splits_follows_same_origin_pagination_and_preserves_auth():
     )
     responses.add(
         responses.GET,
-        next_url,
+        safe_next_url,
         json={
             "status": "OK",
             "results": [

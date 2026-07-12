@@ -213,7 +213,8 @@ class MassiveClient:
             parsed = urlparse(str(next_url))
             if parsed.scheme != "https" or parsed.hostname != "api.massive.com":
                 raise MassiveAPIError("invalid pagination URL")
-            payload = self._get(parsed.path, params=dict(parse_qsl(parsed.query)))
+            query = {key: value for key, value in parse_qsl(parsed.query) if key.casefold() != "apikey"}
+            payload = self._get(parsed.path, params=query)
         raise MassiveAPIError("pagination exceeded 100 pages")
 
     def _get(self, endpoint: str, params: dict[str, Any] | None = None) -> dict:
