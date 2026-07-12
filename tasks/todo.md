@@ -8,7 +8,7 @@ Dependency graph: `T1 -> T2 -> T3 -> T4`
 
 - [x] **T1** (`depends_on: []`): Add strict Massive split/dividend models,
   bounded same-origin pagination, validation, exports, and focused tests.
-- [ ] **T2** (`depends_on: [T1]`): Add the revision-aware canonical corporate
+- [x] **T2** (`depends_on: [T1]`): Add the revision-aware canonical corporate
   action store with correction lineage, safe cancellation semantics, atomic
   publication, and focused tests.
 - [ ] **T3** (`depends_on: [T2]`): Add targeted/universe reconciliation CLI,

@@ -92,7 +92,7 @@ def validate_parquet_file(
     if sort_column not in schema.names:
         raise KeyError(f"sort column {sort_column!r} not in parquet")
 
-    table = pq.read_table(path, columns=[sort_column])
+    table = pq.ParquetFile(path).read(columns=[sort_column])
     if table.num_rows != expected_rows:
         raise ValueError(f"{path}: expected {expected_rows} rows, found {table.num_rows}")
 
