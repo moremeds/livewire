@@ -481,6 +481,9 @@ class TestMain:
                                 # No alert since threshold is 100 and we repaired < 100
                                 mock_subprocess.assert_not_called()
 
+        repaired = BronzeClient(bronze_dir, "equity").read_symbol_rows("AAPL")
+        assert next(row for row in repaired if row["trade_date"] == "2026-01-07")["price_basis"] == "raw"
+
     def test_alert_sent_when_threshold_exceeded(self, tmp_path):
         """Alert email should be sent when repaired gaps meet or exceed threshold."""
         bronze_dir = tmp_path / "bronze" / "asset_class=equity"

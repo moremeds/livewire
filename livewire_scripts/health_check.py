@@ -18,10 +18,12 @@ if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
 from rich.console import Console
 
 from clients import BronzeClient
+from clients.corporate_action_store import CorporateActionStore
 from clients.intraday_bronze_client import (
     INTRADAY_TIMEFRAMES,
     IntradayBronzeClient,
 )
+from clients.price_basis import prepare_ib_rows_for_publish
 from livewire_scripts.daily_update import (
     _make_contract,
     bars_to_futures_rows,
@@ -541,6 +543,13 @@ def main() -> None:
                             source="ib",
                             price_basis="split_adjusted",
                         )
+                        if rows:
+                            rows = prepare_ib_rows_for_publish(
+                                rows,
+                                existing_rows=bronze.read_symbol_rows(symbol),
+                                actions=CorporateActionStore(bronze_dir.parent.parent).latest_active(symbol),
+                                as_of_date=max(date.fromisoformat(row["trade_date"]) for row in rows),
+                            )
 
                     symbol_rows.extend(rows)
 

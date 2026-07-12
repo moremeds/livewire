@@ -17,6 +17,7 @@ from livewire_scripts.scheduled_env import load_scheduled_env
 
 COMMANDS = {
     "audit-split-basis": "livewire_scripts.audit_split_basis",
+    "calibrate-daily-basis": "livewire_scripts.calibrate_daily_basis",
     "health": "livewire_scripts.health_check",
     "coverage": "livewire_scripts.coverage_report",
     "report": "livewire_scripts.data_quality_report",

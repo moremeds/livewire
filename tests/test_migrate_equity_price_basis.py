@@ -84,3 +84,36 @@ def test_failed_publish_preserves_original_bytes(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="publish failed"):
         migrate_equity_price_basis.run(["--tickers", "AAPL"], bronze_root=tmp_path)
     assert path.read_bytes() == before
+
+
+def test_full_migration_resumes_after_interrupted_symbol(tmp_path, monkeypatch, capsys):
+    _legacy(tmp_path / "symbol=AAPL/1d.parquet")
+    _legacy(tmp_path / "symbol=MSFT/1d.parquet")
+    cursor = tmp_path / "migration-cursor.json"
+    original = migrate_equity_price_basis.BronzeClient.replace_ticker_rows
+    calls = 0
+
+    def interrupt_second(client, symbol, rows):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("interrupted")
+        return original(client, symbol, rows)
+
+    monkeypatch.setattr(migrate_equity_price_basis.BronzeClient, "replace_ticker_rows", interrupt_second)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        migrate_equity_price_basis.run(
+            ["--full", "--cursor", str(cursor)],
+            bronze_root=tmp_path,
+        )
+    assert json.loads(cursor.read_text())["completed"] == ["AAPL"]
+
+    monkeypatch.setattr(migrate_equity_price_basis.BronzeClient, "replace_ticker_rows", original)
+    assert migrate_equity_price_basis.run(
+        ["--full", "--cursor", str(cursor)],
+        bronze_root=tmp_path,
+    ) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["resumed"] == 1
+    assert json.loads(cursor.read_text())["completed"] == ["AAPL", "MSFT"]

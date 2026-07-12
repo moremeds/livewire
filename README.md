@@ -298,6 +298,39 @@ artifacts, writes immutable `revision=<n>.json`, and atomically replaces
 `current.json` last. A failed batch never advances the pointer. `MDW_SILVER_DIR`
 overrides the default `data-lake/silver` root.
 
+### Equity Bronze price basis
+
+Equity daily Bronze rows carry non-null `source` and `price_basis` metadata.
+Canonical rows use `price_basis=raw`; migrated legacy rows remain
+`source=legacy, price_basis=unknown` until an approved repair resolves them.
+IB `TRADES` history is classified at every applicable split boundary because IB
+may return adjusted and raw segments for different split events. Ambiguous
+classification aborts before Bronze publication. Massive `adjusted=false` rows
+remain raw, while Nasdaq and Stooq recovery rows remain unknown.
+
+```bash
+# Read-only calibration with per-event hypothesis errors and confidence
+python scripts/livewire_quality.py calibrate-daily-basis \
+  --tickers AAPL MSFT NVDA --output /tmp/daily-basis.json
+
+# Atomic legacy schema migration; --full persists a resumable cursor
+python scripts/livewire_store.py migrate-price-basis --full --dry-run
+python scripts/livewire_store.py migrate-price-basis --full
+
+# Read-only audit, followed only by a separately reviewed/approved manifest
+python scripts/livewire_quality.py audit-split-basis \
+  --tickers AAPL MSFT NVDA --output /tmp/split-basis-audit.json
+python scripts/livewire_store.py repair-split-basis --manifest /tmp/split-basis-audit.json
+python scripts/livewire_store.py repair-split-basis \
+  --manifest /tmp/split-basis-audit.json --rollback
+```
+
+Audit manifests are bound to their resolved data-lake root. Use
+`--data-lake-root /path/to/disposable/data-lake` on both audit and repair for a
+rehearsal; a root mismatch is rejected before any symbol is touched. Silver
+applies split factors only to raw rows, keeps dividend adjustment independent,
+and fails closed when an unknown row is affected by an effective split.
+
 ### Prerequisites
 
 * IB Gateway running (`127.0.0.1:4001` by default) — only needed for non-Massive data

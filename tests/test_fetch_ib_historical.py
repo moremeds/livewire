@@ -973,6 +973,7 @@ class TestFetchTicker:
         assert inserted == 2
         rows = bronze.read_symbol_rows("AAPL")
         assert [row["trade_date"] for row in rows] == ["2025-01-02", "2025-01-03"]
+        assert {row["price_basis"] for row in rows} == {"raw"}
 
     @pytest.mark.integration
     def test_fetch_empty_bars_returns_zero(self, bronze):

@@ -95,6 +95,18 @@ def test_quality_dispatches_split_basis_audit(monkeypatch) -> None:
     ]
 
 
+def test_quality_dispatches_daily_basis_calibration(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_quality.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+
+    assert livewire_quality.main(["calibrate-daily-basis", "--tickers", "AAPL"]) == 7
+    assert calls == [("livewire_scripts.calibrate_daily_basis", ["--tickers", "AAPL"])]
+
+
 def test_store_dispatches_split_basis_repair(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(

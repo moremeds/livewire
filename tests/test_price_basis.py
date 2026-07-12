@@ -5,7 +5,12 @@ from datetime import UTC, date, datetime
 import pytest
 
 from clients.corporate_action_store import CorporateAction
-from clients.price_basis import classify_split_events, normalize_ib_rows, normalize_split_adjusted_rows
+from clients.price_basis import (
+    classify_split_events,
+    normalize_ib_rows,
+    normalize_split_adjusted_rows,
+    prepare_ib_rows_for_publish,
+)
 
 
 def _split(action_id: str, ex_date: date, split_from: float, split_to: float) -> CorporateAction:
@@ -200,3 +205,65 @@ def test_selective_normalization_rejects_ambiguous_event():
 
     with pytest.raises(ValueError, match="ambiguous"):
         normalize_ib_rows([_row(date(2026, 1, 2), 100.0)], classifications)
+
+
+def test_prepare_full_ib_history_normalizes_adjusted_rows_to_raw():
+    incoming = [
+        _row(date(2020, 8, 28), 124.81, volume=400),
+        _row(date(2020, 8, 31), 129.04, volume=500),
+    ]
+
+    result = prepare_ib_rows_for_publish(
+        incoming,
+        existing_rows=[],
+        actions=[_split("aapl", date(2020, 8, 31), 1, 4)],
+        as_of_date=date(2020, 8, 31),
+    )
+
+    assert result[0]["close"] == pytest.approx(499.24)
+    assert result[0]["volume"] == 100
+    assert result[1]["close"] == pytest.approx(129.04)
+    assert {row["price_basis"] for row in result} == {"raw"}
+
+
+def test_prepare_incremental_post_split_row_uses_existing_raw_boundary():
+    existing = [_row(date(2024, 6, 7), 1208.88, volume=41_238_580)]
+    incoming = [_row(date(2024, 6, 10), 121.79, volume=314_162_650)]
+
+    result = prepare_ib_rows_for_publish(
+        incoming,
+        existing_rows=existing,
+        actions=[_split("nvda", date(2024, 6, 10), 1, 10)],
+        as_of_date=date(2024, 6, 10),
+    )
+
+    assert result[0]["close"] == pytest.approx(121.79)
+    assert result[0]["volume"] == 314_162_650
+    assert result[0]["price_basis"] == "raw"
+
+
+def test_prepare_preserves_non_ib_recovery_rows():
+    massive = {**_row(date(2026, 1, 2), 100.0), "source": "massive", "price_basis": "raw"}
+
+    result = prepare_ib_rows_for_publish(
+        [massive],
+        existing_rows=[],
+        actions=[],
+        as_of_date=date(2026, 1, 2),
+    )
+
+    assert result == [massive]
+
+
+def test_prepare_does_not_require_old_split_before_incoming_window():
+    incoming = [_row(date(2025, 1, 2), 200.0)]
+
+    result = prepare_ib_rows_for_publish(
+        incoming,
+        existing_rows=[],
+        actions=[_split("old", date(2020, 8, 31), 1, 4)],
+        as_of_date=date(2025, 1, 2),
+    )
+
+    assert result[0]["close"] == 200.0
+    assert result[0]["price_basis"] == "raw"

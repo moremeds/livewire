@@ -8,15 +8,15 @@ Dependency graph: `T1 -> T2 -> T3 -> T4 -> T5 -> T6`
 
 - [x] **T1** (`depends_on: []`): Add strict row-level equity Bronze source and
   price-basis metadata across every daily producer.
-- [ ] **T2** (`depends_on: [T1]`): Classify IB treatment per split event and
+- [x] **T2** (`depends_on: [T1]`): Classify IB treatment per split event and
   selectively normalize incorporated adjustments to canonical raw rows.
-- [ ] **T3** (`depends_on: [T2]`): Add atomic, resumable legacy schema migration
+- [x] **T3** (`depends_on: [T2]`): Add atomic, resumable legacy schema migration
   to `legacy/unknown` with hashes and dry-run support.
 - [x] **T4** (`depends_on: [T3]`): Add read-only split-basis audit plus stale-safe,
   rollback-capable manifest repair and rehearse it in a disposable lake.
-- [ ] **T5** (`depends_on: [T4]`): Make Silver and its canary basis-aware and
+- [x] **T5** (`depends_on: [T4]`): Make Silver and its canary basis-aware and
   verify known AAPL, NVDA, and MSFT split boundaries through local Apex.
-- [ ] **T6** (`depends_on: [T5]`): Run all gates, update durable/operator docs,
+- [x] **T6** (`depends_on: [T5]`): Run all gates, update durable/operator docs,
   self-review, and prepare a separate follow-up PR without production repair.
 
 ## Silver causal canary hardening (2026-07-13)

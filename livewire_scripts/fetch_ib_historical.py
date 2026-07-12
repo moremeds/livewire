@@ -62,6 +62,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients.bronze_client import BronzeClient
+from clients.corporate_action_store import CorporateAction, CorporateActionStore
 from clients.ib_client import IBClient, IBError
 from clients.ingestion_common import (
     ROOT_EXCHANGE_MAP,  # noqa: F401
@@ -81,6 +82,7 @@ from clients.ingestion_common import (
     resolve_fx_pair as _resolve_fx_pair,  # noqa: F401
 )
 from clients.massive_client import MassiveAPIError, MassiveClient
+from clients.price_basis import prepare_ib_rows_for_publish
 from clients.quality_detector import _normalize_bars_for_detection, detect_all
 from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
 from livewire_scripts.paths import data_lake_dir, log_dir
@@ -129,6 +131,11 @@ def _resolved_data_lake() -> Path:
 
 def _resolved_bronze_dir(asset_class: str = "equity") -> Path:
     return BRONZE_DIR or _resolved_data_lake() / "bronze" / f"asset_class={asset_class}"
+
+
+def _action_store_for_bronze(bronze_dir: Path) -> CorporateActionStore:
+    root = bronze_dir.parent.parent if bronze_dir.parent.name == "bronze" else bronze_dir.parent
+    return CorporateActionStore(root)
 
 
 # load_preset → imported from clients.ingestion_common
@@ -549,6 +556,7 @@ def fetch_ticker(
     *,
     expected_start: date | None = None,
     ib_head_timestamp: date | None = None,
+    corporate_actions: list[CorporateAction] | None = None,
 ) -> int:
     """Persist pre-fetched bars for *ticker* into bronze parquet."""
     if not bars:
@@ -575,6 +583,12 @@ def fetch_ticker(
         rows = bars_to_midpoint_rows(bars, symbol_id, invert=asset_class == "fx" and _is_inverted_fx_pair(ticker))
     else:
         rows = bars_to_rows(bars, symbol_id, source="ib", price_basis="split_adjusted")
+        rows = prepare_ib_rows_for_publish(
+            rows,
+            existing_rows=[],
+            actions=corporate_actions or [],
+            as_of_date=max(date.fromisoformat(row["trade_date"]) for row in rows),
+        )
     inserted = bronze.replace_ticker_rows(ticker, rows)
     if hasattr(bronze, "write_ticker_parquet"):
         bronze.write_ticker_parquet(ticker, symbol_id, _resolved_bronze_dir(asset_class))
@@ -603,6 +617,7 @@ def backfill_ticker(
     expected_start: date | None = None,
     ib_head_timestamp: date | None = None,
     source: str = "ib",
+    corporate_actions: list[CorporateAction] | None = None,
 ) -> int:
     """Insert backfill bars for *ticker* without deleting existing data."""
     if not bars:
@@ -637,6 +652,13 @@ def backfill_ticker(
             source=source,
             price_basis="split_adjusted" if source == "ib" else "unknown",
         )
+        if source == "ib":
+            rows = prepare_ib_rows_for_publish(
+                rows,
+                existing_rows=(bronze.read_symbol_rows(ticker) if hasattr(bronze, "read_symbol_rows") else []),
+                actions=corporate_actions or [],
+                as_of_date=max(date.fromisoformat(row["trade_date"]) for row in rows),
+            )
     inserted = bronze.merge_ticker_rows(ticker, rows)
     if hasattr(bronze, "write_ticker_parquet"):
         bronze.write_ticker_parquet(ticker, symbol_id, _resolved_bronze_dir(asset_class))
@@ -941,7 +963,15 @@ def _run_backfill(
                     batch_fail += 1
                     progress.advance(task)
                     continue
-                count = backfill_ticker(ticker, bars, bronze, asset_class=asset_class)
+                count = backfill_ticker(
+                    ticker,
+                    bars,
+                    bronze,
+                    asset_class=asset_class,
+                    corporate_actions=_action_store_for_bronze(_resolved_bronze_dir(asset_class)).latest_active(
+                        ticker
+                    ),
+                )
 
                 if count > 0:
                     # Real backfill: record the oldest date seen in the returned bars.
@@ -1183,7 +1213,15 @@ def _run_normal(
                     batch_fail += 1
                     progress.advance(task)
                     continue
-                count = fetch_ticker(ticker, bars, bronze, asset_class=asset_class)
+                count = fetch_ticker(
+                    ticker,
+                    bars,
+                    bronze,
+                    asset_class=asset_class,
+                    corporate_actions=_action_store_for_bronze(_resolved_bronze_dir(asset_class)).latest_active(
+                        ticker
+                    ),
+                )
 
                 if count > 0:
                     mark_timeframe_done(completed, ticker, "1d")

@@ -91,6 +91,7 @@ Primary data source: **Interactive Brokers** via `ib_async`. Requires the IB Gat
 - `IBClient.connect()` defaults to `clientId=0` and automatically retries successive `clientId` values if IB reports error `326` (`client id already in use`)
 - `IBClient.get_historical_data()` fetches daily bars via `reqHistoricalData`
 - `BronzeClient` is the live service storage client: it discovers symbols from parquet, merges or replaces per-ticker snapshots, and publishes with `temp -> validate -> os.replace()`
+- Equity daily Bronze rows include non-null `source` and `price_basis`. Canonical rows are raw; legacy rows migrate to `legacy/unknown`. IB `TRADES` rows are classified per applicable split event and normalized before publication, because IB treatment is not consistent across split history. Ambiguity blocks the whole symbol mutation.
 - `DailyBarFallbackClient` is a narrow recovery client for unresolved target-day gaps in the current U.S. equity universe. Provider order: Nasdaq `assetclass=stocks`, Nasdaq `assetclass=etf`, then Stooq U.S. daily CSV.
 - `MassiveClient` is the optional daily U.S. equity accelerator and validation reference. It uses `MASSIVE_API_KEY`, stores `adjusted=false` bars with `adj_close = close`, and is not used for equity intraday or broker-specific asset classes.
 - `MassiveClient` also exposes paginated split and cash-dividend reference data. `scripts/livewire_ingest.py corporate-actions` reconciles those events into revision-aware per-symbol bronze histories; corrections and cancellations remain auditable, while only latest active revisions feed the Silver engine.
@@ -112,6 +113,17 @@ Primary data source: **Interactive Brokers** via `ib_async`. Requires the IB Gat
 | `bar.close` | `close` | Already float |
 | `bar.close` | `adj_close` | Same value |
 | `bar.volume` | `volume` | `int(bar.volume)` |
+| provider | `source` | Row-level `ib`, `massive`, `nasdaq`, `stooq`, or `legacy` |
+| normalization gate | `price_basis` | Canonical `raw`; unresolved legacy/fallback rows use `unknown` |
+
+Operational commands for this contract are
+`scripts/livewire_quality.py calibrate-daily-basis`,
+`scripts/livewire_store.py migrate-price-basis`,
+`scripts/livewire_quality.py audit-split-basis`, and
+`scripts/livewire_store.py repair-split-basis`. Audit manifests record their
+resolved data-lake root; repair and rollback reject a different active root
+before mutation. Silver applies split factors only to rows marked raw and fails
+closed on split-affected unknown rows; dividend adjustment remains independent.
 
 ### IB BarData → Futures Bronze mapping
 

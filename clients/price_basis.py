@@ -137,6 +137,38 @@ def normalize_ib_rows(rows: list[dict], classifications: list[SplitClassificatio
     return normalized
 
 
+def prepare_ib_rows_for_publish(
+    incoming_rows: list[dict],
+    *,
+    existing_rows: list[dict],
+    actions: list[CorporateAction],
+    as_of_date: date,
+) -> list[dict]:
+    """Classify IB split treatment and return canonical raw incoming rows.
+
+    Existing canonical rows supply the opposite side of split boundaries for
+    incremental and backfill requests. They are classification context only and
+    are never returned or rewritten by this helper.
+    """
+    staged = [
+        {**row, "source": "ib", "price_basis": "split_adjusted"}
+        if row.get("source") == "ib"
+        else dict(row)
+        for row in incoming_rows
+    ]
+    if not any(row.get("source") == "ib" for row in staged):
+        return staged
+    earliest_ib_date = min(_date(row["trade_date"]) for row in staged if row.get("source") == "ib")
+    relevant_actions = [action for action in actions if action.ex_date > earliest_ib_date]
+    combined_by_date = {str(row["trade_date"]): row for row in existing_rows}
+    combined_by_date.update({str(row["trade_date"]): row for row in staged})
+    classifications = classify_split_events(list(combined_by_date.values()), relevant_actions, as_of_date)
+    normalized_ib = iter(
+        normalize_ib_rows([row for row in staged if row.get("source") == "ib"], classifications)
+    )
+    return [next(normalized_ib) if row.get("source") == "ib" else row for row in staged]
+
+
 def normalize_split_adjusted_rows(
     rows: list[dict],
     actions: list[CorporateAction],
