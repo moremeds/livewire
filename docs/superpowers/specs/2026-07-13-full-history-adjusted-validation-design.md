@@ -96,8 +96,10 @@ Reference acquisition is separate from comparison:
 1. Request Massive `adjusted=true` daily aggregates for the complete local date
    range, following pagination and recording the actual first/last dates.
 2. Determine exact local sessions not covered by Massive.
-3. Request fresh IB `TRADES` history for those ranges through the canonical
-   robust execution model for bulk runs.
+3. Request fresh IB `TRADES` history for those ranges, expanded by the sessions
+   needed to classify every adjacent split event, using a read-only runner that
+   reuses the canonical robust execution model's pacing, retry, timeout, and
+   per-symbol outcome semantics.
 4. Classify every applicable IB split event and normalize the returned series
    onto the split-only comparison basis.
 5. Mark any session absent from both references as unresolved.
@@ -106,6 +108,13 @@ Provider results are cached under a validation workspace outside Bronze and
 Silver. Cached payloads include request parameters, retrieval time, source,
 actual response range, and a content hash. A new run may reuse a cache only when
 its identity and requested validation as-of date match.
+
+Corporate-action evidence is acquired independently from price-bar coverage.
+The validator refreshes Massive split and dividend reference records where the
+account is entitled, compares their active revisions and
+`historical_adjustment_factor` values with the local action snapshot, and records
+the provider's actual action range. An unverified action range cannot be
+described as independently validated merely because IB supplied price bars.
 
 ## Source and Coverage Contract
 
@@ -164,6 +173,13 @@ total-return oracle. The validator independently rebuilds dividend factors from
 active effective corporate actions and pre-event reference closes, then compares
 the resulting total-return OHLC values and 20/50/200-session moving averages with
 persisted Silver.
+
+Fresh Massive dividend records, including historical adjustment factors where
+present, are a separate action-inventory cross-check. When the provider cannot
+establish complete action coverage, the report distinguishes a successful
+`transformation_check` from an `independent_action_check`. The transformation
+result remains useful and explicit, but the report must not describe the action
+inventory itself as independently proven.
 
 The independent reconstruction must not call the production Silver writer or
 reuse persisted Silver factors as expected values. It may reuse pure corporate
@@ -231,7 +247,8 @@ uv run python scripts/livewire_quality.py validate-adjusted-history \
 It also supports explicit `--tickers`, `--data-lake-root`, `--as-of-date`,
 `--host`, `--port`, `--workers`, `--output-dir`, and threshold arguments.
 Runs over more than five symbols use the repository's robust IB orchestration
-semantics rather than an ad hoc direct loop.
+semantics in a dedicated read-only fetch runner rather than invoking the
+Bronze-writing `robust` ingestion command or using an ad hoc direct loop.
 
 The cursor is versioned and keyed by resolved data-lake root, Bronze hash,
 Silver revision, corporate-action snapshot, as-of date, provider request
@@ -260,10 +277,25 @@ Ticker outcomes are:
   corporate-action, schema, or invariant failure;
 - `unresolved`: at least one local date lacks usable reference evidence;
 - `provider-error`: validation could not establish a usable provider response;
+- `input-changed`: a Bronze, Silver, or corporate-action input changed during
+  validation;
 - `resume-pending`: execution stopped before the ticker reached a terminal state.
 
 The process exits zero only when every requested ticker passes. Unresolved and
 provider-error outcomes are distinct in JSON but fail the aggregate gate.
+
+Every terminal result also carries evidence dimensions rather than compressing
+all successful checks into one confidence claim:
+
+- `price_evidence`: `cross_provider`, `hybrid`, or `same_provider_replay`;
+- `action_reference_status`: `complete`, `partial`, or `unavailable`;
+- `transformation_check`: `pass` or `fail`;
+- `independent_action_check`: `pass`, `fail`, or `unavailable`.
+
+Thus a complete IB-backed history can pass the value and transformation gate
+without being mislabeled as fully independent validation. A fresh Massive action
+mismatch is a failure; unavailable independent action evidence is reported as a
+confidence limitation, not silently converted into success.
 
 ## Safety
 
@@ -289,6 +321,8 @@ provider-error outcomes are distinct in JSON but fail the aggregate gate.
   otherwise valid schemas.
 - 20/50/200 session eligibility, gaps, action boundaries, and threshold edges.
 - Dividend reconstruction that is independent of persisted Silver factors.
+- Complete, partial, corrected, cancelled, and unavailable corporate-action
+  reference coverage, including historical adjustment factors.
 - Cursor invalidation for every identity input and atomic resume behavior.
 - Input-root binding, changed-input detection, and output-root rejection.
 
@@ -331,4 +365,3 @@ percent.
    unexplained clusters.
 5. Only after a clean validation run, use a separate explicitly approved repair
    workflow for any source data changes and rerun the complete validator.
-
