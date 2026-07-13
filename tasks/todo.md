@@ -11,7 +11,7 @@ Dependency graph: `V1 -> V2 -> V3 -> V4 -> V5`
   validation.
 - [x] **V2** (`depends_on: [V1]`): Add paginated Massive adjusted aggregate and
   SMA evidence with strict normalization and same-origin pagination.
-- [ ] **V3** (`depends_on: [V2]`): Add read-only Massive/IB provider acquisition,
+- [x] **V3** (`depends_on: [V2]`): Add read-only Massive/IB provider acquisition,
   split-boundary context, terminal outcomes, and content-addressed atomic caches.
 - [ ] **V4** (`depends_on: [V3]`): Add the full-universe quality command, strict
   coverage gate, cursor, evidence dimensions, JSON/Markdown reports, and CLI tests.

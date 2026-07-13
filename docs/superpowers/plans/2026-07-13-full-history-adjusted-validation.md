@@ -125,31 +125,31 @@
 - Consumes: `MassiveClient`, `IBClient`, local date bounds, corporate actions, host/port, and a cache root.
 - Produces: `SourceEvidence`, `ActionEvidence`, `fetch_massive_evidence(...)`, `fetch_massive_action_evidence(...)`, `fetch_ib_evidence(...)`, `load_cached_evidence(...)`, and `write_cached_evidence(...)`.
 
-- [ ] **Step 1: Write failing acquisition/cache tests**
+- [x] **Step 1: Write failing acquisition/cache tests**
 
   Prove Massive partial ranges remain partial, fresh split/dividend events are compared with active local revisions, historical dividend factors are checked when present, unavailable/partial action evidence remains explicit, IB requests expand around split boundaries, IB results are filtered back to local bounds, retries/timeouts are isolated per symbol, cache identity includes request/as-of/provider/version, credentials are absent from serialized data, corrupt caches are rejected, and writes are atomic.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
   Run: `uv run pytest tests/test_adjusted_history_sources.py -q`
 
   Expected: collection fails because the source module does not exist.
 
-- [ ] **Step 3: Implement injectable read-only acquisition**
+- [x] **Step 3: Implement injectable read-only acquisition**
 
   Convert provider bars to the validation row contract without importing `BronzeClient`. For IB, qualify `Stock(symbol, "SMART", "USD")`, request one-year daily `TRADES` chunks, deduplicate/sort, stage rows as `source=ib, price_basis=split_adjusted`, classify split events with expanded context, normalize them, and rebuild the split-only comparison series. Implement per-symbol terminal acquisition states `ok`, `empty`, `timeout`, and `error`.
 
-- [ ] **Step 4: Implement content-addressed JSON caches**
+- [x] **Step 4: Implement content-addressed JSON caches**
 
   Write to `.<name>.<pid>.tmp`, `fsync`, then `os.replace`. Store provider, symbol, request bounds, actual bounds, retrieved-at, as-of date, validator version, and payload SHA-256. Reject any identity mismatch.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
   Run: `uv run pytest tests/test_adjusted_history_sources.py tests/test_price_basis.py -q -W error::RuntimeWarning`
 
   Expected: all tests pass with no leaked coroutine warnings.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
   ```bash
   git add livewire_scripts/adjusted_history_sources.py tests/test_adjusted_history_sources.py
