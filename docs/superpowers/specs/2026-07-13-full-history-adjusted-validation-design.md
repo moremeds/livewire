@@ -25,8 +25,8 @@ Three properties make a whole-history validator necessary:
   classified per split event and normalized before they can be compared with a
   canonical series.
 - A moving average can look correct even when positive and negative point errors
-  cancel. Moving averages are therefore a required aggregate check, but cannot
-  replace date-aligned OHLCV checks.
+  cancel. Moving averages are therefore a required aggregate check alongside
+  date-aligned diagnostics and exact local transformation checks.
 
 The validation must be read-only, resumable across a large universe, explicit
 about provider coverage, and safe to run while Apex continues reading published
@@ -144,9 +144,10 @@ validated.
 
 Massive `adjusted=true` aggregates are split-adjusted but not dividend-adjusted.
 They are compared with the local split-only reconstruction, never directly with
-total-return Silver. Price OHLC fields are compared pointwise. Volume is checked
-with a separate tolerance and diagnostic classification because provider trade
-filters can produce legitimate volume differences.
+total-return Silver. Price OHLC fields are compared pointwise. Massive close
+differences are hard failures; open/high/low differences remain diagnostics
+because provider trade filters and corrected aggregate revisions can produce
+legitimate differences. Volume is diagnostic for the same reason.
 
 The validator calculates 20-, 50-, and 200-session simple moving averages from
 the returned Massive adjusted close series. On supported overlap it also queries
@@ -192,7 +193,8 @@ For every covered local date, validate:
 
 - exact symbol and trading-date alignment;
 - finite, positive OHLC and standard OHLC ordering;
-- pointwise open, high, low, and close percentage error;
+- pointwise open, high, low, and close percentage error, with independent
+  Massive close differences eligible for hard point failure;
 - adjusted-close and factor consistency;
 - volume semantics and split-volume factors;
 - 20-, 50-, and 200-session simple moving averages at every complete window;
@@ -229,8 +231,10 @@ The report includes, for each 20/50/200 window and reference source:
 - error distributions around corporate-action boundaries;
 - Massive-SMA-endpoint divergence where that endpoint is available.
 
-Pointwise checks remain authoritative. A passing moving average cannot cancel a
-pointwise failure.
+Independent Massive close checks remain authoritative. A passing moving average
+cannot cancel a Massive close failure. IB replay point differences and
+open/high/low differences remain visible diagnostics, while IB-backed moving
+average failures remain authoritative over the fallback history.
 
 ## CLI and Execution Model
 

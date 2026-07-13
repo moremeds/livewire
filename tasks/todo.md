@@ -2,6 +2,32 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Adjusted-history pointwise resolution and production readiness (2026-07-13)
+
+Dependency graph: `P1 -> P2 -> P3 -> P4 -> P5 -> P6 -> P7`
+
+- [x] **P1** (`depends_on: []`): Reproduce every SPY and PLTR pointwise failure
+  from saved evidence and trace Bronze, Silver, Massive, IB, normalization, and
+  corporate-action values at each failing date without mutating production.
+- [x] **P2** (`depends_on: [P1]`): Classify each mismatch by root cause and prove
+  the authoritative value using complete provider context, split boundaries,
+  neighboring sessions, and raw-versus-adjusted return continuity.
+- [x] **P3** (`depends_on: [P2]`): Add regression coverage and implement only the
+  root-cause fix required by the evidence; keep validation read-only and keep
+  ambiguous provider differences as explicit blockers.
+- [x] **P4** (`depends_on: [P3]`): Run focused, RuntimeWarning, static, and full
+  CI-equivalent verification, then repeat the SPY/PLTR live validation and
+  require explained or eliminated pointwise failures.
+- [ ] **P5** (`depends_on: [P4]`): Dry-run the production Bronze basis migration
+  and full split-boundary audit; persist root-bound hashes, counts, and proposed
+  repairs without changing Parquet.
+- [ ] **P6** (`depends_on: [P5]`): Apply only evidence-confirmed Bronze repairs
+  through the stale-safe rollback-capable manifest, then rerun the complete
+  audit and structural/schema validation.
+- [ ] **P7** (`depends_on: [P6]`): Build production inputs into disposable Silver,
+  run the full-history gate plus representative Apex reads, self-review all
+  evidence, and stop before advancing production `silver/revisions/current.json`.
+
 ## Full-history adjusted validation (2026-07-13)
 
 Dependency graph: `V1 -> V2 -> V3 -> V4 -> V5`

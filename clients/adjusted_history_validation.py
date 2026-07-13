@@ -240,10 +240,17 @@ def compare_series(
     failure_bps: float = 5.0,
     windows: tuple[int, ...] = DEFAULT_WINDOWS,
     exact_columns: tuple[str, ...] = (),
+    point_failure_columns: tuple[str, ...] | None = None,
+    point_failure_sources: tuple[str, ...] | None = None,
 ) -> SeriesComparison:
     """Compare aligned OHLC point values and rolling close averages."""
     if warning_bps < 0 or failure_bps <= warning_bps:
         raise ValueError("thresholds require 0 <= warning_bps < failure_bps")
+    hard_columns = set(PRICE_COLUMNS if point_failure_columns is None else point_failure_columns)
+    unknown_columns = hard_columns - set(PRICE_COLUMNS)
+    if unknown_columns:
+        raise ValueError(f"unknown point failure columns: {', '.join(sorted(unknown_columns))}")
+    hard_sources = None if point_failure_sources is None else set(point_failure_sources)
     local_by_date = _rows_by_date(local_rows, "local")
     reference_by_date = _rows_by_date(reference_rows, "reference")
     for trade_date, row in local_by_date.items():
@@ -260,6 +267,11 @@ def compare_series(
             reference = float(reference_by_date[trade_date][column])
             error = _relative_error_bps(local, reference)
             severity = _severity(error, warning_bps, failure_bps)
+            reference_source = str(reference_by_date[trade_date].get("source", ""))
+            if severity == "failure" and (
+                column not in hard_columns or (hard_sources is not None and reference_source not in hard_sources)
+            ):
+                severity = "warning"
             if severity != "ok":
                 differences.append(PointDifference(trade_date, column, local, reference, error, severity))
         for column in exact_columns:

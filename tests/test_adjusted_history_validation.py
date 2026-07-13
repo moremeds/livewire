@@ -109,6 +109,80 @@ def test_compare_series_fails_point_error_even_when_sma_error_cancels() -> None:
     assert result.sma[20].max_error_bps == pytest.approx(0.0)
 
 
+def test_compare_series_keeps_non_close_provider_drift_diagnostic() -> None:
+    trade_date = date(2024, 1, 2)
+    reference = [_bar(trade_date, 100.0, high=101.0)]
+    local = [_bar(trade_date, 100.0, high=110.0)]
+
+    result = compare_series(
+        local,
+        reference,
+        windows=(),
+        point_failure_columns=("close",),
+        point_failure_sources=("massive",),
+    )
+
+    assert result.passed is True
+    assert result.point_failure_count == 0
+    assert result.point_warning_count == 1
+    assert result.differences[0].column == "high"
+    assert result.differences[0].severity == "warning"
+
+
+def test_compare_series_keeps_ib_replay_close_drift_diagnostic() -> None:
+    trade_date = date(2024, 1, 2)
+    reference = [_bar(trade_date, 100.0, source="ib")]
+    local = [_bar(trade_date, 101.0)]
+
+    result = compare_series(
+        local,
+        reference,
+        windows=(),
+        point_failure_columns=("close",),
+        point_failure_sources=("massive",),
+    )
+
+    assert result.passed is True
+    assert result.point_failure_count == 0
+    assert result.point_warning_count == 4
+
+
+def test_compare_series_still_fails_massive_close_drift() -> None:
+    trade_date = date(2024, 1, 2)
+    reference = [_bar(trade_date, 100.0, source="massive")]
+    local = [_bar(trade_date, 101.0)]
+
+    result = compare_series(
+        local,
+        reference,
+        windows=(),
+        point_failure_columns=("close",),
+        point_failure_sources=("massive",),
+    )
+
+    assert result.passed is False
+    assert result.point_failure_count == 1
+    assert result.point_warning_count == 3
+
+
+def test_compare_series_still_fails_ib_sma_drift() -> None:
+    start = date(2024, 1, 1)
+    reference = [_bar(start + timedelta(days=offset), 100.0, source="ib") for offset in range(20)]
+    local = [_bar(start + timedelta(days=offset), 101.0) for offset in range(20)]
+
+    result = compare_series(
+        local,
+        reference,
+        windows=(20,),
+        point_failure_columns=("close",),
+        point_failure_sources=("massive",),
+    )
+
+    assert result.passed is False
+    assert result.point_failure_count == 0
+    assert result.sma[20].failure_count == 1
+
+
 def test_compare_series_reports_missing_reference_date() -> None:
     first = date(2024, 1, 2)
     second = date(2024, 1, 3)

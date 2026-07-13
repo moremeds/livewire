@@ -14,7 +14,10 @@
 - Massive `adjusted=true` validates split-only reconstruction; dividend-adjusted Silver is validated separately.
 - Fresh IB fills Massive bar-coverage gaps and is labelled same-provider replay evidence where appropriate.
 - Every local date must be covered; intersection-only comparison cannot pass.
-- Pointwise OHLC checks remain authoritative even when rolling moving averages pass.
+- Every pointwise OHLC difference remains visible. Independent Massive close
+  differences are authoritative; open/high/low and IB replay point differences
+  are diagnostic because provider filtering, aggregate revisions, and IB request
+  shape can vary. Rolling close averages remain hard full-history gates.
 - Default warning threshold is 1 basis point and failure threshold is 5 basis points.
 - API credentials come only from environment variables and never enter reports or caches.
 - The configured source set must retain at least 95 percent test coverage.

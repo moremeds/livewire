@@ -41,7 +41,7 @@ from livewire_scripts.adjusted_history_sources import (
 from livewire_scripts.paths import data_lake_dir
 
 NEW_YORK = ZoneInfo("America/New_York")
-VALIDATOR_VERSION = 2
+VALIDATOR_VERSION = 3
 
 
 class _UnavailableMassive:
@@ -424,6 +424,8 @@ def run(
                         coverage.rows,
                         warning_bps=args.warning_bps,
                         failure_bps=args.failure_bps,
+                        point_failure_columns=("close",),
+                        point_failure_sources=("massive",),
                     )
                     total_comparison = compare_series(
                         silver_rows,
