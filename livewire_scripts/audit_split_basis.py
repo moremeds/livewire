@@ -78,15 +78,22 @@ def run(
         classifications = classify_split_events(staged, actions.latest_active(symbol), effective_as_of)
         eligible = all(item.treatment != "ambiguous" for item in classifications)
         replacements = []
+        error = None
         if eligible:
-            proposed = normalize_ib_rows(staged, classifications)
-            for old, new in zip(rows, proposed, strict=True):
-                new["source"] = old["source"]
-            replacements = [
-                {"trade_date": old["trade_date"], "original": old, "proposed": new}
-                for old, new in zip(rows, proposed, strict=True)
-                if old != new
-            ]
+            try:
+                proposed = normalize_ib_rows(staged, classifications)
+            except ValueError as exc:
+                eligible = False
+                error = str(exc)
+                failed += 1
+            else:
+                for old, new in zip(rows, proposed, strict=True):
+                    new["source"] = old["source"]
+                replacements = [
+                    {"trade_date": old["trade_date"], "original": old, "proposed": new}
+                    for old, new in zip(rows, proposed, strict=True)
+                    if old != new
+                ]
         else:
             failed += 1
         manifest_symbols.append(
@@ -94,6 +101,7 @@ def run(
                 "approved": False,
                 "classifications": [_classification_payload(item) for item in classifications],
                 "eligible": eligible,
+                "error": error,
                 "path": str(path),
                 "replacements": replacements,
                 "source_sha256": _sha256(path),

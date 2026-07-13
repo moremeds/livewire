@@ -74,3 +74,19 @@ def test_ambiguous_boundary_is_not_repair_eligible(tmp_path):
     item = json.loads(output.read_text())["symbols"][0]
     assert item["eligible"] is False
     assert item["replacements"] == []
+
+
+def test_invalid_normalized_price_is_recorded_without_aborting_full_audit(tmp_path):
+    path = _seed(tmp_path)
+    client = BronzeClient(path.parents[1], "equity")
+    rows = client.read_symbol_rows("AAPL")
+    rows[0]["low"] = 0.0
+    client.replace_ticker_rows("AAPL", rows)
+    output = tmp_path / "audit.json"
+
+    assert audit_split_basis.run(["--tickers", "AAPL", "--output", str(output)], data_lake_root=tmp_path) == 1
+
+    item = json.loads(output.read_text())["symbols"][0]
+    assert item["eligible"] is False
+    assert item["error"] == "normalized low must be positive"
+    assert item["replacements"] == []
