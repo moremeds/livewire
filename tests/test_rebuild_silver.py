@@ -61,6 +61,83 @@ def test_targeted_rebuild_publishes_daily_factors_and_manifest(tmp_path, capsys)
     assert (silver / "revisions/current.json").exists()
 
 
+def test_targeted_rebuild_excludes_announced_future_dividend(tmp_path, capsys):
+    _bronze(tmp_path, "MSFT")
+    dividend = MassiveDividend(
+        provider_event_id="future-dividend",
+        ticker="MSFT",
+        ex_dividend_date=date(2026, 1, 4),
+        cash_amount=Decimal("1"),
+        currency="USD",
+        declaration_date=date(2026, 1, 1),
+        record_date=None,
+        pay_date=None,
+        payload_hash="future-dividend-hash",
+    )
+    CorporateActionStore(tmp_path).reconcile(
+        "MSFT",
+        [dividend],
+        datetime(2026, 1, 2, tzinfo=UTC),
+    )
+    silver = tmp_path / "silver"
+
+    assert (
+        rebuild_silver.run(
+            ["--tickers", "MSFT"],
+            data_lake_root=tmp_path,
+            silver_root=silver,
+            as_of_date=date(2026, 1, 3),
+        )
+        == 0
+    )
+
+    daily = pq.ParquetFile(silver / "asset_class=equity/symbol=MSFT/1d.parquet").read()
+    assert daily.column("close").to_pylist() == [100.0, 100.0, 50.0]
+    assert daily.column("price_adjustment_factor").to_pylist() == [1.0, 1.0, 1.0]
+    factors = pq.ParquetFile(silver / "adjustments/asset_class=equity/symbol=MSFT/factors.parquet").read()
+    assert factors.column("price_adjustment_factor").to_pylist() == [1.0]
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["as_of_date"] == "2026-01-03"
+    assert summary["action_count"] == 1
+    assert summary["effective_action_count"] == 0
+    assert summary["future_action_count"] == 1
+
+
+def test_multi_symbol_rebuild_uses_injected_cutoff_for_every_symbol(tmp_path):
+    for symbol in ("MSFT", "AAPL"):
+        _bronze(tmp_path, symbol)
+        split = MassiveSplit(
+            provider_event_id=f"{symbol}-future-split",
+            ticker=symbol,
+            execution_date=date(2026, 1, 4),
+            split_from=Decimal("1"),
+            split_to=Decimal("2"),
+            payload_hash=f"{symbol}-future-split-hash",
+        )
+        CorporateActionStore(tmp_path).reconcile(
+            symbol,
+            [split],
+            datetime(2026, 1, 2, tzinfo=UTC),
+        )
+
+    assert (
+        rebuild_silver.run(
+            ["--tickers", "MSFT", "AAPL"],
+            data_lake_root=tmp_path,
+            silver_root=tmp_path / "silver",
+            as_of_date=date(2026, 1, 3),
+        )
+        == 0
+    )
+
+    for symbol in ("MSFT", "AAPL"):
+        factors = pq.ParquetFile(
+            tmp_path / f"silver/adjustments/asset_class=equity/symbol={symbol}/factors.parquet"
+        ).read()
+        assert factors.column("price_adjustment_factor").to_pylist() == [1.0]
+        assert factors.column("split_volume_factor").to_pylist() == [1.0]
+
+
 def test_full_rebuild_discovers_all_equity_bronze_symbols(tmp_path, capsys):
     _bronze(tmp_path, "NVDA")
     _bronze(tmp_path, "AAPL", closes=(10.0, 10.0, 10.0))

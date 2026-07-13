@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
-from clients.massive_client import MassiveSplit
+from clients.massive_client import MassiveDividend, MassiveSplit
 from livewire_scripts import rebuild_silver, validate_silver_canary
 
 
@@ -100,3 +100,60 @@ def test_canary_fails_when_silver_volume_disagrees_with_factor(tmp_path, capsys)
     )
     report = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert report["symbols"]["NVDA"]["passed"] is False
+
+
+def test_canary_rejects_internally_consistent_future_action_contamination(tmp_path, capsys):
+    _build_fixture(tmp_path)
+    dividend = MassiveDividend(
+        provider_event_id="aapl-future-dividend",
+        ticker="AAPL",
+        ex_dividend_date=date(2026, 1, 4),
+        cash_amount=Decimal("1"),
+        currency="USD",
+        declaration_date=date(2026, 1, 1),
+        record_date=None,
+        pay_date=None,
+        payload_hash="aapl-future-dividend-hash",
+    )
+    CorporateActionStore(tmp_path).reconcile(
+        "AAPL",
+        [dividend],
+        datetime(2026, 1, 2, tzinfo=UTC),
+    )
+
+    daily_path = tmp_path / "silver/asset_class=equity/symbol=AAPL/1d.parquet"
+    daily = pq.ParquetFile(daily_path).read()
+    factor = Decimal("0.99")
+    for column in ("open", "high", "low", "close", "adj_close"):
+        values = [float(Decimal(str(value)) * factor) for value in daily.column(column).to_pylist()]
+        daily = daily.set_column(daily.schema.get_field_index(column), column, pa.array(values, pa.float64()))
+    daily = daily.set_column(
+        daily.schema.get_field_index("price_adjustment_factor"),
+        "price_adjustment_factor",
+        pa.array([0.99] * len(daily), pa.float64()),
+    )
+    pq.write_table(daily, daily_path)
+
+    factor_path = tmp_path / "silver/adjustments/asset_class=equity/symbol=AAPL/factors.parquet"
+    factors = pq.ParquetFile(factor_path).read()
+    factors = factors.set_column(
+        factors.schema.get_field_index("price_adjustment_factor"),
+        "price_adjustment_factor",
+        pa.array([0.99] * len(factors), pa.float64()),
+    )
+    pq.write_table(factors, factor_path)
+
+    assert (
+        validate_silver_canary.run(
+            ["--tickers", "NVDA", "AAPL", "SPY", "--control", "CONTROL"],
+            data_lake_root=tmp_path,
+            silver_root=tmp_path / "silver",
+            as_of_date=date(2026, 1, 3),
+        )
+        == 1
+    )
+    report = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert report["as_of_date"] == "2026-01-03"
+    assert report["future_action_count"] == 1
+    assert report["symbols"]["AAPL"]["future_action_count"] == 1
+    assert "factor intervals do not match causal expectation" in report["symbols"]["AAPL"]["errors"]

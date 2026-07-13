@@ -10,9 +10,10 @@ import math
 import os
 import sys
 from collections.abc import Sequence
-from datetime import date
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pyarrow.parquet as pq
 
@@ -20,9 +21,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:  # pragma: no cover - direct script bootstrap
     sys.path.insert(0, str(REPO_ROOT))
 
+from clients.adjustment_engine import FactorInterval, build_factor_intervals
 from clients.corporate_action_store import CorporateActionStore
 from clients.symbol_paths import encode_symbol
 from livewire_scripts.paths import data_lake_dir
+
+NEW_YORK = ZoneInfo("America/New_York")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -47,11 +51,24 @@ def _close_enough(left: float, right: float) -> bool:
     return math.isclose(float(left), float(right), rel_tol=1e-10, abs_tol=1e-10)
 
 
+def _factor_intervals_match(expected: list[FactorInterval], actual: list[dict]) -> bool:
+    if len(expected) != len(actual):
+        return False
+    return all(
+        item.effective_start == row["effective_start"]
+        and item.effective_end == row["effective_end"]
+        and _close_enough(float(item.price_adjustment_factor), row["price_adjustment_factor"])
+        and _close_enough(float(item.split_volume_factor), row["split_volume_factor"])
+        for item, row in zip(expected, actual, strict=True)
+    )
+
+
 def run(
     argv: Sequence[str] | None = None,
     *,
     data_lake_root: Path | None = None,
     silver_root: Path | None = None,
+    as_of_date: date | None = None,
 ) -> int:
     args = parse_args(argv)
     root = Path(data_lake_root) if data_lake_root is not None else data_lake_dir()
@@ -62,6 +79,7 @@ def run(
     )
     symbols = list(dict.fromkeys([*(symbol.upper() for symbol in args.tickers), args.control.upper()]))
     control = args.control.upper()
+    effective_as_of = as_of_date or datetime.now(NEW_YORK).date()
     action_store = CorporateActionStore(root)
     bronze_paths = {
         symbol: root / "bronze/asset_class=equity" / f"symbol={encode_symbol(symbol)}" / "1d.parquet"
@@ -69,19 +87,40 @@ def run(
     }
     before = {symbol: _sha256(path) for symbol, path in bronze_paths.items() if path.exists()}
     results: dict[str, dict] = {}
+    action_count = 0
+    effective_action_count = 0
+    future_action_count = 0
 
     for symbol in symbols:
         errors: list[str] = []
+        actions = action_store.latest_active(symbol)
+        symbol_effective_action_count = sum(action.ex_date <= effective_as_of for action in actions)
+        symbol_future_action_count = len(actions) - symbol_effective_action_count
+        action_count += len(actions)
+        effective_action_count += symbol_effective_action_count
+        future_action_count += symbol_future_action_count
         bronze_path = bronze_paths[symbol]
         daily_path = silver / "asset_class=equity" / f"symbol={encode_symbol(symbol)}" / "1d.parquet"
         factor_path = silver / "adjustments/asset_class=equity" / f"symbol={encode_symbol(symbol)}" / "factors.parquet"
         if not all(path.exists() for path in (bronze_path, daily_path, factor_path)):
-            results[symbol] = {"passed": False, "errors": ["missing bronze or Silver artifact"]}
+            results[symbol] = {
+                "passed": False,
+                "errors": ["missing bronze or Silver artifact"],
+                "action_count": len(actions),
+                "effective_action_count": symbol_effective_action_count,
+                "future_action_count": symbol_future_action_count,
+            }
             continue
 
         bronze_rows = pq.ParquetFile(bronze_path).read().to_pylist()
         daily_rows = pq.ParquetFile(daily_path).read().to_pylist()
         factor_rows = pq.ParquetFile(factor_path).read().to_pylist()
+        try:
+            expected_factors = build_factor_intervals(bronze_rows, actions, effective_as_of)
+            if not _factor_intervals_match(expected_factors, factor_rows):
+                errors.append("factor intervals do not match causal expectation")
+        except ValueError as exc:
+            errors.append(f"causal factor construction failed: {exc}")
         bronze_by_date = {row["trade_date"]: row for row in bronze_rows}
         daily_by_date = {row["trade_date"]: row for row in daily_rows}
         if set(bronze_by_date) != set(daily_by_date):
@@ -110,7 +149,6 @@ def run(
             if daily_row["volume"] != expected_volume:
                 errors.append(f"volume adjustment mismatch for {trade_date}")
 
-        actions = action_store.latest_active(symbol)
         ex_date_returns = []
         ordered_dates = sorted(bronze_by_date)
         for action in actions:
@@ -141,7 +179,9 @@ def run(
             "passed": not errors,
             "errors": errors,
             "action_count": len(actions),
+            "effective_action_count": symbol_effective_action_count,
             "ex_date_returns": ex_date_returns,
+            "future_action_count": symbol_future_action_count,
             "identity_control": identity_control,
         }
 
@@ -151,8 +191,12 @@ def run(
     print(
         json.dumps(
             {
+                "action_count": action_count,
+                "as_of_date": effective_as_of.isoformat(),
                 "passed": passed,
                 "bronze_unchanged": bronze_unchanged,
+                "effective_action_count": effective_action_count,
+                "future_action_count": future_action_count,
                 "symbols": results,
             },
             sort_keys=True,

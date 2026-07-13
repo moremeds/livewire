@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pyarrow.parquet as pq
 
@@ -22,6 +23,7 @@ from clients.silver_revision import AffectedSymbol, SilverRevisionPublisher
 from livewire_scripts.paths import data_lake_dir
 
 TIMEFRAMES = ("1d", "1m", "5m", "30m", "1h")
+NEW_YORK = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,7 @@ def run(
     *,
     data_lake_root: Path | None = None,
     silver_root: Path | None = None,
+    as_of_date: date | None = None,
 ) -> int:
     args = parse_args(argv)
     root = Path(data_lake_root) if data_lake_root is not None else data_lake_dir()
@@ -131,6 +134,7 @@ def run(
     )
     if not symbols:
         raise SystemExit("no equity bronze symbols found")
+    effective_as_of = as_of_date or datetime.now(NEW_YORK).date()
 
     staged: list[StagedSymbol] = []
     failed = 0
@@ -140,7 +144,7 @@ def run(
             if not rows:
                 raise ValueError("missing equity bronze rows")
             actions = action_store.latest_active(symbol)
-            intervals = build_factor_intervals(rows, actions)
+            intervals = build_factor_intervals(rows, actions, effective_as_of)
             staged.append(
                 StagedSymbol(
                     symbol,
@@ -157,12 +161,17 @@ def run(
     current = publisher.read_current()
     current_revision = 0 if current is None else current.revision
     action_count = sum(len(item.actions) for item in staged)
+    effective_action_count = sum(action.ex_date <= effective_as_of for item in staged for action in item.actions)
+    future_action_count = action_count - effective_action_count
     earliest = min((item.earliest_date for item in staged), default=None)
     if failed:
         _summary(
             action_count=action_count,
+            as_of_date=effective_as_of.isoformat(),
             earliest_affected_date=None if earliest is None else earliest.isoformat(),
+            effective_action_count=effective_action_count,
             failed=failed,
+            future_action_count=future_action_count,
             rebuilt=0,
             revision=current_revision,
             unchanged=0,
@@ -175,8 +184,11 @@ def run(
     if args.dry_run:
         _summary(
             action_count=action_count,
+            as_of_date=effective_as_of.isoformat(),
             earliest_affected_date=None if earliest is None else earliest.isoformat(),
+            effective_action_count=effective_action_count,
             failed=0,
+            future_action_count=future_action_count,
             rebuilt=len(changed),
             revision=predicted_revision,
             unchanged=unchanged,
@@ -186,8 +198,11 @@ def run(
     if not changed:
         _summary(
             action_count=action_count,
+            as_of_date=effective_as_of.isoformat(),
             earliest_affected_date=None if earliest is None else earliest.isoformat(),
+            effective_action_count=effective_action_count,
             failed=0,
+            future_action_count=future_action_count,
             rebuilt=0,
             revision=current_revision,
             unchanged=unchanged,
@@ -219,8 +234,11 @@ def run(
 
     _summary(
         action_count=action_count,
+        as_of_date=effective_as_of.isoformat(),
         earliest_affected_date=None if earliest is None else earliest.isoformat(),
+        effective_action_count=effective_action_count,
         failed=0,
+        future_action_count=future_action_count,
         rebuilt=rebuilt,
         revision=revision,
         unchanged=unchanged,
