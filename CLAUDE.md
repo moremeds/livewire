@@ -155,6 +155,7 @@ python scripts/livewire_ingest.py cboe-vol                                      
 python scripts/livewire_ingest.py fred-rates                                                      # FRED Treasury yields (DGS3/DGS5/DGS10/DGS30)
 python scripts/livewire_ingest.py corporate-actions --tickers NVDA AAPL SPY                       # Targeted Massive split/dividend reconciliation
 python scripts/livewire_ingest.py corporate-actions --full-reconcile                             # Whole equity-bronze universe; may infer cancellations
+python scripts/livewire_ingest.py corporate-actions --workers 4 --resume --full-reconcile        # Resume incomplete whole-universe reconciliation
 python scripts/livewire_ingest.py corporate-actions --dry-run                                    # Compare without publishing
 python scripts/livewire_store.py rebuild-silver --tickers NVDA AAPL SPY                          # Targeted adjusted daily/factor rebuild
 python scripts/livewire_store.py rebuild-silver --full --dry-run                                 # Full comparison without publishing

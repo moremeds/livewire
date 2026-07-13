@@ -22,6 +22,8 @@ Dependency graph: `P1 -> P2 -> P3 -> P4 -> P5 -> P6 -> P7`
   reconcile a complete corporate-action inventory for the Bronze equity
   universe, and run the full split-boundary audit; persist root-bound hashes,
   counts, and proposed repairs before changing price values.
+  The scope-safe four-worker reconciliation engine is implemented; the
+  production full-universe run and audit evidence remain pending.
 - [ ] **P6** (`depends_on: [P5]`): Apply only evidence-confirmed Bronze repairs
   through the stale-safe rollback-capable manifest, then rerun the complete
   audit and structural/schema validation.

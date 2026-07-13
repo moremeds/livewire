@@ -262,14 +262,25 @@ python scripts/livewire_ingest.py corporate-actions --dry-run
 
 # A complete unfiltered provider fetch may infer cancellations
 python scripts/livewire_ingest.py corporate-actions --full-reconcile
+
+# Resume an interrupted whole-universe reconciliation with four workers
+python scripts/livewire_ingest.py corporate-actions --workers 4 --resume --full-reconcile
 ```
 
 Targeted and preset runs do not infer cancellations unless
-`--full-reconcile` is explicitly supplied. The command prints aggregate JSON
-counters for `inserted`, `revised`, `cancelled`, `unchanged`, and `failed`, and
-returns nonzero if any symbol fails. The scheduled daily job runs this lane
-before market-data ingestion, requests a full provider reconciliation on Sunday,
-and advances Silver only after every ingestion lane succeeds.
+`--full-reconcile` is explicitly supplied. Provider fetches use four workers by
+default; each worker owns its Massive session, while canonical Parquet and
+cursor writes remain serialized. Scope-specific cursors checkpoint only symbols
+whose canonical reconciliation succeeded. `--resume` starts or continues an
+incomplete cursor, but rejects a completed cursor so a stale run cannot suppress
+new provider corrections; omit `--resume` to start a fresh run.
+
+The command prints aggregate JSON counters for `requested`, `attempted`,
+`pending`, `resumed`, `completed`, `inserted`, `revised`, `cancelled`,
+`unchanged`, and `failed`, and returns nonzero if any symbol fails. The
+scheduled daily job runs this lane before market-data ingestion, requests a
+full provider reconciliation on Sunday, and advances Silver only after every
+ingestion lane succeeds.
 
 ### Silver adjusted bars
 
