@@ -312,12 +312,16 @@ python scripts/livewire_quality.py validate-adjusted-history \
 ```
 
 For a targeted smoke run, replace `--all-equities` with
-`--tickers AAPL MSFT NVDA SPY PLTR`. The validator compares pointwise OHLC and
-every eligible 20/50/200-session moving average, checks Massive's SMA endpoint
-when available, independently rebuilds split-only and dividend-adjusted
-expectations without writing Silver, and rejects unresolved dates or remaining
-mechanical split jumps. A provider SMA entitlement failure is reported
-separately and does not discard usable adjusted aggregate bars.
+`--tickers AAPL MSFT NVDA SPY PLTR`. The validator reports every pointwise OHLC
+difference and hard-fails independent Massive close differences plus every
+eligible 20/50/200-session moving-average failure. Open/high/low differences and
+IB replay point differences remain diagnostics because provider trade filters,
+aggregate revisions, and IB request shape can legitimately change those values.
+It independently rebuilds split-only and dividend-adjusted expectations without
+writing Silver, and rejects unresolved dates, exact Silver reconstruction
+differences, or remaining mechanical split jumps. A provider SMA entitlement
+failure is reported separately and does not discard usable adjusted aggregate
+bars.
 
 The output directory must be outside canonical Bronze and Silver. It contains
 content-checked provider caches, per-symbol JSON details, an atomic resumable
