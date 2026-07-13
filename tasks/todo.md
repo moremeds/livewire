@@ -15,8 +15,21 @@ Dependency graph: `V1 -> V2 -> V3 -> V4 -> V5`
   split-boundary context, terminal outcomes, and content-addressed atomic caches.
 - [x] **V4** (`depends_on: [V3]`): Add the full-universe quality command, strict
   coverage gate, cursor, evidence dimensions, JSON/Markdown reports, and CLI tests.
-- [ ] **V5** (`depends_on: [V4]`): Document operation, run focused/static/CI and
+- [x] **V5** (`depends_on: [V4]`): Document operation, run focused/static/CI and
   live read-only verification, self-review, and record the final evidence.
+
+Verification evidence:
+
+- Focused validation suite: 100 passed with RuntimeWarning enforcement.
+- CI-equivalent suite: 1,599 passed, 1 skipped, 98.29% coverage.
+- Ruff check/format: clean. Pyright: 0 errors; 25 established warnings outside
+  the new validation modules.
+- Live disposable-Silver smoke: SPY and PLTR had complete Massive+IB coverage,
+  exact Massive 20/50/200 SMA agreement, exact Silver factor/volume
+  reconstruction, and unchanged production hashes. Both correctly failed the
+  strict pointwise gate on existing OHLC differences. AAPL/MSFT/NVDA remained
+  blocked before disposable Silver publication by split-affected unknown Bronze
+  basis, and production Silver was absent.
 
 ## Bronze price-basis normalization and repair (2026-07-13)
 

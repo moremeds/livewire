@@ -215,11 +215,11 @@
 - Consumes: completed validator CLI and verification evidence.
 - Produces: operator command documentation, durable architecture note, completed task record, and live smoke artifacts outside canonical data.
 
-- [ ] **Step 1: Document operation and evidence limits**
+- [x] **Step 1: Document operation and evidence limits**
 
   Add the command, output location, strict full-coverage gate, Massive-first/IB-fallback behavior, resume usage, evidence grades, and explicit statement that IB replay is not independent vendor validation.
 
-- [ ] **Step 2: Run focused and static verification**
+- [x] **Step 2: Run focused and static verification**
 
   ```bash
   uv run pytest tests/test_adjusted_history_validation.py tests/test_adjusted_history_sources.py tests/test_validate_adjusted_history.py tests/test_massive_client.py tests/test_livewire_entrypoints.py -q -W error::RuntimeWarning
@@ -230,21 +230,21 @@
 
   Expected: zero failures and zero static-analysis errors.
 
-- [ ] **Step 3: Run the CI-equivalent suite**
+- [x] **Step 3: Run the CI-equivalent suite**
 
   Run: `uv run pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing -W error::RuntimeWarning`
 
   Expected: all tests pass and configured coverage is at least 95 percent.
 
-- [ ] **Step 4: Run a live read-only smoke**
+- [x] **Step 4: Run a live read-only smoke**
 
   Hash AAPL/MSFT/NVDA/SPY/PLTR Bronze and current Silver inputs, source `MASSIVE_API_KEY` without printing it, verify IB connectivity at the configured host/port, run the validator into a disposable output directory, then compare input hashes. If entitlement or IB connectivity blocks a source, record the exact `provider-error`/`unresolved` result rather than weakening the gate.
 
-- [ ] **Step 5: Self-review the complete diff and verification artifacts**
+- [x] **Step 5: Self-review the complete diff and verification artifacts**
 
   Check the implementation line-by-line against the approved specification, scan for credential leakage and canonical writes, inspect `git diff --check`, and confirm every task has evidence before marking it complete.
 
-- [ ] **Step 6: Commit documentation and verification record**
+- [x] **Step 6: Commit documentation and verification record**
 
   ```bash
   git add README.md .codex/project-memory.md tasks/todo.md

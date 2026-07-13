@@ -298,6 +298,44 @@ artifacts, writes immutable `revision=<n>.json`, and atomically replaces
 `current.json` last. A failed batch never advances the pointer. `MDW_SILVER_DIR`
 overrides the default `data-lake/silver` root.
 
+#### Full-history adjusted validation
+
+Use the strict read-only gate to validate every stored equity daily session
+against Massive adjusted history, with fresh IB `TRADES` history filling dates
+outside the Massive entitlement:
+
+```bash
+python scripts/livewire_quality.py validate-adjusted-history \
+  --all-equities \
+  --output-dir ~/market-warehouse/validation/adjusted-history \
+  --resume
+```
+
+For a targeted smoke run, replace `--all-equities` with
+`--tickers AAPL MSFT NVDA SPY PLTR`. The validator compares pointwise OHLC and
+every eligible 20/50/200-session moving average, checks Massive's SMA endpoint
+when available, independently rebuilds split-only and dividend-adjusted
+expectations without writing Silver, and rejects unresolved dates or remaining
+mechanical split jumps. A provider SMA entitlement failure is reported
+separately and does not discard usable adjusted aggregate bars.
+
+The output directory must be outside canonical Bronze and Silver. It contains
+content-checked provider caches, per-symbol JSON details, an atomic resumable
+cursor, `manifest.json`, and `summary.md`. Resume checkpoints are bound to the
+Bronze, Silver, corporate-action, and current-revision hashes. The command exits
+zero only when every requested symbol passes complete date coverage and the
+required comparisons.
+
+The initial runner is deliberately sequential (`--workers 1`) to keep Massive
+rate limits and IB historical pacing deterministic. Use `--resume` for long
+whole-universe runs; each completed symbol is checkpointed atomically.
+
+Evidence grades matter: Massive validation of IB-sourced Bronze is
+cross-provider evidence; a combined Massive/IB range is hybrid evidence; fresh
+IB validation of IB-sourced history is same-provider replay. The last case
+proves that retrieval, raw normalization, storage, and Silver transformation are
+reproducible, but it does not independently prove IB's vendor data.
+
 ### Equity Bronze price basis
 
 Equity daily Bronze rows carry non-null `source` and `price_basis` metadata.
