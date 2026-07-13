@@ -36,6 +36,7 @@ class SourceEvidence:
     sma: dict[int, dict[date, float]]
     status: SourceStatus
     error: str | None = None
+    sma_errors: dict[int, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -81,12 +82,15 @@ def fetch_massive_evidence(
     try:
         bars = client.get_daily_bars(symbol, start, end, adjusted=True)
         rows = tuple(_bar_row(bar, source="massive", price_basis="split_adjusted") for bar in bars)
-        sma = {
-            window: {item.trade_date: item.value for item in client.get_sma(symbol, window, start, end)}
-            for window in windows
-        }
     except Exception as exc:
         return SourceEvidence("massive", symbol, start, end, None, None, False, (), {}, "error", str(exc))
+    sma: dict[int, dict[date, float]] = {}
+    sma_errors: dict[int, str] = {}
+    for window in windows:
+        try:
+            sma[window] = {item.trade_date: item.value for item in client.get_sma(symbol, window, start, end)}
+        except Exception as exc:
+            sma_errors[window] = str(exc)
     dates = sorted(_coerce_date(row["trade_date"]) for row in rows)
     actual_start = dates[0] if dates else None
     actual_end = dates[-1] if dates else None
@@ -107,6 +111,7 @@ def fetch_massive_evidence(
         rows=rows,
         sma=sma,
         status="ok" if rows else "empty",
+        sma_errors=sma_errors,
     )
 
 

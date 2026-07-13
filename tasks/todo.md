@@ -13,7 +13,7 @@ Dependency graph: `V1 -> V2 -> V3 -> V4 -> V5`
   SMA evidence with strict normalization and same-origin pagination.
 - [x] **V3** (`depends_on: [V2]`): Add read-only Massive/IB provider acquisition,
   split-boundary context, terminal outcomes, and content-addressed atomic caches.
-- [ ] **V4** (`depends_on: [V3]`): Add the full-universe quality command, strict
+- [x] **V4** (`depends_on: [V3]`): Add the full-universe quality command, strict
   coverage gate, cursor, evidence dimensions, JSON/Markdown reports, and CLI tests.
 - [ ] **V5** (`depends_on: [V4]`): Document operation, run focused/static/CI and
   live read-only verification, self-review, and record the final evidence.

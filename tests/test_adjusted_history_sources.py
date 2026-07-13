@@ -103,6 +103,25 @@ def test_massive_evidence_preserves_partial_range_and_smas() -> None:
     assert evidence.sma == {20: {date(2024, 1, 3): 20.0}, 50: {date(2024, 1, 3): 50.0}}
 
 
+def test_massive_sma_error_does_not_discard_valid_adjusted_bars() -> None:
+    class MassiveWithUnavailableSMA(_Massive):
+        def get_sma(self, ticker, window, start, end):
+            raise RuntimeError("indicator entitlement unavailable")
+
+    evidence = fetch_massive_evidence(
+        MassiveWithUnavailableSMA(),
+        "TEST",
+        date(2024, 1, 2),
+        date(2024, 1, 5),
+        windows=(20,),
+    )
+
+    assert evidence.status == "ok"
+    assert len(evidence.rows) == 1
+    assert evidence.sma == {}
+    assert evidence.sma_errors == {20: "indicator entitlement unavailable"}
+
+
 def test_ib_evidence_classifies_and_normalizes_adjusted_split_history() -> None:
     split = _action("split", "split", date(2024, 1, 3), split_from=1.0, split_to=2.0)
     requested = []

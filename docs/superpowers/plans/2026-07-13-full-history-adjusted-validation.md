@@ -169,35 +169,35 @@
 - Consumes: Tasks 1-3 APIs, canonical Bronze/Silver/corporate-action Parquet, explicit tickers or full equity discovery, and CLI thresholds.
 - Produces: `run(argv, *, massive_factory=..., ib_factory=...) -> int`, per-symbol JSON, run manifest JSON, Markdown summary, and atomic versioned cursor.
 
-- [ ] **Step 1: Write failing end-to-end command tests**
+- [x] **Step 1: Write failing end-to-end command tests**
 
   Build disposable Bronze/Silver/action fixtures and injected provider fakes. Prove Massive-first/IB-fallback coverage, unresolved failure, pointwise failure despite a passing SMA, dividend-factor corruption, input-change detection, checkpoint reuse/invalidation, output-root rejection, JSON/Markdown content, aggregate exit status, and no input hash changes.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
   Run: `uv run pytest tests/test_validate_adjusted_history.py tests/test_livewire_entrypoints.py -q`
 
   Expected: missing command/module failures.
 
-- [ ] **Step 3: Implement CLI and symbol orchestration**
+- [x] **Step 3: Implement CLI and symbol orchestration**
 
   Support mutually exclusive `--tickers ...` and `--all-equities`, plus `--data-lake-root`, `--silver-root`, `--output-dir`, `--as-of-date`, `--host`, `--port`, `--workers`, `--warning-bps`, `--failure-bps`, `--resume`, and `--no-ib-fallback`. Resolve and bind all roots before provider calls. Process one symbol atomically and checkpoint after its detail JSON is durable.
 
-- [ ] **Step 4: Implement reports and evidence dimensions**
+- [x] **Step 4: Implement reports and evidence dimensions**
 
   Emit ticker outcomes `pass`, `fail`, `unresolved`, `provider-error`, `input-changed`, and `resume-pending`, plus `price_evidence`, `action_reference_status`, `transformation_check`, and `independent_action_check`. Exit zero only when every requested ticker passes. Include exact coverage ranges, missing dates, pointwise/SMA statistics, worst dates, action-boundary evidence, and input/output hashes.
 
-- [ ] **Step 5: Add quality CLI dispatch and active todo tracking**
+- [x] **Step 5: Add quality CLI dispatch and active todo tracking**
 
   Map `validate-adjusted-history` to the new module and add the dependency graph `V1 -> V2 -> V3 -> V4 -> V5` with `depends_on` annotations to `tasks/todo.md`, checking off only completed and verified tasks.
 
-- [ ] **Step 6: Run focused command tests**
+- [x] **Step 6: Run focused command tests**
 
   Run: `uv run pytest tests/test_adjusted_history_validation.py tests/test_adjusted_history_sources.py tests/test_validate_adjusted_history.py tests/test_massive_client.py tests/test_livewire_entrypoints.py -q -W error::RuntimeWarning`
 
   Expected: all tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
   ```bash
   git add livewire_scripts/validate_adjusted_history.py tests/test_validate_adjusted_history.py scripts/livewire_quality.py tests/test_livewire_entrypoints.py tasks/todo.md
