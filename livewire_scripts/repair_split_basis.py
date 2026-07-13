@@ -57,9 +57,7 @@ def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None
         raise ValueError("unsupported manifest schema")
     manifest_root = Path(payload.get("data_lake_root", "")).resolve()
     if manifest_root != root:
-        raise ValueError(
-            f"manifest data-lake root {manifest_root} does not match active root {root}"
-        )
+        raise ValueError(f"manifest data-lake root {manifest_root} does not match active root {root}")
     client = BronzeClient(bronze_root, "equity")
     changed = 0
     for item in payload["symbols"]:

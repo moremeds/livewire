@@ -947,9 +947,7 @@ def main():  # pragma: no cover — only exercised by integration tests
                             rows = prepare_ib_rows_for_publish(
                                 rows,
                                 existing_rows=(
-                                    bronze.read_symbol_rows(ticker)
-                                    if hasattr(bronze, "read_symbol_rows")
-                                    else []
+                                    bronze.read_symbol_rows(ticker) if hasattr(bronze, "read_symbol_rows") else []
                                 ),
                                 actions=_action_store_for_bronze(bronze_dir).latest_active(ticker),
                                 as_of_date=target,

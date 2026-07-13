@@ -109,10 +109,13 @@ def test_full_migration_resumes_after_interrupted_symbol(tmp_path, monkeypatch, 
     assert json.loads(cursor.read_text())["completed"] == ["AAPL"]
 
     monkeypatch.setattr(migrate_equity_price_basis.BronzeClient, "replace_ticker_rows", original)
-    assert migrate_equity_price_basis.run(
-        ["--full", "--cursor", str(cursor)],
-        bronze_root=tmp_path,
-    ) == 0
+    assert (
+        migrate_equity_price_basis.run(
+            ["--full", "--cursor", str(cursor)],
+            bronze_root=tmp_path,
+        )
+        == 0
+    )
 
     report = json.loads(capsys.readouterr().out)
     assert report["resumed"] == 1

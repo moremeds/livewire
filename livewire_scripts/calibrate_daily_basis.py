@@ -56,10 +56,7 @@ def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None
     reports = []
     passed = True
     for symbol in symbols:
-        rows = [
-            {**row, "source": "ib", "price_basis": "unknown"}
-            for row in bronze.read_symbol_rows(symbol)
-        ]
+        rows = [{**row, "source": "ib", "price_basis": "unknown"} for row in bronze.read_symbol_rows(symbol)]
         events = []
         for item in classify_split_events(rows, action_store.latest_active(symbol), as_of):
             event = asdict(item)

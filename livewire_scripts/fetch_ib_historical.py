@@ -968,9 +968,7 @@ def _run_backfill(
                     bars,
                     bronze,
                     asset_class=asset_class,
-                    corporate_actions=_action_store_for_bronze(_resolved_bronze_dir(asset_class)).latest_active(
-                        ticker
-                    ),
+                    corporate_actions=_action_store_for_bronze(_resolved_bronze_dir(asset_class)).latest_active(ticker),
                 )
 
                 if count > 0:
@@ -1218,9 +1216,7 @@ def _run_normal(
                     bars,
                     bronze,
                     asset_class=asset_class,
-                    corporate_actions=_action_store_for_bronze(_resolved_bronze_dir(asset_class)).latest_active(
-                        ticker
-                    ),
+                    corporate_actions=_action_store_for_bronze(_resolved_bronze_dir(asset_class)).latest_active(ticker),
                 )
 
                 if count > 0:

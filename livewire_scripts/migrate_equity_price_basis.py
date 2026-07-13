@@ -49,7 +49,9 @@ def run(
     args = parse_args(argv)
     root = Path(bronze_root) if bronze_root is not None else data_lake_dir() / "bronze/asset_class=equity"
     client = BronzeClient(root, "equity")
-    symbols = sorted(client.get_existing_symbols()) if args.full else list(dict.fromkeys(s.upper() for s in args.tickers))
+    symbols = (
+        sorted(client.get_existing_symbols()) if args.full else list(dict.fromkeys(s.upper() for s in args.tickers))
+    )
     cursor_path = args.cursor or (root / ".price_basis_migration_cursor.json" if args.full else None)
     completed: set[str] = set()
     if cursor_path is not None and cursor_path.exists():

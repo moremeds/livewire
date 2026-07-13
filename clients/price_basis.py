@@ -151,9 +151,7 @@ def prepare_ib_rows_for_publish(
     are never returned or rewritten by this helper.
     """
     staged = [
-        {**row, "source": "ib", "price_basis": "split_adjusted"}
-        if row.get("source") == "ib"
-        else dict(row)
+        {**row, "source": "ib", "price_basis": "split_adjusted"} if row.get("source") == "ib" else dict(row)
         for row in incoming_rows
     ]
     if not any(row.get("source") == "ib" for row in staged):
@@ -163,9 +161,7 @@ def prepare_ib_rows_for_publish(
     combined_by_date = {str(row["trade_date"]): row for row in existing_rows}
     combined_by_date.update({str(row["trade_date"]): row for row in staged})
     classifications = classify_split_events(list(combined_by_date.values()), relevant_actions, as_of_date)
-    normalized_ib = iter(
-        normalize_ib_rows([row for row in staged if row.get("source") == "ib"], classifications)
-    )
+    normalized_ib = iter(normalize_ib_rows([row for row in staged if row.get("source") == "ib"], classifications))
     return [next(normalized_ib) if row.get("source") == "ib" else row for row in staged]
 
 
