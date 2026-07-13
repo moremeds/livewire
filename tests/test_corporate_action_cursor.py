@@ -37,6 +37,12 @@ def test_ticker_identity_is_normalized_and_order_independent(tmp_path):
     assert first.ticker_count == 2
 
 
+def test_ticker_identity_preserves_case_distinct_provider_symbols(tmp_path):
+    identity = build_identity(tmp_path, ["BCPC", "BCpC"], full_reconcile=True, dry_run=False)
+
+    assert identity.ticker_count == 2
+
+
 def test_resume_missing_starts_and_incomplete_cross_date_resumes(tmp_path):
     identity = build_identity(tmp_path, ["AAPL", "MSFT"], full_reconcile=True, dry_run=False)
     path = tmp_path / "cursor.json"

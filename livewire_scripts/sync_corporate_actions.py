@@ -17,7 +17,7 @@ from threading import Event
 from clients.corporate_action_store import CorporateActionStore, ProviderEvent
 from clients.ingestion_common import load_preset
 from clients.massive_client import MassiveAuthError, MassiveClient
-from clients.symbol_paths import decode_symbol
+from clients.symbol_paths import canonical_symbol, decode_symbol
 from livewire_scripts.corporate_action_cursor import build_identity, default_cursor_path, open_cursor
 from livewire_scripts.paths import data_lake_dir
 
@@ -67,7 +67,7 @@ def _resolve_tickers(args: argparse.Namespace, root: Path) -> list[str]:
         _, tickers, _ = load_preset(args.preset)
     else:
         tickers = _discover_symbols(root)
-    normalized = list(dict.fromkeys(str(ticker).upper() for ticker in tickers))
+    normalized = list(dict.fromkeys(canonical_symbol(str(ticker)) for ticker in tickers))
     if not normalized:
         raise SystemExit("no tickers found for corporate-action reconciliation")
     return normalized

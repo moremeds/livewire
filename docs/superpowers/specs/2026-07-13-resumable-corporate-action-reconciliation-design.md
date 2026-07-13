@@ -26,7 +26,7 @@ Extend `corporate-actions` with:
 - `--cursor PATH`, defaulting to
   `<data-lake-root>/cursors/corporate_actions/<scope-id>.json`.
 
-The scope ID is derived from the normalized ticker-set hash plus the
+The scope ID is derived from the canonical case-preserving ticker-set hash plus the
 `full_reconcile` and `dry_run` modes. This prevents a targeted, dry-run, or
 scheduled command from overwriting an interrupted full-universe cursor.
 Without `--resume`, the matching scope cursor is replaced with a fresh run.
@@ -42,7 +42,8 @@ The atomic JSON cursor contains:
 - schema version;
 - resolved data-lake root;
 - New York start date and UTC start timestamp as metadata;
-- SHA-256 of the sorted normalized ticker list;
+- SHA-256 of the sorted canonical ticker list, preserving provider-significant
+  mixed case such as `BCPC` versus `BCpC`;
 - ticker count;
 - `full_reconcile` and `dry_run` flags;
 - sorted successfully completed symbols;

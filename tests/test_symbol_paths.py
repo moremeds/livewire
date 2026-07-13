@@ -1,4 +1,4 @@
-from clients.symbol_paths import decode_symbol, encode_symbol
+from clients.symbol_paths import canonical_symbol, decode_symbol, encode_symbol
 
 
 def test_symbol_path_roundtrip():
@@ -14,3 +14,9 @@ def test_mixed_case_symbol_does_not_collide_on_case_insensitive_filesystems():
     assert encode_symbol("BCpC") == "BC%70C"
     assert encode_symbol("BCPC").lower() != encode_symbol("BCpC").lower()
     assert decode_symbol(encode_symbol("BCpC")) == "BCpC"
+
+
+def test_canonical_symbol_uppercases_lowercase_input_but_preserves_provider_case():
+    assert canonical_symbol("nvda") == "NVDA"
+    assert canonical_symbol("BCpC") == "BCpC"
+    assert canonical_symbol("BCPC") == "BCPC"

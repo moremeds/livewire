@@ -1,5 +1,10 @@
 # Lessons
 
+- For whole-universe work, count canonical provider symbols rather than only
+  uppercased labels: mixed-case identities such as `BCPC`/`BCpC` and `TPC`/`TpC`
+  are distinct and must remain distinct in scope hashes, API queries, cursors,
+  and storage paths.
+
 - For disposable data-lake rehearsals, redirecting only an output manifest is not isolation. Bind manifests to a resolved data-lake root, pass that root explicitly to every audit/apply/rollback command, and verify embedded target paths before mutation.
 
 - When the user requests a replacement without backwards compatibility, remove

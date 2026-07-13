@@ -11,6 +11,8 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from clients.symbol_paths import canonical_symbol
+
 _SCHEMA_VERSION = 1
 _NEW_YORK = ZoneInfo("America/New_York")
 
@@ -67,7 +69,7 @@ class CorporateActionCursor:
 
     def mark_completed(self, ticker: str, *, now: datetime) -> None:
         del now
-        self.completed.add(ticker.upper())
+        self.completed.add(canonical_symbol(ticker))
         self._save()
 
     def mark_run_completed(self, *, now: datetime) -> None:
@@ -107,7 +109,7 @@ def build_identity(
     full_reconcile: bool,
     dry_run: bool,
 ) -> CursorIdentity:
-    normalized = sorted({ticker.upper() for ticker in tickers})
+    normalized = sorted({canonical_symbol(ticker) for ticker in tickers})
     ticker_sha256 = hashlib.sha256("\n".join(normalized).encode()).hexdigest()
     return CursorIdentity(
         schema_version=_SCHEMA_VERSION,

@@ -14,7 +14,7 @@ import pyarrow.parquet as pq
 
 from clients.massive_client import MassiveDividend, MassiveSplit
 from clients.parquet_io import publish_parquet, symbol_lock
-from clients.symbol_paths import encode_symbol
+from clients.symbol_paths import canonical_symbol, encode_symbol
 
 ActionStatus = Literal["active", "corrected", "cancelled"]
 ProviderEvent = MassiveSplit | MassiveDividend
@@ -84,11 +84,12 @@ class CorporateActionStore:
         self._root = Path(data_lake_root)
 
     def path_for(self, symbol: str) -> Path:
+        symbol = canonical_symbol(symbol)
         return (
             self._root
             / "bronze"
             / "asset_class=corporate_action"
-            / f"symbol={encode_symbol(symbol.upper())}"
+            / f"symbol={encode_symbol(symbol)}"
             / "events.parquet"
         )
 
@@ -101,7 +102,7 @@ class CorporateActionStore:
         full_reconcile: bool = False,
         dry_run: bool = False,
     ) -> ReconcileResult:
-        symbol = symbol.upper()
+        symbol = canonical_symbol(symbol)
         event_ids = [event.provider_event_id for event in events]
         if len(event_ids) != len(set(event_ids)):
             raise ValueError("duplicate provider event id in reconciliation")
@@ -166,7 +167,7 @@ class CorporateActionStore:
             return result
 
     def latest_active(self, symbol: str) -> list[CorporateAction]:
-        latest = self._latest_by_provider_id(self._read(self.path_for(symbol.upper())))
+        latest = self._latest_by_provider_id(self._read(self.path_for(canonical_symbol(symbol))))
         return sorted(
             (row for row in latest.values() if row.status == "active"),
             key=lambda row: (row.ex_date, row.action_type, row.action_id),

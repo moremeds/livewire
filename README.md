@@ -271,7 +271,8 @@ Targeted and preset runs do not infer cancellations unless
 `--full-reconcile` is explicitly supplied. Provider fetches use four workers by
 default; each worker owns its Massive session, while canonical Parquet and
 cursor writes remain serialized. Scope-specific cursors checkpoint only symbols
-whose canonical reconciliation succeeded. `--resume` starts or continues an
+whose canonical reconciliation succeeded. Canonical identities preserve
+provider-significant mixed case (`BCPC` and `BCpC` remain distinct). `--resume` starts or continues an
 incomplete cursor, but rejects a completed cursor so a stale run cannot suppress
 new provider corrections; omit `--resume` to start a fresh run.
 

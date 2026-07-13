@@ -144,7 +144,7 @@ def test_preset_resolves_tickers(tmp_path):
 
 
 def test_no_scope_discovers_equity_bronze_symbols(tmp_path):
-    for symbol in ("AAPL", "BRK%2EB"):
+    for symbol in ("AAPL", "BRK%2EB", "BCPC", "BC%70C"):
         (tmp_path / "bronze/asset_class=equity" / f"symbol={symbol}").mkdir(parents=True)
     client = _Client()
 
@@ -152,6 +152,8 @@ def test_no_scope_discovers_equity_bronze_symbols(tmp_path):
 
     assert [call for call in client.calls if call[0] == "splits"] == [
         ("splits", "AAPL"),
+        ("splits", "BCPC"),
+        ("splits", "BCpC"),
         ("splits", "BRK.B"),
     ]
 

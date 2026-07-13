@@ -7,6 +7,12 @@ from urllib.parse import unquote
 _CASE_SAFE = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 
 
+def canonical_symbol(symbol: str) -> str:
+    """Normalize lowercase user input without collapsing provider-significant case."""
+    value = str(symbol).strip()
+    return value.upper() if value.islower() else value
+
+
 def encode_symbol(symbol: str) -> str:
     """Encode symbols distinctly on case-insensitive filesystems."""
     parts: list[str] = []

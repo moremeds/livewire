@@ -97,7 +97,7 @@ class CorporateActionCursor:
 
 def build_identity(root: Path, tickers: list[str], *, full_reconcile: bool,
                    dry_run: bool) -> CursorIdentity:
-    normalized = sorted(set(ticker.upper() for ticker in tickers))
+    normalized = sorted(set(canonical_symbol(ticker) for ticker in tickers))
     ticker_hash = hashlib.sha256("\n".join(normalized).encode()).hexdigest()
     return CursorIdentity(1, str(root.resolve()), ticker_hash, len(normalized),
                           full_reconcile, dry_run)
