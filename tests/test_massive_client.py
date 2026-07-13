@@ -15,6 +15,7 @@ from clients.massive_client import (
     MassiveAuthError,
     MassiveClient,
     MassiveMalformedBarError,
+    MassiveMalformedIndicatorError,
     MassiveNotFoundError,
     MassiveRateLimitError,
     MassiveServerError,
@@ -134,6 +135,78 @@ def test_get_daily_bars_uses_custom_aggregate_endpoint_and_normalizes():
     assert "adjusted=false" in request.url
     assert "sort=asc" in request.url
     assert "limit=50000" in request.url
+
+
+@responses.activate
+def test_get_daily_bars_follows_same_origin_pagination():
+    endpoint = "/v2/aggs/ticker/AAPL/range/1/day/2024-06-03/2024-06-04"
+    responses.add(
+        responses.GET,
+        _url(endpoint),
+        json={**_payload(_bar()), "next_url": _url(f"{endpoint}?cursor=next&apiKey=leak")},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        _url(f"{endpoint}?cursor=next"),
+        json=_payload(_bar(t=1717531200000)),
+        status=200,
+    )
+
+    with _make_client() as client:
+        bars = client.get_daily_bars("AAPL", date(2024, 6, 3), date(2024, 6, 4), adjusted=True)
+
+    assert [bar.trade_date for bar in bars] == [date(2024, 6, 3), date(2024, 6, 4)]
+    assert all(call.request.headers["Authorization"] == "Bearer test-token" for call in responses.calls)
+    assert "apiKey" not in responses.calls[1].request.url
+
+
+@responses.activate
+def test_get_sma_normalizes_nested_values_and_paginates():
+    endpoint = "/v1/indicators/sma/AAPL"
+    responses.add(
+        responses.GET,
+        _url(endpoint),
+        json={
+            "status": "OK",
+            "results": {"values": [{"timestamp": _REST_T_20240603, "value": 200.5}]},
+            "next_url": _url(f"{endpoint}?cursor=next"),
+        },
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        _url(f"{endpoint}?cursor=next"),
+        json={"status": "OK", "results": {"values": [{"timestamp": 1717531200000, "value": 201.5}]}},
+        status=200,
+    )
+
+    with _make_client() as client:
+        values = client.get_sma("aapl", 20, date(2024, 6, 3), date(2024, 6, 4))
+
+    assert [(item.trade_date, item.value) for item in values] == [
+        (date(2024, 6, 3), 200.5),
+        (date(2024, 6, 4), 201.5),
+    ]
+    request_url = responses.calls[0].request.url
+    assert "adjusted=true" in request_url
+    assert "window=20" in request_url
+    assert "series_type=close" in request_url
+    assert "limit=5000" in request_url
+
+
+@responses.activate
+def test_get_sma_rejects_non_finite_value():
+    responses.add(
+        responses.GET,
+        _url("/v1/indicators/sma/AAPL"),
+        json={"status": "OK", "results": {"values": [{"timestamp": _REST_T_20240603, "value": "nan"}]}},
+        status=200,
+    )
+
+    with _make_client() as client:
+        with pytest.raises(MassiveMalformedIndicatorError, match="finite"):
+            client.get_sma("AAPL", 20, date(2024, 6, 3), date(2024, 6, 3))
 
 
 @responses.activate
@@ -401,6 +474,7 @@ def test_get_dividends_normalizes_dates_currency_and_amount():
                     "declaration_date": "2026-06-05",
                     "record_date": "2026-06-20",
                     "pay_date": "2026-07-31",
+                    "historical_adjustment_factor": "0.9975",
                 }
             ],
         },
@@ -414,6 +488,7 @@ def test_get_dividends_normalizes_dates_currency_and_amount():
     assert dividends[0].cash_amount == Decimal("1.7611")
     assert dividends[0].currency == "USD"
     assert dividends[0].declaration_date == date(2026, 6, 5)
+    assert dividends[0].historical_adjustment_factor == Decimal("0.9975")
 
 
 @pytest.mark.parametrize(

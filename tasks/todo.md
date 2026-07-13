@@ -9,7 +9,7 @@ Dependency graph: `V1 -> V2 -> V3 -> V4 -> V5`
 - [x] **V1** (`depends_on: []`): Implement pure date coverage, split-only and
   total-return reconstruction, pointwise comparison, and 20/50/200-session SMA
   validation.
-- [ ] **V2** (`depends_on: [V1]`): Add paginated Massive adjusted aggregate and
+- [x] **V2** (`depends_on: [V1]`): Add paginated Massive adjusted aggregate and
   SMA evidence with strict normalization and same-origin pagination.
 - [ ] **V3** (`depends_on: [V2]`): Add read-only Massive/IB provider acquisition,
   split-boundary context, terminal outcomes, and content-addressed atomic caches.

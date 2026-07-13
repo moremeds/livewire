@@ -79,17 +79,17 @@
 - Consumes: existing authenticated `MassiveClient` session and bounded ticker/date/window requests.
 - Produces: `MassiveSMAValue`, `get_daily_bars(..., adjusted=True)` with same-origin pagination, `get_sma(ticker, window, start, end)`, and normalized optional `MassiveDividend.historical_adjustment_factor` evidence.
 
-- [ ] **Step 1: Write failing provider-adapter tests**
+- [x] **Step 1: Write failing provider-adapter tests**
 
   Add responses tests proving aggregate `next_url` pagination preserves authentication without accepting cross-origin URLs, SMA nested `results.values` pagination works, timestamps normalize to trade dates, malformed/non-finite SMA values fail, `historical_adjustment_factor` is retained and validated when present, and `adjusted=true` is present on both price endpoints.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
   Run: `uv run pytest tests/test_massive_client.py -q -k 'daily_bars or sma'`
 
   Expected: failures for missing `get_sma`/`MassiveSMAValue` and incomplete aggregate pagination.
 
-- [ ] **Step 3: Implement bounded same-origin pagination**
+- [x] **Step 3: Implement bounded same-origin pagination**
 
   Add a shared private page iterator that validates HTTPS, `api.massive.com`, strips any `apiKey`, and caps at 100 pages. Normalize SMA rows into:
 
@@ -102,13 +102,13 @@
 
   Request `/v1/indicators/sma/{ticker}` with `adjusted=true`, `window`, `series_type=close`, ascending order, timestamp bounds, and `limit=5000`.
 
-- [ ] **Step 4: Run the full Massive client tests**
+- [x] **Step 4: Run the full Massive client tests**
 
   Run: `uv run pytest tests/test_massive_client.py -q`
 
   Expected: all tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
   ```bash
   git add clients/massive_client.py clients/__init__.py tests/test_massive_client.py
