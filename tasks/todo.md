@@ -6,7 +6,7 @@ Active task lists live here. Completed sections move to [archive.md](archive.md)
 
 Dependency graph: `V1 -> V2 -> V3 -> V4 -> V5`
 
-- [ ] **V1** (`depends_on: []`): Implement pure date coverage, split-only and
+- [x] **V1** (`depends_on: []`): Implement pure date coverage, split-only and
   total-return reconstruction, pointwise comparison, and 20/50/200-session SMA
   validation.
 - [ ] **V2** (`depends_on: [V1]`): Add paginated Massive adjusted aggregate and

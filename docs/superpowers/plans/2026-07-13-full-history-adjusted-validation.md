@@ -31,7 +31,7 @@
 - Consumes: Bronze/Silver/reference rows as `list[dict[str, object]]`, `CorporateAction` values, and one `as_of_date`.
 - Produces: `CoverageMap`, `SeriesComparison`, `build_split_only_rows(...)`, `build_total_return_rows(...)`, `merge_reference_rows(...)`, `rolling_sma(...)`, and `compare_series(...)`.
 
-- [ ] **Step 1: Write failing coverage and moving-average tests**
+- [x] **Step 1: Write failing coverage and moving-average tests**
 
   Add tests proving Massive precedence, IB fallback, unresolved local dates, duplicate-date rejection, session-based 20/50/200 SMA eligibility, a point error that cancels in an SMA, threshold-edge behavior, and mechanical split-jump detection. Use compact synthetic rows such as:
 
@@ -45,23 +45,23 @@
   assert coverage.unresolved == (date(2024, 1, 4),)
   ```
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
   Run: `uv run pytest tests/test_adjusted_history_validation.py -q`
 
   Expected: collection fails because `clients.adjusted_history_validation` does not exist.
 
-- [ ] **Step 3: Implement the pure validation types and functions**
+- [x] **Step 3: Implement the pure validation types and functions**
 
   Use immutable dataclasses. Reject duplicate dates and invalid OHLC before comparison. Compute relative error as `abs(local-reference) / abs(reference) * 10_000`; classify `warning` above 1 bp and `failure` above 5 bp. Moving averages use exactly the preceding N ordered sessions and become unavailable across missing reference dates. Reconstruct split-only rows using split actions only and an independent call to pure factor arithmetic; reconstruct total return from all active effective actions without reading persisted factor rows.
 
-- [ ] **Step 4: Run focused tests and refactor while green**
+- [x] **Step 4: Run focused tests and refactor while green**
 
   Run: `uv run pytest tests/test_adjusted_history_validation.py -q`
 
   Expected: all new tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
   ```bash
   git add clients/adjusted_history_validation.py tests/test_adjusted_history_validation.py
