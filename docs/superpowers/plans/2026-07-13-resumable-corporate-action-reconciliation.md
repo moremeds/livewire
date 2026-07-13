@@ -32,7 +32,7 @@ Dependency graph: `T1 -> T2 -> T3 -> T4`
 - Consumes: resolved data-lake `Path`, normalized `list[str]`, `full_reconcile: bool`, `dry_run: bool`, and `resume: bool`.
 - Produces: `CursorIdentity`, `CorporateActionCursor`, `build_identity()`, `default_cursor_path()`, and `open_cursor()` for Task 2.
 
-- [ ] **Step 1: Write failing scope and lifecycle tests**
+- [x] **Step 1: Write failing scope and lifecycle tests**
 
 ```python
 def test_default_paths_isolate_modes_and_ticker_sets(tmp_path):
@@ -60,13 +60,13 @@ def test_completed_or_incompatible_cursor_rejects_resume(tmp_path):
         open_cursor(path, identity, resume=True, now=_utc(2026, 7, 14))
 ```
 
-- [ ] **Step 2: Run the cursor tests and verify RED**
+- [x] **Step 2: Run the cursor tests and verify RED**
 
 Run: `uv run pytest tests/test_corporate_action_cursor.py -q`
 
 Expected: collection fails because `livewire_scripts.corporate_action_cursor` does not exist.
 
-- [ ] **Step 3: Implement identity, validation, and atomic persistence**
+- [x] **Step 3: Implement identity, validation, and atomic persistence**
 
 ```python
 @dataclass(frozen=True)
@@ -129,13 +129,13 @@ def open_cursor(path: Path, identity: CursorIdentity, *, resume: bool,
 
 `_save()` must write JSON through a same-directory temporary file, flush and `os.fsync()` the file, publish with `os.replace()`, and remove abandoned temporary files. Serialized fields are exactly identity fields, timestamps, sorted `completed`, and `run_completed_at`; credentials are never accepted by this unit.
 
-- [ ] **Step 4: Run cursor tests and verify GREEN**
+- [x] **Step 4: Run cursor tests and verify GREEN**
 
 Run: `uv run pytest tests/test_corporate_action_cursor.py -q`
 
 Expected: all cursor tests pass.
 
-- [ ] **Step 5: Commit cursor unit**
+- [x] **Step 5: Commit cursor unit**
 
 ```bash
 git add livewire_scripts/corporate_action_cursor.py tests/test_corporate_action_cursor.py
@@ -152,7 +152,7 @@ git commit -m "feat: add corporate action resume cursor"
 - Consumes: Task 1 cursor APIs.
 - Produces: CLI flags `--workers`, `--resume`, `--cursor`; effective worker resolution; expanded deterministic summary counters.
 
-- [ ] **Step 1: Write failing CLI/counter tests**
+- [x] **Step 1: Write failing CLI/counter tests**
 
 ```python
 def test_worker_range_is_validated():
@@ -180,13 +180,13 @@ def test_injected_client_rejects_explicit_parallel_workers(tmp_path):
         )
 ```
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run: `uv run pytest tests/test_sync_corporate_actions.py -q`
 
 Expected: failures for unknown CLI flags and missing summary keys.
 
-- [ ] **Step 3: Implement CLI flags and sequential cursor flow**
+- [x] **Step 3: Implement CLI flags and sequential cursor flow**
 
 ```python
 def _worker_count(args: argparse.Namespace, *, injected_client: bool) -> int:
@@ -212,13 +212,13 @@ def _summary(*, requested: int, attempted: int, resumed: int, completed: int,
 
 Open/reset the scope cursor before fetching; skip its completed symbols on resume; mark a symbol only after `reconcile()` returns; mark the run complete only when `completed == requested` and `failed == 0`. Preserve the existing injected-client call order and existing action-counter meanings.
 
-- [ ] **Step 4: Run command tests and verify GREEN**
+- [x] **Step 4: Run command tests and verify GREEN**
 
 Run: `uv run pytest tests/test_sync_corporate_actions.py tests/test_livewire_entrypoints.py -q`
 
 Expected: all tests pass with no warning output.
 
-- [ ] **Step 5: Commit sequential integration**
+- [x] **Step 5: Commit sequential integration**
 
 ```bash
 git add livewire_scripts/sync_corporate_actions.py tests/test_sync_corporate_actions.py
@@ -235,7 +235,7 @@ git commit -m "feat: resume corporate action reconciliation"
 - Consumes: sequential reconciliation/cursor flow from Task 2 and `MassiveAuthError` from `clients.massive_client`.
 - Produces: `_fetch_parallel()` iterator and optional `client_factory` injection in `run()`.
 
-- [ ] **Step 1: Write failing parallel behavior tests**
+- [x] **Step 1: Write failing parallel behavior tests**
 
 ```python
 def test_four_workers_use_distinct_clients_and_close_them(tmp_path):
@@ -273,13 +273,13 @@ def test_auth_failure_stops_new_work_and_reports_pending(tmp_path, capsys):
     assert summary["requested"] == summary["resumed"] + summary["attempted"] + summary["pending"]
 ```
 
-- [ ] **Step 2: Run parallel tests and verify RED**
+- [x] **Step 2: Run parallel tests and verify RED**
 
 Run: `uv run pytest tests/test_sync_corporate_actions.py -q`
 
 Expected: failures because `client_factory` and parallel execution do not exist.
 
-- [ ] **Step 3: Implement bounded worker loops and main-thread reconciliation**
+- [x] **Step 3: Implement bounded worker loops and main-thread reconciliation**
 
 ```python
 @dataclass(frozen=True)
@@ -301,13 +301,13 @@ def _fetch_parallel(
 
 Catch ordinary per-symbol failures into `_FetchResult.error`. On `MassiveAuthError`, set the stop event before emitting the error. The main thread increments `attempted` for every emitted symbol result, reconciles successes, checkpoints only after reconcile success, and leaves unstarted symbols as `pending`. Do not wrap Massive calls in another retry loop.
 
-- [ ] **Step 4: Run parallel and cursor tests and verify GREEN**
+- [x] **Step 4: Run parallel and cursor tests and verify GREEN**
 
 Run: `uv run pytest tests/test_sync_corporate_actions.py tests/test_corporate_action_cursor.py -q -W error::RuntimeWarning`
 
 Expected: all tests pass and no RuntimeWarning is emitted.
 
-- [ ] **Step 5: Commit worker engine**
+- [x] **Step 5: Commit worker engine**
 
 ```bash
 git add livewire_scripts/sync_corporate_actions.py tests/test_sync_corporate_actions.py
@@ -326,7 +326,7 @@ git commit -m "feat: parallelize corporate action fetches"
 - Consumes: final CLI behavior from Tasks 1-3.
 - Produces: operator command and recorded durable runtime behavior.
 
-- [ ] **Step 1: Update operator examples and durable facts**
+- [x] **Step 1: Update operator examples and durable facts**
 
 ```markdown
 python scripts/livewire_ingest.py corporate-actions --workers 4 --resume --full-reconcile
@@ -334,7 +334,7 @@ python scripts/livewire_ingest.py corporate-actions --workers 4 --resume --full-
 
 Document that default cursors are scope-isolated, only successful reconciliations checkpoint, a completed cursor requires a fresh run, and full reconciliation may infer cancellations.
 
-- [ ] **Step 2: Run focused quality gates**
+- [x] **Step 2: Run focused quality gates**
 
 Run: `uv run pytest tests/test_corporate_action_cursor.py tests/test_sync_corporate_actions.py tests/test_corporate_action_store.py tests/test_massive_client.py tests/test_livewire_entrypoints.py -q -W error::RuntimeWarning`
 
@@ -348,7 +348,7 @@ Run: `uv run ruff format --check livewire_scripts/corporate_action_cursor.py liv
 
 Expected: all files already formatted.
 
-- [ ] **Step 3: Run full CI-equivalent verification**
+- [x] **Step 3: Run full CI-equivalent verification**
 
 Run: `uv run pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing`
 
@@ -358,13 +358,13 @@ Run: `uv run pytest tests -q -W error::RuntimeWarning`
 
 Expected: all tests pass without RuntimeWarning.
 
-- [ ] **Step 4: Self-review the implementation and operational boundary**
+- [x] **Step 4: Self-review the implementation and operational boundary**
 
 Run: `git diff --check && git status --short`
 
 Verify from the final diff that all store writes remain in the main thread, all clients close, cursor publication follows successful reconciliation, no credentials enter output/state, and no production Silver pointer path is changed.
 
-- [ ] **Step 5: Commit documentation and verification record**
+- [x] **Step 5: Commit documentation and verification record**
 
 ```bash
 git add README.md CLAUDE.md .codex/project-memory.md tasks/todo.md docs/superpowers/specs/2026-07-13-resumable-corporate-action-reconciliation-design.md docs/superpowers/plans/2026-07-13-resumable-corporate-action-reconciliation.md
