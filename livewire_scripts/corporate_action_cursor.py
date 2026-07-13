@@ -15,6 +15,13 @@ _SCHEMA_VERSION = 1
 _NEW_YORK = ZoneInfo("America/New_York")
 
 
+def _boolean(payload: dict, key: str) -> bool:
+    value = payload[key]
+    if not isinstance(value, bool):
+        raise TypeError(f"{key} must be boolean")
+    return value
+
+
 @dataclass(frozen=True)
 class CursorIdentity:
     schema_version: int
@@ -43,8 +50,8 @@ class CorporateActionCursor:
                 root=str(payload["root"]),
                 ticker_sha256=str(payload["ticker_sha256"]),
                 ticker_count=int(payload["ticker_count"]),
-                full_reconcile=bool(payload["full_reconcile"]),
-                dry_run=bool(payload["dry_run"]),
+                full_reconcile=_boolean(payload, "full_reconcile"),
+                dry_run=_boolean(payload, "dry_run"),
             )
             completed_at = payload.get("run_completed_at")
             return cls(

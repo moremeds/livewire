@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 
 import pytest
@@ -91,6 +92,38 @@ def test_malformed_cursor_rejects_resume(tmp_path):
 
     with pytest.raises(ValueError, match="malformed"):
         open_cursor(path, identity, resume=True, now=_utc(13))
+
+
+def test_non_boolean_mode_is_malformed(tmp_path):
+    identity = build_identity(tmp_path, ["AAPL"], full_reconcile=False, dry_run=False)
+    path = tmp_path / "cursor.json"
+    open_cursor(path, identity, resume=False, now=_utc(13))
+    payload = json.loads(path.read_text())
+    payload["dry_run"] = "false"
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="malformed"):
+        open_cursor(path, identity, resume=True, now=_utc(13))
+
+
+def test_cursor_write_fsyncs_before_atomic_replace(tmp_path, monkeypatch):
+    identity = build_identity(tmp_path, ["AAPL"], full_reconcile=False, dry_run=False)
+    path = tmp_path / "cursor.json"
+    operations = []
+    real_replace = os.replace
+
+    monkeypatch.setattr("livewire_scripts.corporate_action_cursor.os.fsync", lambda _fd: operations.append("fsync"))
+
+    def record_replace(source, target):
+        assert source.exists()
+        operations.append("replace")
+        real_replace(source, target)
+
+    monkeypatch.setattr("livewire_scripts.corporate_action_cursor.os.replace", record_replace)
+
+    open_cursor(path, identity, resume=False, now=_utc(13))
+
+    assert operations == ["fsync", "replace"]
 
 
 def test_cursor_contains_no_unexpected_fields(tmp_path):
