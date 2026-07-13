@@ -374,9 +374,20 @@ python scripts/livewire_store.py migrate-price-basis --full
 # Read-only audit, followed only by a separately reviewed/approved manifest
 python scripts/livewire_quality.py audit-split-basis \
   --tickers AAPL MSFT NVDA --output /tmp/split-basis-audit.json
-python scripts/livewire_store.py repair-split-basis --manifest /tmp/split-basis-audit.json
+
+# Resolve only ambiguous in-history boundaries from two overlapping IB windows.
+# Results are hash-bound, per-symbol, atomic, and resumable; Bronze is read-only.
+python scripts/livewire_quality.py resolve-split-basis \
+  --audit-manifest /tmp/split-basis-audit.json \
+  --output-dir /tmp/split-basis-evidence --resume
+
+# Replay the saved provider rows rather than trusting their saved label.
+python scripts/livewire_quality.py audit-split-basis \
+  --tickers AAPL MSFT NVDA --evidence-dir /tmp/split-basis-evidence \
+  --output /tmp/split-basis-resolved.json
+python scripts/livewire_store.py repair-split-basis --manifest /tmp/split-basis-resolved.json
 python scripts/livewire_store.py repair-split-basis \
-  --manifest /tmp/split-basis-audit.json --rollback
+  --manifest /tmp/split-basis-resolved.json --rollback
 ```
 
 Audit manifests are bound to their resolved data-lake root. Use
@@ -384,6 +395,15 @@ Audit manifests are bound to their resolved data-lake root. Use
 rehearsal; a root mismatch is rejected before any symbol is touched. Silver
 applies split factors only to raw rows, keeps dividend adjustment independent,
 and fails closed when an unknown row is affected by an effective split.
+Splits at or before a symbol's first stored session are outside the stored
+history and do not block the audit. Splits after its last stored session remain
+pending until a post-event bar exists. Evidence resolution requires repeated IB
+requests to agree pointwise, then compares multi-session Bronze-to-IB scale on
+both sides of each action; the audit independently recomputes that decision.
+When IB has no historical boundary row, the resolver may use two overlapping
+Massive adjusted ranges as a narrow fallback. The same repeated-reference gate
+can recover nonpositive OHLC fields, scaled into the row's existing basis and
+checked against every remaining positive OHLC anchor before audit replay.
 
 ### Prerequisites
 

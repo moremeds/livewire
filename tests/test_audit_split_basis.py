@@ -119,3 +119,92 @@ def test_symbol_without_split_evidence_has_no_proposed_replacements(tmp_path):
     assert item["classifications"] == []
     assert item["eligible"] is True
     assert item["replacements"] == []
+
+
+def test_split_before_stored_history_does_not_block_audit(tmp_path):
+    bronze = tmp_path / "bronze/asset_class=equity"
+    BronzeClient(bronze, "equity").replace_ticker_rows(
+        "TEST",
+        [
+            {
+                "trade_date": "2026-01-02",
+                "symbol_id": 3,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "adj_close": 100.0,
+                "volume": 1000,
+                "source": "legacy",
+                "price_basis": "unknown",
+            }
+        ],
+    )
+    split = MassiveSplit(
+        provider_event_id="test-prehistory-split",
+        ticker="TEST",
+        execution_date=date(2020, 8, 31),
+        split_from=Decimal("1"),
+        split_to=Decimal("4"),
+        payload_hash="prehistory-split",
+    )
+    CorporateActionStore(tmp_path).reconcile("TEST", [split], datetime(2026, 1, 2, tzinfo=UTC))
+    output = tmp_path / "audit.json"
+
+    assert audit_split_basis.run(["--tickers", "TEST", "--output", str(output)], data_lake_root=tmp_path) == 0
+
+    item = json.loads(output.read_text())["symbols"][0]
+    assert item["classifications"] == []
+    assert item["eligible"] is True
+    assert item["replacements"] == []
+
+
+def test_audit_replays_ib_evidence_to_resolve_ambiguous_boundary(tmp_path):
+    path = _seed(tmp_path)
+    client = BronzeClient(path.parents[1], "equity")
+    rows = client.read_symbol_rows("AAPL")
+    rows[1]["close"] = rows[1]["open"] = rows[1]["high"] = rows[1]["low"] = rows[1]["adj_close"] = 17.5
+    client.replace_ticker_rows("AAPL", rows)
+    initial = tmp_path / "initial.json"
+    assert audit_split_basis.run(["--tickers", "AAPL", "--output", str(initial)], data_lake_root=tmp_path) == 1
+    item = json.loads(initial.read_text())["symbols"][0]
+    action_id = item["classifications"][0]["action_id"]
+    provider_rows = [
+        {"trade_date": "2020-08-28", "close": 25.0},
+        {"trade_date": "2020-08-31", "close": 17.5},
+    ]
+    evidence = tmp_path / "evidence/symbols"
+    evidence.mkdir(parents=True)
+    (evidence / "AAPL.json").write_text(
+        json.dumps(
+            {
+                "data_lake_root": str(tmp_path.resolve()),
+                "events": [
+                    {
+                        "action_id": action_id,
+                        "provider_runs": [provider_rows, provider_rows],
+                        "status": "resolved",
+                    }
+                ],
+                "source_sha256": item["source_sha256"],
+                "status": "resolved",
+                "symbol": "AAPL",
+            },
+            sort_keys=True,
+        )
+    )
+    output = tmp_path / "resolved.json"
+
+    assert (
+        audit_split_basis.run(
+            ["--tickers", "AAPL", "--output", str(output), "--evidence-dir", str(evidence.parent)],
+            data_lake_root=tmp_path,
+        )
+        == 0
+    )
+
+    resolved = json.loads(output.read_text())["symbols"][0]
+    assert resolved["eligible"] is True
+    assert resolved["classifications"][0]["treatment"] == "adjusted"
+    assert resolved["resolution_evidence_sha256"] is not None
+    assert resolved["replacements"]

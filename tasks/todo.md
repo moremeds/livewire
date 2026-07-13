@@ -32,6 +32,20 @@ Dependency graph: `P1 -> P2 -> P3 -> P4 -> P5 -> P6 -> P7`
 - [ ] **P6** (`depends_on: [P5]`): Apply only evidence-confirmed Bronze repairs
   through the stale-safe rollback-capable manifest, then rerun the complete
   audit and structural/schema validation.
+  - [x] **P6.1** (`depends_on: [P5]`): Exclude split actions at or before the
+    first stored session from basis classification because no stored row can be
+    affected; retain actions after the last stored session as pending evidence.
+    - Corrected full audit: 13,099 symbols, 12,584 eligible, 511 ambiguous
+      symbols / 759 events, and four invalid-OHLC errors. Manifest SHA-256:
+      `3df837f61f588015f15b51d5934dcedd27cbf251a40e8e4a92eb5b2937388ce3`.
+  - [ ] **P6.2** (`depends_on: [P6.1]`): Resolve each remaining in-history
+    ambiguous boundary from repeated overlapping IB windows and persist the
+    provider rows, action factor/date, continuity metrics, and terminal outcome.
+  - [ ] **P6.3** (`depends_on: [P6.2]`): Repair the four invalid OHLC rows and
+    approve only manifest entries supported by reproducible provider evidence.
+  - [ ] **P6.4** (`depends_on: [P6.3]`): Apply the root-bound manifest, rerun the
+    full audit twice, and require zero unresolved in-history classifications,
+    zero invalid OHLC rows, unchanged second-run hashes, and readable schemas.
 - [ ] **P7** (`depends_on: [P6]`): Build production inputs into disposable Silver,
   run the full-history gate plus representative Apex reads, self-review all
   evidence, and stop before advancing production `silver/revisions/current.json`.

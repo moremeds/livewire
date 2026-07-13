@@ -21,6 +21,7 @@ Use this file for:
 - Live equity data is stored per ticker at `~/market-warehouse/data-lake/bronze/asset_class=equity/symbol=<ticker>/1d.parquet`.
 - Equity daily Bronze has row-level `source` and `price_basis` provenance. Canonical basis is raw; legacy schema migration writes `legacy/unknown`. IB `TRADES` history is classified per applicable split boundary and only incoming IB rows are normalized; ambiguous applicable events block publication before mutation.
 - Split-basis audit manifests are cryptographically tied to both source files and a resolved data-lake root. Apply/rollback reject stale hashes or a different active root. Full legacy migration persists an atomic resumable cursor.
+- Split-basis classification ignores actions at or before the first stored session because no stored row can be affected, while actions after the last stored session remain pending. Ambiguous in-history boundaries are resolved only from repeated pointwise-consistent IB windows, with repeated Massive-adjusted ranges as a narrow fallback when IB has no boundary. The same evidence path may recover nonpositive OHLC fields in their existing basis. The audit replays saved provider rows against current Bronze/action inputs instead of trusting a saved label.
 - Daily and intraday bronze replace/merge operations use blocking `fcntl.flock`
   locks keyed by the exact target parquet path. Persistent `*.parquet.lock`
   sidecars are expected coordination artifacts, ignored by discovery/sync paths,
