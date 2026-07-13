@@ -158,3 +158,25 @@ def test_comparison_threshold_edges_are_strictly_greater_than() -> None:
     assert warning.passed is True
     assert failure.point_failure_count == 4
     assert failure.passed is False
+
+
+def test_exact_silver_columns_fail_even_when_ohlc_matches() -> None:
+    trade_date = date(2024, 1, 2)
+    expected = _bar(
+        trade_date,
+        100,
+        price_adjustment_factor=0.9,
+        split_volume_factor=2.0,
+        adjustment_revision=1,
+    )
+    actual = {**expected, "volume": 99, "price_adjustment_factor": 0.8}
+
+    result = compare_series(
+        [actual],
+        [expected],
+        windows=(),
+        exact_columns=("adj_close", "volume", "price_adjustment_factor", "split_volume_factor"),
+    )
+
+    assert result.passed is False
+    assert result.exact_failure_count == 2

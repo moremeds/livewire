@@ -177,6 +177,51 @@ def test_massive_action_evidence_compares_active_inventory_and_factors() -> None
     assert evidence.historical_adjustment_factors == {"div": "0.98"}
 
 
+def test_massive_action_evidence_rejects_same_id_field_correction() -> None:
+    local = [
+        _action(
+            "div-local",
+            "cash_dividend",
+            date(2024, 1, 4),
+            provider_event_id="div",
+            cash_amount=2.0,
+            currency="USD",
+        )
+    ]
+
+    evidence = fetch_massive_action_evidence(_Massive(), "TEST", local, date(2024, 1, 5))
+
+    assert evidence.status == "partial"
+    assert evidence.mismatched_provider_ids == ("div",)
+    assert evidence.unexpected_provider_ids == ("split",)
+
+
+def test_massive_dividend_factor_is_compared_with_reference_close() -> None:
+    local = [
+        _action(
+            "div-local",
+            "cash_dividend",
+            date(2024, 1, 4),
+            provider_event_id="div",
+            cash_amount=1.0,
+            currency="USD",
+        ),
+        _action("split-local", "split", date(2024, 1, 3), provider_event_id="split", split_from=1.0, split_to=2.0),
+    ]
+    bronze_rows = [_row(date(2024, 1, 3), 100)]
+
+    evidence = fetch_massive_action_evidence(
+        _Massive(),
+        "TEST",
+        local,
+        date(2024, 1, 5),
+        bronze_rows=bronze_rows,
+    )
+
+    assert evidence.status == "partial"
+    assert evidence.factor_mismatch_ids == ("div",)
+
+
 def test_cache_is_atomic_content_checked_and_contains_no_credentials(tmp_path) -> None:
     path = tmp_path / "evidence.json"
     identity = {"version": CACHE_VERSION, "symbol": "TEST", "as_of_date": "2024-01-05"}

@@ -249,6 +249,9 @@ It also supports explicit `--tickers`, `--data-lake-root`, `--as-of-date`,
 Runs over more than five symbols use the repository's robust IB orchestration
 semantics in a dedicated read-only fetch runner rather than invoking the
 Bronze-writing `robust` ingestion command or using an ad hoc direct loop.
+The first implementation intentionally accepts only `--workers 1` so Massive
+rate limits and IB historical pacing remain deterministic; resumable per-symbol
+checkpoints provide operational progress until measured concurrency is added.
 
 The cursor is versioned and keyed by resolved data-lake root, Bronze hash,
 Silver revision, corporate-action snapshot, as-of date, provider request

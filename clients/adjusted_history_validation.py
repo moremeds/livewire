@@ -65,6 +65,7 @@ class SeriesComparison:
     extra_reference_dates: tuple[date, ...]
     point_warning_count: int
     point_failure_count: int
+    exact_failure_count: int
     differences: tuple[PointDifference, ...]
     sma: dict[int, MetricSummary]
 
@@ -238,6 +239,7 @@ def compare_series(
     warning_bps: float = 1.0,
     failure_bps: float = 5.0,
     windows: tuple[int, ...] = DEFAULT_WINDOWS,
+    exact_columns: tuple[str, ...] = (),
 ) -> SeriesComparison:
     """Compare aligned OHLC point values and rolling close averages."""
     if warning_bps < 0 or failure_bps <= warning_bps:
@@ -260,6 +262,27 @@ def compare_series(
             severity = _severity(error, warning_bps, failure_bps)
             if severity != "ok":
                 differences.append(PointDifference(trade_date, column, local, reference, error, severity))
+        for column in exact_columns:
+            try:
+                local_value = float(local_by_date[trade_date][column])
+                reference_value = float(reference_by_date[trade_date][column])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"exact comparison column {column} must be numeric") from exc
+            if column == "volume":
+                matches = local_value == reference_value
+            else:
+                matches = math.isclose(local_value, reference_value, rel_tol=1e-12, abs_tol=1e-12)
+            if not matches:
+                differences.append(
+                    PointDifference(
+                        trade_date,
+                        column,
+                        local_value,
+                        reference_value,
+                        _relative_error_bps(local_value, reference_value),
+                        "failure",
+                    )
+                )
 
     sma = {
         window: _metric_summary(
@@ -270,14 +293,21 @@ def compare_series(
         for window in windows
     }
     point_warnings = sum(item.severity == "warning" for item in differences)
-    point_failures = sum(item.severity == "failure" for item in differences)
-    passed = not missing_dates and point_failures == 0 and all(item.failure_count == 0 for item in sma.values())
+    point_failures = sum(item.severity == "failure" and item.column in PRICE_COLUMNS for item in differences)
+    exact_failures = sum(item.severity == "failure" and item.column in exact_columns for item in differences)
+    passed = (
+        not missing_dates
+        and point_failures == 0
+        and exact_failures == 0
+        and all(item.failure_count == 0 for item in sma.values())
+    )
     return SeriesComparison(
         passed=passed,
         missing_dates=missing_dates,
         extra_reference_dates=extra_dates,
         point_warning_count=point_warnings,
         point_failure_count=point_failures,
+        exact_failure_count=exact_failures,
         differences=tuple(differences),
         sma=sma,
     )

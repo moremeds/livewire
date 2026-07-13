@@ -8,6 +8,7 @@ import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
@@ -15,7 +16,7 @@ from clients.adjusted_history_validation import build_split_only_rows
 from clients.corporate_action_store import CorporateAction
 from clients.ib_client import IBClient, IBTimeoutError
 from clients.ingestion_common import bars_to_rows, make_contract
-from clients.massive_client import MassiveClient
+from clients.massive_client import MassiveClient, MassiveDividend, MassiveSplit
 from clients.price_basis import prepare_ib_rows_for_publish
 from livewire_scripts.fetch_ib_historical import compute_date_windows
 
@@ -47,6 +48,9 @@ class ActionEvidence:
     unexpected_provider_ids: tuple[str, ...]
     historical_adjustment_factors: dict[str, str]
     error: str | None = None
+    mismatched_provider_ids: tuple[str, ...] = ()
+    factor_mismatch_ids: tuple[str, ...] = ()
+    unverified_factor_ids: tuple[str, ...] = ()
 
 
 def _coerce_date(value: object) -> date:
@@ -120,6 +124,9 @@ def fetch_massive_action_evidence(
     symbol: str,
     local_actions: Sequence[CorporateAction],
     as_of_date: date,
+    *,
+    bronze_rows: Sequence[dict[str, Any]] | None = None,
+    factor_tolerance_bps: float = 5.0,
 ) -> ActionEvidence:
     """Compare fresh Massive action IDs with the effective local inventory."""
     symbol = symbol.upper()
@@ -134,13 +141,74 @@ def fetch_massive_action_evidence(
     provider_ids = {item.provider_event_id for item in [*splits, *dividends]}
     missing = tuple(sorted(local_ids - provider_ids))
     unexpected = tuple(sorted(provider_ids - local_ids))
+    local_by_id = {
+        item.provider_event_id: item for item in local_actions if item.status == "active" and item.ex_date <= as_of_date
+    }
+    provider_by_id = {item.provider_event_id: item for item in [*splits, *dividends]}
+    mismatched: list[str] = []
+    for event_id in sorted(local_ids & provider_ids):
+        local = local_by_id[event_id]
+        provider = provider_by_id[event_id]
+        if isinstance(provider, MassiveSplit):
+            matches = (
+                local.action_type == "split"
+                and local.ex_date == provider.execution_date
+                and Decimal(str(local.split_from)) == provider.split_from
+                and Decimal(str(local.split_to)) == provider.split_to
+            )
+        elif isinstance(provider, MassiveDividend):
+            matches = (
+                local.action_type == "cash_dividend"
+                and local.ex_date == provider.ex_dividend_date
+                and Decimal(str(local.cash_amount)) == provider.cash_amount
+                and str(local.currency).upper() == provider.currency
+            )
+        else:  # pragma: no cover - closed provider event union
+            matches = False
+        if not matches:
+            mismatched.append(event_id)
     factors = {
         item.provider_event_id: str(item.historical_adjustment_factor)
         for item in dividends
         if item.historical_adjustment_factor is not None
     }
-    status: Literal["complete", "partial"] = "complete" if not missing and not unexpected else "partial"
-    return ActionEvidence(symbol, status, missing, unexpected, factors)
+    factor_mismatches: list[str] = []
+    unverified_factors: list[str] = []
+    if bronze_rows is not None:
+        ordered_rows = sorted(bronze_rows, key=lambda row: _coerce_date(row["trade_date"]))
+        for dividend in dividends:
+            provider_factor = dividend.historical_adjustment_factor
+            if provider_factor is None:
+                continue
+            local = local_by_id.get(dividend.provider_event_id)
+            previous = [row for row in ordered_rows if _coerce_date(row["trade_date"]) < dividend.ex_dividend_date]
+            if local is None or local.action_type != "cash_dividend" or not previous:
+                unverified_factors.append(dividend.provider_event_id)
+                continue
+            same_day_split = Decimal("1")
+            for action in local_actions:
+                if action.status == "active" and action.action_type == "split" and action.ex_date == local.ex_date:
+                    same_day_split *= Decimal(str(action.split_from)) / Decimal(str(action.split_to))
+            reference_close = Decimal(str(previous[-1]["close"])) * same_day_split
+            expected_factor = (reference_close - Decimal(str(local.cash_amount))) / reference_close
+            error_bps = abs(expected_factor - provider_factor) / abs(provider_factor) * Decimal("10000")
+            if error_bps > Decimal(str(factor_tolerance_bps)):
+                factor_mismatches.append(dividend.provider_event_id)
+    status: Literal["complete", "partial"] = (
+        "complete"
+        if not missing and not unexpected and not mismatched and not factor_mismatches and not unverified_factors
+        else "partial"
+    )
+    return ActionEvidence(
+        symbol,
+        status,
+        missing,
+        unexpected,
+        factors,
+        mismatched_provider_ids=tuple(mismatched),
+        factor_mismatch_ids=tuple(factor_mismatches),
+        unverified_factor_ids=tuple(unverified_factors),
+    )
 
 
 def fetch_ib_evidence(

@@ -41,7 +41,7 @@ from livewire_scripts.adjusted_history_sources import (
 from livewire_scripts.paths import data_lake_dir
 
 NEW_YORK = ZoneInfo("America/New_York")
-VALIDATOR_VERSION = 1
+VALIDATOR_VERSION = 2
 
 
 class _UnavailableMassive:
@@ -250,6 +250,8 @@ def _cache_identity(
     start: date,
     end: date,
     as_of_date: date,
+    *,
+    dependency_hash: str | None = None,
 ) -> dict[str, Any]:
     return {
         "schema_version": VALIDATOR_VERSION,
@@ -258,6 +260,7 @@ def _cache_identity(
         "requested_start": start.isoformat(),
         "requested_end": end.isoformat(),
         "as_of_date": as_of_date.isoformat(),
+        "dependency_hash": dependency_hash,
     }
 
 
@@ -286,8 +289,8 @@ def run(
     ib_fetcher_factory: Callable[[Any], Callable[[str, date, date], list[dict[str, Any]]]] = IBHistoryFetcher,
 ) -> int:
     args = parse_args(argv)
-    if args.workers <= 0:
-        raise ValueError("workers must be positive")
+    if args.workers != 1:
+        raise ValueError("adjusted-history validation currently requires --workers 1 for provider pacing")
     root = (args.data_lake_root or data_lake_dir()).expanduser().resolve()
     bronze_root = root / "bronze/asset_class=equity"
     silver_root = (args.silver_root or root / "silver").expanduser().resolve()
@@ -386,7 +389,14 @@ def run(
                             )
                         else:
                             ib_cache = output / "cache/ib" / f"{encoded}.json"
-                            ib_identity = _cache_identity("ib", symbol, start, end, effective_as_of)
+                            ib_identity = _cache_identity(
+                                "ib",
+                                symbol,
+                                start,
+                                end,
+                                effective_as_of,
+                                dependency_hash=before["actions"],
+                            )
                             ib_evidence = _acquire_cached_source(
                                 ib_cache,
                                 ib_identity,
@@ -420,6 +430,12 @@ def run(
                         total_return,
                         warning_bps=args.warning_bps,
                         failure_bps=args.failure_bps,
+                        exact_columns=(
+                            "adj_close",
+                            "volume",
+                            "price_adjustment_factor",
+                            "split_volume_factor",
+                        ),
                     )
                     jumps = find_mechanical_split_jumps(silver_rows, actions, effective_as_of)
                     sma_diagnostics, sma_failed = _massive_sma_diagnostics(
@@ -427,7 +443,13 @@ def run(
                         warning_bps=args.warning_bps,
                         failure_bps=args.failure_bps,
                     )
-                    action_evidence = fetch_massive_action_evidence(massive, symbol, actions, effective_as_of)
+                    action_evidence = fetch_massive_action_evidence(
+                        massive,
+                        symbol,
+                        actions,
+                        effective_as_of,
+                        bronze_rows=bronze_rows,
+                    )
                     after = _input_hashes(paths)
                     errors: list[str] = []
                     if coverage.unresolved:
