@@ -18,12 +18,17 @@ Dependency graph: `P1 -> P2 -> P3 -> P4 -> P5 -> P6 -> P7`
 - [x] **P4** (`depends_on: [P3]`): Run focused, RuntimeWarning, static, and full
   CI-equivalent verification, then repeat the SPY/PLTR live validation and
   require explained or eliminated pointwise failures.
-- [ ] **P5** (`depends_on: [P4]`): Dry-run the production Bronze basis migration,
+- [x] **P5** (`depends_on: [P4]`): Dry-run the production Bronze basis migration,
   reconcile a complete corporate-action inventory for the Bronze equity
   universe, and run the full split-boundary audit; persist root-bound hashes,
   counts, and proposed repairs before changing price values.
-  The scope-safe four-worker reconciliation engine is implemented; the
-  production full-universe run and audit evidence remain pending.
+  - Corporate-action cursor: 13,099 requested/completed, zero failed/pending,
+    ticker hash `ad8bfdf9d908a489d5f09438910f08e9cfe26a06e16102f2cc0cf5a8ea6038fd`.
+  - Structural scan: 8,753 Parquet artifacts, 335,873 rows, zero schema/read/symbol
+    failures, 335,871 active revisions, and two cancelled revisions.
+  - Split audit: 13,099 symbols, 11,280 eligible, 1,815 ambiguous, four invalid
+    OHLC blockers, 1,097 symbols with proposed replacements, and zero approvals.
+    Manifest SHA-256: `9a30e07ee9e2872d738710be051dd0bf52a63d3c0ad7170cd7380096fedfa6c2`.
 - [ ] **P6** (`depends_on: [P5]`): Apply only evidence-confirmed Bronze repairs
   through the stale-safe rollback-capable manifest, then rerun the complete
   audit and structural/schema validation.
