@@ -298,6 +298,77 @@ artifacts, writes immutable `revision=<n>.json`, and atomically replaces
 `current.json` last. A failed batch never advances the pointer. `MDW_SILVER_DIR`
 overrides the default `data-lake/silver` root.
 
+#### Full-history adjusted validation
+
+Use the strict read-only gate to validate every stored equity daily session
+against Massive adjusted history, with fresh IB `TRADES` history filling dates
+outside the Massive entitlement:
+
+```bash
+python scripts/livewire_quality.py validate-adjusted-history \
+  --all-equities \
+  --output-dir ~/market-warehouse/validation/adjusted-history \
+  --resume
+```
+
+For a targeted smoke run, replace `--all-equities` with
+`--tickers AAPL MSFT NVDA SPY PLTR`. The validator compares pointwise OHLC and
+every eligible 20/50/200-session moving average, checks Massive's SMA endpoint
+when available, independently rebuilds split-only and dividend-adjusted
+expectations without writing Silver, and rejects unresolved dates or remaining
+mechanical split jumps. A provider SMA entitlement failure is reported
+separately and does not discard usable adjusted aggregate bars.
+
+The output directory must be outside canonical Bronze and Silver. It contains
+content-checked provider caches, per-symbol JSON details, an atomic resumable
+cursor, `manifest.json`, and `summary.md`. Resume checkpoints are bound to the
+Bronze, Silver, corporate-action, and current-revision hashes. The command exits
+zero only when every requested symbol passes complete date coverage and the
+required comparisons.
+
+The initial runner is deliberately sequential (`--workers 1`) to keep Massive
+rate limits and IB historical pacing deterministic. Use `--resume` for long
+whole-universe runs; each completed symbol is checkpointed atomically.
+
+Evidence grades matter: Massive validation of IB-sourced Bronze is
+cross-provider evidence; a combined Massive/IB range is hybrid evidence; fresh
+IB validation of IB-sourced history is same-provider replay. The last case
+proves that retrieval, raw normalization, storage, and Silver transformation are
+reproducible, but it does not independently prove IB's vendor data.
+
+### Equity Bronze price basis
+
+Equity daily Bronze rows carry non-null `source` and `price_basis` metadata.
+Canonical rows use `price_basis=raw`; migrated legacy rows remain
+`source=legacy, price_basis=unknown` until an approved repair resolves them.
+IB `TRADES` history is classified at every applicable split boundary because IB
+may return adjusted and raw segments for different split events. Ambiguous
+classification aborts before Bronze publication. Massive `adjusted=false` rows
+remain raw, while Nasdaq and Stooq recovery rows remain unknown.
+
+```bash
+# Read-only calibration with per-event hypothesis errors and confidence
+python scripts/livewire_quality.py calibrate-daily-basis \
+  --tickers AAPL MSFT NVDA --output /tmp/daily-basis.json
+
+# Atomic legacy schema migration; --full persists a resumable cursor
+python scripts/livewire_store.py migrate-price-basis --full --dry-run
+python scripts/livewire_store.py migrate-price-basis --full
+
+# Read-only audit, followed only by a separately reviewed/approved manifest
+python scripts/livewire_quality.py audit-split-basis \
+  --tickers AAPL MSFT NVDA --output /tmp/split-basis-audit.json
+python scripts/livewire_store.py repair-split-basis --manifest /tmp/split-basis-audit.json
+python scripts/livewire_store.py repair-split-basis \
+  --manifest /tmp/split-basis-audit.json --rollback
+```
+
+Audit manifests are bound to their resolved data-lake root. Use
+`--data-lake-root /path/to/disposable/data-lake` on both audit and repair for a
+rehearsal; a root mismatch is rejected before any symbol is touched. Silver
+applies split factors only to raw rows, keeps dividend adjustment independent,
+and fails closed when an unknown row is affected by an effective split.
+
 ### Prerequisites
 
 * IB Gateway running (`127.0.0.1:4001` by default) — only needed for non-Massive data

@@ -111,21 +111,37 @@ def make_contract(ticker: str, asset_class: str = "equity", exchange: str | None
     return Stock(ticker, "SMART", "USD")
 
 
-def bars_to_rows(bars: list, symbol_id: int) -> list[dict]:
+def bars_to_rows(
+    bars: list,
+    symbol_id: int,
+    *,
+    source: str = "legacy",
+    price_basis: str = "unknown",
+) -> list[dict]:
     """Convert IB BarData objects to bronze row dicts."""
-    return [
-        {
-            "trade_date": str(bar.date),
-            "symbol_id": symbol_id,
-            "open": float(bar.open),
-            "high": float(bar.high),
-            "low": float(bar.low),
-            "close": float(bar.close),
-            "adj_close": float(bar.close),
-            "volume": int(bar.volume),
-        }
-        for bar in bars
-    ]
+    rows: list[dict] = []
+    for bar in bars:
+        row_source = str(getattr(bar, "source", source)).split(":", 1)[0]
+        row_basis = {
+            "massive": "raw",
+            "nasdaq": "unknown",
+            "stooq": "unknown",
+        }.get(row_source, price_basis)
+        rows.append(
+            {
+                "trade_date": str(bar.date),
+                "symbol_id": symbol_id,
+                "open": float(bar.open),
+                "high": float(bar.high),
+                "low": float(bar.low),
+                "close": float(bar.close),
+                "adj_close": float(bar.close),
+                "volume": int(bar.volume),
+                "source": row_source,
+                "price_basis": row_basis,
+            }
+        )
+    return rows
 
 
 def bars_to_futures_rows(

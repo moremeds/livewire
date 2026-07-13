@@ -36,6 +36,8 @@ def _bronze_rows(ticker: str, rows: list[dict]) -> list[dict]:
                 "close": source["close"],
                 "adj_close": source["close"],
                 "volume": int(source["volume"]),
+                "source": "massive",
+                "price_basis": "raw",
             }
         )
     return result

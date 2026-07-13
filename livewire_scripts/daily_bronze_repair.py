@@ -221,6 +221,8 @@ def apply_mismatches(bronze_dir: Path, mismatches: list[DailyMismatch]) -> dict[
                 "close": item.raw_close,
                 "adj_close": item.raw_close,
                 "volume": item.raw_volume,
+                "source": "massive",
+                "price_basis": "raw",
             }
         )
     bronze = BronzeClient(bronze_dir=bronze_dir, asset_class="equity")

@@ -1603,6 +1603,7 @@ class TestMain:
             rows = bronze.read_symbol_rows("AAPL")
         assert len(rows) == 2
         assert [row["trade_date"] for row in rows] == ["2025-01-02", "2025-01-03"]
+        assert rows[-1]["price_basis"] == "raw"
 
     @pytest.mark.integration
     def test_main_calls_write_ticker_parquet_for_compat_storage(self, tmp_path, monkeypatch):

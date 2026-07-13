@@ -2,6 +2,52 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Full-history adjusted validation (2026-07-13)
+
+Dependency graph: `V1 -> V2 -> V3 -> V4 -> V5`
+
+- [x] **V1** (`depends_on: []`): Implement pure date coverage, split-only and
+  total-return reconstruction, pointwise comparison, and 20/50/200-session SMA
+  validation.
+- [x] **V2** (`depends_on: [V1]`): Add paginated Massive adjusted aggregate and
+  SMA evidence with strict normalization and same-origin pagination.
+- [x] **V3** (`depends_on: [V2]`): Add read-only Massive/IB provider acquisition,
+  split-boundary context, terminal outcomes, and content-addressed atomic caches.
+- [x] **V4** (`depends_on: [V3]`): Add the full-universe quality command, strict
+  coverage gate, cursor, evidence dimensions, JSON/Markdown reports, and CLI tests.
+- [x] **V5** (`depends_on: [V4]`): Document operation, run focused/static/CI and
+  live read-only verification, self-review, and record the final evidence.
+
+Verification evidence:
+
+- Focused validation suite: 100 passed with RuntimeWarning enforcement.
+- CI-equivalent suite: 1,599 passed, 1 skipped, 98.29% coverage.
+- Ruff check/format: clean. Pyright: 0 errors; 25 established warnings outside
+  the new validation modules.
+- Live disposable-Silver smoke: SPY and PLTR had complete Massive+IB coverage,
+  exact Massive 20/50/200 SMA agreement, exact Silver factor/volume
+  reconstruction, and unchanged production hashes. Both correctly failed the
+  strict pointwise gate on existing OHLC differences. AAPL/MSFT/NVDA remained
+  blocked before disposable Silver publication by split-affected unknown Bronze
+  basis, and production Silver was absent.
+
+## Bronze price-basis normalization and repair (2026-07-13)
+
+Dependency graph: `T1 -> T2 -> T3 -> T4 -> T5 -> T6`
+
+- [x] **T1** (`depends_on: []`): Add strict row-level equity Bronze source and
+  price-basis metadata across every daily producer.
+- [x] **T2** (`depends_on: [T1]`): Classify IB treatment per split event and
+  selectively normalize incorporated adjustments to canonical raw rows.
+- [x] **T3** (`depends_on: [T2]`): Add atomic, resumable legacy schema migration
+  to `legacy/unknown` with hashes and dry-run support.
+- [x] **T4** (`depends_on: [T3]`): Add read-only split-basis audit plus stale-safe,
+  rollback-capable manifest repair and rehearse it in a disposable lake.
+- [x] **T5** (`depends_on: [T4]`): Make Silver and its canary basis-aware and
+  verify known AAPL, NVDA, and MSFT split boundaries through local Apex.
+- [x] **T6** (`depends_on: [T5]`): Run all gates, update durable/operator docs,
+  self-review, and prepare a separate follow-up PR without production repair.
+
 ## Silver causal canary hardening (2026-07-13)
 
 Dependency graph: `T1 -> T2 -> T3 -> T4`

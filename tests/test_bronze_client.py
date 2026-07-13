@@ -15,8 +15,15 @@ from clients.parquet_io import validate_parquet_file
 from clients.symbol_ids import stable_symbol_id
 
 
-def _row(trade_date: str, symbol_id: int, close: float) -> dict:
-    return {
+def _row(
+    trade_date: str,
+    symbol_id: int,
+    close: float,
+    *,
+    source: str | None = None,
+    price_basis: str | None = None,
+) -> dict:
+    row = {
         "trade_date": trade_date,
         "symbol_id": symbol_id,
         "open": close - 1.0,
@@ -26,6 +33,80 @@ def _row(trade_date: str, symbol_id: int, close: float) -> dict:
         "adj_close": close,
         "volume": 1000,
     }
+    row["source"] = source or "legacy"
+    row["price_basis"] = price_basis or "unknown"
+    return row
+
+
+def test_equity_rows_round_trip_source_and_price_basis(tmp_path):
+    bronze = BronzeClient(bronze_dir=tmp_path, asset_class="equity")
+    symbol_id = bronze.get_symbol_id("AAPL")
+
+    bronze.replace_ticker_rows(
+        "AAPL",
+        [_row("2025-01-06", symbol_id, 100.0, source="massive", price_basis="raw")],
+    )
+
+    assert bronze.read_symbol_rows("AAPL")[0]["source"] == "massive"
+    assert bronze.read_symbol_rows("AAPL")[0]["price_basis"] == "raw"
+    schema = pq.read_schema(tmp_path / "symbol=AAPL/1d.parquet")
+    assert schema.field("source").nullable is False
+    assert schema.field("price_basis").nullable is False
+
+
+def test_equity_legacy_rows_default_to_unknown_basis(tmp_path):
+    bronze = BronzeClient(bronze_dir=tmp_path, asset_class="equity")
+    symbol_id = bronze.get_symbol_id("AAPL")
+    legacy = _row("2025-01-06", symbol_id, 100.0)
+    legacy.pop("source")
+    legacy.pop("price_basis")
+
+    bronze.replace_ticker_rows("AAPL", [legacy])
+
+    row = bronze.read_symbol_rows("AAPL")[0]
+    assert row["source"] == "legacy"
+    assert row["price_basis"] == "unknown"
+
+
+def test_equity_merge_replaces_price_metadata_with_ohlcv(tmp_path):
+    bronze = BronzeClient(bronze_dir=tmp_path, asset_class="equity")
+    symbol_id = bronze.get_symbol_id("AAPL")
+    bronze.replace_ticker_rows(
+        "AAPL",
+        [_row("2025-01-06", symbol_id, 100.0, source="legacy", price_basis="unknown")],
+    )
+
+    bronze.merge_ticker_rows(
+        "AAPL",
+        [_row("2025-01-06", symbol_id, 101.0, source="massive", price_basis="raw")],
+    )
+
+    row = bronze.read_symbol_rows("AAPL")[0]
+    assert (row["close"], row["source"], row["price_basis"]) == (101.0, "massive", "raw")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("source", "mystery"), ("price_basis", "adjusted-ish")],
+)
+def test_equity_rejects_unknown_metadata_values(tmp_path, field, value):
+    bronze = BronzeClient(bronze_dir=tmp_path, asset_class="equity")
+    symbol_id = bronze.get_symbol_id("AAPL")
+    row = _row("2025-01-06", symbol_id, 100.0, source="massive", price_basis="raw")
+    row[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        bronze.replace_ticker_rows("AAPL", [row])
+
+
+def test_non_equity_daily_schema_does_not_gain_price_metadata(tmp_path):
+    bronze = BronzeClient(bronze_dir=tmp_path, asset_class="volatility")
+    symbol_id = bronze.get_symbol_id("VIX")
+    bronze.replace_ticker_rows("VIX", [_row("2025-01-06", symbol_id, 20.0)])
+
+    schema = pq.read_schema(tmp_path / "symbol=VIX/1d.parquet")
+    assert "source" not in schema.names
+    assert "price_basis" not in schema.names
 
 
 def test_concurrent_merges_preserve_both_updates(tmp_path, monkeypatch):
@@ -123,6 +204,8 @@ class TestBronzeClient:
                 "close": 156.0,
                 "adj_close": 156.0,
                 "volume": 1000,
+                "source": "legacy",
+                "price_basis": "unknown",
             }
         ]
         assert list(bronze.bronze_dir.glob("symbol=AAPL/.1d.parquet.*.tmp")) == []

@@ -50,6 +50,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients.bronze_client import BronzeClient
+from clients.corporate_action_store import CorporateActionStore
 from clients.daily_bar_fallback import DailyBarFallbackClient
 from clients.ib_client import IBClient, IBError
 from clients.ingestion_common import (
@@ -70,6 +71,7 @@ from clients.ingestion_common import (
     resolve_fx_pair as _resolve_fx_pair,  # noqa: F401
 )
 from clients.massive_client import MassiveAPIError, MassiveAuthError, MassiveClient
+from clients.price_basis import prepare_ib_rows_for_publish
 from clients.quality_detector import _normalize_bars_for_detection, detect_all
 from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
 from clients.trading_calendar import (
@@ -126,6 +128,11 @@ console = Console()
 
 def _resolved_data_lake() -> Path:
     return DATA_LAKE or data_lake_dir()
+
+
+def _action_store_for_bronze(bronze_dir: Path) -> CorporateActionStore:
+    root = bronze_dir.parent.parent if bronze_dir.parent.name == "bronze" else bronze_dir.parent
+    return CorporateActionStore(root)
 
 
 # ROOT_EXCHANGE_MAP, SUPPORTED_IB_FX_PAIRS, _resolve_fx_pair,
@@ -751,7 +758,12 @@ def main():  # pragma: no cover — only exercised by integration tests
                                 continue
 
                             symbol_id = bronze.get_symbol_id(ticker)
-                            rows = bars_to_rows(valid_bars, symbol_id)
+                            rows = bars_to_rows(
+                                valid_bars,
+                                symbol_id,
+                                source="massive",
+                                price_basis="raw",
+                            )
                             parquet_path = bronze_dir / f"symbol={ticker}" / "1d.parquet"
                             # No expected_start on the Massive path: for thin instruments a
                             # later actual_start just means "didn't trade", and ib_head_timestamp
@@ -926,7 +938,20 @@ def main():  # pragma: no cover — only exercised by integration tests
                                 invert=asset_class == "fx" and _is_inverted_fx_pair(ticker),
                             )
                         else:
-                            rows = bars_to_rows(valid_bars, symbol_id)
+                            rows = bars_to_rows(
+                                valid_bars,
+                                symbol_id,
+                                source="ib",
+                                price_basis="split_adjusted",
+                            )
+                            rows = prepare_ib_rows_for_publish(
+                                rows,
+                                existing_rows=(
+                                    bronze.read_symbol_rows(ticker) if hasattr(bronze, "read_symbol_rows") else []
+                                ),
+                                actions=_action_store_for_bronze(bronze_dir).latest_active(ticker),
+                                as_of_date=target,
+                            )
                         parquet_path = bronze_dir / f"symbol={ticker}" / "1d.parquet"
                         _run_quality_detection(
                             ticker=ticker,

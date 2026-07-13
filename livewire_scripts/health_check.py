@@ -18,10 +18,12 @@ if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
 from rich.console import Console
 
 from clients import BronzeClient
+from clients.corporate_action_store import CorporateActionStore
 from clients.intraday_bronze_client import (
     INTRADAY_TIMEFRAMES,
     IntradayBronzeClient,
 )
+from clients.price_basis import prepare_ib_rows_for_publish
 from livewire_scripts.daily_update import (
     _make_contract,
     bars_to_futures_rows,
@@ -535,7 +537,19 @@ def main() -> None:
                         rows = bars_to_futures_rows(valid_bars, contract_id, root_symbol, expiry_date)
                     else:
                         symbol_id = bronze.get_symbol_id(symbol)
-                        rows = bars_to_rows(valid_bars, symbol_id)
+                        rows = bars_to_rows(
+                            valid_bars,
+                            symbol_id,
+                            source="ib",
+                            price_basis="split_adjusted",
+                        )
+                        if rows:
+                            rows = prepare_ib_rows_for_publish(
+                                rows,
+                                existing_rows=bronze.read_symbol_rows(symbol),
+                                actions=CorporateActionStore(bronze_dir.parent.parent).latest_active(symbol),
+                                as_of_date=max(date.fromisoformat(row["trade_date"]) for row in rows),
+                            )
 
                     symbol_rows.extend(rows)
 
@@ -560,7 +574,12 @@ def main() -> None:
                         fb_bars, _ = fetch_fallback_bars(symbol, sorted(remaining_set), fallback)
                         if fb_bars:
                             symbol_id = bronze.get_symbol_id(symbol)
-                            fb_rows = bars_to_rows(fb_bars, symbol_id)
+                            fb_rows = bars_to_rows(
+                                fb_bars,
+                                symbol_id,
+                                source="legacy",
+                                price_basis="unknown",
+                            )
                             fb_inserted = bronze.merge_ticker_rows(symbol, fb_rows)
                             fallback_repaired += fb_inserted
                             console.print(f"  [cyan]{symbol}: +{fb_inserted} bars repaired via fallback[/cyan]")

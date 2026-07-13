@@ -1,5 +1,7 @@
 # Lessons
 
+- For disposable data-lake rehearsals, redirecting only an output manifest is not isolation. Bind manifests to a resolved data-lake root, pass that root explicitly to every audit/apply/rollback command, and verify embedded target paths before mutation.
+
 - When the user requests a replacement without backwards compatibility, remove
   the legacy runtime and CLI paths from the design instead of retaining them as
   degraded fallbacks.

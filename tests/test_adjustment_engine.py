@@ -11,7 +11,13 @@ from clients.adjustment_engine import adjust_daily_rows, build_factor_intervals
 from clients.corporate_action_store import CorporateAction
 
 
-def _bars(closes=(100.0, 100.0, 100.0), *, start=date(2026, 1, 1), currency="USD"):
+def _bars(
+    closes=(100.0, 100.0, 100.0),
+    *,
+    start=date(2026, 1, 1),
+    currency="USD",
+    price_basis="raw",
+):
     return [
         {
             "trade_date": start + timedelta(days=index),
@@ -23,6 +29,8 @@ def _bars(closes=(100.0, 100.0, 100.0), *, start=date(2026, 1, 1), currency="USD
             "adj_close": close,
             "volume": 1_000,
             "currency": currency,
+            "source": "massive",
+            "price_basis": price_basis,
         }
         for index, close in enumerate(closes)
     ]
@@ -149,6 +157,33 @@ def test_future_split_is_excluded_until_its_ex_date():
         Decimal("2"),
         Decimal("1"),
     ]
+
+
+def test_split_adjusted_row_does_not_receive_second_split_factor():
+    bars = _bars(price_basis="split_adjusted")
+    split = _action("split", date(2026, 1, 3), action_type="split", split_from=1, split_to=2)
+
+    intervals = build_factor_intervals(bars, [split], date(2026, 1, 3))
+
+    assert [item.price_adjustment_factor for item in intervals] == [Decimal("1")]
+    assert [item.split_volume_factor for item in intervals] == [Decimal("1")]
+
+
+def test_unknown_split_affected_row_blocks_factor_construction():
+    bars = _bars(price_basis="unknown")
+    split = _action("split", date(2026, 1, 3), action_type="split", split_from=1, split_to=2)
+
+    with pytest.raises(ValueError, match="unknown price_basis"):
+        build_factor_intervals(bars, [split], date(2026, 1, 3))
+
+
+def test_unknown_row_after_split_is_safe():
+    bars = _bars((100.0,), start=date(2026, 1, 3), price_basis="unknown")
+    split = _action("split", date(2026, 1, 3), action_type="split", split_from=1, split_to=2)
+
+    intervals = build_factor_intervals(bars, [split], date(2026, 1, 3))
+
+    assert intervals[0].price_adjustment_factor == Decimal("1")
 
 
 def test_effective_action_without_ex_date_bar_adjusts_only_earlier_sessions():
