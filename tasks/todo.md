@@ -18,9 +18,10 @@ Dependency graph: `P1 -> P2 -> P3 -> P4 -> P5 -> P6 -> P7`
 - [x] **P4** (`depends_on: [P3]`): Run focused, RuntimeWarning, static, and full
   CI-equivalent verification, then repeat the SPY/PLTR live validation and
   require explained or eliminated pointwise failures.
-- [ ] **P5** (`depends_on: [P4]`): Dry-run the production Bronze basis migration
-  and full split-boundary audit; persist root-bound hashes, counts, and proposed
-  repairs without changing Parquet.
+- [ ] **P5** (`depends_on: [P4]`): Dry-run the production Bronze basis migration,
+  reconcile a complete corporate-action inventory for the Bronze equity
+  universe, and run the full split-boundary audit; persist root-bound hashes,
+  counts, and proposed repairs before changing price values.
 - [ ] **P6** (`depends_on: [P5]`): Apply only evidence-confirmed Bronze repairs
   through the stale-safe rollback-capable manifest, then rerun the complete
   audit and structural/schema validation.
