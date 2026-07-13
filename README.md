@@ -385,16 +385,20 @@ python scripts/livewire_quality.py resolve-split-basis \
 python scripts/livewire_quality.py audit-split-basis \
   --tickers AAPL MSFT NVDA --evidence-dir /tmp/split-basis-evidence \
   --output /tmp/split-basis-resolved.json
-python scripts/livewire_store.py repair-split-basis --manifest /tmp/split-basis-resolved.json
+python scripts/livewire_store.py repair-split-basis \
+  --manifest /tmp/split-basis-resolved.json --approve
 python scripts/livewire_store.py repair-split-basis \
   --manifest /tmp/split-basis-resolved.json --rollback
 ```
 
 Audit manifests are bound to their resolved data-lake root. Use
 `--data-lake-root /path/to/disposable/data-lake` on both audit and repair for a
-rehearsal; a root mismatch is rejected before any symbol is touched. Silver
-applies split factors only to raw rows, keeps dividend adjustment independent,
-and fails closed when an unknown row is affected by an effective split.
+rehearsal; a root mismatch is rejected before any symbol is touched.
+`repair-split-basis` still rejects unapproved manifests by default;
+`--approve` is the explicit operator action that records approval before the
+atomic apply. Silver applies split factors only to raw rows, keeps dividend
+adjustment independent, and fails closed when an unknown row is affected by an
+effective split.
 Splits at or before a symbol's first stored session are outside the stored
 history and do not block the audit. Splits after its last stored session remain
 pending until a post-event bar exists. Evidence resolution requires repeated IB

@@ -31,6 +31,34 @@ def test_unapproved_manifest_does_not_mutate_bronze(tmp_path):
     assert bronze_path.read_bytes() == before
 
 
+def test_explicit_approve_flag_records_approval_and_applies(tmp_path):
+    bronze_path = _seed(tmp_path)
+    manifest = _manifest(tmp_path)
+
+    assert repair_split_basis.run(["--manifest", str(manifest), "--approve"], data_lake_root=tmp_path) == 0
+
+    payload = json.loads(manifest.read_text())
+    assert payload["symbols"][0]["approved"] is True
+    row = BronzeClient(bronze_path.parents[1], "equity").read_symbol_rows("AAPL")[0]
+    assert row["price_basis"] == "raw"
+
+
+def test_entire_manifest_is_preflighted_before_first_mutation(tmp_path):
+    bronze_path = _seed(tmp_path)
+    original = bronze_path.read_bytes()
+    manifest = _manifest(tmp_path)
+    payload = json.loads(manifest.read_text())
+    payload["symbols"][0]["approved"] = True
+    invalid = {**payload["symbols"][0], "symbol": "LATE", "eligible": False}
+    payload["symbols"].append(invalid)
+    manifest.write_text(json.dumps(payload, sort_keys=True))
+
+    with pytest.raises(ValueError, match="LATE"):
+        repair_split_basis.run(["--manifest", str(manifest)], data_lake_root=tmp_path)
+
+    assert bronze_path.read_bytes() == original
+
+
 def test_stale_manifest_is_rejected(tmp_path):
     bronze_path = _seed(tmp_path)
     manifest = _manifest(tmp_path)

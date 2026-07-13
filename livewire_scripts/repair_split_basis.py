@@ -19,7 +19,9 @@ from livewire_scripts.paths import data_lake_dir
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--rollback", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--approve", action="store_true")
+    mode.add_argument("--rollback", action="store_true")
     parser.add_argument("--data-lake-root", type=Path)
     return parser.parse_args(list(argv) if argv is not None else None)
 
@@ -59,13 +61,27 @@ def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None
     if manifest_root != root:
         raise ValueError(f"manifest data-lake root {manifest_root} does not match active root {root}")
     client = BronzeClient(bronze_root, "equity")
-    changed = 0
     for item in payload["symbols"]:
-        if not item.get("eligible") or not item.get("approved"):
+        if not item.get("eligible"):
+            raise ValueError(f"{item['symbol']}: manifest item must be eligible and approved")
+        if not item.get("approved") and not args.approve:
             raise ValueError(f"{item['symbol']}: manifest item must be eligible and approved")
         target = Path(item["path"]).resolve()
         if not target.is_relative_to(bronze_root):
             raise ValueError("manifest target is outside equity Bronze")
+        if args.rollback:
+            backup = Path(item.get("backup_path", "")).resolve()
+            if not backup.is_file():
+                raise ValueError(f"{item['symbol']}: rollback backup is missing")
+            if _sha256(target) != item.get("applied_sha256"):
+                raise ValueError(f"{item['symbol']}: stale target blocks rollback")
+        elif _sha256(target) != item["source_sha256"]:
+            raise ValueError(f"{item['symbol']}: stale manifest source hash")
+    changed = 0
+    for item in payload["symbols"]:
+        if not item.get("approved"):
+            item["approved"] = True
+        target = Path(item["path"]).resolve()
         with symbol_lock(target):
             if args.rollback:
                 backup = Path(item.get("backup_path", "")).resolve()

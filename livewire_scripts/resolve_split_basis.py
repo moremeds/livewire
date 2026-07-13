@@ -182,7 +182,7 @@ def run(
                     correction = correct_invalid_ohlc_from_reference(row, provider_runs)
                     provider = "ib"
                     fallback_error = None
-                    if correction.reason == "missing_reference_row":
+                    if correction.status == "ambiguous":
                         try:
                             if massive_client is None:
                                 massive_client = massive_factory()
@@ -267,6 +267,22 @@ def run(
                     provider = "ib"
                     fallback_error = None
                     if classification.reason == "missing_reference_boundary":
+                        bronze_dates = sorted(date.fromisoformat(str(row["trade_date"])) for row in rows)
+                        previous = [day for day in bronze_dates if day < ex_date]
+                        following = [day for day in bronze_dates if day >= ex_date]
+                        if previous and following:
+                            wide_runs = [
+                                fetcher(
+                                    symbol,
+                                    previous[-1] - timedelta(days=padding),
+                                    following[0] + timedelta(days=padding),
+                                )
+                                for padding in (90, 180)
+                            ]
+                            wide_classification = classify_split_from_reference(rows, wide_runs, action)
+                            provider_runs = wide_runs
+                            classification = wide_classification
+                    if classification.treatment == "ambiguous":
                         try:
                             if massive_client is None:
                                 massive_client = massive_factory()

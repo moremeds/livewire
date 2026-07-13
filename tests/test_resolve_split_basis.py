@@ -286,7 +286,21 @@ def test_resolver_uses_massive_adjusted_fallback_when_ib_has_no_boundary(tmp_pat
                 str(tmp_path),
             ],
             ib_factory=_FakeIB,
-            ib_fetcher_factory=lambda _client: lambda _symbol, _start, _end: [],
+            ib_fetcher_factory=lambda _client: (
+                lambda _symbol, _start, _end: [
+                    {
+                        "trade_date": date(2020, 8, 28),
+                        "open": 25.0,
+                        "high": 25.0,
+                        "low": 0.0,
+                        "close": 25.0,
+                        "adj_close": 25.0,
+                        "volume": 400,
+                        "source": "ib",
+                        "price_basis": "split_adjusted",
+                    }
+                ]
+            ),
             massive_factory=Massive,
         )
         == 0
@@ -335,7 +349,21 @@ def test_invalid_ohlc_uses_massive_fallback_when_ib_row_is_unavailable(tmp_path)
                 str(tmp_path),
             ],
             ib_factory=_FakeIB,
-            ib_fetcher_factory=lambda _client: lambda _symbol, _start, _end: [],
+            ib_fetcher_factory=lambda _client: (
+                lambda _symbol, _start, _end: [
+                    {
+                        "trade_date": date(2020, 8, 28),
+                        "open": 25.0,
+                        "high": 25.0,
+                        "low": 0.0,
+                        "close": 25.0,
+                        "adj_close": 25.0,
+                        "volume": 400,
+                        "source": "ib",
+                        "price_basis": "split_adjusted",
+                    }
+                ]
+            ),
             massive_factory=Massive,
         )
         == 0
@@ -344,3 +372,97 @@ def test_invalid_ohlc_uses_massive_fallback_when_ib_row_is_unavailable(tmp_path)
     correction = json.loads((output / "symbols/AAPL.json").read_text())["ohlc_corrections"][0]
     assert correction["provider"] == "massive"
     assert correction["status"] == "resolved"
+
+
+def test_resolver_uses_massive_when_ib_hypotheses_remain_ambiguous(tmp_path):
+    audit = _ambiguous_audit(tmp_path)
+    output = tmp_path / "evidence"
+
+    class Massive:
+        def get_daily_bars(self, _symbol, _start, _end, *, adjusted):
+            assert adjusted is True
+            return [
+                SimpleNamespace(
+                    trade_date=date(2020, 8, 28),
+                    open=25.0,
+                    high=25.0,
+                    low=25.0,
+                    close=25.0,
+                    volume=400,
+                ),
+                SimpleNamespace(
+                    trade_date=date(2020, 8, 31),
+                    open=17.5,
+                    high=17.5,
+                    low=17.5,
+                    close=17.5,
+                    volume=500,
+                ),
+            ]
+
+        def close(self):
+            pass
+
+    def ambiguous_ib(_symbol, _start, _end):
+        return [
+            {"trade_date": date(2020, 8, 28), "close": 20.0},
+            {"trade_date": date(2020, 8, 31), "close": 17.5},
+        ]
+
+    assert (
+        resolve_split_basis.run(
+            [
+                "--audit-manifest",
+                str(audit),
+                "--output-dir",
+                str(output),
+                "--data-lake-root",
+                str(tmp_path),
+            ],
+            ib_factory=_FakeIB,
+            ib_fetcher_factory=lambda _client: ambiguous_ib,
+            massive_factory=Massive,
+        )
+        == 0
+    )
+
+    event = json.loads((output / "symbols/AAPL.json").read_text())["events"][0]
+    assert event["provider"] == "massive"
+    assert event["status"] == "resolved"
+
+
+def test_resolver_expands_ib_windows_across_stored_boundary_gap(tmp_path):
+    audit = _ambiguous_audit(tmp_path)
+    output = tmp_path / "evidence"
+    calls = []
+
+    def fetcher(_symbol, start, end):
+        calls.append((start, end))
+        if (end - start).days < 150:
+            return []
+        return [
+            {"trade_date": date(2020, 8, 28), "close": 25.0},
+            {"trade_date": date(2020, 8, 31), "close": 17.5},
+        ]
+
+    assert (
+        resolve_split_basis.run(
+            [
+                "--audit-manifest",
+                str(audit),
+                "--output-dir",
+                str(output),
+                "--data-lake-root",
+                str(tmp_path),
+            ],
+            ib_factory=_FakeIB,
+            ib_fetcher_factory=lambda _client: fetcher,
+            massive_factory=lambda: (_ for _ in ()).throw(AssertionError("Massive must not be used")),
+        )
+        == 0
+    )
+
+    event = json.loads((output / "symbols/AAPL.json").read_text())["events"][0]
+    assert event["provider"] == "ib"
+    assert event["status"] == "resolved"
+    assert len(calls) == 4
