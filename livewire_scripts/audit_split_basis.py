@@ -79,7 +79,7 @@ def run(
         eligible = all(item.treatment != "ambiguous" for item in classifications)
         replacements = []
         error = None
-        if eligible:
+        if eligible and classifications:
             try:
                 proposed = normalize_ib_rows(staged, classifications)
             except ValueError as exc:
@@ -94,7 +94,7 @@ def run(
                     for old, new in zip(rows, proposed, strict=True)
                     if old != new
                 ]
-        else:
+        elif not eligible:
             failed += 1
         manifest_symbols.append(
             {

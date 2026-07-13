@@ -90,3 +90,32 @@ def test_invalid_normalized_price_is_recorded_without_aborting_full_audit(tmp_pa
     assert item["eligible"] is False
     assert item["error"] == "normalized low must be positive"
     assert item["replacements"] == []
+
+
+def test_symbol_without_split_evidence_has_no_proposed_replacements(tmp_path):
+    bronze = tmp_path / "bronze/asset_class=equity"
+    BronzeClient(bronze, "equity").replace_ticker_rows(
+        "MSFT",
+        [
+            {
+                "trade_date": "2026-01-02",
+                "symbol_id": 2,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "adj_close": 100.0,
+                "volume": 1000,
+                "source": "legacy",
+                "price_basis": "unknown",
+            }
+        ],
+    )
+    output = tmp_path / "audit.json"
+
+    assert audit_split_basis.run(["--tickers", "MSFT", "--output", str(output)], data_lake_root=tmp_path) == 0
+
+    item = json.loads(output.read_text())["symbols"][0]
+    assert item["classifications"] == []
+    assert item["eligible"] is True
+    assert item["replacements"] == []
