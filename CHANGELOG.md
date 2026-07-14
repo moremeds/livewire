@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `rebuild-silver` now publishes the successfully staged symbols instead of
+  aborting the whole revision when some symbols fail to stage (e.g. unresolved
+  split-basis). A symbol's artifacts remain atomic, and the run exits non-zero
+  only on systemic failure (all symbols failed, or the failure rate exceeds the
+  daily-command threshold via `resolve_exit_code`), so a small stable set of
+  unresolved symbols no longer blocks the full universe or triggers a nightly
+  alert storm.
+
 ## [0.3.0] - 2026-07-04
 
 ### Added

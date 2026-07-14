@@ -296,7 +296,14 @@ in memory by the continuously running Apex service.
   symbol unavailable instead of silently dropping ticks.
 - Apex health reports current observed revision, `last_fully_applied_revision`,
   per-symbol applied revisions, refresh age, affected failures, and staleness.
-- Livewire never advances `current.json` after a partial publication.
+- Publication is atomic per symbol: a symbol's daily and factor artifacts both
+  commit or neither does, and `current.json` advances only after every artifact
+  in the revision validates. Symbols that fail to stage (e.g. unresolved
+  split-basis) are excluded from the revision rather than blocking it, so a
+  small stable set of unresolved symbols does not hold back the rest of the
+  universe. `rebuild-silver` exits non-zero only on systemic failure (all
+  symbols failed, or the failure rate exceeds the daily-command threshold),
+  keeping a persistent unresolved set from triggering a nightly alert storm.
 
 ## 10. Scheduling and Operations
 

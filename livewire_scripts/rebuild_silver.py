@@ -20,6 +20,7 @@ from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateAction, CorporateActionStore
 from clients.silver_client import SilverClient
 from clients.silver_revision import AffectedSymbol, SilverRevisionPublisher
+from livewire_scripts.daily_outcomes import resolve_exit_code
 from livewire_scripts.paths import data_lake_dir
 
 TIMEFRAMES = ("1d", "1m", "5m", "30m", "1h")
@@ -164,19 +165,12 @@ def run(
     effective_action_count = sum(action.ex_date <= effective_as_of for item in staged for action in item.actions)
     future_action_count = action_count - effective_action_count
     earliest = min((item.earliest_date for item in staged), default=None)
-    if failed:
-        _summary(
-            action_count=action_count,
-            as_of_date=effective_as_of.isoformat(),
-            earliest_affected_date=None if earliest is None else earliest.isoformat(),
-            effective_action_count=effective_action_count,
-            failed=failed,
-            future_action_count=future_action_count,
-            rebuilt=0,
-            revision=current_revision,
-            unchanged=0,
-        )
-        return 1
+    # Publish the successfully staged subset even when some symbols fail: a small,
+    # stable set of unresolved symbols must not block the rest of the universe.
+    # Exit code fails only on systemic breakage (all symbols failed, or the failure
+    # rate exceeds the daily-command threshold), so persistent known-unresolved
+    # symbols don't trigger a nightly alert storm.
+    exit_code = resolve_exit_code(updated=len(staged), no_trade=0, partial=0, errors=failed)
 
     changed = [item for item in staged if not _matches_existing(client, item)]
     unchanged = len(staged) - len(changed)
@@ -187,13 +181,13 @@ def run(
             as_of_date=effective_as_of.isoformat(),
             earliest_affected_date=None if earliest is None else earliest.isoformat(),
             effective_action_count=effective_action_count,
-            failed=0,
+            failed=failed,
             future_action_count=future_action_count,
             rebuilt=len(changed),
             revision=predicted_revision,
             unchanged=unchanged,
         )
-        return 0
+        return exit_code
 
     if not changed:
         _summary(
@@ -201,13 +195,13 @@ def run(
             as_of_date=effective_as_of.isoformat(),
             earliest_affected_date=None if earliest is None else earliest.isoformat(),
             effective_action_count=effective_action_count,
-            failed=0,
+            failed=failed,
             future_action_count=future_action_count,
             rebuilt=0,
             revision=current_revision,
             unchanged=unchanged,
         )
-        return 0
+        return exit_code
 
     with publisher.transaction() as transaction:
         changed = [item for item in staged if not _matches_existing(client, item)]
@@ -237,13 +231,13 @@ def run(
         as_of_date=effective_as_of.isoformat(),
         earliest_affected_date=None if earliest is None else earliest.isoformat(),
         effective_action_count=effective_action_count,
-        failed=0,
+        failed=failed,
         future_action_count=future_action_count,
         rebuilt=rebuilt,
         revision=revision,
         unchanged=unchanged,
     )
-    return 0
+    return exit_code
 
 
 def main(argv: Sequence[str] | None = None) -> int:
