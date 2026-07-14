@@ -3,7 +3,11 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 
 from clients.corporate_action_store import CorporateAction
-from clients.split_basis_evidence import classify_split_from_reference, correct_invalid_ohlc_from_reference
+from clients.split_basis_evidence import (
+    classify_reference_basis,
+    classify_split_from_reference,
+    correct_invalid_ohlc_from_reference,
+)
 
 
 def _split(split_from: float = 1, split_to: float = 4) -> CorporateAction:
@@ -79,6 +83,77 @@ def test_reference_requires_sessions_on_both_sides():
 
     assert result.treatment == "ambiguous"
     assert result.reason == "missing_reference_boundary"
+
+
+def test_pre_only_bronze_resolves_when_reference_confirms_effective_split():
+    bronze = [
+        {"trade_date": "2024-06-06", "close": 400.0},
+        {"trade_date": "2024-06-07", "close": 404.0},
+    ]
+    reference = [
+        {"trade_date": "2024-06-06", "close": 100.0},
+        {"trade_date": "2024-06-07", "close": 101.0},
+        {"trade_date": "2024-06-10", "close": 102.0},
+    ]
+
+    result = classify_split_from_reference(bronze, [reference, reference], _split())
+
+    assert result.treatment == "raw"
+    assert result.reason == "reference_consensus_pre_only"
+    assert result.post_date == date(2024, 6, 10)
+
+
+def test_pre_only_bronze_handles_reference_that_is_itself_raw():
+    bronze = [
+        {"trade_date": "2024-06-06", "close": 400.0},
+        {"trade_date": "2024-06-07", "close": 404.0},
+    ]
+    raw_reference = [
+        {"trade_date": "2024-06-06", "close": 400.0},
+        {"trade_date": "2024-06-07", "close": 404.0},
+        {"trade_date": "2024-06-10", "close": 102.0},
+    ]
+
+    result = classify_split_from_reference(
+        bronze,
+        [raw_reference, raw_reference],
+        _split(),
+        reference_basis="raw",
+    )
+
+    assert result.treatment == "raw"
+    assert result.reason == "reference_consensus_pre_only"
+
+
+def test_reference_basis_requires_repeated_consensus():
+    adjusted = _rows(100.0, 101.0)
+    raw = _rows(400.0, 101.0)
+
+    assert classify_reference_basis([adjusted, adjusted], _split()) == "adjusted"
+    assert classify_reference_basis([raw, raw], _split()) == "raw"
+    assert classify_reference_basis([adjusted, raw], _split()) == "ambiguous"
+
+
+def test_reference_basis_rejects_treatment_that_changes_within_a_run():
+    ex_date_outlier = [
+        {"trade_date": "2024-06-06", "close": 7.5},
+        {"trade_date": "2024-06-07", "close": 8.0},
+        {"trade_date": "2024-06-10", "close": 0.32},
+        {"trade_date": "2024-06-11", "close": 7.0},
+        {"trade_date": "2024-06-12", "close": 7.2},
+    ]
+    assert classify_reference_basis([ex_date_outlier, ex_date_outlier], _split(1, 25)) == "ambiguous"
+
+
+def test_reference_basis_uses_decisive_sessions_despite_later_large_market_move():
+    large_market_move = [
+        {"trade_date": "2024-06-06", "close": 22.45},
+        {"trade_date": "2024-06-07", "close": 19.1},
+        {"trade_date": "2024-06-10", "close": 15.36},
+        {"trade_date": "2024-06-11", "close": 11.52},
+    ]
+
+    assert classify_reference_basis([large_market_move, large_market_move], _split(20, 1)) == "adjusted"
 
 
 def test_reference_neither_fit_remains_ambiguous():

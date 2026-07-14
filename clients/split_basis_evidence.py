@@ -69,6 +69,49 @@ def _ambiguous(
     )
 
 
+def classify_reference_basis(
+    reference_runs: list[list[dict]],
+    action: CorporateAction,
+    *,
+    tolerance: float = 0.15,
+    min_margin: float = 0.10,
+) -> Literal["raw", "adjusted", "ambiguous"]:
+    """Classify repeated provider runs at their own split boundary."""
+    if len(reference_runs) < 2:
+        return "ambiguous"
+    split_from = Decimal(str(action.split_from))
+    split_to = Decimal(str(action.split_to))
+    if split_from <= 0 or split_to <= 0:
+        return "ambiguous"
+    factor = float(split_from / split_to)
+    treatments = []
+    for run in reference_runs:
+        rows = {_date(row["trade_date"]): float(row["close"]) for row in run}
+        previous = sorted(day for day in rows if day < action.ex_date)
+        following = sorted(day for day in rows if day >= action.ex_date)
+        if not previous or not following:
+            return "ambiguous"
+        before = statistics.median(rows[day] for day in previous[-5:])
+        after_values = [rows[day] for day in following[:5]]
+        if before <= 0 or any(after <= 0 for after in after_values):
+            return "ambiguous"
+        session_treatments = []
+        for after in after_values:
+            observed = after / before
+            raw_error = abs(math.log(observed / factor))
+            adjusted_error = abs(math.log(observed))
+            best = min(raw_error, adjusted_error)
+            confidence = abs(raw_error - adjusted_error)
+            strongly_separated = confidence >= 0.0001 and max(raw_error, adjusted_error) >= best * 10
+            if confidence < min_margin or (best > tolerance and not strongly_separated):
+                continue
+            session_treatments.append("raw" if raw_error < adjusted_error else "adjusted")
+        if not session_treatments or len(set(session_treatments)) != 1:
+            return "ambiguous"
+        treatments.append(session_treatments[0])
+    return treatments[0] if len(set(treatments)) == 1 else "ambiguous"
+
+
 def classify_split_from_reference(
     bronze_rows: list[dict],
     reference_runs: list[list[dict]],
@@ -77,8 +120,9 @@ def classify_split_from_reference(
     reference_tolerance_bps: float = 10.0,
     fit_tolerance: float = 0.03,
     min_margin: float = 0.01,
+    reference_basis: Literal["raw", "adjusted"] = "adjusted",
 ) -> SplitReferenceClassification:
-    """Classify a Bronze boundary against repeated split-adjusted references."""
+    """Classify a Bronze boundary against repeated references of a known basis."""
     if len(reference_runs) < 2:
         return _ambiguous(action, "insufficient_reference_requests", len(reference_runs))
     bronze = {_date(row["trade_date"]): float(row["close"]) for row in bronze_rows}
@@ -88,11 +132,18 @@ def classify_split_from_reference(
         common_dates &= set(reference)
     previous = sorted(day for day in common_dates if day < action.ex_date)
     following = sorted(day for day in common_dates if day >= action.ex_date)
-    if not previous or not following:
+    if not previous:
+        return _ambiguous(action, "missing_reference_boundary", len(reference_runs))
+    reference_dates = set(references[0])
+    for reference in references[1:]:
+        reference_dates &= set(reference)
+    reference_following = sorted(day for day in reference_dates if day >= action.ex_date)
+    pre_only = not following
+    if pre_only and not reference_following:
         return _ambiguous(action, "missing_reference_boundary", len(reference_runs))
     pre_date = previous[-1]
-    post_date = following[0]
-    comparison_dates = [*previous[-5:], *following[:5]]
+    post_date = reference_following[0] if pre_only else following[0]
+    comparison_dates = [*previous[-5:], *(reference_following[:5] if pre_only else following[:5])]
     max_spread_bps = 0.0
     for day in comparison_dates:
         values = [reference[day] for reference in references]
@@ -115,7 +166,7 @@ def classify_split_from_reference(
             post_date=post_date,
             max_reference_spread_bps=max_spread_bps,
         )
-    if bronze[pre_date] <= 0 or bronze[post_date] <= 0:
+    if bronze[pre_date] <= 0 or (not pre_only and bronze[post_date] <= 0):
         return _ambiguous(
             action,
             "nonpositive_bronze_close",
@@ -127,16 +178,24 @@ def classify_split_from_reference(
     scale_ratios = []
     for reference in references:
         pre_scale = statistics.median(bronze[day] / reference[day] for day in previous[-5:])
-        post_scale = statistics.median(bronze[day] / reference[day] for day in following[:5])
-        scale_ratios.append(pre_scale / post_scale)
+        if pre_only:
+            scale_ratios.append(pre_scale)
+        else:
+            post_scale = statistics.median(bronze[day] / reference[day] for day in following[:5])
+            scale_ratios.append(pre_scale / post_scale)
     observed = statistics.median(scale_ratios)
     split_from = Decimal(str(action.split_from))
     split_to = Decimal(str(action.split_to))
     if split_from <= 0 or split_to <= 0:
         return _ambiguous(action, "invalid_split_factor", len(reference_runs))
-    raw_expected = float(split_to / split_from)
+    if reference_basis == "adjusted":
+        raw_expected = float(split_to / split_from)
+        adjusted_expected = 1.0
+    else:
+        raw_expected = 1.0
+        adjusted_expected = float(split_from / split_to)
     raw_error = abs(math.log(observed / raw_expected))
-    adjusted_error = abs(math.log(observed))
+    adjusted_error = abs(math.log(observed / adjusted_expected))
     best = min(raw_error, adjusted_error)
     confidence = abs(raw_error - adjusted_error)
     if best > fit_tolerance:
@@ -170,7 +229,7 @@ def classify_split_from_reference(
     return SplitReferenceClassification(
         action.action_id,
         treatment,
-        "reference_consensus",
+        "reference_consensus_pre_only" if pre_only else "reference_consensus",
         len(reference_runs),
         pre_date,
         post_date,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -182,6 +183,7 @@ def test_audit_replays_ib_evidence_to_resolve_ambiguous_boundary(tmp_path):
                 "events": [
                     {
                         "action_id": action_id,
+                        "provider": "massive",
                         "provider_runs": [provider_rows, provider_rows],
                         "status": "resolved",
                     }
@@ -208,3 +210,57 @@ def test_audit_replays_ib_evidence_to_resolve_ambiguous_boundary(tmp_path):
     assert resolved["classifications"][0]["treatment"] == "adjusted"
     assert resolved["resolution_evidence_sha256"] is not None
     assert resolved["replacements"]
+
+
+def test_audit_replays_raw_ib_evidence_using_its_detected_basis(tmp_path, monkeypatch):
+    path = _seed(tmp_path)
+    client = BronzeClient(path.parents[1], "equity")
+    rows = client.read_symbol_rows("AAPL")
+    rows[0].update({column: 100.0 for column in ("open", "high", "low", "close", "adj_close")})
+    client.replace_ticker_rows("AAPL", rows)
+    initial = tmp_path / "initial.json"
+    assert audit_split_basis.run(["--tickers", "AAPL", "--output", str(initial)], data_lake_root=tmp_path) == 0
+    item = json.loads(initial.read_text())["symbols"][0]
+    action_id = item["classifications"][0]["action_id"]
+    provider_rows = [
+        {"trade_date": "2020-08-28", "close": 100.0},
+        {"trade_date": "2020-08-31", "close": 26.0},
+    ]
+    evidence = tmp_path / "evidence/symbols"
+    evidence.mkdir(parents=True)
+    (evidence / "AAPL.json").write_text(
+        json.dumps(
+            {
+                "data_lake_root": str(tmp_path.resolve()),
+                "events": [
+                    {
+                        "action_id": action_id,
+                        "provider": "ib",
+                        "provider_runs": [provider_rows, provider_rows],
+                        "status": "resolved",
+                    }
+                ],
+                "source_sha256": item["source_sha256"],
+                "status": "resolved",
+                "symbol": "AAPL",
+            },
+            sort_keys=True,
+        )
+    )
+    original_classifier = audit_split_basis.classify_split_events
+
+    def force_ambiguous(*args, **kwargs):
+        return [replace(item, treatment="ambiguous") for item in original_classifier(*args, **kwargs)]
+
+    monkeypatch.setattr(audit_split_basis, "classify_split_events", force_ambiguous)
+    output = tmp_path / "resolved.json"
+
+    assert (
+        audit_split_basis.run(
+            ["--tickers", "AAPL", "--output", str(output), "--evidence-dir", str(evidence.parent)],
+            data_lake_root=tmp_path,
+        )
+        == 0
+    )
+    resolved = json.loads(output.read_text())["symbols"][0]
+    assert resolved["classifications"][0]["treatment"] == "raw"

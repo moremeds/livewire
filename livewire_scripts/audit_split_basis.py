@@ -16,7 +16,11 @@ from zoneinfo import ZoneInfo
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.price_basis import classify_split_events, normalize_ib_rows
-from clients.split_basis_evidence import classify_split_from_reference, correct_invalid_ohlc_from_reference
+from clients.split_basis_evidence import (
+    classify_reference_basis,
+    classify_split_from_reference,
+    correct_invalid_ohlc_from_reference,
+)
 from clients.symbol_paths import canonical_symbol, encode_symbol
 from livewire_scripts.paths import data_lake_dir
 
@@ -119,7 +123,20 @@ def run(
                 if classification.treatment != "ambiguous" or event is None or action is None:
                     resolved.append(classification)
                     continue
-                reference = classify_split_from_reference(staged, event.get("provider_runs", []), action)
+                provider_runs = event.get("provider_runs", [])
+                provider = event.get("provider")
+                reference_basis = (
+                    "adjusted" if provider == "massive" else classify_reference_basis(provider_runs, action)
+                )
+                if reference_basis == "ambiguous":
+                    resolved.append(classification)
+                    continue
+                reference = classify_split_from_reference(
+                    staged,
+                    provider_runs,
+                    action,
+                    reference_basis=reference_basis,
+                )
                 if reference.treatment == "ambiguous":
                     resolved.append(classification)
                     continue

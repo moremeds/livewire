@@ -401,10 +401,12 @@ adjustment independent, and fails closed when an unknown row is affected by an
 effective split.
 Splits at or before a symbol's first stored session are outside the stored
 history and do not block the audit. Splits after its last stored session remain
-pending until a post-event bar exists. Evidence resolution requires repeated IB
-requests to agree pointwise, then compares multi-session Bronze-to-IB scale on
-both sides of each action; the audit independently recomputes that decision.
-When IB has no historical boundary row, the resolver may use two overlapping
+pending until repeated provider evidence contains a post-event bar; the partial
+post-event price is not used, only its confirmation of the effective basis.
+Evidence resolution requires repeated IB requests to agree pointwise, first
+classifies the IB boundary itself as raw or adjusted, then compares multi-session
+Bronze-to-IB scale on both sides of each action; the audit independently
+recomputes that decision. When IB evidence remains ambiguous, the resolver may use two overlapping
 Massive adjusted ranges as a narrow fallback. The same repeated-reference gate
 can recover nonpositive OHLC fields, scaled into the row's existing basis and
 checked against every remaining positive OHLC anchor before audit replay.

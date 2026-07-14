@@ -124,10 +124,13 @@ Operational commands for this contract are
 `scripts/livewire_store.py repair-split-basis`. Audit manifests record their
 resolved data-lake root; repair and rollback reject a different active root
 before mutation. Prehistory splits do not affect stored rows; post-history
-splits stay pending. Ambiguous in-history events may be resolved from resumable,
+splits stay pending until repeated provider evidence confirms the effective
+post-event basis. Ambiguous in-history events may be resolved from resumable,
 repeated IB evidence, which the audit replays against current Bronze and action
-hashes. Two overlapping Massive adjusted ranges are a narrow fallback only when
-IB lacks the historical boundary; repeated provider evidence may also repair
+hashes. The resolver first determines whether each repeated IB boundary is raw
+or adjusted; it does not assume a fixed IB history basis. Two overlapping
+Massive adjusted ranges are a narrow fallback when IB evidence remains
+ambiguous; repeated provider evidence may also repair
 nonpositive OHLC fields in the row's existing basis. Silver applies split
 factors only to rows marked raw and fails closed on split-affected unknown rows;
 dividend adjustment remains independent.

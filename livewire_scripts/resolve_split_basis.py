@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 from collections.abc import Callable, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -17,12 +17,17 @@ from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.ib_client import IBClient
 from clients.massive_client import MassiveClient
-from clients.split_basis_evidence import classify_split_from_reference, correct_invalid_ohlc_from_reference
+from clients.split_basis_evidence import (
+    classify_reference_basis,
+    classify_split_from_reference,
+    correct_invalid_ohlc_from_reference,
+)
 from clients.symbol_paths import encode_symbol
 from livewire_scripts.adjusted_history_sources import IBHistoryFetcher
 from livewire_scripts.paths import data_lake_dir
 
 SCHEMA_VERSION = 3
+EVIDENCE_VERSION = 7
 WINDOW_DAYS = (20, 60)
 
 
@@ -83,6 +88,70 @@ def _massive_rows(client: Any, symbol: str, start: date, end: date) -> list[dict
     ]
 
 
+def _classify_provider_reference(rows: list[dict], provider_runs: list[list[dict]], action, provider: str):
+    reference_basis = "adjusted" if provider == "massive" else classify_reference_basis(provider_runs, action)
+    if reference_basis == "ambiguous":
+        classification = classify_split_from_reference(rows, provider_runs, action)
+        if classification.reason != "missing_reference_boundary":
+            classification = replace(classification, treatment="ambiguous", reason="reference_basis_ambiguous")
+        return classification, reference_basis
+    return (
+        classify_split_from_reference(rows, provider_runs, action, reference_basis=reference_basis),
+        reference_basis,
+    )
+
+
+def _replay_resolved_detail(
+    detail: dict,
+    item: dict,
+    rows: list[dict],
+    actions: dict[str, Any],
+) -> dict | None:
+    """Upgrade saved provider rows only when current code reproduces every resolution."""
+    replayed = json.loads(json.dumps(detail))
+    events = {event.get("action_id"): event for event in replayed.get("events", [])}
+    for target in item.get("classifications", []):
+        if target.get("treatment") != "ambiguous":
+            continue
+        event = events.get(target.get("action_id"))
+        action = actions.get(target.get("action_id"))
+        if event is None or action is None or event.get("provider") not in {"ib", "massive"}:
+            return None
+        classification, reference_basis = _classify_provider_reference(
+            rows,
+            event.get("provider_runs", []),
+            action,
+            event["provider"],
+        )
+        if classification.treatment == "ambiguous":
+            return None
+        event["classification"] = _classification_payload(classification)
+        event["reason"] = classification.reason
+        event["reference_basis"] = reference_basis
+        event["status"] = "resolved"
+
+    corrections = {item.get("trade_date"): item for item in replayed.get("ohlc_corrections", [])}
+    for row in rows:
+        if all(float(row[column]) > 0 for column in ("open", "high", "low", "close", "adj_close")):
+            continue
+        trade_date = str(row["trade_date"])
+        saved = corrections.get(trade_date)
+        if saved is None:
+            return None
+        correction = correct_invalid_ohlc_from_reference(row, saved.get("provider_runs", []))
+        if correction.status != "resolved":
+            return None
+        payload = asdict(correction)
+        payload["trade_date"] = correction.trade_date.isoformat()
+        saved["correction"] = payload
+        saved["reason"] = correction.reason
+        saved["status"] = "resolved"
+
+    replayed["evidence_version"] = EVIDENCE_VERSION
+    replayed["status"] = "resolved"
+    return replayed
+
+
 def run(
     argv: Sequence[str] | None = None,
     *,
@@ -129,16 +198,14 @@ def run(
             symbol = item["symbol"]
             detail_path = output / "symbols" / f"{encode_symbol(symbol)}.json"
             checkpoint = cursor["completed"].get(symbol)
-            if (
+            checkpoint_artifact_valid = (
                 args.resume
                 and checkpoint
-                and checkpoint.get("status") in {"resolved", "pending"}
                 and checkpoint.get("source_sha256") == item["source_sha256"]
                 and detail_path.is_file()
                 and checkpoint.get("detail_sha256") == _sha256(detail_path)
-            ):
-                results.append(json.loads(detail_path.read_text(encoding="utf-8")))
-                continue
+            )
+            checkpoint_valid = checkpoint_artifact_valid and checkpoint.get("status") == "resolved"
             source_path = Path(item["path"]).resolve()
             bronze_root = (root / "bronze/asset_class=equity").resolve()
             if not source_path.is_relative_to(bronze_root):
@@ -165,20 +232,49 @@ def run(
             rows = bronze.read_symbol_rows(symbol)
             latest = max(date.fromisoformat(str(row["trade_date"])) for row in rows)
             actions = {action.action_id: action for action in action_store.latest_active(symbol)}
+            saved_detail = json.loads(detail_path.read_text(encoding="utf-8")) if checkpoint_artifact_valid else None
+            if checkpoint_valid:
+                assert saved_detail is not None
+                if saved_detail.get("evidence_version") == EVIDENCE_VERSION:
+                    results.append(saved_detail)
+                    continue
+                replayed = _replay_resolved_detail(saved_detail, item, rows, actions)
+                if replayed is not None:
+                    _write_atomic(detail_path, replayed)
+                    cursor["completed"][symbol] = {
+                        "detail_sha256": _sha256(detail_path),
+                        "source_sha256": item["source_sha256"],
+                        "status": "resolved",
+                    }
+                    _write_atomic(cursor_path, cursor)
+                    results.append(replayed)
+                    continue
             ohlc_corrections = []
+            saved_corrections = {
+                correction.get("trade_date"): correction
+                for correction in (saved_detail or {}).get("ohlc_corrections", [])
+            }
             for row in rows:
                 if all(float(row[column]) > 0 for column in ("open", "high", "low", "close", "adj_close")):
                     continue
                 trade_date = date.fromisoformat(str(row["trade_date"]))
                 try:
-                    if fetcher is None:
-                        ib_client = ib_factory()
-                        ib_client.connect(host=args.host, port=args.port)
-                        fetcher = ib_fetcher_factory(ib_client)
-                    provider_runs = [
-                        fetcher(symbol, trade_date - timedelta(days=days), trade_date + timedelta(days=days))
-                        for days in WINDOW_DAYS
-                    ]
+                    saved_correction = saved_corrections.get(trade_date.isoformat())
+                    if saved_correction and saved_correction.get("provider") == "ib":
+                        provider_runs = saved_correction.get("provider_runs", [])
+                    else:
+                        if fetcher is None:
+                            ib_client = ib_factory()
+                            ib_client.connect(host=args.host, port=args.port)
+                            fetcher = ib_fetcher_factory(ib_client)
+                        provider_runs = [
+                            fetcher(
+                                symbol,
+                                trade_date - timedelta(days=days),
+                                trade_date + timedelta(days=days),
+                            )
+                            for days in WINDOW_DAYS
+                        ]
                     correction = correct_invalid_ohlc_from_reference(row, provider_runs)
                     provider = "ib"
                     fallback_error = None
@@ -227,21 +323,13 @@ def run(
                     }
                 )
             events = []
+            saved_events = {
+                saved_event.get("action_id"): saved_event for saved_event in (saved_detail or {}).get("events", [])
+            }
             for event in item["classifications"]:
                 if event["treatment"] != "ambiguous":
                     continue
                 ex_date = date.fromisoformat(event["ex_date"])
-                if ex_date > latest:
-                    events.append(
-                        {
-                            "action_id": event["action_id"],
-                            "ex_date": event["ex_date"],
-                            "reason": "awaiting_post_split_session",
-                            "status": "pending",
-                            "provider_runs": [],
-                        }
-                    )
-                    continue
                 action = actions.get(event["action_id"])
                 if action is None or action.ex_date != ex_date:
                     events.append(
@@ -255,22 +343,30 @@ def run(
                     )
                     continue
                 try:
-                    if fetcher is None:
-                        ib_client = ib_factory()
-                        ib_client.connect(host=args.host, port=args.port)
-                        fetcher = ib_fetcher_factory(ib_client)
-                    provider_runs = [
-                        fetcher(symbol, ex_date - timedelta(days=days), ex_date + timedelta(days=days))
-                        for days in WINDOW_DAYS
-                    ]
-                    classification = classify_split_from_reference(rows, provider_runs, action)
+                    saved_event = saved_events.get(event["action_id"])
+                    if saved_event and saved_event.get("provider") == "ib":
+                        provider_runs = saved_event.get("provider_runs", [])
+                    else:
+                        if fetcher is None:
+                            ib_client = ib_factory()
+                            ib_client.connect(host=args.host, port=args.port)
+                            fetcher = ib_fetcher_factory(ib_client)
+                        provider_runs = [
+                            fetcher(symbol, ex_date - timedelta(days=days), ex_date + timedelta(days=days))
+                            for days in WINDOW_DAYS
+                        ]
+                    classification, reference_basis = _classify_provider_reference(rows, provider_runs, action, "ib")
                     provider = "ib"
                     fallback_error = None
                     if classification.reason == "missing_reference_boundary":
                         bronze_dates = sorted(date.fromisoformat(str(row["trade_date"])) for row in rows)
                         previous = [day for day in bronze_dates if day < ex_date]
                         following = [day for day in bronze_dates if day >= ex_date]
-                        if previous and following:
+                        if previous and following and any(provider_runs):
+                            if fetcher is None:
+                                ib_client = ib_factory()
+                                ib_client.connect(host=args.host, port=args.port)
+                                fetcher = ib_fetcher_factory(ib_client)
                             wide_runs = [
                                 fetcher(
                                     symbol,
@@ -279,9 +375,12 @@ def run(
                                 )
                                 for padding in (90, 180)
                             ]
-                            wide_classification = classify_split_from_reference(rows, wide_runs, action)
+                            wide_classification, wide_reference_basis = _classify_provider_reference(
+                                rows, wide_runs, action, "ib"
+                            )
                             provider_runs = wide_runs
                             classification = wide_classification
+                            reference_basis = wide_reference_basis
                     if classification.treatment == "ambiguous":
                         try:
                             if massive_client is None:
@@ -295,7 +394,9 @@ def run(
                                 )
                                 for days in WINDOW_DAYS
                             ]
-                            massive_classification = classify_split_from_reference(rows, massive_runs, action)
+                            massive_classification, massive_reference_basis = _classify_provider_reference(
+                                rows, massive_runs, action, "massive"
+                            )
                         except Exception as exc:
                             fallback_error = str(exc)
                         else:
@@ -303,6 +404,7 @@ def run(
                                 classification = massive_classification
                                 provider_runs = massive_runs
                                 provider = "massive"
+                                reference_basis = massive_reference_basis
                 except Exception as exc:
                     events.append(
                         {
@@ -314,6 +416,15 @@ def run(
                         }
                     )
                     continue
+                event_status = "resolved" if classification.treatment != "ambiguous" else "ambiguous"
+                event_reason = classification.reason
+                if (
+                    event_status == "ambiguous"
+                    and ex_date > latest
+                    and classification.reason == "missing_reference_boundary"
+                ):
+                    event_status = "pending"
+                    event_reason = "awaiting_post_split_reference"
                 events.append(
                     {
                         "action_id": event["action_id"],
@@ -322,8 +433,9 @@ def run(
                         "fallback_error": fallback_error,
                         "provider": provider,
                         "provider_runs": [_rows_payload(run_rows) for run_rows in provider_runs],
-                        "reason": classification.reason,
-                        "status": "resolved" if classification.treatment != "ambiguous" else "ambiguous",
+                        "reference_basis": reference_basis,
+                        "reason": event_reason,
+                        "status": event_status,
                     }
                 )
             statuses = {event["status"] for event in [*events, *ohlc_corrections]}
@@ -338,6 +450,7 @@ def run(
             detail = {
                 "audit_sha256": audit_sha256,
                 "data_lake_root": str(root),
+                "evidence_version": EVIDENCE_VERSION,
                 "events": events,
                 "ohlc_corrections": ohlc_corrections,
                 "source_sha256": item["source_sha256"],
