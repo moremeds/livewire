@@ -170,30 +170,52 @@ def test_unchanged_second_run_is_manifest_noop(tmp_path, capsys):
     assert not (silver / "revisions/revision=2.json").exists()
 
 
-def test_one_symbol_validation_failure_blocks_entire_batch_manifest(tmp_path, capsys):
-    _bronze(tmp_path, "NVDA")
-    _bronze(tmp_path, "BAD")
-    _split(tmp_path)
+def _bad_action(root, symbol="BAD"):
     bad_dividend = MassiveDividend(
-        provider_event_id="bad-dividend",
-        ticker="BAD",
+        provider_event_id=f"{symbol}-dividend",
+        ticker=symbol,
         ex_dividend_date=date(2026, 1, 1),
         cash_amount=Decimal("1"),
         currency="USD",
         declaration_date=None,
         record_date=None,
         pay_date=None,
-        payload_hash="bad",
+        payload_hash=f"{symbol}-bad",
     )
-    CorporateActionStore(tmp_path).reconcile("BAD", [bad_dividend], datetime(2026, 1, 4, tzinfo=UTC))
+    CorporateActionStore(root).reconcile(symbol, [bad_dividend], datetime(2026, 1, 4, tzinfo=UTC))
+
+
+def test_one_symbol_failure_still_publishes_healthy_symbols(tmp_path, capsys):
+    _bronze(tmp_path, "NVDA")
+    _bronze(tmp_path, "BAD")
+    _split(tmp_path)
+    _bad_action(tmp_path)
     silver = tmp_path / "silver"
 
-    assert rebuild_silver.run(["--tickers", "NVDA", "BAD"], data_lake_root=tmp_path, silver_root=silver) == 1
+    # 1 failure out of 2 processed is below the systemic threshold, so the run
+    # publishes the healthy symbol and reports the failure without failing.
+    assert rebuild_silver.run(["--tickers", "NVDA", "BAD"], data_lake_root=tmp_path, silver_root=silver) == 0
 
     summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert summary["failed"] == 1
+    assert summary["rebuilt"] == 1
+    assert (silver / "revisions/current.json").exists()
+    assert (silver / "asset_class=equity/symbol=NVDA/1d.parquet").exists()
+    assert not (silver / "asset_class=equity/symbol=BAD/1d.parquet").exists()
+
+
+def test_total_staging_failure_fails_the_run_and_publishes_nothing(tmp_path, capsys):
+    _bronze(tmp_path, "BAD")
+    _bad_action(tmp_path)
+    silver = tmp_path / "silver"
+
+    # Zero successful symbols with an error is a systemic failure.
+    assert rebuild_silver.run(["--tickers", "BAD"], data_lake_root=tmp_path, silver_root=silver) == 1
+
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["failed"] == 1
+    assert summary["rebuilt"] == 0
     assert not (silver / "revisions/current.json").exists()
-    assert not (silver / "asset_class=equity/symbol=NVDA/1d.parquet").exists()
 
 
 def test_dry_run_reports_changes_without_creating_silver_root(tmp_path, capsys):
