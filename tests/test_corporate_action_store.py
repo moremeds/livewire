@@ -129,6 +129,19 @@ def test_event_ticker_must_match_reconciliation_symbol(tmp_path):
         store.reconcile("AAPL", [_split()], FETCHED_AT)
 
 
+def test_case_distinct_provider_symbols_publish_to_distinct_paths(tmp_path):
+    store = CorporateActionStore(tmp_path)
+    common = _split(ticker="BCPC", provider_event_id="common")
+    preferred = _split(ticker="BCpC", provider_event_id="preferred")
+
+    store.reconcile("BCPC", [common], FETCHED_AT)
+    store.reconcile("BCpC", [preferred], FETCHED_AT)
+
+    assert store.path_for("BCPC") != store.path_for("BCpC")
+    assert store.latest_active("BCPC")[0].symbol == "BCPC"
+    assert store.latest_active("BCpC")[0].symbol == "BCpC"
+
+
 def test_repeated_full_reconcile_does_not_cancel_twice(tmp_path):
     store = CorporateActionStore(tmp_path)
     store.reconcile("NVDA", [_split()], FETCHED_AT)

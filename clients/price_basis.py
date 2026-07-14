@@ -69,7 +69,9 @@ def classify_split_events(
     for action, factor in _effective_splits(actions, as_of_date):
         previous = [row for row in ordered if _date(row["trade_date"]) < action.ex_date]
         following = [row for row in ordered if _date(row["trade_date"]) >= action.ex_date]
-        if not previous or not following:
+        if not previous:
+            continue
+        if not following:
             result.append(
                 SplitClassification(
                     action.action_id,

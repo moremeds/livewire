@@ -262,14 +262,26 @@ python scripts/livewire_ingest.py corporate-actions --dry-run
 
 # A complete unfiltered provider fetch may infer cancellations
 python scripts/livewire_ingest.py corporate-actions --full-reconcile
+
+# Resume an interrupted whole-universe reconciliation with four workers
+python scripts/livewire_ingest.py corporate-actions --workers 4 --resume --full-reconcile
 ```
 
 Targeted and preset runs do not infer cancellations unless
-`--full-reconcile` is explicitly supplied. The command prints aggregate JSON
-counters for `inserted`, `revised`, `cancelled`, `unchanged`, and `failed`, and
-returns nonzero if any symbol fails. The scheduled daily job runs this lane
-before market-data ingestion, requests a full provider reconciliation on Sunday,
-and advances Silver only after every ingestion lane succeeds.
+`--full-reconcile` is explicitly supplied. Provider fetches use four workers by
+default; each worker owns its Massive session, while canonical Parquet and
+cursor writes remain serialized. Scope-specific cursors checkpoint only symbols
+whose canonical reconciliation succeeded. Canonical identities preserve
+provider-significant mixed case (`BCPC` and `BCpC` remain distinct). `--resume` starts or continues an
+incomplete cursor, but rejects a completed cursor so a stale run cannot suppress
+new provider corrections; omit `--resume` to start a fresh run.
+
+The command prints aggregate JSON counters for `requested`, `attempted`,
+`pending`, `resumed`, `completed`, `inserted`, `revised`, `cancelled`,
+`unchanged`, and `failed`, and returns nonzero if any symbol fails. The
+scheduled daily job runs this lane before market-data ingestion, requests a
+full provider reconciliation on Sunday, and advances Silver only after every
+ingestion lane succeeds.
 
 ### Silver adjusted bars
 
@@ -362,16 +374,42 @@ python scripts/livewire_store.py migrate-price-basis --full
 # Read-only audit, followed only by a separately reviewed/approved manifest
 python scripts/livewire_quality.py audit-split-basis \
   --tickers AAPL MSFT NVDA --output /tmp/split-basis-audit.json
-python scripts/livewire_store.py repair-split-basis --manifest /tmp/split-basis-audit.json
+
+# Resolve only ambiguous in-history boundaries from two overlapping IB windows.
+# Results are hash-bound, per-symbol, atomic, and resumable; Bronze is read-only.
+python scripts/livewire_quality.py resolve-split-basis \
+  --audit-manifest /tmp/split-basis-audit.json \
+  --output-dir /tmp/split-basis-evidence --resume
+
+# Replay the saved provider rows rather than trusting their saved label.
+python scripts/livewire_quality.py audit-split-basis \
+  --tickers AAPL MSFT NVDA --evidence-dir /tmp/split-basis-evidence \
+  --output /tmp/split-basis-resolved.json
 python scripts/livewire_store.py repair-split-basis \
-  --manifest /tmp/split-basis-audit.json --rollback
+  --manifest /tmp/split-basis-resolved.json --approve
+python scripts/livewire_store.py repair-split-basis \
+  --manifest /tmp/split-basis-resolved.json --rollback
 ```
 
 Audit manifests are bound to their resolved data-lake root. Use
 `--data-lake-root /path/to/disposable/data-lake` on both audit and repair for a
-rehearsal; a root mismatch is rejected before any symbol is touched. Silver
-applies split factors only to raw rows, keeps dividend adjustment independent,
-and fails closed when an unknown row is affected by an effective split.
+rehearsal; a root mismatch is rejected before any symbol is touched.
+`repair-split-basis` still rejects unapproved manifests by default;
+`--approve` is the explicit operator action that records approval before the
+atomic apply. Silver applies split factors only to raw rows, keeps dividend
+adjustment independent, and fails closed when an unknown row is affected by an
+effective split.
+Splits at or before a symbol's first stored session are outside the stored
+history and do not block the audit. Splits after its last stored session remain
+pending until repeated provider evidence contains a post-event bar; the partial
+post-event price is not used, only its confirmation of the effective basis.
+Evidence resolution requires repeated IB requests to agree pointwise, first
+classifies the IB boundary itself as raw or adjusted, then compares multi-session
+Bronze-to-IB scale on both sides of each action; the audit independently
+recomputes that decision. When IB evidence remains ambiguous, the resolver may use two overlapping
+Massive adjusted ranges as a narrow fallback. The same repeated-reference gate
+can recover nonpositive OHLC fields, scaled into the row's existing basis and
+checked against every remaining positive OHLC anchor before audit replay.
 
 ### Prerequisites
 

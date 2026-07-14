@@ -23,6 +23,7 @@ from requests.exceptions import (
 )
 
 from clients.massive_time import massive_timestamp_to_trade_date
+from clients.symbol_paths import canonical_symbol
 
 _DEFAULT_BASE_URL = "https://api.massive.com"
 _DEFAULT_TIMEOUT = 30
@@ -114,7 +115,7 @@ class MassiveDividend:
     ticker: str
     ex_dividend_date: date
     cash_amount: Decimal
-    currency: str
+    currency: str | None
     declaration_date: date | None
     record_date: date | None
     pay_date: date | None
@@ -211,11 +212,11 @@ class MassiveClient:
         return {bar.ticker or "": bar for bar in bars}
 
     def get_splits(self, ticker: str) -> list[MassiveSplit]:
-        rows = self._get_paginated("/v3/reference/splits", {"ticker": ticker.upper(), "limit": 1000})
+        rows = self._get_paginated("/v3/reference/splits", {"ticker": canonical_symbol(ticker), "limit": 1000})
         return [self.normalize_split(row) for row in rows]
 
     def get_dividends(self, ticker: str) -> list[MassiveDividend]:
-        rows = self._get_paginated("/v3/reference/dividends", {"ticker": ticker.upper(), "limit": 1000})
+        rows = self._get_paginated("/v3/reference/dividends", {"ticker": canonical_symbol(ticker), "limit": 1000})
         return [self.normalize_dividend(row) for row in rows]
 
     def get_sma(
@@ -428,8 +429,9 @@ class MassiveClient:
         cash_amount = MassiveClient._decimal(payload, "cash_amount")
         if cash_amount < 0:
             raise MassiveMalformedCorporateActionError("cash amount must be non-negative")
-        currency = str(payload.get("currency", "")).upper()
-        if len(currency) != 3 or not currency.isalpha():
+        raw_currency = payload.get("currency")
+        currency = None if raw_currency is None else str(raw_currency).upper()
+        if currency is not None and (len(currency) != 3 or not currency.isalpha()):
             raise MassiveMalformedCorporateActionError("currency must be a three-letter code")
         historical_adjustment_factor = MassiveClient._optional_decimal(payload, "historical_adjustment_factor")
         if historical_adjustment_factor is not None and historical_adjustment_factor <= 0:
@@ -464,7 +466,7 @@ class MassiveClient:
     @staticmethod
     def _corporate_action_identity(payload: dict) -> tuple[str, str]:
         event_id = str(payload.get("id", "")).strip()
-        ticker = str(payload.get("ticker", "")).strip().upper()
+        ticker = canonical_symbol(str(payload.get("ticker", "")))
         if not event_id or not ticker:
             raise MassiveMalformedCorporateActionError("corporate action requires provider id and ticker")
         return event_id, ticker

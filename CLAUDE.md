@@ -119,11 +119,21 @@ Primary data source: **Interactive Brokers** via `ib_async`. Requires the IB Gat
 Operational commands for this contract are
 `scripts/livewire_quality.py calibrate-daily-basis`,
 `scripts/livewire_store.py migrate-price-basis`,
-`scripts/livewire_quality.py audit-split-basis`, and
+`scripts/livewire_quality.py audit-split-basis`,
+`scripts/livewire_quality.py resolve-split-basis`, and
 `scripts/livewire_store.py repair-split-basis`. Audit manifests record their
 resolved data-lake root; repair and rollback reject a different active root
-before mutation. Silver applies split factors only to rows marked raw and fails
-closed on split-affected unknown rows; dividend adjustment remains independent.
+before mutation. Prehistory splits do not affect stored rows; post-history
+splits stay pending until repeated provider evidence confirms the effective
+post-event basis. Ambiguous in-history events may be resolved from resumable,
+repeated IB evidence, which the audit replays against current Bronze and action
+hashes. The resolver first determines whether each repeated IB boundary is raw
+or adjusted; it does not assume a fixed IB history basis. Two overlapping
+Massive adjusted ranges are a narrow fallback when IB evidence remains
+ambiguous; repeated provider evidence may also repair
+nonpositive OHLC fields in the row's existing basis. Silver applies split
+factors only to rows marked raw and fails closed on split-affected unknown rows;
+dividend adjustment remains independent.
 
 ### IB BarData → Futures Bronze mapping
 
@@ -155,6 +165,7 @@ python scripts/livewire_ingest.py cboe-vol                                      
 python scripts/livewire_ingest.py fred-rates                                                      # FRED Treasury yields (DGS3/DGS5/DGS10/DGS30)
 python scripts/livewire_ingest.py corporate-actions --tickers NVDA AAPL SPY                       # Targeted Massive split/dividend reconciliation
 python scripts/livewire_ingest.py corporate-actions --full-reconcile                             # Whole equity-bronze universe; may infer cancellations
+python scripts/livewire_ingest.py corporate-actions --workers 4 --resume --full-reconcile        # Resume incomplete whole-universe reconciliation
 python scripts/livewire_ingest.py corporate-actions --dry-run                                    # Compare without publishing
 python scripts/livewire_store.py rebuild-silver --tickers NVDA AAPL SPY                          # Targeted adjusted daily/factor rebuild
 python scripts/livewire_store.py rebuild-silver --full --dry-run                                 # Full comparison without publishing

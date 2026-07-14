@@ -458,6 +458,33 @@ def test_get_splits_follows_same_origin_pagination_and_preserves_auth():
 
 
 @responses.activate
+def test_get_splits_preserves_case_distinct_provider_symbol():
+    responses.add(
+        responses.GET,
+        _url("/v3/reference/splits"),
+        json={
+            "status": "OK",
+            "results": [
+                {
+                    "id": "preferred-split",
+                    "ticker": "BCpC",
+                    "execution_date": "2024-06-10",
+                    "split_from": 1,
+                    "split_to": 2,
+                }
+            ],
+        },
+        status=200,
+    )
+
+    with _make_client() as client:
+        splits = client.get_splits("BCpC")
+
+    assert splits[0].ticker == "BCpC"
+    assert "ticker=BCpC" in responses.calls[0].request.url
+
+
+@responses.activate
 def test_get_dividends_normalizes_dates_currency_and_amount():
     responses.add(
         responses.GET,
@@ -489,6 +516,32 @@ def test_get_dividends_normalizes_dates_currency_and_amount():
     assert dividends[0].currency == "USD"
     assert dividends[0].declaration_date == date(2026, 6, 5)
     assert dividends[0].historical_adjustment_factor == Decimal("0.9975")
+
+
+@responses.activate
+def test_get_dividends_preserves_provider_missing_currency_as_unknown():
+    responses.add(
+        responses.GET,
+        _url("/v3/reference/dividends"),
+        json={
+            "status": "OK",
+            "results": [
+                {
+                    "id": "legacy-dividend",
+                    "ticker": "AXR",
+                    "ex_dividend_date": "2004-07-23",
+                    "cash_amount": "0.4",
+                    "currency": None,
+                }
+            ],
+        },
+        status=200,
+    )
+
+    with _make_client() as client:
+        dividends = client.get_dividends("AXR")
+
+    assert dividends[0].currency is None
 
 
 @pytest.mark.parametrize(

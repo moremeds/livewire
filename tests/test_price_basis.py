@@ -172,6 +172,18 @@ def test_classification_is_ambiguous_without_bars_on_both_sides():
     assert result[0].observed_ratio is None
 
 
+def test_split_at_or_before_first_stored_session_is_out_of_scope():
+    rows = [_row(date(2026, 1, 2), 100.0), _row(date(2026, 1, 5), 101.0)]
+
+    result = classify_split_events(
+        rows,
+        [_split("prehistory", date(2026, 1, 2), 1, 4)],
+        date(2026, 1, 5),
+    )
+
+    assert result == []
+
+
 def test_selective_normalization_reverses_only_adjusted_events():
     rows = [_row(date(2026, 1, 1), 25.0, volume=400)]
     actions = [

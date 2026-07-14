@@ -1,5 +1,16 @@
 # Lessons
 
+- For whole-universe work, count canonical provider symbols rather than only
+  uppercased labels: mixed-case identities such as `BCPC`/`BCpC` and `TPC`/`TpC`
+  are distinct and must remain distinct in scope hashes, API queries, cursors,
+  and storage paths.
+- When reading a Parquet file inside a Hive-style `symbol=` directory, use
+  `pyarrow.parquet.ParquetFile(path).read()` for file-only schema validation;
+  `read_table(path)` may merge partition fields and report a false type conflict.
+- A split-basis audit must not propose raw-basis rewrites for symbols with no
+  split evidence. Keep those symbols eligible with zero replacements, and record
+  per-symbol normalization errors instead of aborting the full audit.
+
 - For disposable data-lake rehearsals, redirecting only an output manifest is not isolation. Bind manifests to a resolved data-lake root, pass that root explicitly to every audit/apply/rollback command, and verify embedded target paths before mutation.
 
 - When the user requests a replacement without backwards compatibility, remove
