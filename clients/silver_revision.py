@@ -15,6 +15,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from clients.silver_client import PublishedArtifact
+from clients.symbol_paths import canonical_symbol
 
 _THREAD_LOCKS: dict[Path, threading.RLock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
@@ -161,7 +162,8 @@ class SilverRevisionPublisher:
         if not affected:
             raise ValueError("at least one affected symbol is required")
         normalized = [
-            AffectedSymbol(item.symbol.upper(), item.earliest_date, tuple(item.timeframes)) for item in affected
+            AffectedSymbol(canonical_symbol(item.symbol), item.earliest_date, tuple(item.timeframes))
+            for item in affected
         ]
         symbols = [item.symbol for item in normalized]
         if len(symbols) != len(set(symbols)):

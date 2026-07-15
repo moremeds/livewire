@@ -2,6 +2,17 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Silver case-preserving publication paths (2026-07-15)
+
+Dependency graph: `C1 -> C2 -> C3`
+
+- [x] **C1** (`depends_on: []`): Reproduce the `BCPC`/`BCpC` Silver artifact
+  checksum collision with a focused regression test.
+- [x] **C2** (`depends_on: [C1]`): Preserve provider-significant case before
+  filesystem-safe encoding in daily and factor paths.
+- [x] **C3** (`depends_on: [C2]`): Run focused and full Silver verification,
+  then resume the production revision publish.
+
 ## Adjusted-history pointwise resolution and production readiness (2026-07-13)
 
 Dependency graph: `P1 -> P2 -> P3 -> P4 -> P5 -> P6 -> P7`
