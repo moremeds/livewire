@@ -93,6 +93,14 @@ def test_quality_dispatches_split_basis_audit(monkeypatch) -> None:
     assert calls == [("livewire_scripts.audit_split_basis", ["--tickers", "AAPL", "--output", "audit.json"])]
 
 
+def test_quality_dispatches_audit_legacy_basis(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(livewire_quality.importlib, "import_module",
+                        lambda name: _fake_module(calls, name, accepts_argv=True))
+    assert livewire_quality.main(["audit-legacy-basis", "--full", "--output", "x.json"]) == 7
+    assert calls == [("livewire_scripts.audit_legacy_basis", ["--full", "--output", "x.json"])]
+
+
 def test_quality_dispatches_split_basis_resolution(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(

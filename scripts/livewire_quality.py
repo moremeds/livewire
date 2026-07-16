@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from livewire_scripts.scheduled_env import load_scheduled_env
 
 COMMANDS = {
+    "audit-legacy-basis": "livewire_scripts.audit_legacy_basis",
     "audit-split-basis": "livewire_scripts.audit_split_basis",
     "calibrate-daily-basis": "livewire_scripts.calibrate_daily_basis",
     "health": "livewire_scripts.health_check",
