@@ -100,8 +100,12 @@ Three modules plus the rev-3 rebuild.
 
 ### 4.1 Module 1 — WS0 continuity gate (correctness invariant)
 
-- **Where:** silver per-symbol publish validation in `rebuild_silver.py` /
-  `silver_client.py`, before `os.replace`.
+- **Where:** the `rebuild_silver.py` **staging loop**, on the in-memory adjusted
+  series (`adjust_daily_rows` output) before publish. A violation raises
+  `ValueError`, which the existing staging `try/except` routes into `failures` —
+  the symbol is quarantined and the rest of the universe still publishes.
+  Implemented as a pure function
+  `clients/silver_continuity.py::check_adjusted_continuity`.
 - **Rule:** on the adjusted daily series, if
   `max over t of max(c[t]/c[t-1], c[t-1]/c[t])` exceeds the threshold
   (**default 6×**, configurable) and the offending date is not on a halt/relist
@@ -116,17 +120,17 @@ Three modules plus the rev-3 rebuild.
 ### 4.2 Module 2 — WS1 basis-consistency audit (offline, cheap)
 
 - **Command:** `scripts/livewire_quality.py audit-legacy-basis`.
-- **Per legacy symbol, per bronze `1d`:**
-  1. From `corporate_action_store` take active split events → build the
-     cumulative split-factor curve `F(date)`.
-  2. Per-row: a row that is **not on a split ex-date** but jumps by ~`F`
-     magnitude relative to its neighbors is "suspected already-adjusted,
-     mislabeled raw" (e.g. NVDA 2021-06-18). Reuse
-     `price_basis.classify_split_treatment`'s `raw_error`/`adjusted_error`
-     comparison, extended from per-boundary to per-row.
-  3. Classify the symbol as `clean` / `mixed` / `ambiguous`.
-- **Output:** an audit manifest (symbol → class, plus each suspect bar's date,
-  ratio, decision basis).
+- **Per legacy symbol:** build its adjusted daily series (`build_factor_intervals`
+  + `adjust_daily_rows`) and run the **same continuity invariant used at publish
+  time** (`check_adjusted_continuity`). A symbol whose adjusted series has a
+  >threshold adjacent-day jump is `mixed` (the signature of already-adjusted rows
+  mislabeled `raw`, e.g. NVDA 2021-06-18); otherwise `clean`. This reuses Module 1
+  rather than a separate per-row classifier.
+- **`ambiguous` is not a static audit class** — it is a repair-phase outcome
+  (Module 3), because distinguishing "unrepairable" from "mixed" needs the IB
+  evidence the offline audit deliberately doesn't fetch.
+- **Output:** an audit manifest (symbol → `{klass, break_date, source_sha256}`,
+  plus counts).
 - **Key property:** detection uses only the known split schedule + the series'
   own discontinuities — **no external fetch**. So the audit runs full-universe
   cheaply; the expensive IB fetch (Module 3) hits only `mixed`/`ambiguous`
@@ -146,14 +150,18 @@ Three modules plus the rev-3 rebuild.
   2. **Per symbol re-derivation** (respecting IB constraints — Gateway on the
      Mac mini, 2FA, rate limits, **no auto-retry on connection failure**):
      - `adjusted_history_sources.fetch_ib_evidence` fetches deep IB history;
-     - `price_basis.classify_split_treatment` decides IB basis per boundary (IB
-       basis is not fixed and must be classified) → normalize to canonical
-       true-raw;
-     - where a ≤5-year Massive window overlaps,
-       `fetch_massive_evidence` cross-checks; disagreement → mark `ambiguous`,
-       do not write;
-     - write back via the canonical bronze repair path
-       (temp → validate → `os.replace`, per-symbol lock) + an audit sidecar.
+     - `price_basis.prepare_ib_rows_for_publish` classifies IB basis per boundary
+       (via `classify_split_events`; IB basis is not fixed) → normalizes to
+       canonical true-raw, raising on ambiguous classification → `ambiguous`;
+     - **correctness self-check:** the re-derived series must itself adjust to a
+       continuous curve (`check_adjusted_continuity`); if not → `ambiguous`, do
+       not write. This is a stronger, window-independent gate than the Massive
+       cross-check and **replaces it in Spec 1**;
+     - Massive ≤5-year cross-check is a **deferred optional enhancement** — add a
+       `massive_factory` param and the cross-check when needed (YAGNI: not wired in
+       Spec 1, since the continuity self-check already gates correctness);
+     - write back via `BronzeClient.merge_ticker_rows` (canonical
+       temp → validate → `os.replace`, per-symbol lock) + an audit sidecar.
   3. **Resumable cursor:**
      `~/market-warehouse/cursors/cursor_legacy_basis_repair.json` records each
      symbol's `done`/`failed`/`ambiguous`; interrupts resume from the cursor
@@ -179,10 +187,10 @@ cross-check, never the sole basis for pre-window rows.
 
 ```
 corporate_action_store ─┐
-bronze 1d (legacy/raw) ──┼─▶ [M2 audit] ─▶ mixed/ambiguous list ─▶ (operator review)
+bronze 1d (legacy/raw) ──┼─▶ [M2 audit] ─▶ mixed list ─▶ (operator review)
                          │                                            │
 IB deep history ─────────┼─▶ [M3 re-derive + normalize] ◀────────────┘
-Massive (≤5y) cross-check┘        │  canonical raw → bronze  (resumable via cursor)
+Massive (≤5y, deferred)──┘        │  canonical raw → bronze  (resumable via cursor)
                                   ▼
               queue drained ─▶ [ONE rebuild-silver + M1 gate] ─▶ rev-3 (single atomic publish)
 ```
@@ -192,20 +200,29 @@ Massive (≤5y) cross-check┘        │  canonical raw → bronze  (resumable 
 - `audit-legacy-basis` → audit manifest JSON (symbol classes + per-bar
   evidence), written under `data-lake/repairs/silver-legacy-basis/<stamp>/`.
 - `repair-legacy-basis` → cursor JSON (resume state) + per-symbol repair sidecar
-  (source, decision, IB/Massive evidence identity, timestamp, data-lake root),
-  following the existing resolver evidence schema so repairs stay auditable.
+  (symbol, status, reason, timestamp, data-lake root), following the resolver
+  evidence-sidecar pattern so repairs stay auditable.
 - rev-3 manifest via the existing `silver_revision` atomic publish
   (`revisions/current.json`).
 
 ## 7. Error handling & operational constraints
 
-- IB: preflight before connecting; on unreachable Gateway, report and exit
-  cleanly (no burning the 4-min timeout, no connection auto-retry). The run is
-  resumable, so an interrupted IB session continues later.
+- IB: lazy-connect once; a connection failure **aborts the run** and is recorded
+  (no auto-retry — connection failures mean 2FA/maintenance/session conflict, not
+  something to retry; re-entering the loop must not reconnect per symbol). The run
+  is resumable via its cursor, so an aborted run continues later. Follows the
+  `resolve_split_basis` pattern; no separate preflight.
 - Writer coordination: as in the rev-2 rebuild, freeze the three Livewire
   writers during the final publish and restore them even if publish fails.
 - Every mutation goes through the canonical repair path with a resolved
   data-lake-root guard (reject a different active root before mutating).
+- **Revision removal (open item):** a symbol published in a prior revision that
+  now quarantines is *not* automatically made unavailable — its prior artifact
+  lingers on disk and in the manifest, so Apex would keep serving stale data
+  instead of failing closed. rev-3 must make quarantined-but-previously-published
+  symbols fail-closed (manifest omission or artifact tombstone, depending on
+  Apex's consumption model). See plan Task 5; may need a first-class
+  revision-removal contract in `silver_revision`.
 
 ## 8. Testing (repo rules; 95% coverage gate)
 
@@ -215,7 +232,7 @@ Massive (≤5y) cross-check┘        │  canonical raw → bronze  (resumable 
 - **Module 2:** per-row detection unit tests — isolated bad bar; distinguishing a
   real ex-date jump from a non-ex-date artifact jump; `clean`/`mixed`/`ambiguous`
   classification.
-- **Module 3:** mock IB/Massive evidence → classify → normalize → write-back;
+- **Module 3:** stub IB fetcher (injected factory) → classify → normalize → write-back;
   cursor interrupt/resume; priority ordering (sp500→ndx100→r2k→rest); ambiguous
   is never written.
 - All external I/O mocked; temp parquet roots; `-W error::RuntimeWarning` on

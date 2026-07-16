@@ -104,6 +104,24 @@ second time). Such a symbol must be quarantined, not published.
 from __future__ import annotations
 
 
+class ContinuityBreak(ValueError):
+    """A residual adjacent-day discontinuity in an adjusted series.
+
+    Subclasses ``ValueError`` so existing ``except ValueError`` handlers (the
+    rebuild staging loop) still catch it, while exposing structured ``.date`` /
+    ``.ratio`` so callers (the audit) don't parse the message string.
+    """
+
+    def __init__(self, date: str, ratio: float, previous_date: str, threshold: float) -> None:
+        self.date = date
+        self.ratio = ratio
+        self.previous_date = previous_date
+        super().__init__(
+            f"adjusted continuity break at {date}: {ratio:.1f}x jump from "
+            f"{previous_date} (threshold {threshold:g}x) — mixed-basis suspected"
+        )
+
+
 def check_adjusted_continuity(
     rows: list[dict],
     *,
@@ -127,10 +145,7 @@ def check_adjusted_continuity(
         if previous_close is not None and trade_date not in allowlist and previous_date not in allowlist:
             ratio = max(close / previous_close, previous_close / close)
             if ratio > threshold:
-                raise ValueError(
-                    f"adjusted continuity break at {trade_date}: {ratio:.1f}x jump "
-                    f"from {previous_date} (threshold {threshold:g}x) — mixed-basis suspected"
-                )
+                raise ContinuityBreak(trade_date, ratio, previous_date, threshold)
         previous_close = close
         previous_date = trade_date
 ```
@@ -177,18 +192,27 @@ def test_mixed_basis_symbol_is_quarantined_not_published(tmp_path):
     )
     CorporateActionStore(tmp_path).reconcile("NVDA", [split], datetime(2021, 7, 20, tzinfo=UTC))
 
+    # Also seed a CLEAN symbol (no split) so the run has updated>0. A lone rejected
+    # symbol makes updated==0 → resolve_exit_code returns 1; a second published symbol
+    # proves quarantine doesn't fail the whole batch.
+    clean = [{"trade_date": d, "symbol_id": 2, "open": c, "high": c, "low": c,
+              "close": c, "adj_close": c, "volume": 100, "source": "legacy", "price_basis": "raw"}
+             for d, c in (("2021-06-17", 258.0), ("2021-06-18", 259.4), ("2021-06-21", 259.9))]
+    BronzeClient(bronze_root, "equity").replace_ticker_rows("MSFT", clean)
+
     failure_output = tmp_path / "failures.json"
     rc = rebuild_silver.run(
-        ["--tickers", "NVDA", "--failure-output", str(failure_output)],
+        ["--tickers", "NVDA", "MSFT", "--failure-output", str(failure_output)],
         data_lake_root=tmp_path,
         silver_root=tmp_path / "silver",
     )
-    # No silver 1d artifact was published for the quarantined symbol.
+    # NVDA quarantined (no artifact); MSFT published.
     assert not (tmp_path / "silver/asset_class=equity/symbol=NVDA/1d.parquet").exists()
+    assert (tmp_path / "silver/asset_class=equity/symbol=MSFT/1d.parquet").exists()
     import json
     failures = json.loads(failure_output.read_text())["failures"]
     assert any(f["symbol"] == "NVDA" and "continuity" in f["error"] for f in failures)
-    assert rc == 0  # one quarantined symbol is not a systemic failure
+    assert rc == 0  # quarantining one symbol while another publishes is not systemic failure
 ```
 
 > Note: the exact split ratio/dates only need to produce a >6× residual jump in the adjusted series; adjust the frozen closes if the seeded action makes the seeded series continuous. Confirm by running the test — it must fail for the right reason (published, or wrong error) before Step 6.
@@ -307,7 +331,24 @@ def test_clean_symbol_classified_clean(tmp_path):
     assert audit_legacy_basis.run(["--tickers", "MSFT", "--output", str(output)], data_lake_root=tmp_path) == 0
     manifest = json.loads(output.read_text())
     assert manifest["symbols"][0]["klass"] == "clean"
-    assert manifest["counts"] == {"clean": 1, "mixed": 0}
+    assert manifest["counts"] == {"clean": 1, "mixed": 0, "error": 0}
+
+
+def test_unknown_basis_symbol_classified_error_not_crash(tmp_path):
+    # A price_basis='unknown' row + an applicable split makes build_factor_intervals
+    # raise (that's WS3's 593 territory, not a legacy-basis mix). Audit must isolate
+    # it as klass='error' and still exit 0 — never abort the whole --full run.
+    split = MassiveSplit(provider_event_id="xyz", ticker="XYZ", execution_date=date(2021, 7, 20),
+                         split_from=Decimal("1"), split_to=Decimal("4"), payload_hash="s")
+    rows = [{"trade_date": "2021-06-17", "symbol_id": 1, "open": 10.0, "high": 10.0, "low": 10.0,
+             "close": 10.0, "adj_close": 10.0, "volume": 100, "source": "legacy", "price_basis": "unknown"}]
+    BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").replace_ticker_rows("XYZ", rows)
+    CorporateActionStore(tmp_path).reconcile("XYZ", [split], datetime(2021, 7, 20, tzinfo=UTC))
+    output = tmp_path / "audit.json"
+    assert audit_legacy_basis.run(["--tickers", "XYZ", "--output", str(output)], data_lake_root=tmp_path) == 0
+    manifest = json.loads(output.read_text())
+    assert manifest["symbols"][0]["klass"] == "error"
+    assert manifest["counts"]["error"] == 1
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -344,7 +385,7 @@ from clients.adjustment_engine import adjust_daily_rows, build_factor_intervals
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.ingestion_common import load_preset
-from clients.silver_continuity import check_adjusted_continuity
+from clients.silver_continuity import ContinuityBreak, check_adjusted_continuity
 from clients.symbol_paths import encode_symbol
 from livewire_scripts.paths import data_lake_dir
 
@@ -382,18 +423,22 @@ def _classify(bronze: BronzeClient, store: CorporateActionStore, symbol: str,
     entry: dict = {"symbol": symbol, "path": str(path), "source_sha256": _sha256(path),
                    "klass": "clean", "max_ratio": None, "break_date": None}
     if not rows:
-        entry["klass"] = "clean"
         return entry
-    actions = store.latest_active(symbol)
-    intervals = build_factor_intervals(rows, actions, as_of)
-    adjusted = adjust_daily_rows(rows, intervals, revision=1)
+    # Isolate ALL per-symbol failures so a single bad symbol never aborts --full.
     try:
+        actions = store.latest_active(symbol)
+        intervals = build_factor_intervals(rows, actions, as_of)
+        adjusted = adjust_daily_rows(rows, intervals, revision=1)
         check_adjusted_continuity(adjusted, threshold=threshold)
-    except ValueError as exc:
+    except ContinuityBreak as exc:
         entry["klass"] = "mixed"
-        # error message is "adjusted continuity break at <date>: <r>x jump ..."
-        message = str(exc)
-        entry["break_date"] = message.split("at ", 1)[1].split(":", 1)[0].strip() if " at " in message else None
+        entry["break_date"] = exc.date
+        entry["max_ratio"] = exc.ratio
+    except Exception as exc:
+        # build/adjust errors (e.g. `unknown price_basis` rows → WS3's 593, not a
+        # legacy-basis mix) or a non-positive-close ValueError. NOT fed to repair.
+        entry["klass"] = "error"
+        entry["error"] = str(exc)
     return entry
 
 
@@ -418,8 +463,7 @@ def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None
     existing = bronze.get_existing_symbols()
     entries = [_classify(bronze, store, s, as_of, args.continuity_threshold)
                for s in symbols if s in existing]
-    counts = {"clean": sum(e["klass"] == "clean" for e in entries),
-              "mixed": sum(e["klass"] == "mixed" for e in entries)}
+    counts = {k: sum(e["klass"] == k for e in entries) for k in ("clean", "mixed", "error")}
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "data_lake_root": str(root.resolve()),
@@ -430,8 +474,7 @@ def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None
         "counts": counts,
     }
     _write_atomic(args.output, manifest)
-    print(json.dumps({"clean": counts["clean"], "mixed": counts["mixed"],
-                      "output": str(args.output)}, sort_keys=True))
+    print(json.dumps({**counts, "output": str(args.output)}, sort_keys=True))
     return 0
 
 
@@ -489,8 +532,8 @@ git commit -m "feat(silver): add offline legacy-basis audit command"
 - Test: `tests/test_repair_legacy_basis.py`, `tests/test_livewire_entrypoints.py` (add dispatch case)
 
 **Interfaces:**
-- Consumes: audit manifest from Task 2; `adjusted_history_sources.fetch_ib_evidence(fetcher, symbol, start, end, actions, as_of) -> SourceEvidence`; `adjusted_history_sources.IBHistoryFetcher(client)` (callable `(symbol,start,end)->list[dict]`); `clients.ib_client.IBClient`; `clients.price_basis.prepare_ib_rows_for_publish(incoming_rows, *, existing_rows, actions, as_of_date) -> list[dict]` (raises `ValueError` on ambiguous classification); `BronzeClient.merge_ticker_rows(symbol, rows) -> int`, `.read_symbol_rows`; `CorporateActionStore.latest_active`; `check_adjusted_continuity`; `build_factor_intervals`/`adjust_daily_rows`; `load_preset`.
-- Produces: `run(argv=None, *, data_lake_root=None, ib_factory=IBClient, ib_fetcher_factory=IBHistoryFetcher, massive_factory=MassiveClient, as_of_date=None) -> int` and `main(argv=None) -> int`. Cursor at `<output-dir>/cursor.json` = `{"identity": {schema_version, audit_sha256, data_lake_root}, "completed": {symbol: {source_sha256, status}}}` with `status in {"done","ambiguous","failed"}`; per-symbol sidecar under `<output-dir>/symbols/<enc>.json`; `summary.json` + stdout summary line.
+- Consumes: audit manifest from Task 2; `adjusted_history_sources.IBHistoryFetcher(client)` — a callable `(symbol, start, end) -> list[dict]` of IB `split_adjusted` rows (this is what the repair uses **directly**; `fetch_ib_evidence` returns a `SourceEvidence` summary, not writable rows, so it is NOT used here); `clients.ib_client.IBClient`; `clients.price_basis.prepare_ib_rows_for_publish(incoming_rows, *, existing_rows, actions, as_of_date) -> list[dict]` (returns **normalized canonical-raw IB rows only** — existing rows are classification context; raises `ValueError` on ambiguous classification); `BronzeClient.merge_ticker_rows(symbol, rows) -> int` (overwrites matching dates; `_normalize_rows` **preserves** incoming `source`/`price_basis`), `.read_symbol_rows`; `CorporateActionStore.latest_active`; `check_adjusted_continuity`; `build_factor_intervals`/`adjust_daily_rows`; `load_preset`.
+- Produces: `run(argv=None, *, data_lake_root=None, ib_factory=IBClient, ib_fetcher_factory=IBHistoryFetcher, as_of_date=None) -> int` and `main(argv=None) -> int`. Cursor at `<output-dir>/cursor.json` = `{"identity": {schema_version, audit_sha256, data_lake_root}, "completed": {symbol: {source_sha256, status}}}` with `status in {"done","ambiguous","failed"}`; per-symbol sidecar under `<output-dir>/symbols/<enc>.json`; `summary.json` + stdout summary line.
 
 - [ ] **Step 1: Write the failing test (stubbed IB, no network)**
 
@@ -609,6 +652,12 @@ def test_ib_connection_failure_marks_failed_not_crash(tmp_path):
     assert rc == 1
     cursor = json.loads((output_dir / "cursor.json").read_text())
     assert cursor["completed"]["NVDA"]["status"] == "failed"
+
+
+def test_priority_orders_sp500_before_ndx_before_r2k_before_rest():
+    # tiers: sp500=0, ndx100=1, r2k=2, unranked=len(presets)=3
+    rank = {"AAPL": 0, "ZM": 1, "IWM": 2}
+    assert repair_legacy_basis._order_symbols(["ZZZ", "IWM", "AAPL", "ZM"], rank) == ["AAPL", "ZM", "IWM", "ZZZ"]
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -636,6 +685,7 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -652,7 +702,6 @@ from livewire_scripts.adjusted_history_sources import IBHistoryFetcher
 from livewire_scripts.paths import data_lake_dir
 
 SCHEMA_VERSION = 1
-IB_EARLIEST = date(1980, 1, 1)
 _PRIORITY_PRESETS = ("sp500", "ndx100", "r2k")
 
 
@@ -701,9 +750,14 @@ def _repair_one(symbol: str, *, bronze: BronzeClient, store: CorporateActionStor
                 threshold: float) -> tuple[str, dict]:
     """Return (status, sidecar). status in {'done','ambiguous','failed'}."""
     existing = bronze.read_symbol_rows(symbol)
+    if not existing:
+        return "failed", {"symbol": symbol, "reason": "no_bronze_rows"}
     actions = store.latest_active(symbol)
-    end = as_of
-    ib_rows = fetcher(symbol, IB_EARLIEST, end)
+    # Re-fetch only the range bronze already covers — we're correcting the basis of
+    # existing rows, not extending history. Fetching from an absolute 1980 floor
+    # would issue ~46 empty yearly IB requests per symbol and hammer the gateway.
+    start = min(date.fromisoformat(str(r["trade_date"])) for r in existing)
+    ib_rows = fetcher(symbol, start, as_of)
     if not ib_rows:
         return "failed", {"symbol": symbol, "reason": "ib_no_data"}
     try:
@@ -714,13 +768,19 @@ def _repair_one(symbol: str, *, bronze: BronzeClient, store: CorporateActionStor
     ib_only = [r for r in canonical if r.get("source") == "ib"]
     if not ib_only:
         return "failed", {"symbol": symbol, "reason": "no_ib_rows_after_normalize"}
-    # Self-check: the corrected series must adjust to a continuous curve.
-    intervals = build_factor_intervals(ib_only, actions, as_of)
-    adjusted = adjust_daily_rows(ib_only, intervals, revision=1)
+    # Self-check on the POST-MERGE series (existing rows overwritten by IB per date),
+    # NOT the IB rows alone — partial IB coverage could otherwise pass the check yet
+    # leave un-replaced corrupt legacy dates in bronze. (codex F2)
+    merged_by_date = {str(r["trade_date"]): r for r in existing}
+    for r in ib_only:
+        merged_by_date[str(r["trade_date"])] = r
+    merged = [merged_by_date[d] for d in sorted(merged_by_date)]
     try:
+        intervals = build_factor_intervals(merged, actions, as_of)
+        adjusted = adjust_daily_rows(merged, intervals, revision=1)
         check_adjusted_continuity(adjusted, threshold=threshold)
     except ValueError as exc:
-        return "ambiguous", {"symbol": symbol, "reason": f"still_discontinuous: {exc}"}
+        return "ambiguous", {"symbol": symbol, "reason": f"post_merge_discontinuous: {exc}"}
     inserted = bronze.merge_ticker_rows(symbol, ib_only)
     return "done", {"symbol": symbol, "rows_written": len(ib_only), "inserted": inserted}
 
@@ -728,7 +788,6 @@ def _repair_one(symbol: str, *, bronze: BronzeClient, store: CorporateActionStor
 def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None,
         ib_factory: Callable[[], Any] = IBClient,
         ib_fetcher_factory: Callable[[Any], Callable[[str, date, date], list[dict]]] = IBHistoryFetcher,
-        massive_factory: Callable[[], Any] | None = None,
         as_of_date: date | None = None) -> int:
     args = parse_args(argv)
     root = Path(data_lake_root) if data_lake_root is not None else (args.data_lake_root or data_lake_dir())
@@ -760,20 +819,37 @@ def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None
             if args.resume and checkpoint and checkpoint.get("status") == "done":
                 counts["done"] += 1
                 continue
-            try:
-                if fetcher is None:
+            if fetcher is None:
+                # Lazy-connect once. A connection failure ABORTS the whole run —
+                # per CLAUDE.md, livewire never auto-retries IB connection failures
+                # (they mean 2FA / maintenance / session conflict, not something to
+                # retry). Re-entering the loop must NOT reconnect per symbol.
+                try:
                     ib_client = ib_factory()
                     connect = getattr(ib_client, "connect", None)
                     if callable(connect):
-                        connect(host=args.host, port=args.port)  # no auto-retry beyond IBClient's 326 handling
+                        connect(host=args.host, port=args.port)  # IBClient handles error-326 clientId retry only
                     fetcher = ib_fetcher_factory(ib_client)
+                except Exception as exc:
+                    print(f"IB connection failed, aborting run: {exc}", file=sys.stderr)
+                    cursor["completed"][symbol] = {
+                        "source_sha256": next((i["source_sha256"] for i in audit["symbols"]
+                                               if i["symbol"] == symbol), None),
+                        "status": "failed",
+                    }
+                    _write_atomic(cursor_path, cursor)
+                    counts["failed"] += 1
+                    break  # remaining symbols stay unprocessed; --resume continues later
+            try:
                 status, sidecar = _repair_one(symbol, bronze=bronze, store=store,
                                               fetcher=fetcher, as_of=as_of,
                                               threshold=args.continuity_threshold)
-            except Exception as exc:  # connection or fetch failure — mark, don't crash
+            except Exception as exc:  # per-symbol fetch/derive failure — mark, continue
                 status, sidecar = "failed", {"symbol": symbol, "reason": f"exception: {exc}"}
             sidecar_path = args.output_dir / "symbols" / f"{encode_symbol(symbol)}.json"
-            _write_atomic(sidecar_path, {**sidecar, "status": status})
+            _write_atomic(sidecar_path, {**sidecar, "status": status,
+                                         "data_lake_root": str(root.resolve()),
+                                         "repaired_at": datetime.now(UTC).isoformat()})
             cursor["completed"][symbol] = {
                 "source_sha256": next((i["source_sha256"] for i in audit["symbols"]
                                        if i["symbol"] == symbol), None),
@@ -837,6 +913,175 @@ Expected: PASS.
 ```bash
 git add livewire_scripts/repair_legacy_basis.py scripts/livewire_store.py tests/test_repair_legacy_basis.py tests/test_livewire_entrypoints.py
 git commit -m "feat(silver): add resumable IB legacy-basis repair command"
+```
+
+---
+
+## Task 3.5: First-batch gate — quantify the tail before committing to it
+
+**Why this task exists:** The audit is full-universe, so after the first
+(priority-only) repair batch we know *exactly* how many `mixed` symbols remain in
+the ~10.6K tail, and we have a *sampled* IB-ambiguity rate from the batch. Those
+two numbers decide whether the tail is a one-night job or needs a dedicated IB
+batch schedule — without them the tail is an open-ended black hole. This task
+adds the `--priority-only` batch boundary, a pure `summarize_progress` reporter,
+and a runbook STOP gate that forces an operator decision before the tail runs.
+
+**Files:**
+- Modify: `livewire_scripts/repair_legacy_basis.py` (add `--priority-only` flag + `summarize_progress`)
+- Test: `tests/test_repair_legacy_basis.py`
+
+**Interfaces:**
+- Consumes: `parse_args`, `run`, `_priority_rank`, `_order_symbols` from Task 3.
+- Produces: `summarize_progress(audit_manifest: dict, batch_summary: dict) -> dict`
+  with keys `audit_total`, `audit_mixed`, `audit_mixed_rate`, `batch_attempted`,
+  `batch_done`, `batch_ambiguous`, `batch_ambiguous_rate`, `tail_mixed_exact`,
+  `tail_estimated_unrepairable`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/test_repair_legacy_basis.py`:
+
+```python
+def test_summarize_progress_quantifies_tail():
+    # Full audit saw 300 mixed of 8305; first batch attempted 100, 8 ambiguous.
+    audit = {"counts": {"clean": 8000, "mixed": 300, "error": 5}}
+    batch = {"counts": {"done": 90, "ambiguous": 8, "failed": 2}}
+    s = repair_legacy_basis.summarize_progress(audit, batch)
+    assert s["audit_mixed"] == 300
+    assert s["audit_mixed_rate"] == round(300 / 8305, 4)
+    assert s["batch_attempted"] == 100
+    assert s["batch_ambiguous_rate"] == 0.08
+    assert s["tail_mixed_exact"] == 200            # 300 total mixed − 100 attempted
+    assert s["tail_estimated_unrepairable"] == 16  # 200 × 0.08, rounded
+
+
+def test_priority_only_skips_unranked_tail_symbols(tmp_path):
+    _seed_mixed(tmp_path, "AAPL")   # sp500 member
+    _seed_mixed(tmp_path, "ZZZQ")   # in no priority preset
+    bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
+    import hashlib
+    def _entry(sym):
+        p = bronze.symbol_path(sym)
+        return {"symbol": sym, "path": str(p),
+                "source_sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+                "klass": "mixed", "break_date": "2021-06-18"}
+    manifest_path = tmp_path / "audit.json"
+    manifest_path.write_text(json.dumps(
+        {"schema_version": 1, "data_lake_root": str(tmp_path.resolve()),
+         "symbols": [_entry("AAPL"), _entry("ZZZQ")]}))
+    ib_rows = {s: [{"trade_date": d, "symbol_id": 0, "open": c, "high": c, "low": c,
+                    "close": c, "adj_close": c, "volume": 100, "source": "ib",
+                    "price_basis": "split_adjusted", "currency": "USD"}
+                   for d, c in ((date(2021, 6, 17), 186.57), (date(2021, 6, 18), 186.4),
+                                (date(2021, 6, 21), 184.27))]
+               for s in ("AAPL", "ZZZQ")}
+    output_dir = tmp_path / "out"
+    rc = repair_legacy_basis.run(
+        ["--audit-manifest", str(manifest_path), "--output-dir", str(output_dir),
+         "--priority-only"],
+        data_lake_root=tmp_path, ib_factory=lambda: object(),
+        ib_fetcher_factory=_clean_ib_fetcher(ib_rows))
+    assert rc == 0
+    cursor = json.loads((output_dir / "cursor.json").read_text())
+    assert "AAPL" in cursor["completed"]      # ranked → processed
+    assert "ZZZQ" not in cursor["completed"]  # unranked tail → deferred
+```
+
+Note: `test_priority_only_skips_unranked_tail_symbols` relies on the real
+`presets/sp500.json` (default `--presets-dir presets`) containing `AAPL`. If that
+preset is ever renamed, update `_PRIORITY_PRESETS` and this test together.
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `uv run pytest tests/test_repair_legacy_basis.py::test_summarize_progress_quantifies_tail tests/test_repair_legacy_basis.py::test_priority_only_skips_unranked_tail_symbols -v`
+Expected: FAIL — `AttributeError: module ... has no attribute 'summarize_progress'` and the `--priority-only` arg is unrecognized.
+
+- [ ] **Step 3: Add the `--priority-only` flag**
+
+In `livewire_scripts/repair_legacy_basis.py`, `parse_args`, immediately after the
+`--resume` argument:
+```python
+    parser.add_argument("--priority-only", action="store_true",
+                        help="repair only sp500/ndx100/r2k members; defer the tail to a later full run")
+```
+
+- [ ] **Step 4: Wire the flag into `run` and add the reporter**
+
+In `run`, replace:
+```python
+    mixed = [item["symbol"] for item in audit["symbols"] if item.get("klass") == "mixed"]
+    ordered = _order_symbols(mixed, _priority_rank(args.presets_dir))
+```
+with:
+```python
+    mixed = [item["symbol"] for item in audit["symbols"] if item.get("klass") == "mixed"]
+    rank = _priority_rank(args.presets_dir)
+    ordered = _order_symbols(mixed, rank)
+    if args.priority_only:
+        ordered = [s for s in ordered if s in rank]  # rank holds only preset members
+```
+
+Add `summarize_progress` after `run` (before `main`):
+```python
+def summarize_progress(audit_manifest: dict, batch_summary: dict) -> dict:
+    """Quantify remaining tail work from a full audit + a first (priority-only) batch.
+
+    The audit is full-universe, so ``tail_mixed_exact`` is exact, not projected.
+    Only the tail's un-repairable share is estimated, using the batch's observed
+    ambiguous rate as the sample (each tail mixed symbol = one deep IB fetch).
+    """
+    ac = audit_manifest["counts"]
+    total = ac["clean"] + ac["mixed"] + ac["error"]
+    mixed_total = ac["mixed"]
+    bc = batch_summary["counts"]
+    attempted = bc["done"] + bc["ambiguous"] + bc["failed"]
+    tail_mixed = max(0, mixed_total - attempted)
+    amb_rate = (bc["ambiguous"] / attempted) if attempted else 0.0
+    return {
+        "audit_total": total,
+        "audit_mixed": mixed_total,
+        "audit_mixed_rate": round(mixed_total / total, 4) if total else 0.0,
+        "batch_attempted": attempted,
+        "batch_done": bc["done"],
+        "batch_ambiguous": bc["ambiguous"],
+        "batch_ambiguous_rate": round(amb_rate, 4),
+        "tail_mixed_exact": tail_mixed,
+        "tail_estimated_unrepairable": round(tail_mixed * amb_rate),
+    }
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `uv run pytest tests/test_repair_legacy_basis.py -v`
+Expected: PASS (all repair tests, including the two new ones).
+
+- [ ] **Step 6: Document the first-batch STOP gate**
+
+Add to the rev-3 runbook (this replaces a single one-shot repair with a gated
+two-phase repair — Task 4's CLAUDE.md section references this ordering):
+```bash
+# 1) Full-universe audit → audit/manifest.json with counts{clean,mixed,error}
+python scripts/livewire_quality.py audit-legacy-basis --output audit/manifest.json
+
+# 2) FIRST BATCH ONLY — sp500 + ndx100 + r2k members
+python scripts/livewire_store.py repair-legacy-basis \
+    --audit-manifest audit/manifest.json --output-dir repair-batch1 --priority-only --resume
+
+# 3) STOP GATE — quantify the tail BEFORE running it
+python -c "import json; from livewire_scripts.repair_legacy_basis import summarize_progress; \
+print(json.dumps(summarize_progress(json.load(open('audit/manifest.json')), \
+json.load(open('repair-batch1/summary.json'))), indent=2))"
+# Decide from tail_mixed_exact + tail_estimated_unrepairable:
+#   small tail, low ambiguous rate  → run the full tail now (drop --priority-only, keep --resume)
+#   large tail / high ambiguous rate → schedule a dedicated IB batch run first (2FA-gated, no auto-retry)
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add livewire_scripts/repair_legacy_basis.py tests/test_repair_legacy_basis.py
+git commit -m "feat(silver): add priority-only batch gate + tail-projection reporter"
 ```
 
 ---
@@ -919,11 +1164,18 @@ Expected: PASS, coverage ≥ 95%. Add targeted tests for any uncovered branch in
 In `CLAUDE.md`, under the silver section, add the operator sequence:
 ```bash
 # Full legacy-basis repair → rev-3 (operator-reviewed, resumable)
-python scripts/livewire_quality.py audit-legacy-basis --full --output <lake>/repairs/silver-legacy-basis/<stamp>/audit.json   # 1. offline audit; REVIEW the mixed count before proceeding
-python scripts/livewire_store.py repair-legacy-basis --audit-manifest <.../audit.json> --output-dir <.../> --resume            # 2. IB re-derivation (sp500→ndx100→r2k→rest), resumes from cursor
-python scripts/livewire_store.py rebuild-silver --full                                                                          # 3. single rev-3 publish (continuity gate quarantines any residual mixed)
+# 1. offline audit; REVIEW the mixed count before proceeding to IB
+python scripts/livewire_quality.py audit-legacy-basis --full --output <lake>/repairs/silver-legacy-basis/<stamp>/audit.json
+# 2. IB re-derivation (sp500→ndx100→r2k→rest), resumes from cursor
+python scripts/livewire_store.py repair-legacy-basis --audit-manifest <.../audit.json> --output-dir <.../> --resume
+# 3. freeze the three writers, single rev-3 publish, restore writers EVEN IF rebuild fails
+WRITERS="com.livewire.daily-update com.livewire.intraday-catchup com.livewire.daily-update-watchdog"
+for L in $WRITERS; do launchctl unload ~/Library/LaunchAgents/$L.plist; done
+python scripts/livewire_store.py rebuild-silver --full; RC=$?   # continuity gate quarantines any residual mixed
+for L in $WRITERS; do launchctl load ~/Library/LaunchAgents/$L.plist; done   # restore regardless of RC
+# 4. after Apex adopts rev-3, smoke-test NVDA/AMZN/GOOGL/AGL (formerly corrupt) + INTC (fail-closed control)
 ```
-State explicitly: run step 1, review the `mixed` count, only then run step 2; the continuity gate is always on in step 3.
+State explicitly: run step 1, review the `mixed` count, only then run step 2; freeze the writers around step 3 and restore them even on failure; the continuity gate is always on in step 3.
 
 - [ ] **Step 5: Commit**
 
@@ -931,6 +1183,30 @@ State explicitly: run step 1, review the `mixed` count, only then run step 2; th
 git add tests/test_silver_legacy_repair_e2e.py CLAUDE.md
 git commit -m "test(silver): end-to-end legacy-basis repair + rev-3 runbook"
 ```
+
+---
+
+## Task 5: Fail-closed removal of quarantined-but-previously-published symbols (BLOCKER — needs a design decision)
+
+**Why:** (codex Critical F1) Skipping a symbol's publication is NOT the same as making it unavailable. A symbol published *corrupt* in rev-2 that now quarantines (repair couldn't fix it) keeps its old artifact on disk and in the manifest — Apex keeps serving the old garbage instead of failing closed like INTC. The gate + repair make *fixable* symbols correct; *unfixable* previously-published symbols need explicit removal/tombstone. Confirm one fact about Apex before specifying the rest:
+
+- [ ] **Step 1: Determine how Apex resolves which symbols to serve.**
+
+Read the Apex silver-serving code (repo `~/apex-deploy` / apex-api). Answer: does Apex serve a symbol iff it appears in `current.json`'s `artifacts`/`affected` (manifest-driven), or does it disk-scan `silver/asset_class=equity/symbol=*`? Record the answer in this task before proceeding — it selects Step 2 vs Step 3.
+
+- [ ] **Step 2 (manifest-driven case): make rev-3 a full-manifest of healthy symbols.**
+
+Inspect `clients/silver_revision.py` (`_read_current`/`publish`) to confirm whether `current.json` is cumulative (all healthy symbols) or incremental (only this run's `affected`). If incremental, a symbol dropped from a rebuild still lingers in the last manifest that named it — add a rev-3 mode that publishes the full healthy set and omits quarantined symbols. Test: a symbol present in rev-2 but quarantined in rev-3 is absent from `current.json`.
+
+- [ ] **Step 3 (disk-scan case): tombstone/remove the quarantined artifact.**
+
+If Apex disk-scans, `rebuild-silver` must delete (or tombstone) the stale `silver/.../symbol=<Q>/1d.parquet` + `factors.parquet` for quarantined-but-previously-published symbols, guarded by the data-lake-root check. Test: the artifact is gone after rev-3.
+
+- [ ] **Step 4: Smoke-test fail-closed.**
+
+After rev-3, a formerly-published now-quarantined symbol returns HTTP 500 from Apex (fail-closed) like INTC — not a stale 200 with garbage.
+
+> This is a genuine lifecycle gap in the current silver revision model, surfaced by review. It may warrant folding into the spec as a first-class "revision removal" contract rather than a bolt-on. **Flag to the spec owner before implementing.**
 
 ---
 
