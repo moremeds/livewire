@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -174,9 +175,9 @@ def _bad_action(root, symbol="BAD"):
     bad_dividend = MassiveDividend(
         provider_event_id=f"{symbol}-dividend",
         ticker=symbol,
-        ex_dividend_date=date(2026, 1, 1),
+        ex_dividend_date=date(2026, 1, 3),
         cash_amount=Decimal("1"),
-        currency="USD",
+        currency="CAD",
         declaration_date=None,
         record_date=None,
         pay_date=None,
@@ -235,4 +236,117 @@ def test_dry_run_reports_changes_without_creating_silver_root(tmp_path, capsys):
     summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert summary["rebuilt"] == 1
     assert summary["revision"] == 1
+    assert not silver.exists()
+
+
+def test_dry_run_preserves_existing_bronze_and_silver_bytes(tmp_path, capsys):
+    _bronze(tmp_path, "NVDA")
+    _split(tmp_path)
+    silver = tmp_path / "silver"
+    assert rebuild_silver.run(["--tickers", "NVDA"], data_lake_root=tmp_path, silver_root=silver) == 0
+    capsys.readouterr()
+
+    watched = [
+        tmp_path / "bronze/asset_class=equity/symbol=NVDA/1d.parquet",
+        silver / "asset_class=equity/symbol=NVDA/1d.parquet",
+        silver / "adjustments/asset_class=equity/symbol=NVDA/factors.parquet",
+        silver / "revisions/current.json",
+        silver / "revisions/revision=1.json",
+    ]
+    before = {path: path.read_bytes() for path in watched}
+
+    assert (
+        rebuild_silver.run(
+            ["--tickers", "NVDA", "--dry-run"],
+            data_lake_root=tmp_path,
+            silver_root=silver,
+        )
+        == 0
+    )
+
+    assert {path: path.read_bytes() for path in watched} == before
+    assert not (silver / "revisions/revision=2.json").exists()
+
+
+def test_successful_dry_run_atomically_replaces_stale_failure_report(tmp_path):
+    _bronze(tmp_path, "NVDA")
+    _split(tmp_path)
+    silver = tmp_path / "silver"
+    output = tmp_path / "reports/rebuild-failures.json"
+    output.parent.mkdir(parents=True)
+    output.write_text('{"failures":[{"symbol":"STALE"}]}')
+
+    assert (
+        rebuild_silver.run(
+            ["--tickers", "NVDA", "--dry-run", "--failure-output", str(output)],
+            data_lake_root=tmp_path,
+            silver_root=silver,
+        )
+        == 0
+    )
+
+    payload = json.loads(output.read_text())
+    assert payload["schema_version"] == 2
+    assert payload["failures"] == []
+    assert list(output.parent.glob(f".{output.name}.*.tmp")) == []
+
+
+def test_dry_run_writes_evidence_grade_failure_report(tmp_path):
+    _bronze(tmp_path, "BAD")
+    _bad_action(tmp_path)
+    silver = tmp_path / "silver"
+    output = tmp_path / "reports/rebuild-failures.json"
+    bronze_path = tmp_path / "bronze/asset_class=equity/symbol=BAD/1d.parquet"
+    expected_digest = hashlib.sha256(bronze_path.read_bytes()).hexdigest()
+    expected_action = CorporateActionStore(tmp_path).latest_active("BAD")[0]
+
+    assert (
+        rebuild_silver.run(
+            [
+                "--tickers",
+                "BAD",
+                "--dry-run",
+                "--failure-output",
+                str(output),
+            ],
+            data_lake_root=tmp_path,
+            silver_root=silver,
+            as_of_date=date(2026, 1, 3),
+        )
+        == 1
+    )
+
+    payload = json.loads(output.read_text())
+    assert payload.keys() == {
+        "schema_version",
+        "generated_at",
+        "data_lake_root",
+        "silver_root",
+        "as_of_date",
+        "failures",
+    }
+    assert payload["schema_version"] == 2
+    assert datetime.fromisoformat(payload["generated_at"]).tzinfo is not None
+    assert payload["data_lake_root"] == str(tmp_path.resolve())
+    assert payload["silver_root"] == str(silver.resolve())
+    assert payload["as_of_date"] == "2026-01-03"
+    assert payload["failures"] == [
+        {
+            "symbol": "BAD",
+            "error_type": "ValueError",
+            "error": "dividend currency does not match bronze currency",
+            "bronze_path": str(bronze_path.resolve()),
+            "source_sha256": expected_digest,
+            "earliest_trade_date": "2026-01-01",
+            "latest_trade_date": "2026-01-03",
+            "active_actions": [
+                {
+                    "action_id": expected_action.action_id,
+                    "action_type": "cash_dividend",
+                    "ex_date": "2026-01-03",
+                    "status": "active",
+                }
+            ],
+        }
+    ]
     assert not silver.exists()

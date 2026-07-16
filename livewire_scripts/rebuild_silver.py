@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -42,6 +43,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     scope.add_argument("--tickers", nargs="+", help="Explicit equity symbols")
     scope.add_argument("--full", action="store_true", help="Discover all equity bronze symbols")
     parser.add_argument("--dry-run", action="store_true", help="Compute and compare without publishing")
+    parser.add_argument(
+        "--failure-output",
+        type=Path,
+        help="Write evidence-grade per-symbol staging failures as JSON",
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -114,6 +120,60 @@ def _summary(**values) -> None:
     print(json.dumps(values, sort_keys=True))
 
 
+def _sha256(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _action_identity(action: CorporateAction) -> dict[str, str]:
+    return {
+        "action_id": action.action_id,
+        "action_type": action.action_type,
+        "ex_date": action.ex_date.isoformat(),
+        "status": action.status,
+    }
+
+
+def _failure(
+    symbol: str,
+    exc: Exception,
+    bronze: BronzeClient,
+    rows: list[dict],
+    actions: list[CorporateAction],
+) -> dict:
+    dates = sorted(_trade_date(row["trade_date"]) for row in rows)
+    path = bronze.symbol_path(symbol).resolve()
+    return {
+        "symbol": symbol,
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+        "bronze_path": str(path),
+        "source_sha256": _sha256(path),
+        "earliest_trade_date": dates[0].isoformat() if dates else None,
+        "latest_trade_date": dates[-1].isoformat() if dates else None,
+        "active_actions": [_action_identity(action) for action in actions],
+    }
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    destination = path.expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def run(
     argv: Sequence[str] | None = None,
     *,
@@ -138,8 +198,10 @@ def run(
     effective_as_of = as_of_date or datetime.now(NEW_YORK).date()
 
     staged: list[StagedSymbol] = []
-    failed = 0
+    failures: list[dict] = []
     for symbol in symbols:
+        rows: list[dict] = []
+        actions: list[CorporateAction] = []
         try:
             rows = bronze.read_symbol_rows(symbol)
             if not rows:
@@ -156,8 +218,21 @@ def run(
                 )
             )
         except Exception as exc:
-            failed += 1
+            failures.append(_failure(symbol, exc, bronze, rows, actions))
             print(f"{symbol}: {exc}", file=sys.stderr)
+
+    if args.failure_output is not None:
+        _write_json_atomic(
+            args.failure_output,
+            {
+                "schema_version": 2,
+                "generated_at": datetime.now(UTC).isoformat(),
+                "data_lake_root": str(root.expanduser().resolve()),
+                "silver_root": str(silver_path.expanduser().resolve()),
+                "as_of_date": effective_as_of.isoformat(),
+                "failures": sorted(failures, key=lambda item: item["symbol"]),
+            },
+        )
 
     current = publisher.read_current()
     current_revision = 0 if current is None else current.revision
@@ -170,6 +245,7 @@ def run(
     # Exit code fails only on systemic breakage (all symbols failed, or the failure
     # rate exceeds the daily-command threshold), so persistent known-unresolved
     # symbols don't trigger a nightly alert storm.
+    failed = len(failures)
     exit_code = resolve_exit_code(updated=len(staged), no_trade=0, partial=0, errors=failed)
 
     changed = [item for item in staged if not _matches_existing(client, item)]

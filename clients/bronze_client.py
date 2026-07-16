@@ -145,6 +145,10 @@ class BronzeClient:
     def bronze_dir(self) -> Path:
         return self._bronze_dir
 
+    def symbol_path(self, symbol: str) -> Path:
+        """Return the canonical snapshot path for *symbol* without mutating it."""
+        return self._symbol_path(symbol)
+
     def get_existing_symbols(self) -> set[str]:
         """Return symbols that currently have canonical bronze parquet snapshots."""
         if not self._bronze_dir.exists():

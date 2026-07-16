@@ -2,6 +2,54 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Silver full-universe residual resolution (2026-07-16)
+
+Dependency graph: `R1 -> R2 -> R3 -> R4 -> R5 -> R6 -> R7 -> R8`
+
+- [ ] **R1** (`depends_on: []`): Land the case-preserving, evidence-grade,
+  history-bounded foundation with atomic failure-report tests and both reviewed
+  execution plans through a PR; stop for explicit merge approval.
+- [ ] **R2** (`depends_on: [R1]`): Freeze writers and capture a fresh immutable,
+  credentialed resolver/audit run with root- and hash-bound evidence.
+- [ ] **R3** (`depends_on: [R2]`): Persist provider dividend factors with
+  lineage, provenance, validation state, and legacy-schema compatibility.
+- [ ] **R4** (`depends_on: [R3]`): Allow Silver to consume only independently
+  validated provider factors and retain strict cash-derived fallback behavior.
+- [ ] **R5** (`depends_on: [R4]`): Add dividend-normalized IB adjusted history
+  and credentialed Massive reference lanes for remaining split ambiguity.
+- [ ] **R6** (`depends_on: [R5]`): Build deterministic residual/mutation
+  manifests, completeness-gate reconciliation, and close every blocker through
+  an evidence-backed adjudication lane.
+- [ ] **R7** (`depends_on: [R6]`): Freeze writers idempotently, verify backups,
+  obtain destructive approval, apply approved repairs, and prove zero failures.
+- [ ] **R8** (`depends_on: [R7]`): Atomically publish and independently verify
+  Silver coverage for the discovered full Bronze universe before Apex handoff.
+
+## Silver production failure classification (2026-07-16)
+
+Dependency graph: `D1 -> D2 -> D3 -> D4`
+
+- [x] **D1** (`depends_on: []`): Establish the clean Silver worktree and focused
+  rebuild/Bronze baseline without touching the dirty main checkout.
+- [ ] **D2** (`depends_on: [D1]`): Add evidence-grade, atomic rebuild failure
+  reporting with canonical Bronze paths, source hashes, date bounds, and active
+  corporate-action identities.
+- [ ] **D3** (`depends_on: [D2]`): Verify and land the diagnostic through a PR
+  with explicit merge approval.
+- [ ] **D4** (`depends_on: [D3]`): Run a read-only production dry run, classify
+  every residual failure, and revise the cutover plan from captured evidence.
+
+## Silver case-preserving publication paths (2026-07-15)
+
+Dependency graph: `C1 -> C2 -> C3`
+
+- [x] **C1** (`depends_on: []`): Reproduce the `BCPC`/`BCpC` Silver artifact
+  checksum collision with a focused regression test.
+- [x] **C2** (`depends_on: [C1]`): Preserve provider-significant case before
+  filesystem-safe encoding in daily and factor paths.
+- [x] **C3** (`depends_on: [C2]`): Run focused and full Silver verification,
+  then resume the production revision publish.
+
 ## Adjusted-history pointwise resolution and production readiness (2026-07-13)
 
 Dependency graph: `P1 -> P2 -> P3 -> P4 -> P5 -> P6 -> P7`

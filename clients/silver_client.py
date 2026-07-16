@@ -11,7 +11,7 @@ import pyarrow as pa
 
 from clients.adjustment_engine import FactorInterval
 from clients.parquet_io import publish_parquet, symbol_lock
-from clients.symbol_paths import encode_symbol
+from clients.symbol_paths import canonical_symbol, encode_symbol
 
 
 @dataclass(frozen=True)
@@ -53,14 +53,14 @@ class SilverClient:
         self.root = Path(silver_root)
 
     def daily_path(self, symbol: str) -> Path:
-        return self.root / "asset_class=equity" / f"symbol={encode_symbol(symbol.upper())}" / "1d.parquet"
+        return self.root / "asset_class=equity" / f"symbol={encode_symbol(canonical_symbol(symbol))}" / "1d.parquet"
 
     def factor_path(self, symbol: str) -> Path:
         return (
             self.root
             / "adjustments"
             / "asset_class=equity"
-            / f"symbol={encode_symbol(symbol.upper())}"
+            / f"symbol={encode_symbol(canonical_symbol(symbol))}"
             / "factors.parquet"
         )
 

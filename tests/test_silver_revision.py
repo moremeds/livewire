@@ -50,6 +50,22 @@ def test_unchanged_artifacts_are_noop(tmp_path):
     assert not (tmp_path / "revisions/revision=2.json").exists()
 
 
+def test_affected_symbols_preserve_provider_significant_case(tmp_path):
+    publisher = SilverRevisionPublisher(tmp_path)
+    affected = [
+        AffectedSymbol("BCPC", date(2026, 1, 1), ("1d",)),
+        AffectedSymbol("BCpC", date(2026, 1, 1), ("1d",)),
+    ]
+
+    revision = publisher.publish(
+        [_artifact(tmp_path, "BCPC.parquet", b"common"), _artifact(tmp_path, "BC%70C.parquet", b"preferred")],
+        affected,
+        ACTIONS_AS_OF,
+    )
+
+    assert [item.symbol for item in revision.affected] == ["BCPC", "BCpC"]
+
+
 def test_checksum_mismatch_preserves_current(tmp_path):
     publisher = SilverRevisionPublisher(tmp_path)
     publisher.publish([_artifact(tmp_path, "a.parquet", b"valid")], AFFECTED, ACTIONS_AS_OF)

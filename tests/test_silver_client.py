@@ -62,6 +62,15 @@ def test_publish_daily_uses_canonical_schema_path_sort_and_checksum(tmp_path):
     assert artifact.sha256 == hashlib.sha256(artifact.path.read_bytes()).hexdigest()
 
 
+def test_paths_preserve_provider_significant_symbol_case(tmp_path):
+    client = SilverClient(tmp_path)
+
+    assert client.daily_path("BCPC") == tmp_path / "asset_class=equity/symbol=BCPC/1d.parquet"
+    assert client.daily_path("BCpC") == tmp_path / "asset_class=equity/symbol=BC%70C/1d.parquet"
+    assert client.daily_path("nvda") == tmp_path / "asset_class=equity/symbol=NVDA/1d.parquet"
+    assert client.factor_path("BCPC") != client.factor_path("BCpC")
+
+
 def test_publish_factors_preserves_identity_and_revision(tmp_path):
     client = SilverClient(tmp_path)
     artifact = client.publish_factors("NVDA", _intervals())
