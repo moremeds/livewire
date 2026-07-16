@@ -20,12 +20,14 @@ from clients.adjustment_engine import FactorInterval, adjust_daily_rows, build_f
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateAction, CorporateActionStore
 from clients.silver_client import SilverClient
+from clients.silver_continuity import check_adjusted_continuity
 from clients.silver_revision import AffectedSymbol, SilverRevisionPublisher
 from livewire_scripts.daily_outcomes import resolve_exit_code
 from livewire_scripts.paths import data_lake_dir
 
 TIMEFRAMES = ("1d", "1m", "5m", "30m", "1h")
 NEW_YORK = ZoneInfo("America/New_York")
+CONTINUITY_THRESHOLD = 6.0
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--failure-output",
         type=Path,
         help="Write evidence-grade per-symbol staging failures as JSON",
+    )
+    parser.add_argument(
+        "--continuity-threshold",
+        type=float,
+        default=CONTINUITY_THRESHOLD,
+        help="max adjacent-day adjusted close ratio before a symbol is quarantined",
     )
     return parser.parse_args(list(argv) if argv is not None else None)
 
@@ -196,6 +204,7 @@ def run(
     if not symbols:
         raise SystemExit("no equity bronze symbols found")
     effective_as_of = as_of_date or datetime.now(NEW_YORK).date()
+    threshold = args.continuity_threshold
 
     staged: list[StagedSymbol] = []
     failures: list[dict] = []
@@ -208,6 +217,8 @@ def run(
                 raise ValueError("missing equity bronze rows")
             actions = action_store.latest_active(symbol)
             intervals = build_factor_intervals(rows, actions, effective_as_of)
+            adjusted = adjust_daily_rows(rows, intervals, revision=1)
+            check_adjusted_continuity(adjusted, threshold=threshold)
             staged.append(
                 StagedSymbol(
                     symbol,
