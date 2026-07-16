@@ -216,13 +216,40 @@ Massive (≤5y, deferred)──┘        │  canonical raw → bronze  (resuma
   writers during the final publish and restore them even if publish fails.
 - Every mutation goes through the canonical repair path with a resolved
   data-lake-root guard (reject a different active root before mutating).
-- **Revision removal (open item):** a symbol published in a prior revision that
-  now quarantines is *not* automatically made unavailable — its prior artifact
-  lingers on disk and in the manifest, so Apex would keep serving stale data
-  instead of failing closed. rev-3 must make quarantined-but-previously-published
-  symbols fail-closed (manifest omission or artifact tombstone, depending on
-  Apex's consumption model). See plan Task 5; may need a first-class
-  revision-removal contract in `silver_revision`.
+- **Revision removal (resolved — no new contract needed):** removal of a
+  quarantined symbol is a natural consequence of the existing revision model plus
+  Apex's consumption model; it does *not* require an artifact tombstone or a new
+  `silver_revision` removal API. Verified against the Apex source at
+  `~/projects/apex`:
+  - Apex reads Silver **strictly manifest-driven** — only the `artifacts[]` listed
+    in `revisions/current.json`, each sha256-verified
+    (`src/infrastructure/adapters/livewire/revisions.py:49-155`). There is **no**
+    glob / listdir / scandir / walk anywhere on the Livewire read path; a parquet
+    file that is not named in the manifest is never opened.
+  - The acted-on set is Apex's own active subscriptions ∩ the manifest `affected`
+    list (`src/application/subscriptions/manager.py:163-164`). A symbol that drops
+    out of the manifest simply stops being reseeded — no error, no global break.
+  - A missing/removed artifact degrades to empty bars (bronze raw mode) or a
+    per-symbol `AdjustedDataUnavailable` recorded in `/health`
+    (`ohlc_provider.py:143-151`), never a process-wide failure.
+  - **Therefore:** rev-3 is published as a single `rebuild-silver --full` (a full
+    manifest snapshot). Symbols the continuity gate quarantines never enter
+    `outcomes`, so they are absent from the rev-3 `artifacts[]`/`affected[]` and
+    Apex stops reading them. Stale parquet lingering on disk is harmless because
+    Apex never scans. Physically deleting old bad artifacts is optional hygiene,
+    not a correctness requirement.
+  - **Hard operational constraint:** rev-3 MUST be a full rebuild, not an
+    incremental commit. An incremental `affected` lists only the run's symbols, so
+    a quarantined symbol would be absent — but Apex does not actively evict a
+    symbol it reseeded from an earlier revision. A full rebuild re-declares every
+    clean symbol and omits every quarantined one, so the first read of rev-3 is
+    correct. (Current state makes this safe today: Silver has only an experimental
+    3-symbol rev-2 and Apex master is still bronze-raw mode, so there is no
+    in-flight adjusted reseed to evict.)
+  - **Residual, disclosed:** whether Apex actively evicts a previously-reseeded
+    symbol under *incremental* adjusted publishing is unverified. It does not
+    affect the rev-3 full publish; revisit before adopting incremental adjusted
+    revisions. See plan Task 5.
 
 ## 8. Testing (repo rules; 95% coverage gate)
 
