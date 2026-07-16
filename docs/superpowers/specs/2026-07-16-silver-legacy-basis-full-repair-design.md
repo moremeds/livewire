@@ -137,6 +137,10 @@ Three modules plus the rev-3 rebuild.
 - **Script:** `livewire_scripts/repair_legacy_basis.py`, entry point
   `scripts/livewire_store.py repair-legacy-basis`.
 - **Flow:**
+  0. **Operator review gate:** Module 2's audit is run first and on its own. Its
+     `mixed`/`ambiguous` symbol list and counts are surfaced to the operator for
+     confirmation **before any IB re-derivation begins** — the expensive,
+     rate-limited IB phase is not entered until the blast radius is reviewed.
   1. **Priority queue:** skip `clean`; enqueue `mixed`/`ambiguous`, ordered
      **sp500 → ndx100 → r2k → remainder** (read the corresponding presets).
   2. **Per symbol re-derivation** (respecting IB constraints — Gateway on the
@@ -154,8 +158,11 @@ Three modules plus the rev-3 rebuild.
      `~/market-warehouse/cursors/cursor_legacy_basis_repair.json` records each
      symbol's `done`/`failed`/`ambiguous`; interrupts resume from the cursor
      (same pattern as the resolver / backfill runners).
-  4. **Rebuild:** repaired symbols run `rebuild-silver` (with Module 1 gate) →
-     advance to **rev-3** via atomic revision publish.
+  4. **Rebuild (single trigger):** after the whole priority queue is drained,
+     run **one** `rebuild-silver` (with Module 1 gate) over the repaired symbols
+     → advance to **rev-3** via a single atomic revision publish. The cursor
+     makes the repair phase resumable across interrupts; rev-3 is published
+     **once at the end, not per batch.**
 - **Failure / ambiguity handling:** IB no-data / timeout / cross-check
   disagreement → mark and skip; do **not** block subsequent symbols. These join
   the "needs evidence/manual" residual set alongside WS3's 71 ambiguous. **Never
@@ -172,12 +179,12 @@ cross-check, never the sole basis for pre-window rows.
 
 ```
 corporate_action_store ─┐
-bronze 1d (legacy/raw) ──┼─▶ [M2 audit] ─▶ mixed/ambiguous list + priority queue
-                         │
-IB deep history ─────────┼─▶ [M3 re-derive + normalize] ─▶ canonical raw → bronze
-Massive (≤5y) cross-check┘                                   │
-                                                             ▼
-                                       [rebuild-silver + M1 gate] ─▶ rev-3 (atomic)
+bronze 1d (legacy/raw) ──┼─▶ [M2 audit] ─▶ mixed/ambiguous list ─▶ (operator review)
+                         │                                            │
+IB deep history ─────────┼─▶ [M3 re-derive + normalize] ◀────────────┘
+Massive (≤5y) cross-check┘        │  canonical raw → bronze  (resumable via cursor)
+                                  ▼
+              queue drained ─▶ [ONE rebuild-silver + M1 gate] ─▶ rev-3 (single atomic publish)
 ```
 
 ## 6. Interfaces / artifacts
