@@ -50,11 +50,7 @@ def build_factor_intervals(
 
     first_trade_date = dates[0]
     active_actions = sorted(
-        (
-            action
-            for action in actions
-            if action.status == "active" and first_trade_date < action.ex_date <= as_of_date
-        ),
+        (action for action in actions if action.status == "active" and first_trade_date < action.ex_date <= as_of_date),
         key=lambda action: (action.ex_date, 0 if action.action_type == "split" else 1, action.action_id),
     )
     factors_by_action: dict[str, tuple[Decimal, Decimal]] = {}
