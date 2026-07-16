@@ -260,16 +260,49 @@ def test_duplicate_bar_dates_are_rejected():
         build_factor_intervals(bars, [], date.max)
 
 
-def test_missing_previous_close_blocks_dividend():
-    dividend = _action(
-        "div",
-        date(2026, 1, 1),
-        action_type="cash_dividend",
-        cash_amount=1,
-        currency="USD",
-    )
-    with pytest.raises(ValueError, match="previous close"):
-        build_factor_intervals(_bars(), [dividend], date.max)
+@pytest.mark.parametrize(
+    "action",
+    [
+        _action(
+            "old-dividend",
+            date(2025, 12, 31),
+            action_type="cash_dividend",
+            cash_amount=1,
+            currency="USD",
+        ),
+        _action(
+            "first-day-dividend",
+            date(2026, 1, 1),
+            action_type="cash_dividend",
+            cash_amount=1,
+            currency="USD",
+        ),
+        _action(
+            "old-split",
+            date(2025, 12, 31),
+            action_type="split",
+            split_from=0,
+            split_to=2,
+        ),
+        _action(
+            "first-day-split",
+            date(2026, 1, 1),
+            action_type="split",
+            split_from=0,
+            split_to=2,
+        ),
+    ],
+)
+def test_action_on_or_before_first_stored_session_is_non_impacting(action):
+    bars = _bars(price_basis="unknown")
+
+    intervals = build_factor_intervals(bars, [action], date.max)
+    adjusted = adjust_daily_rows(bars, intervals, revision=1)
+
+    assert [row["close"] for row in adjusted] == [row["close"] for row in bars]
+    assert [row["volume"] for row in adjusted] == [row["volume"] for row in bars]
+    assert [interval.price_adjustment_factor for interval in intervals] == [Decimal("1")]
+    assert [interval.split_volume_factor for interval in intervals] == [Decimal("1")]
 
 
 def test_currency_mismatch_blocks_dividend():

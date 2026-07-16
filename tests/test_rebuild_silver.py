@@ -175,9 +175,9 @@ def _bad_action(root, symbol="BAD"):
     bad_dividend = MassiveDividend(
         provider_event_id=f"{symbol}-dividend",
         ticker=symbol,
-        ex_dividend_date=date(2026, 1, 1),
+        ex_dividend_date=date(2026, 1, 3),
         cash_amount=Decimal("1"),
-        currency="USD",
+        currency="CAD",
         declaration_date=None,
         record_date=None,
         pay_date=None,
@@ -282,7 +282,7 @@ def test_dry_run_writes_evidence_grade_failure_report(tmp_path):
         {
             "symbol": "BAD",
             "error_type": "ValueError",
-            "error": f"missing previous close for dividend {expected_action.action_id}",
+            "error": "dividend currency does not match bronze currency",
             "bronze_path": str(bronze_path.resolve()),
             "source_sha256": expected_digest,
             "earliest_trade_date": "2026-01-01",
@@ -291,7 +291,7 @@ def test_dry_run_writes_evidence_grade_failure_report(tmp_path):
                 {
                     "action_id": expected_action.action_id,
                     "action_type": "cash_dividend",
-                    "ex_date": "2026-01-01",
+                    "ex_date": "2026-01-03",
                     "status": "active",
                 }
             ],
