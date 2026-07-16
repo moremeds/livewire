@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -235,4 +236,65 @@ def test_dry_run_reports_changes_without_creating_silver_root(tmp_path, capsys):
     summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert summary["rebuilt"] == 1
     assert summary["revision"] == 1
+    assert not silver.exists()
+
+
+def test_dry_run_writes_evidence_grade_failure_report(tmp_path):
+    _bronze(tmp_path, "BAD")
+    _bad_action(tmp_path)
+    silver = tmp_path / "silver"
+    output = tmp_path / "reports/rebuild-failures.json"
+    bronze_path = tmp_path / "bronze/asset_class=equity/symbol=BAD/1d.parquet"
+    expected_digest = hashlib.sha256(bronze_path.read_bytes()).hexdigest()
+    expected_action = CorporateActionStore(tmp_path).latest_active("BAD")[0]
+
+    assert (
+        rebuild_silver.run(
+            [
+                "--tickers",
+                "BAD",
+                "--dry-run",
+                "--failure-output",
+                str(output),
+            ],
+            data_lake_root=tmp_path,
+            silver_root=silver,
+            as_of_date=date(2026, 1, 3),
+        )
+        == 1
+    )
+
+    payload = json.loads(output.read_text())
+    assert payload.keys() == {
+        "schema_version",
+        "generated_at",
+        "data_lake_root",
+        "silver_root",
+        "as_of_date",
+        "failures",
+    }
+    assert payload["schema_version"] == 2
+    assert datetime.fromisoformat(payload["generated_at"]).tzinfo is not None
+    assert payload["data_lake_root"] == str(tmp_path.resolve())
+    assert payload["silver_root"] == str(silver.resolve())
+    assert payload["as_of_date"] == "2026-01-03"
+    assert payload["failures"] == [
+        {
+            "symbol": "BAD",
+            "error_type": "ValueError",
+            "error": f"missing previous close for dividend {expected_action.action_id}",
+            "bronze_path": str(bronze_path.resolve()),
+            "source_sha256": expected_digest,
+            "earliest_trade_date": "2026-01-01",
+            "latest_trade_date": "2026-01-03",
+            "active_actions": [
+                {
+                    "action_id": expected_action.action_id,
+                    "action_type": "cash_dividend",
+                    "ex_date": "2026-01-01",
+                    "status": "active",
+                }
+            ],
+        }
+    ]
     assert not silver.exists()

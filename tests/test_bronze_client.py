@@ -54,6 +54,12 @@ def test_equity_rows_round_trip_source_and_price_basis(tmp_path):
     assert schema.field("price_basis").nullable is False
 
 
+def test_symbol_path_returns_canonical_case_preserving_path(tmp_path):
+    bronze = BronzeClient(bronze_dir=tmp_path, asset_class="equity")
+
+    assert bronze.symbol_path("BCpC") == tmp_path / "symbol=BC%70C/1d.parquet"
+
+
 def test_equity_legacy_rows_default_to_unknown_basis(tmp_path):
     bronze = BronzeClient(bronze_dir=tmp_path, asset_class="equity")
     symbol_id = bronze.get_symbol_id("AAPL")

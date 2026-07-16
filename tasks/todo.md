@@ -2,6 +2,20 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Silver production failure classification (2026-07-16)
+
+Dependency graph: `D1 -> D2 -> D3 -> D4`
+
+- [x] **D1** (`depends_on: []`): Establish the clean Silver worktree and focused
+  rebuild/Bronze baseline without touching the dirty main checkout.
+- [ ] **D2** (`depends_on: [D1]`): Add evidence-grade, atomic rebuild failure
+  reporting with canonical Bronze paths, source hashes, date bounds, and active
+  corporate-action identities.
+- [ ] **D3** (`depends_on: [D2]`): Verify and land the diagnostic through a PR
+  with explicit merge approval.
+- [ ] **D4** (`depends_on: [D3]`): Run a read-only production dry run, classify
+  every residual failure, and revise the cutover plan from captured evidence.
+
 ## Silver case-preserving publication paths (2026-07-15)
 
 Dependency graph: `C1 -> C2 -> C3`
