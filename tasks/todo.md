@@ -2,6 +2,29 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Silver full-universe residual resolution (2026-07-16)
+
+Dependency graph: `R1 -> R2 -> R3 -> R4 -> R5 -> R6 -> R7 -> R8`
+
+- [ ] **R1** (`depends_on: []`): Land the case-preserving, evidence-grade,
+  history-bounded foundation with atomic failure-report tests and both reviewed
+  execution plans through a PR; stop for explicit merge approval.
+- [ ] **R2** (`depends_on: [R1]`): Freeze writers and capture a fresh immutable,
+  credentialed resolver/audit run with root- and hash-bound evidence.
+- [ ] **R3** (`depends_on: [R2]`): Persist provider dividend factors with
+  lineage, provenance, validation state, and legacy-schema compatibility.
+- [ ] **R4** (`depends_on: [R3]`): Allow Silver to consume only independently
+  validated provider factors and retain strict cash-derived fallback behavior.
+- [ ] **R5** (`depends_on: [R4]`): Add dividend-normalized IB adjusted history
+  and credentialed Massive reference lanes for remaining split ambiguity.
+- [ ] **R6** (`depends_on: [R5]`): Build deterministic residual/mutation
+  manifests, completeness-gate reconciliation, and close every blocker through
+  an evidence-backed adjudication lane.
+- [ ] **R7** (`depends_on: [R6]`): Freeze writers idempotently, verify backups,
+  obtain destructive approval, apply approved repairs, and prove zero failures.
+- [ ] **R8** (`depends_on: [R7]`): Atomically publish and independently verify
+  Silver coverage for the discovered full Bronze universe before Apex handoff.
+
 ## Silver production failure classification (2026-07-16)
 
 Dependency graph: `D1 -> D2 -> D3 -> D4`

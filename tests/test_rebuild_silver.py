@@ -239,6 +239,58 @@ def test_dry_run_reports_changes_without_creating_silver_root(tmp_path, capsys):
     assert not silver.exists()
 
 
+def test_dry_run_preserves_existing_bronze_and_silver_bytes(tmp_path, capsys):
+    _bronze(tmp_path, "NVDA")
+    _split(tmp_path)
+    silver = tmp_path / "silver"
+    assert rebuild_silver.run(["--tickers", "NVDA"], data_lake_root=tmp_path, silver_root=silver) == 0
+    capsys.readouterr()
+
+    watched = [
+        tmp_path / "bronze/asset_class=equity/symbol=NVDA/1d.parquet",
+        silver / "asset_class=equity/symbol=NVDA/1d.parquet",
+        silver / "adjustments/asset_class=equity/symbol=NVDA/factors.parquet",
+        silver / "revisions/current.json",
+        silver / "revisions/revision=1.json",
+    ]
+    before = {path: path.read_bytes() for path in watched}
+
+    assert (
+        rebuild_silver.run(
+            ["--tickers", "NVDA", "--dry-run"],
+            data_lake_root=tmp_path,
+            silver_root=silver,
+        )
+        == 0
+    )
+
+    assert {path: path.read_bytes() for path in watched} == before
+    assert not (silver / "revisions/revision=2.json").exists()
+
+
+def test_successful_dry_run_atomically_replaces_stale_failure_report(tmp_path):
+    _bronze(tmp_path, "NVDA")
+    _split(tmp_path)
+    silver = tmp_path / "silver"
+    output = tmp_path / "reports/rebuild-failures.json"
+    output.parent.mkdir(parents=True)
+    output.write_text('{"failures":[{"symbol":"STALE"}]}')
+
+    assert (
+        rebuild_silver.run(
+            ["--tickers", "NVDA", "--dry-run", "--failure-output", str(output)],
+            data_lake_root=tmp_path,
+            silver_root=silver,
+        )
+        == 0
+    )
+
+    payload = json.loads(output.read_text())
+    assert payload["schema_version"] == 2
+    assert payload["failures"] == []
+    assert list(output.parent.glob(f".{output.name}.*.tmp")) == []
+
+
 def test_dry_run_writes_evidence_grade_failure_report(tmp_path):
     _bronze(tmp_path, "BAD")
     _bad_action(tmp_path)
