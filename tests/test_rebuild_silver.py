@@ -784,9 +784,7 @@ def test_an_unreadable_published_artifact_is_treated_as_changed(tmp_path):
     (silver / "asset_class=equity/symbol=AAPL/1d.parquet").write_bytes(b"not a parquet")
 
     assert (
-        rebuild_silver.run(
-            ["--tickers", "AAPL"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17)
-        )
+        rebuild_silver.run(["--tickers", "AAPL"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
         == 0
     )
 
