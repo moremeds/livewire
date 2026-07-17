@@ -36,6 +36,11 @@ def find_breaks(
     on the FIRST break, this enumerates all of them — the audit needs the full list
     so every break gets triaged, and the resolver needs the last one.
     """
+    # A non-finite threshold makes every `ratio > threshold` false (nan compares
+    # false; nothing exceeds inf), so the scan would report a clean series and
+    # publish every symbol untrimmed rather than fail. Fail closed instead.
+    if not math.isfinite(threshold):
+        raise ValueError("continuity threshold must be finite")
     ordered = sorted(rows, key=lambda row: str(row["trade_date"])[:10])
     breaks: list[dict] = []
     previous_close: float | None = None

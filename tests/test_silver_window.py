@@ -1,5 +1,7 @@
 """Unit tests for break enumeration and window resolution. Frozen real closes, no network."""
 
+import pytest
+
 from clients.silver_window import find_breaks, resolve_window
 
 
@@ -127,3 +129,16 @@ def test_a_non_numeric_close_is_reported_rather_than_crashing_the_scan():
     breaks = find_breaks(rows)
     assert [b["date"] for b in breaks] == ["2024-01-03"]
     assert breaks[0]["ratio"] is None
+
+
+def test_a_non_finite_threshold_is_rejected_rather_than_disabling_the_scan():
+    """nan compares false against every ratio and nothing exceeds inf, so a non-finite
+    threshold would report a clean series and publish the whole universe untrimmed.
+    silver_continuity guards this; the scan that replaced it in the publish path must
+    too. INTC's real 2000-07-31 1:2 split boundary, which is a >2x step either way."""
+    rows = _rows([("2000-07-28", 129.13), ("2000-07-31", 66.75)])
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="must be finite"):
+            find_breaks(rows, threshold=bad)
+        with pytest.raises(ValueError, match="must be finite"):
+            resolve_window(rows, threshold=bad)
