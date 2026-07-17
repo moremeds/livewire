@@ -206,6 +206,72 @@ def test_effective_action_without_ex_date_bar_adjusts_only_earlier_sessions():
     assert [item.price_adjustment_factor for item in intervals] == [Decimal("0.5"), Decimal("1")]
 
 
+def _bulx_bars():
+    """Real BULX (Bull leveraged ETF) closes, frozen from Bronze on 2026-07-17.
+
+    BULX liquidated: its final bar is 2026-06-18 at NAV 2.96, and its only cash
+    action is a 2.96 terminal distribution ex 2026-06-22 — the entire NAV paid out
+    the week after trading stopped. There is no bar on or after the ex-date.
+    """
+    closes = {
+        date(2026, 6, 15): 2.96,
+        date(2026, 6, 16): 2.9604,
+        date(2026, 6, 17): 2.96,
+        date(2026, 6, 18): 2.96,
+    }
+    return [
+        {
+            "trade_date": day,
+            "symbol_id": 1,
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "adj_close": close,
+            "volume": 1_000,
+            "currency": "USD",
+            "source": "legacy",
+            "price_basis": "unknown",
+        }
+        for day, close in closes.items()
+    ]
+
+
+def test_terminal_distribution_after_last_bar_is_excluded_not_quarantined():
+    bars = _bulx_bars()
+    terminal = _action(
+        "bulx-liquidation",
+        date(2026, 6, 22),  # strictly after the final 2026-06-18 bar
+        action_type="cash_dividend",
+        cash_amount=2.96,
+        currency="USD",
+    )
+
+    intervals = build_factor_intervals(bars, [terminal], as_of_date=date(2026, 7, 17))
+
+    # No observable ex-date drop → no adjustment, and crucially no raise: the symbol
+    # stages instead of being quarantined by the "dividend < previous close" gate.
+    assert [item.price_adjustment_factor for item in intervals] == [Decimal("1")]
+    assert [item.split_volume_factor for item in intervals] == [Decimal("1")]
+
+
+def test_oversized_dividend_within_history_still_raises():
+    # Guard: the horizon bound must not disable the magnitude gate for a dividend that
+    # does have a bar on/after its ex-date. A 2.96 cut against a 2.96 close on an
+    # in-history date is still corrupt and must fail closed.
+    bars = _bulx_bars()
+    in_history = _action(
+        "bulx-oversized",
+        date(2026, 6, 18),  # the final bar sits on this date; previous close is 2.96
+        action_type="cash_dividend",
+        cash_amount=2.96,
+        currency="USD",
+    )
+
+    with pytest.raises(ValueError, match="cash dividend must be less than positive previous close"):
+        build_factor_intervals(bars, [in_history], as_of_date=date(2026, 7, 17))
+
+
 def test_recurring_dividends_compound_for_older_rows():
     bars = _bars((100.0, 100.0, 100.0, 100.0))
     actions = [
