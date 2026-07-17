@@ -9,6 +9,8 @@ second time). Such a symbol must be quarantined, not published.
 
 from __future__ import annotations
 
+import math
+
 
 class ContinuityBreak(ValueError):
     """A residual adjacent-day discontinuity in an adjusted series.
@@ -41,13 +43,15 @@ def check_adjusted_continuity(
     check (evidence-backed halts/relistings). Returns ``None`` when the series is
     continuous.
     """
+    if not math.isfinite(threshold):
+        raise ValueError("continuity threshold must be finite")
     previous_close: float | None = None
     previous_date: str | None = None
     for row in rows:
         trade_date = str(row["trade_date"])
         close = float(row["close"])
-        if close <= 0:
-            raise ValueError(f"non-positive adjusted close at {trade_date}: {close}")
+        if not math.isfinite(close) or close <= 0:
+            raise ValueError(f"non-finite or non-positive adjusted close at {trade_date}: {close}")
         if previous_close is not None and trade_date not in allowlist and previous_date not in allowlist:
             ratio = max(close / previous_close, previous_close / close)
             if ratio > threshold:

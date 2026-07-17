@@ -31,3 +31,24 @@ def test_threshold_is_inclusive_boundary_safe():
     assert check_adjusted_continuity(_rows([("2021-01-04", 10.0), ("2021-01-05", 60.0)]), threshold=6.0) is None
     with pytest.raises(ValueError):
         check_adjusted_continuity(_rows([("2021-01-04", 10.0), ("2021-01-05", 60.01)]), threshold=6.0)
+
+
+def test_nan_close_raises():
+    # A NaN close must not silently pass the gate (NaN<=0 and NaN>threshold are both False).
+    rows = _rows([("2021-06-17", 18.59), ("2021-06-18", float("nan"))])
+    with pytest.raises(ValueError, match="non-finite"):
+        check_adjusted_continuity(rows, threshold=6.0)
+
+
+def test_inf_close_raises():
+    # An inf close yields a NaN ratio that would otherwise pass — reject it.
+    rows = _rows([("2021-06-17", 18.59), ("2021-06-18", float("inf"))])
+    with pytest.raises(ValueError, match="non-finite"):
+        check_adjusted_continuity(rows, threshold=6.0)
+
+
+def test_nan_threshold_raises():
+    # A NaN threshold disables the ratio comparison — reject at entry.
+    rows = _rows([("2021-06-17", 18.59), ("2021-06-18", 0.4644)])
+    with pytest.raises(ValueError, match="threshold must be finite"):
+        check_adjusted_continuity(rows, threshold=float("nan"))

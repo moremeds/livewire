@@ -454,6 +454,104 @@ def test_priority_only_skips_unranked_tail_symbols(tmp_path):
     assert "ZZZQ" not in cursor["completed"]  # unranked tail → deferred
 
 
+def _clean_ib_rows_for(symbol):
+    return [
+        {
+            "trade_date": d,
+            "symbol_id": 0,
+            "open": c,
+            "high": c,
+            "low": c,
+            "close": c,
+            "adj_close": c,
+            "volume": 100,
+            "source": "ib",
+            "price_basis": "split_adjusted",
+            "currency": "USD",
+        }
+        for d, c in (
+            (date(2021, 6, 17), 186.57),
+            (date(2021, 6, 18), 186.4),
+            (date(2021, 6, 21), 184.27),
+            (date(2021, 7, 21), 185.0),
+        )
+    ]
+
+
+def test_mid_run_ib_session_drop_aborts(tmp_path):
+    # Three unranked symbols → deterministic alphabetical order ZZZA, ZZZB, ZZZC.
+    for sym in ("ZZZA", "ZZZB", "ZZZC"):
+        _seed_mixed(tmp_path, sym)
+    bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
+    import hashlib
+
+    def _entry(sym):
+        p = bronze.symbol_path(sym)
+        return {
+            "symbol": sym,
+            "path": str(p),
+            "source_sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+            "klass": "mixed",
+            "break_date": "2021-06-18",
+        }
+
+    manifest_path = tmp_path / "audit.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "data_lake_root": str(tmp_path.resolve()),
+                "symbols": [_entry("ZZZA"), _entry("ZZZB"), _entry("ZZZC")],
+            }
+        )
+    )
+    output_dir = tmp_path / "out"
+
+    calls = {"n": 0}
+
+    def _dropping_factory(client):
+        def _fetch(symbol, start, end):
+            calls["n"] += 1
+            if calls["n"] == 2:  # session drops on the 2nd symbol
+                raise ConnectionError("socket closed mid-run")
+            return [dict(r) for r in _clean_ib_rows_for(symbol) if start <= r["trade_date"] <= end]
+
+        return _fetch
+
+    rc = repair_legacy_basis.run(
+        ["--audit-manifest", str(manifest_path), "--output-dir", str(output_dir)],
+        data_lake_root=tmp_path,
+        ib_factory=lambda: object(),
+        ib_fetcher_factory=_dropping_factory,
+    )
+    assert rc == 1
+    cursor = json.loads((output_dir / "cursor.json").read_text())
+    assert cursor["completed"]["ZZZB"]["status"] == "failed"  # dropped symbol marked failed
+    assert "ZZZC" not in cursor["completed"]  # 3rd symbol never attempted (aborted)
+    assert calls["n"] == 2  # loop stopped after the drop
+
+
+def test_mismatched_data_lake_root_raises_before_mutation(tmp_path):
+    _seed_mixed(tmp_path, "NVDA")
+    manifest = _audit_manifest(tmp_path, "NVDA")
+    payload = json.loads(manifest.read_text())
+    payload["data_lake_root"] = str((tmp_path / "elsewhere").resolve())
+    manifest.write_text(json.dumps(payload))
+    bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
+    before = bronze.symbol_path("NVDA").read_bytes()
+    output_dir = tmp_path / "out"
+    import pytest
+
+    with pytest.raises(ValueError, match="does not match active root"):
+        repair_legacy_basis.run(
+            ["--audit-manifest", str(manifest), "--output-dir", str(output_dir)],
+            data_lake_root=tmp_path,
+            ib_factory=lambda: object(),
+            ib_fetcher_factory=_clean_ib_fetcher({"NVDA": _clean_ib_rows_for("NVDA")}),
+        )
+    assert bronze.symbol_path("NVDA").read_bytes() == before  # no mutation before the guard
+
+
 def test_main_delegates_to_run(monkeypatch):
     seen = {}
 

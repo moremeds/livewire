@@ -140,6 +140,10 @@ def run(
 
     audit = json.loads(args.audit_manifest.read_text())
     audit_sha256 = _sha256(args.audit_manifest)
+    # CLAUDE.md repair contract: reject a different active data-lake root before mutation.
+    manifest_root = audit.get("data_lake_root")
+    if manifest_root is not None and manifest_root != str(root.resolve()):
+        raise ValueError(f"audit manifest data_lake_root {manifest_root} does not match active root {root.resolve()}")
     mixed = [item["symbol"] for item in audit["symbols"] if item.get("klass") == "mixed"]
     rank = _priority_rank(args.presets_dir)
     ordered = _order_symbols(mixed, rank)
@@ -186,6 +190,7 @@ def run(
                     _write_atomic(cursor_path, cursor)
                     counts["failed"] += 1
                     break  # remaining symbols stay unprocessed; --resume continues later
+            aborting = False
             try:
                 status, sidecar = _repair_one(
                     symbol,
@@ -195,7 +200,14 @@ def run(
                     as_of=as_of,
                     threshold=args.continuity_threshold,
                 )
-            except Exception as exc:  # per-symbol fetch/derive failure — mark, continue
+            except (ConnectionError, OSError, TimeoutError) as exc:
+                # IB session dropped mid-run. Aborting mirrors the initial-connect
+                # abort: every remaining symbol would fail through the dead socket,
+                # so mark this one failed and leave the rest for --resume.
+                print(f"IB session lost mid-run, aborting run: {exc}", file=sys.stderr)
+                status, sidecar = "failed", {"symbol": symbol, "reason": f"connection_lost: {exc}"}
+                aborting = True
+            except Exception as exc:  # non-connection per-symbol failure — mark, continue
                 status, sidecar = "failed", {"symbol": symbol, "reason": f"exception: {exc}"}
             sidecar_path = args.output_dir / "symbols" / f"{encode_symbol(symbol)}.json"
             _write_atomic(
@@ -213,6 +225,8 @@ def run(
             }
             _write_atomic(cursor_path, cursor)
             counts[status] = counts.get(status, 0) + 1
+            if aborting:
+                break  # remaining symbols stay unprocessed; --resume continues later
     finally:
         if ib_client is not None:
             disconnect = getattr(ib_client, "disconnect", None)
