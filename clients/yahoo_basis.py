@@ -82,3 +82,51 @@ def reconcile_splits(
 def _ratio_close(a: float, b: float, tol: float) -> bool:
     high = max(abs(a), abs(b))
     return high <= 0 or abs(a - b) / high <= tol
+
+
+@dataclass(frozen=True)
+class BasisClassification:
+    """Per-row verdict for an existing bronze series against the Yahoo reference.
+
+    `relabel`: existing close already equals the reconstructed raw — keep the value,
+    only stamp price_basis='raw'. `rewrite`: existing close equals the split-adjusted
+    close (Yahoo's `close`) — the row is adjusted and must be rewritten to raw.
+    `mismatch`: neither — bad data or a reference disagreement; the symbol fails closed.
+    A row with no split ahead has raw == adjusted, so it always classifies `relabel`.
+    """
+
+    relabel: list[date] = field(default_factory=list)
+    rewrite: list[date] = field(default_factory=list)
+    mismatch: list[tuple[date, float, float, float]] = field(default_factory=list)
+    unmatched: list[date] = field(default_factory=list)
+
+    @property
+    def clean(self) -> bool:
+        return not self.mismatch
+
+
+def classify_existing_basis(
+    existing_rows: list[dict],
+    yahoo_raw: dict[date, float],
+    yahoo_adjusted: dict[date, float],
+    *,
+    tol: float = 0.02,
+) -> BasisClassification:
+    """Decide, per existing bronze row, whether it is already raw, adjusted, or neither."""
+    result = BasisClassification()
+    for row in existing_rows:
+        day = row["trade_date"]
+        day = day if isinstance(day, date) else date.fromisoformat(str(day)[:10])
+        raw = yahoo_raw.get(day)
+        adjusted = yahoo_adjusted.get(day)
+        if raw is None or adjusted is None:
+            result.unmatched.append(day)
+            continue
+        close = float(row["close"])
+        if _ratio_close(close, raw, tol):
+            result.relabel.append(day)
+        elif _ratio_close(close, adjusted, tol):
+            result.rewrite.append(day)
+        else:
+            result.mismatch.append((day, close, raw, adjusted))
+    return result

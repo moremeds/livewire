@@ -10,7 +10,7 @@ from datetime import date
 
 import pytest
 
-from clients.yahoo_basis import reconcile_splits, reconstruct_raw_closes
+from clients.yahoo_basis import classify_existing_basis, reconcile_splits, reconstruct_raw_closes
 from clients.yahoo_client import YahooBar, YahooSplit
 
 
@@ -69,3 +69,33 @@ def test_reconcile_clean_match_is_reconciled():
     yahoo = [YahooSplit(date(2021, 7, 20), 4.0, 1.0)]
     store = [(date(2021, 7, 20), 4.0)]
     assert reconcile_splits(yahoo, store).reconciled
+
+
+# A 2:1 split on 1999-05-27: a 1998 row's raw close is 2× its split-adjusted close.
+_YRAW = {date(1998, 1, 2): 200.0, date(2020, 1, 2): 50.0}
+_YADJ = {date(1998, 1, 2): 100.0, date(2020, 1, 2): 50.0}  # no split after 2020 → raw == adjusted
+
+
+def test_classify_row_already_raw_is_relabel():
+    result = classify_existing_basis([{"trade_date": "1998-01-02", "close": 200.0}], _YRAW, _YADJ)
+    assert result.relabel == [date(1998, 1, 2)] and result.clean
+
+
+def test_classify_adjusted_row_is_rewrite():
+    result = classify_existing_basis([{"trade_date": "1998-01-02", "close": 100.0}], _YRAW, _YADJ)
+    assert result.rewrite == [date(1998, 1, 2)]
+
+
+def test_classify_row_with_no_split_ahead_is_relabel():
+    result = classify_existing_basis([{"trade_date": "2020-01-02", "close": 50.0}], _YRAW, _YADJ)
+    assert result.relabel == [date(2020, 1, 2)] and not result.rewrite
+
+
+def test_classify_neither_raw_nor_adjusted_is_mismatch():
+    result = classify_existing_basis([{"trade_date": "1998-01-02", "close": 150.0}], _YRAW, _YADJ)
+    assert not result.clean and result.mismatch[0][0] == date(1998, 1, 2)
+
+
+def test_classify_date_absent_from_yahoo_is_unmatched():
+    result = classify_existing_basis([{"trade_date": "1975-01-02", "close": 9.0}], _YRAW, _YADJ)
+    assert result.unmatched == [date(1975, 1, 2)] and result.clean
