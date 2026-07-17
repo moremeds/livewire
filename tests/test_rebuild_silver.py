@@ -77,6 +77,35 @@ def _seed_split(root, symbol, ex_date, split_from, split_to):
     CorporateActionStore(root).reconcile(symbol, [event], datetime(2026, 1, 4, tzinfo=UTC))
 
 
+def test_continuity_allowlist_exempts_an_evidenced_date(tmp_path):
+    """Without an override a >6x step makes a symbol unpublishable forever.
+
+    Real EQIX bronze closes (frozen 2026-07-17): a 24.95x step at 2003-01-02 that no
+    corporate action explains — EQIX has zero split events in the store.
+    """
+    root = tmp_path / "lake"
+    _seed_bronze(root, "EQIX", [("2002-12-30", 0.21), ("2003-01-02", 5.24), ("2003-01-03", 5.08)])
+    silver = tmp_path / "silver"
+
+    # Baseline: the gate quarantines it, so nothing publishes.
+    assert (
+        rebuild_silver.run(
+            ["--tickers", "EQIX"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17)
+        )
+        == 1
+    )
+
+    assert (
+        rebuild_silver.run(
+            ["--tickers", "EQIX", "--continuity-allowlist", "2003-01-02"],
+            data_lake_root=root,
+            silver_root=silver,
+            as_of_date=date(2026, 7, 17),
+        )
+        == 0
+    )
+
+
 def test_targeted_rebuild_publishes_daily_factors_and_manifest(tmp_path, capsys):
     _bronze(tmp_path, "NVDA")
     _split(tmp_path)

@@ -56,6 +56,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=CONTINUITY_THRESHOLD,
         help="max adjacent-day adjusted close ratio before a symbol is quarantined",
     )
+    parser.add_argument(
+        "--continuity-allowlist",
+        nargs="*",
+        default=[],
+        metavar="ISO_DATE",
+        help="iso dates exempt from the continuity gate (evidence-backed halts/relistings)",
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -218,7 +225,7 @@ def run(
             actions = action_store.latest_active(symbol)
             intervals = build_factor_intervals(rows, actions, effective_as_of)
             adjusted = adjust_daily_rows(rows, intervals, revision=1)
-            check_adjusted_continuity(adjusted, threshold=threshold)
+            check_adjusted_continuity(adjusted, threshold=threshold, allowlist=frozenset(args.continuity_allowlist))
             staged.append(
                 StagedSymbol(
                     symbol,

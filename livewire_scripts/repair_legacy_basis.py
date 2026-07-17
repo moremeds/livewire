@@ -215,6 +215,9 @@ def run(
     ib_client: Any = None
     fetcher: Callable[[str, date, date], list[dict]] | None = None
     counts: dict[str, int] = {"done": 0, "ambiguous": 0, "failed": 0}
+    # An abort is not a per-symbol failure, but it is never a successful run either:
+    # tracked separately so a dead gateway cannot exit 0 with an empty cursor.
+    aborted = False
     try:
         for symbol in ordered:
             checkpoint = cursor["completed"].get(symbol)
@@ -233,16 +236,11 @@ def run(
                         connect(host=args.host, port=args.port)  # IBClient handles error-326 clientId retry only
                     fetcher = ib_fetcher_factory(ib_client)
                 except Exception as exc:
+                    # Never attempted: do NOT record a cursor entry or count it as
+                    # failed — --resume must pick this symbol up cleanly.
                     print(f"IB connection failed, aborting run: {exc}", file=sys.stderr)
-                    cursor["completed"][symbol] = {
-                        "source_sha256": next(
-                            (i["source_sha256"] for i in audit["symbols"] if i["symbol"] == symbol), None
-                        ),
-                        "status": "failed",
-                    }
-                    _write_atomic(cursor_path, cursor)
-                    counts["failed"] += 1
-                    break  # remaining symbols stay unprocessed; --resume continues later
+                    aborted = True
+                    break
             aborting = False
             try:
                 status, sidecar = _repair_one(
@@ -262,6 +260,7 @@ def run(
                 print(f"IB session lost mid-run, aborting run: {exc}", file=sys.stderr)
                 status, sidecar = "failed", {"symbol": symbol, "reason": f"connection_lost: {exc}"}
                 aborting = True
+                aborted = True
             except Exception as exc:  # non-connection per-symbol failure — mark, continue
                 status, sidecar = "failed", {"symbol": symbol, "reason": f"exception: {exc}"}
             sidecar_path = args.output_dir / "symbols" / f"{encode_symbol(symbol)}.json"
@@ -289,37 +288,47 @@ def run(
                 disconnect()
 
     _write_atomic(
-        args.output_dir / "summary.json", {"audit_sha256": audit_sha256, "counts": counts, "symbols": len(ordered)}
+        args.output_dir / "summary.json",
+        {
+            "audit_sha256": audit_sha256,
+            "counts": counts,
+            "symbols": len(ordered),
+            "complete": not aborted and len(cursor["completed"]) >= len(ordered),
+        },
     )
-    print(json.dumps({"counts": counts, "symbols": len(ordered)}, sort_keys=True))
-    return 0 if counts["failed"] == 0 else 1
+    print(json.dumps({"counts": counts, "symbols": len(ordered), "aborted": aborted}, sort_keys=True))
+    return 0 if counts["failed"] == 0 and not aborted else 1
 
 
-def summarize_progress(audit_manifest: dict, batch_summary: dict) -> dict:
+def summarize_progress(audit_manifest: dict, batch_summary: dict, *, cursor: dict | None = None) -> dict:
     """Quantify remaining tail work from a full audit + a first (priority-only) batch.
 
-    The audit is full-universe, so ``tail_mixed_exact`` is exact, not projected.
-    Only the tail's un-repairable share is estimated, using the batch's observed
-    ambiguous rate as the sample (each tail mixed symbol = one deep IB fetch).
+    Outcome counts equal coverage only when the batch ran to completion. An aborted
+    batch leaves priority symbols unprocessed; counting them as tail work would
+    understate the remaining priority run, so the tail is a lower bound instead.
+    Pass ``cursor`` (the batch's ``cursor.json``) to measure coverage exactly.
     """
     ac = audit_manifest["counts"]
     total = ac["clean"] + ac["mixed"] + ac["error"]
     mixed_total = ac["mixed"]
     bc = batch_summary["counts"]
-    attempted = bc["done"] + bc["ambiguous"] + bc["failed"]
-    tail_mixed = max(0, mixed_total - attempted)
+    attempted = len(cursor["completed"]) if cursor else bc["done"] + bc["ambiguous"] + bc["failed"]
+    unprocessed = max(0, mixed_total - attempted)
     amb_rate = (bc["ambiguous"] / attempted) if attempted else 0.0
-    return {
+    result = {
         "audit_total": total,
         "audit_mixed": mixed_total,
         "audit_mixed_rate": round(mixed_total / total, 4) if total else 0.0,
         "batch_attempted": attempted,
+        "batch_unprocessed": unprocessed,
         "batch_done": bc["done"],
         "batch_ambiguous": bc["ambiguous"],
         "batch_ambiguous_rate": round(amb_rate, 4),
-        "tail_mixed_exact": tail_mixed,
-        "tail_estimated_unrepairable": round(tail_mixed * amb_rate),
+        "tail_estimated_unrepairable": round(unprocessed * amb_rate),
     }
+    key = "tail_mixed_exact" if batch_summary.get("complete") else "tail_mixed_lower_bound"
+    result[key] = unprocessed
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:

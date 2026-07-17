@@ -162,7 +162,9 @@ def test_resume_skips_completed_symbol(tmp_path):
     assert calls["n"] == 0  # completed symbol not re-fetched
 
 
-def test_ib_connection_failure_marks_failed_not_crash(tmp_path):
+def test_ib_connection_failure_aborts_nonzero_without_burning_the_symbol(tmp_path):
+    """A symbol that was never attempted must not be checkpointed as failed — --resume
+    has to pick it up cleanly — but the run itself is still not a success."""
     _seed_mixed(tmp_path, "NVDA")
     manifest = _audit_manifest(tmp_path, "NVDA")
     output_dir = tmp_path / "out"
@@ -176,9 +178,12 @@ def test_ib_connection_failure_marks_failed_not_crash(tmp_path):
         ib_factory=_boom,
         ib_fetcher_factory=_clean_ib_fetcher({}),
     )
-    assert rc == 1
-    cursor = json.loads((output_dir / "cursor.json").read_text())
-    assert cursor["completed"]["NVDA"]["status"] == "failed"
+
+    assert rc == 1  # a dead gateway is never a successful run
+    summary = json.loads((output_dir / "summary.json").read_text())
+    assert summary["complete"] is False
+    assert summary["counts"]["failed"] == 0  # NVDA was never attempted, so it is not burnt
+    assert not (output_dir / "cursor.json").is_file()  # nothing to resume past
 
 
 def test_priority_orders_sp500_before_ndx_before_r2k_before_rest():
@@ -384,9 +389,9 @@ def test_resume_cursor_identity_mismatch_raises(tmp_path):
 
 
 def test_summarize_progress_quantifies_tail():
-    # Full audit saw 300 mixed of 8305; first batch attempted 100, 8 ambiguous.
+    # Full audit saw 300 mixed of 8305; a COMPLETE first batch attempted 100, 8 ambiguous.
     audit = {"counts": {"clean": 8000, "mixed": 300, "error": 5}}
-    batch = {"counts": {"done": 90, "ambiguous": 8, "failed": 2}}
+    batch = {"counts": {"done": 90, "ambiguous": 8, "failed": 2}, "complete": True}
     s = repair_legacy_basis.summarize_progress(audit, batch)
     assert s["audit_mixed"] == 300
     assert s["audit_mixed_rate"] == round(300 / 8305, 4)
@@ -394,6 +399,15 @@ def test_summarize_progress_quantifies_tail():
     assert s["batch_ambiguous_rate"] == 0.08
     assert s["tail_mixed_exact"] == 200  # 300 total mixed − 100 attempted
     assert s["tail_estimated_unrepairable"] == 16  # 200 × 0.08, rounded
+
+
+def test_summarize_progress_without_a_completeness_flag_reports_a_lower_bound():
+    """Outcome counts equal coverage only for a batch that ran to completion."""
+    audit = {"counts": {"clean": 8000, "mixed": 300, "error": 5}}
+    batch = {"counts": {"done": 90, "ambiguous": 8, "failed": 2}}
+    s = repair_legacy_basis.summarize_progress(audit, batch)
+    assert "tail_mixed_exact" not in s
+    assert s["tail_mixed_lower_bound"] == 200
 
 
 def test_priority_only_skips_unranked_tail_symbols(tmp_path):
@@ -550,6 +564,30 @@ def test_mismatched_data_lake_root_raises_before_mutation(tmp_path):
             ib_fetcher_factory=_clean_ib_fetcher({"NVDA": _clean_ib_rows_for("NVDA")}),
         )
     assert bronze.symbol_path("NVDA").read_bytes() == before  # no mutation before the guard
+
+
+def test_summarize_progress_does_not_call_unprocessed_priority_symbols_tail():
+    """An aborted batch's unprocessed priority symbols are not tail work — reporting
+    them as an exact tail understates the priority run still to come."""
+    audit = {"counts": {"clean": 100, "mixed": 50, "error": 5}}
+    summary = {"counts": {"done": 10, "ambiguous": 2, "failed": 1}, "complete": False}
+    result = repair_legacy_basis.summarize_progress(
+        audit, summary, cursor={"completed": {f"S{i}": {} for i in range(13)}}
+    )
+    assert result["batch_attempted"] == 13
+    assert result["batch_unprocessed"] == 37
+    assert "tail_mixed_exact" not in result
+    assert result["tail_mixed_lower_bound"] == 37
+
+
+def test_summarize_progress_is_exact_when_the_batch_completed():
+    audit = {"counts": {"clean": 100, "mixed": 12, "error": 5}}
+    summary = {"counts": {"done": 10, "ambiguous": 2, "failed": 0}, "complete": True}
+    result = repair_legacy_basis.summarize_progress(
+        audit, summary, cursor={"completed": {f"S{i}": {} for i in range(12)}}
+    )
+    assert result["tail_mixed_exact"] == 0
+    assert result["batch_unprocessed"] == 0
 
 
 def test_ib_connection_error_mid_run_aborts_the_batch(tmp_path):
