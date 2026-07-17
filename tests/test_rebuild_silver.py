@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -526,6 +527,27 @@ def test_seed_corrupt_symbol_publishes_its_post_seed_window_rather_than_quaranti
     assert [str(r["trade_date"]) for r in published] == ["2021-06-11", "2021-06-14"]
 
 
+def test_seed_trim_does_not_narrow_factor_coverage(tmp_path):
+    """The SEED trim reassigns `rows`, so building factors after it bounds them at the
+    floor and leaves every pre-floor bronze intraday bar uncovered -> apex 500. Live,
+    not theoretical: production APH's bronze 1m starts 2021-06-03 against its
+    2021-06-11 floor (TSLA/GE/WMT/CSX identical). The EQIX case below covers only the
+    WINDOW trim, which never narrowed the factor input — which is why this broke
+    undetected. Real APH closes + its real 2024-06-12 1:2 split."""
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(
+        root, "APH", [("2021-06-09", 34.07), ("2021-06-10", 34.13), ("2021-06-11", 68.45), ("2021-06-14", 68.31)]
+    )
+    _seed_split(root, "APH", "2024-06-12", 1, 2)
+
+    rebuild_silver.run(["--tickers", "APH"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+
+    daily = pq.ParquetFile(silver / "asset_class=equity/symbol=APH/1d.parquet").read().to_pylist()
+    factors = pq.ParquetFile(silver / "adjustments/asset_class=equity/symbol=APH/factors.parquet").read().to_pylist()
+    assert min(str(r["trade_date"]) for r in daily) == "2021-06-11"  # daily IS floored
+    assert min(str(f["effective_start"]) for f in factors) == "2021-06-09"  # factors are NOT
+
+
 def test_factor_intervals_still_cover_dates_trimmed_out_of_the_daily_window(tmp_path):
     """Factors must NOT be narrowed to the daily window. Apex LEFT JOINs bronze
     intraday onto these intervals and 500s on any uncovered bronze bar
@@ -790,3 +812,41 @@ def test_an_unreadable_published_artifact_is_treated_as_changed(tmp_path):
 
     published = pq.ParquetFile(silver / "asset_class=equity/symbol=AAPL/1d.parquet").read().to_pylist()
     assert len(published) == 2  # republished over the corruption
+
+
+def test_eviction_is_retried_after_a_previous_run_left_the_file_behind(tmp_path):
+    """A committed manifest omitting Q plus a failed eviction is a reachable state, and
+    every later run then assembles that SAME manifest. The publisher dedupes an
+    identical manifest to the current revision (silver_revision.py:110), which trips
+    the transaction's reserved-revision guard (:65) — so the run would crash before
+    reaching the eviction retry and Q would serve its stale artifact forever.
+    Real INTC closes around its real 2000-07-31 1:2 split; NVDA is the control."""
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "INTC", [("2000-07-27", 137.00), ("2000-07-28", 129.13), ("2000-08-01", 64.63)])
+    _seed_bronze(root, "NVDA", [("2000-07-27", 1.71), ("2000-07-28", 1.66), ("2000-08-01", 1.80)])
+    args = ["--tickers", "INTC", "NVDA"]
+    assert rebuild_silver.run(args, data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17)) == 0
+    served = silver / "asset_class=equity/symbol=INTC/1d.parquet"
+    assert served.is_file()
+
+    # INTC becomes unstageable: `unknown` basis against a split it cannot resolve.
+    _seed_bronze(
+        root,
+        "INTC",
+        [("2000-07-27", 137.00), ("2000-07-28", 129.13), ("2000-08-01", 64.63)],
+        source="legacy",
+        price_basis="unknown",
+    )
+    _seed_split(root, "INTC", "2000-07-31", 1, 2)
+    rebuild_silver.run(args, data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    assert not served.is_file()  # evicted, manifest committed without it
+
+    # Simulate that run's eviction having failed AFTER the commit (os.replace can fail
+    # on a full or read-only volume): the manifest is already right, only the file is
+    # stale. The next run must retry the eviction rather than abort.
+    evicted_copy = next((silver / "evicted").rglob("symbol=INTC/1d.parquet"))
+    served.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(evicted_copy, served)
+
+    rebuild_silver.run(args, data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    assert not served.is_file()  # re-evicted, not left serving stale data

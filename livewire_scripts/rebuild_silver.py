@@ -197,11 +197,10 @@ def _carry_forward(
     return artifacts, affected
 
 
-def _evict_unmanifested(
+def _evict_quarantined(
     client: SilverClient,
-    current: SilverRevision | None,
+    quarantined: list[str],
     manifested: list[PublishedArtifact],
-    scope: set[str],
     revision: int,
 ) -> list[str]:
     """Move a quarantined symbol's daily artifact out of the served tree.
@@ -213,24 +212,26 @@ def _evict_unmanifested(
     serving its stale corrupt artifact forever — moving the file is the only removal
     signal apex can perceive, after which it fails closed with AdjustedDataUnavailable.
 
+    Candidates come from ``quarantined`` — symbols in scope that failed staging and
+    still have a file — NOT from the previous manifest. Deriving them from the previous
+    manifest makes eviction a one-shot: the run that drops Q from the manifest is the
+    only one that can ever move Q's file, so if that move fails, no later run can see Q
+    as a candidate again and it serves stale data forever.
+
     Moved, not unlinked, so an eviction is reversible. The FACTOR artifact stays: apex
     joins bronze intraday onto factors independently of the daily file, and a missing
     factor file is its own 500.
     """
-    if current is None:
-        return []
     kept = {artifact.path.resolve() for artifact in manifested}
     evicted: list[str] = []
-    for artifact in current.artifacts:
-        if "symbol=" not in artifact.path or not artifact.path.endswith("1d.parquet"):
-            continue
-        symbol = artifact.path.split("symbol=")[1].split("/")[0]
-        if symbol not in scope:
-            continue
-        path = client.root / artifact.path
+    for symbol in quarantined:
+        path = client.daily_path(symbol)
+        # `in kept` is the fail-safe against evicting a file the just-committed manifest
+        # still names: apex re-verifies every artifact's sha256 each poll and rejects
+        # the WHOLE revision on a mismatch, so that would blank the service.
         if not path.is_file() or path.resolve() in kept:
             continue
-        destination = client.root / "evicted" / str(revision) / artifact.path
+        destination = client.root / "evicted" / str(revision) / path.relative_to(client.root)
         destination.parent.mkdir(parents=True, exist_ok=True)
         os.replace(path, destination)
         evicted.append(symbol)
@@ -361,9 +362,17 @@ def run(
             # rows are IB back-adjusted, its rows on/after the window are true raw.
             # Trim rather than quarantine: the post-seed years are perfectly good.
             seed = classify_seed_boundary(rows, actions)
+            # Factors FIRST, over the untrimmed raw range — see the note on `intervals`
+            # below. build_factor_intervals bounds its intervals by the first supplied
+            # bar, and every seed-corrupt symbol's bronze intraday starts ~2021-06-03,
+            # BEFORE its 2021-06-11 floor. Building after the trim would leave those
+            # bars uncovered, which is the exact hard-fail that note warns about. The
+            # pre-seed rows' prices are corrupt but their factors are not: the interval
+            # covering the pre-floor gap is the product of actions with a later ex_date,
+            # all of which fall after the seed window where closes are genuine raw.
+            intervals = build_factor_intervals(rows, actions, effective_as_of)
             if seed["verdict"] == "corrupt":
                 rows = [row for row in rows if str(row["trade_date"])[:10] >= seed["date"]]
-            intervals = build_factor_intervals(rows, actions, effective_as_of)
             adjusted = adjust_daily_rows(rows, intervals, revision=1)
             # Trim 2 — the blind window scan over the ADJUSTED series, for every other
             # unexplained break. Keep triage-confirmed real moves and allowlisted dates.
@@ -378,8 +387,8 @@ def run(
                 # closed rather than publishing a series that starts on a bad bar.
                 raise ValueError(f"no silver-grade window: {window['reason']}")
             kept = [row for row in rows if str(row["trade_date"])[:10] >= window["start"]]
-            # NOTE: `intervals` stay built over the FULL pre-trim `rows`. Do NOT rebuild
-            # them over `kept` to "make the factor file match the daily file" — that is
+            # NOTE: `intervals` stay built over the FULL pre-trim raw range (both trims).
+            # Do NOT rebuild them over `kept` to "make the factor file match" — that is
             # a correctness trap. Apex's adjusted-intraday path LEFT JOINs BRONZE
             # intraday bars onto these factor intervals and hard-fails when any bronze
             # bar has no interval (apex `ohlc_provider.py:236-240`,
@@ -535,14 +544,27 @@ def run(
                 # revision, and evicting against a manifest that still names the file
                 # would fail apex's sha256 check and reject the WHOLE revision.
                 raise SystemExit("every in-scope symbol failed staging: refusing to publish an empty revision")
-            revision = transaction.commit(artifacts, affected, actions_as_of).revision
+            # Committing an unchanged manifest is not a no-op here — the publisher
+            # dedupes it by returning the CURRENT revision (silver_revision.py:110),
+            # which trips the transaction's reserved-revision guard (:65) and aborts
+            # before the eviction below. That state is reachable: once a run commits a
+            # manifest omitting Q but its eviction fails, every later run assembles
+            # that same manifest and would crash instead of retrying, leaving Q served
+            # forever. Eviction is idempotent, so skip the pointless commit and retry.
+            still_manifested = {
+                artifact.path.split("symbol=")[1].split("/")[0]
+                for artifact in (transaction.current.artifacts if transaction.current else ())
+                if "symbol=" in artifact.path
+            }
+            if changed or still_manifested.intersection(quarantined):
+                revision = transaction.commit(artifacts, affected, actions_as_of).revision
+            else:
+                revision = 0 if transaction.current is None else transaction.current.revision
             # Evict only AFTER the manifest that omits them is committed. Apex verifies
             # every manifested artifact's sha256 on every 30s poll and rejects the whole
             # revision atomically on a mismatch, so a moved file still named by the
             # current manifest would take the entire service down, not just one symbol.
-            evicted = _evict_unmanifested(
-                client, transaction.current, artifacts, {s.upper() for s in symbols}, revision
-            )
+            evicted = _evict_quarantined(client, quarantined, artifacts, revision)
             for symbol in evicted:
                 print(f"{symbol}: evicted — quarantined, artifact moved out of the served tree", file=sys.stderr)
             rebuilt = len(changed)
