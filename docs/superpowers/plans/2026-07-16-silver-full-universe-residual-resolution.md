@@ -1,5 +1,61 @@
 # Silver Full-Universe Residual Resolution Implementation Plan
 
+> ## ⚠️ CALIBRATED 2026-07-17 — DO NOT EXECUTE FROM R1. READ THIS FIRST.
+>
+> This plan was written 2026-07-16, committed, and **never executed** (53 tasks,
+> 0 done). Re-verified 2026-07-17 against production data and the live provider:
+>
+> | Task | Status | Evidence |
+> |---|---|---|
+> | **R1** | ✅ **already landed** — do not redo | `3e436a0`, `a89d572`, `aae8d24` are all ancestors of `main` |
+> | **R2** | ⚠️ **redo** — baseline is stale | PR #57 changed `rebuild-silver` semantics (seed trim, window trim, eviction). Any pre-#57 baseline describes a rebuild that no longer exists |
+> | **R3** | ❌ **IMPOSSIBLE — the premise is false** | `historical_adjustment_factor` **does not exist in Massive's response.** `/v3/reference/dividends` returns exactly: `cash_amount, currency, declaration_date, dividend_type, ex_dividend_date, frequency, id, pay_date, record_date, ticker`. Live check 2026-07-17: factor present on **0/92** (BMO), **0/11** (RACE), **0/132** (CNQ). `MassiveClient.normalize_dividend` parses it with `_optional_decimal`, so it silently reads `None` forever — which is why nobody noticed |
+> | **R4** | ❌ **IMPOSSIBLE** — dead branch | Gates on `factor_validation_status == "validated"`, unreachable given R3 |
+> | **R5** | ⚠️ **needs redesign** | Its `ib_adjusted` tier says *"reject the reference if any dividend lacks validated math"* — no dividend can ever have validated math, so that tier always rejects for any dividend payer |
+> | **R6–R8** | ⚠️ **blocked** | `depends_on` chain through R5 |
+>
+> **Also dead:** deriving the dividend factor from Massive's `adjusted÷raw` ratio.
+> `/v2/aggs?adjusted=true` is **split-adjusted only** — verified `adj/raw == 1.000000`
+> across BMO's 2026-04-29 ex-date *and* across plain-USD payer KO's 2026-06-15
+> ex-date. It does not adjust dividends for anyone.
+>
+> **Corrected residual taxonomy** (measured from the failure strings of a real
+> `rebuild-silver --full --dry-run`, 2026-07-17 — supersedes the Evidence Baseline
+> below, which says 594 and invents a nonexistent "1 AVBH non-positive close"):
+>
+> ```text
+> 593 = 518 split_basis_unknown + 61 dividend_currency + 14 dividend_magnitude
+> ```
+>
+> The 61 `dividend_currency` do **not** decompose as this plan's sibling claims
+> ("52 genuinely foreign / 9 stray"). Measured against the real action store:
+> **13** genuinely all-foreign · **47** currency-swing (same dividend stream, Massive
+> sporadically reports the FX-converted USD amount instead of the declared amount) ·
+> **1** (CNQ) with 40 duplicate ex-dates carrying both a CAD and a USD record.
+> BMO — cited elsewhere as the example of "genuinely foreign" — is `{CAD: 68, USD: 24}`,
+> i.e. the counter-example. None of the 61 is legitimately excludable: all trade in USD
+> on US exchanges (Massive `us_stocks_sip` is US-listing by definition; bronze BMO
+> matches Massive BMO at ratio 1.0000 on every overlapping date). They need FX
+> conversion at ex-date, which is the **only** surviving path.
+>
+> The 14 `dividend_magnitude` are **10** terminal liquidating distributions (ex-date
+> strictly *after* the symbol's last bronze bar) + **4** in-history anomalies — of which
+> DBRG is a bronze-price defect (`div 1.1635` vs `prev_close 0.0004`, 2908×), not a
+> dividend defect, and MCHB is a constant `85.00` repeated 23 times against ~13–16
+> closes. The sibling plan's "11 terminal + 3 ticker reuse" is not what the data shows.
+>
+> **Cheaper path to the 518 than R5** (structural inference — **not yet verified**,
+> requires a 2FA-gated IB dry-run to confirm): the 518 are `unknown price_basis`, which
+> is exactly what `repair-legacy-basis` already fixes by re-deriving basis from IB.
+> They are excluded from it only by `audit_legacy_basis._classify`'s catch-all
+> `except Exception` labelling them `error`, whose stated justification ("a symbol with
+> a zero close is not a basis problem repair can fix") is true for the dividend/zero-close
+> class and **false** for `unknown price_basis`. `repair_legacy_basis` never reads
+> `break_date` (0 references) and never reads the existing `price_basis` — it classifies
+> freshly-fetched IB rows via `prepare_ib_rows_for_publish` — so it is structurally
+> indifferent to the old label. Splitting that handler may feed all 518 to machinery that
+> already exists and is already tested.
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Reduce the production Silver rebuild from 593 failures to zero, publish readable and revision-consistent Silver daily/factor artifacts for all 13,141 production Bronze equity symbols, and hand the complete revision to the Apex promotion plan.
@@ -135,6 +191,10 @@ R1 -> R2 -> R3 -> R4 -> R5 -> R6 -> R7 -> R8
 
 ### Task R3: Persist provider dividend adjustment factors
 
+> ❌ **DEAD — DO NOT IMPLEMENT.** Massive does not return
+> `historical_adjustment_factor`; see the calibration banner at the top of this file.
+> Implementing R3 persists a column that is `None` for every row that will ever exist.
+
 **depends_on:** `[R2]`
 
 **Files:** `clients/corporate_action_store.py`, `tests/test_corporate_action_store.py`
@@ -157,6 +217,12 @@ R1 -> R2 -> R3 -> R4 -> R5 -> R6 -> R7 -> R8
 - [ ] Run `tests/test_corporate_action_store.py`, `tests/test_sync_corporate_actions.py`, Ruff, and `git diff --check`; commit as `feat(actions): retain provider dividend factors`.
 
 ### Task R4: Use provider factors safely in Silver adjustment math
+
+> ❌ **DEAD — DO NOT IMPLEMENT.** The entire branch here gates on
+> `action.historical_adjustment_factor is not None and factor_validation_status == "validated"`.
+> That factor is `None` for every dividend Massive will ever return (see the calibration
+> banner at the top of this file), so this branch is unreachable and the `validated` status
+> can never be produced. Nothing to build.
 
 **depends_on:** `[R3]`
 
@@ -193,6 +259,17 @@ R1 -> R2 -> R3 -> R4 -> R5 -> R6 -> R7 -> R8
 - [ ] Run focused and full CI-equivalent suites; commit as `fix(silver): use provider dividend factors`.
 
 ### Task R5: Add explicit adjusted IB reference for residual splits
+
+> ⚠️ **NEEDS REDESIGN — DO NOT IMPLEMENT AS WRITTEN.** The `ib_adjusted` tier here is
+> supposed to supply the "validated" dividend factor R4 consumes, but that validated
+> factor can never exist (dead adjusted÷raw path — see the calibration banner). An
+> `ADJUSTED_LAST` IB fetch is *total-return* adjusted (splits **and** dividends folded in),
+> which is the opposite of what Silver's raw-basis engine needs and cannot be decomposed
+> back into a per-dividend factor without the very reference the plan lacks. The 518
+> `split_basis_unknown` symbols — the bulk of the residual — are **not a dividend problem
+> at all**; the cheaper path is to split the audit's `except Exception` so those
+> `unknown price_basis` symbols feed the existing `repair-legacy-basis` IB re-derivation
+> (currently unverified — needs a 2FA IB dry-run to confirm `would-repair`).
 
 **depends_on:** `[R4]`
 
