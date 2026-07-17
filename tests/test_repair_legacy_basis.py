@@ -552,6 +552,76 @@ def test_mismatched_data_lake_root_raises_before_mutation(tmp_path):
     assert bronze.symbol_path("NVDA").read_bytes() == before  # no mutation before the guard
 
 
+def test_repair_backs_up_bronze_before_mutating(tmp_path):
+    import hashlib
+
+    _seed_mixed(tmp_path, "NVDA")
+    manifest = _audit_manifest(tmp_path, "NVDA")
+    output_dir = tmp_path / "out"
+    path = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").symbol_path("NVDA")
+    before = path.read_bytes()
+
+    rc = repair_legacy_basis.run(
+        ["--audit-manifest", str(manifest), "--output-dir", str(output_dir)],
+        data_lake_root=tmp_path,
+        ib_factory=lambda: object(),
+        ib_fetcher_factory=_clean_ib_fetcher({"NVDA": _clean_ib_rows_for("NVDA")}),
+    )
+
+    assert rc == 0
+    assert path.read_bytes() != before  # the repair really did mutate the system of record
+    backup = output_dir / "backup" / "NVDA.1d.parquet"
+    assert backup.is_file()
+    assert backup.read_bytes() == before
+    sidecar = json.loads((output_dir / "symbols" / "NVDA.json").read_text())
+    assert sidecar["backup_sha256"] == hashlib.sha256(before).hexdigest()
+
+
+def test_dry_run_makes_no_bronze_write_and_no_backup(tmp_path):
+    _seed_mixed(tmp_path, "NVDA")
+    manifest = _audit_manifest(tmp_path, "NVDA")
+    output_dir = tmp_path / "out"
+    path = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").symbol_path("NVDA")
+    before = path.read_bytes()
+
+    rc = repair_legacy_basis.run(
+        ["--audit-manifest", str(manifest), "--output-dir", str(output_dir), "--dry-run"],
+        data_lake_root=tmp_path,
+        ib_factory=lambda: object(),
+        ib_fetcher_factory=_clean_ib_fetcher({"NVDA": _clean_ib_rows_for("NVDA")}),
+    )
+
+    assert rc == 0
+    assert path.read_bytes() == before
+    assert not (output_dir / "backup").exists()
+    assert json.loads((output_dir / "symbols" / "NVDA.json").read_text())["status"] == "would-repair"
+
+
+def test_dry_run_is_not_treated_as_completed_work_on_resume(tmp_path):
+    """`would-repair` must not let --resume skip a symbol that was never repaired."""
+    _seed_mixed(tmp_path, "NVDA")
+    manifest = _audit_manifest(tmp_path, "NVDA")
+    output_dir = tmp_path / "out"
+    path = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").symbol_path("NVDA")
+    before = path.read_bytes()
+    repair_legacy_basis.run(
+        ["--audit-manifest", str(manifest), "--output-dir", str(output_dir), "--dry-run"],
+        data_lake_root=tmp_path,
+        ib_factory=lambda: object(),
+        ib_fetcher_factory=_clean_ib_fetcher({"NVDA": _clean_ib_rows_for("NVDA")}),
+    )
+
+    repair_legacy_basis.run(
+        ["--audit-manifest", str(manifest), "--output-dir", str(output_dir), "--resume"],
+        data_lake_root=tmp_path,
+        ib_factory=lambda: object(),
+        ib_fetcher_factory=_clean_ib_fetcher({"NVDA": _clean_ib_rows_for("NVDA")}),
+    )
+
+    assert path.read_bytes() != before  # the real run was not skipped
+    assert json.loads((output_dir / "cursor.json").read_text())["completed"]["NVDA"]["status"] == "done"
+
+
 def _seed_aph(root):
     """Real APH bronze (production, frozen 2026-07-17): pre-window rows are IB
     back-adjusted for the real 2024-06-12 1:2 split yet labelled raw, post-window

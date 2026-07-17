@@ -50,6 +50,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="repair only sp500/ndx100/r2k members; defer the tail to a later full run",
     )
+    parser.add_argument("--dry-run", action="store_true", help="fetch, classify and self-check, but never write bronze")
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -62,6 +63,26 @@ def _write_atomic(path: Path, payload: dict) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def backup_symbol(bronze: BronzeClient, symbol: str, backup_dir: Path) -> dict:
+    """Copy a symbol's bronze parquet verbatim before any mutation.
+
+    Bronze is the system of record and merge_ticker_rows overwrites rows in place,
+    so the pre-repair bytes are otherwise unrecoverable. The sibling split-basis
+    repair family ships rollback; this one must too.
+    """
+    source = bronze.symbol_path(symbol)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    destination = backup_dir / f"{encode_symbol(symbol)}.1d.parquet"
+    payload = source.read_bytes()
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_bytes(payload)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return {"symbol": symbol, "backup_path": str(destination), "sha256": hashlib.sha256(payload).hexdigest()}
 
 
 def _priority_rank(presets_dir: Path) -> dict[str, int]:
@@ -88,8 +109,9 @@ def _repair_one(
     fetcher: Callable[[str, date, date], list[dict]],
     as_of: date,
     threshold: float,
+    backup_dir: Path | None,
 ) -> tuple[str, dict]:
-    """Return (status, sidecar). status in {'done','ambiguous','failed'}."""
+    """Return (status, sidecar). status in {'done','would-repair','ambiguous','failed'}."""
     existing = bronze.read_symbol_rows(symbol)
     if not existing:
         return "failed", {"symbol": symbol, "reason": "no_bronze_rows"}
@@ -125,8 +147,17 @@ def _repair_one(
         check_seed_boundary(merged, actions)
     except ValueError as exc:
         return "ambiguous", {"symbol": symbol, "reason": f"post_merge_discontinuous: {exc}"}
+    if backup_dir is None:
+        return "would-repair", {"symbol": symbol, "rows_would_write": len(ib_only)}
+    saved = backup_symbol(bronze, symbol, backup_dir)
     inserted = bronze.merge_ticker_rows(symbol, ib_only)
-    return "done", {"symbol": symbol, "rows_written": len(ib_only), "inserted": inserted}
+    return "done", {
+        "symbol": symbol,
+        "rows_written": len(ib_only),
+        "inserted": inserted,
+        "backup_path": saved["backup_path"],
+        "backup_sha256": saved["sha256"],
+    }
 
 
 def run(
@@ -204,6 +235,7 @@ def run(
                     fetcher=fetcher,
                     as_of=as_of,
                     threshold=args.continuity_threshold,
+                    backup_dir=None if args.dry_run else args.output_dir / "backup",
                 )
             except (ConnectionError, OSError, TimeoutError) as exc:
                 # IB session dropped mid-run. Aborting mirrors the initial-connect
