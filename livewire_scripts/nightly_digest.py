@@ -74,6 +74,33 @@ def _phases_section(run_date: str, log_dir: Path) -> list[str]:
     return lines
 
 
+def _silver_section(run_date: str, log_dir: Path) -> list[str]:
+    """Silver rebuild outcome, and loudly whenever new data cost published history.
+
+    The rebuild lane logs into the same daily-update log; its SUMMARY_JSON carries no
+    `job` key, which is what tells it apart from the per-asset-class outcome lines.
+    """
+    text = _read_text(log_dir / f"daily_update_{run_date}.log")
+    lines = ["Silver rebuild:"]
+    summaries = [s for s in parse_all_summary_json(text or "") if "window_regressions" in s]
+    if not summaries:
+        lines.append("  (not found)")
+        return lines
+    s = summaries[-1]
+    lines.append(
+        f"  revision={s.get('revision', '?')}  rebuilt={s.get('rebuilt', 0)}  "
+        f"unchanged={s.get('unchanged', 0)}  trimmed={s.get('trimmed', 0)}  failed={s.get('failed', 0)}"
+    )
+    regressions = s.get("window_regressions", 0)
+    if regressions:
+        lines.append(
+            f"  ⚠ {regressions} symbol(s) withheld: their silver-grade window SHRANK, so new data "
+            f"cost published history. They still serve their previous window — investigate the "
+            f"newest bars before the next publish."
+        )
+    return lines
+
+
 def _coverage_section(run_date: str, log_dir: Path) -> list[str]:
     text = _read_text(log_dir / f"coverage_{run_date}.log")
     lines = ["Coverage:"]
@@ -101,6 +128,7 @@ def build_digest(run_date: date, log_dir: Path, data_lake: Path) -> str:
         [f"Livewire nightly digest — {run}"],
         _outcomes_section(run, log_dir),
         _phases_section(run, log_dir),
+        _silver_section(run, log_dir),
         _coverage_section(run, log_dir),
         _disk_section(data_lake),
     ]

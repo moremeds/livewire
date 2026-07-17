@@ -76,6 +76,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             f"(default: <data-lake-root>/{DEFAULT_TRIAGE_MANIFEST} when present)"
         ),
     )
+    parser.add_argument(
+        "--allow-window-regression",
+        action="store_true",
+        help="publish symbols whose window start moved later (required once, for the rev-3 bootstrap)",
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -356,6 +361,31 @@ def run(
             failures.append(_failure(symbol, exc, bronze, rows, actions))
             print(f"{symbol}: {exc}", file=sys.stderr)
 
+    current = publisher.read_current()
+    current_revision = 0 if current is None else current.revision
+
+    # A window that moved LATER than what we already serve means new data cost us
+    # published history. resolve_window cannot tell which side of a one-sided
+    # boundary is trustworthy — it always trusts the newer one — so a corrupt bar
+    # arriving tonight would become the last break and collapse the window onto
+    # itself. Only this comparison against the published revision can catch that.
+    previous_start = {item.symbol: item.earliest_date for item in (current.affected if current else ())}
+    regressions = [
+        {
+            "symbol": item.symbol,
+            "previous_start": previous_start[item.symbol].isoformat(),
+            "new_start": item.window["start"],
+            "reason": item.window["reason"],
+        }
+        for item in staged
+        if item.symbol in previous_start and item.window["start"] > previous_start[item.symbol].isoformat()
+    ]
+    # Fail closed: withhold the regressed symbols from republication. They stay in
+    # `staged`, so _carry_forward re-lists their previous artifacts and they keep
+    # serving the older, longer, still-valid window.
+    regressed = set() if args.allow_window_regression else {item["symbol"] for item in regressions}
+    publishable = [item for item in staged if item.symbol not in regressed]
+
     if args.failure_output is not None:
         _write_json_atomic(
             args.failure_output,
@@ -366,11 +396,13 @@ def run(
                 "silver_root": str(silver_path.expanduser().resolve()),
                 "as_of_date": effective_as_of.isoformat(),
                 "failures": sorted(failures, key=lambda item: item["symbol"]),
+                # Alongside `failures`, not inside it: a regressed symbol still
+                # publishes (its previous window), so it must not inflate `failed`
+                # or reach resolve_exit_code. It is an alert, not a job failure.
+                "window_regressions": sorted(regressions, key=lambda item: item["symbol"]),
             },
         )
 
-    current = publisher.read_current()
-    current_revision = 0 if current is None else current.revision
     action_count = sum(len(item.actions) for item in staged)
     effective_action_count = sum(action.ex_date <= effective_as_of for item in staged for action in item.actions)
     future_action_count = action_count - effective_action_count
@@ -384,7 +416,7 @@ def run(
     failed = len(failures)
     exit_code = resolve_exit_code(updated=len(staged), no_trade=0, partial=0, errors=failed)
 
-    changed = [item for item in staged if not _matches_existing(client, item)]
+    changed = [item for item in publishable if not _matches_existing(client, item)]
     unchanged = len(staged) - len(changed)
     predicted_revision = current_revision + 1 if changed else current_revision
     if args.dry_run:
@@ -399,6 +431,7 @@ def run(
             revision=predicted_revision,
             unchanged=unchanged,
             trimmed=trimmed,
+            window_regressions=len(regressions),
         )
         return exit_code
 
@@ -414,11 +447,12 @@ def run(
             revision=current_revision,
             unchanged=unchanged,
             trimmed=trimmed,
+            window_regressions=len(regressions),
         )
         return exit_code
 
     with publisher.transaction() as transaction:
-        changed = [item for item in staged if not _matches_existing(client, item)]
+        changed = [item for item in publishable if not _matches_existing(client, item)]
         if not changed:
             revision = 0 if transaction.current is None else transaction.current.revision
             rebuilt = 0
@@ -459,6 +493,7 @@ def run(
         revision=revision,
         unchanged=unchanged,
         trimmed=trimmed,
+        window_regressions=len(regressions),
     )
     return exit_code
 

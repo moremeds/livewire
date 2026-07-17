@@ -472,6 +472,7 @@ def test_dry_run_writes_evidence_grade_failure_report(tmp_path):
         "silver_root",
         "as_of_date",
         "failures",
+        "window_regressions",
     }
     assert payload["schema_version"] == 2
     assert datetime.fromisoformat(payload["generated_at"]).tzinfo is not None
@@ -599,3 +600,87 @@ def test_targeted_rebuild_keeps_previously_published_symbols_in_the_manifest(tmp
     symbols = {a["path"].split("symbol=")[1].split("/")[0] for a in current["artifacts"]}
     assert symbols == {"AAPL", "MSFT"}  # AAPL must not vanish
     assert current["revision"] == 2
+
+
+# A corrupt bar the way this warehouse actually produces one: an IB back-adjusted
+# close leaking in among true-raw rows. 181.91 / 40 = 4.548 — the same mechanism as
+# the 2021-06 seed artifact, not an invented price.
+_BACK_ADJUSTED_LEAK = 4.548
+
+
+def test_a_new_bad_bar_that_shortens_the_window_does_not_publish(tmp_path):
+    """THE core invariant. A corrupt bar arriving at the newest edge is the LAST
+    break, so the suffix rule would start the window at it and publish that single
+    garbage row, dropping all real history. It must fail closed instead: keep serving
+    what was published, and alert."""
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25), ("2024-01-04", 181.91)])
+    rebuild_silver.run(["--tickers", "AAPL"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    _seed_bronze(
+        root,
+        "AAPL",
+        [("2024-01-02", 185.64), ("2024-01-03", 184.25), ("2024-01-04", 181.91), ("2024-01-05", _BACK_ADJUSTED_LEAK)],
+    )
+    failures = tmp_path / "failures.json"
+
+    rebuild_silver.run(
+        ["--tickers", "AAPL", "--failure-output", str(failures)],
+        data_lake_root=root,
+        silver_root=silver,
+        as_of_date=date(2026, 7, 17),
+    )
+
+    payload = json.loads(failures.read_text())
+    regression = payload["window_regressions"][0]
+    assert regression["symbol"] == "AAPL"
+    assert regression["previous_start"] == "2024-01-02"
+    assert regression["new_start"] == "2024-01-05"
+    assert payload["failures"] == []  # a regression is an alert, not a staging failure
+    # The published artifact is UNCHANGED — the garbage singleton never shipped.
+    published = pq.ParquetFile(silver / "asset_class=equity/symbol=AAPL/1d.parquet").read().to_pylist()
+    assert [str(r["trade_date"]) for r in published] == ["2024-01-02", "2024-01-03", "2024-01-04"]
+    # ...and the symbol is still in the manifest, not evicted.
+    current = json.loads((silver / "revisions/current.json").read_text())
+    assert any("symbol=AAPL" in a["path"] for a in current["artifacts"])
+
+
+def test_allow_window_regression_publishes_the_shorter_window(tmp_path):
+    """The rev-3 bootstrap: rev-2 published untrimmed history, so the intentional
+    mass trim must be able to land once, under operator review."""
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25), ("2024-01-04", 181.91)])
+    rebuild_silver.run(["--tickers", "AAPL"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    _seed_bronze(
+        root,
+        "AAPL",
+        [("2024-01-02", 185.64), ("2024-01-03", 184.25), ("2024-01-04", 181.91), ("2024-01-05", _BACK_ADJUSTED_LEAK)],
+    )
+
+    rebuild_silver.run(
+        ["--tickers", "AAPL", "--allow-window-regression"],
+        data_lake_root=root,
+        silver_root=silver,
+        as_of_date=date(2026, 7, 17),
+    )
+
+    published = pq.ParquetFile(silver / "asset_class=equity/symbol=AAPL/1d.parquet").read().to_pylist()
+    assert [str(r["trade_date"]) for r in published] == ["2024-01-05"]
+
+
+def test_no_regression_reported_when_the_window_is_stable(tmp_path):
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
+    rebuild_silver.run(["--tickers", "AAPL"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25), ("2024-01-04", 181.91)])
+    failures = tmp_path / "failures.json"
+
+    rebuild_silver.run(
+        ["--tickers", "AAPL", "--failure-output", str(failures)],
+        data_lake_root=root,
+        silver_root=silver,
+        as_of_date=date(2026, 7, 17),
+    )
+
+    assert json.loads(failures.read_text())["window_regressions"] == []
+    published = pq.ParquetFile(silver / "asset_class=equity/symbol=AAPL/1d.parquet").read().to_pylist()
+    assert len(published) == 3  # the good new bar published normally
