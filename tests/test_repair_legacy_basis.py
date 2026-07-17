@@ -552,6 +552,96 @@ def test_mismatched_data_lake_root_raises_before_mutation(tmp_path):
     assert bronze.symbol_path("NVDA").read_bytes() == before  # no mutation before the guard
 
 
+def _seed_aph(root):
+    """Real APH bronze (production, frozen 2026-07-17): pre-window rows are IB
+    back-adjusted for the real 2024-06-12 1:2 split yet labelled raw, post-window
+    rows are genuine raw. The 2024-06-11/12 pair straddles the split so the IB
+    classifier can resolve treatment instead of bailing out ambiguous."""
+    rows = [
+        {
+            "trade_date": d,
+            "symbol_id": 1,
+            "open": c,
+            "high": c,
+            "low": c,
+            "close": c,
+            "adj_close": c,
+            "volume": 100,
+            "source": "legacy",
+            "price_basis": "raw",
+        }
+        for d, c in (
+            ("2021-06-09", 34.07),
+            ("2021-06-10", 34.13),
+            ("2021-06-11", 68.45),
+            ("2021-06-14", 68.31),
+            ("2024-06-11", 134.43),
+            ("2024-06-12", 68.69),
+        )
+    ]
+    BronzeClient(root / "bronze/asset_class=equity", "equity").replace_ticker_rows("APH", rows)
+    split = MassiveSplit(
+        provider_event_id="APH-2024",
+        ticker="APH",
+        execution_date=date(2024, 6, 12),
+        split_from=Decimal("1"),
+        split_to=Decimal("2"),
+        payload_hash="aph-2024-06-12",
+    )
+    CorporateActionStore(root).reconcile("APH", [split], datetime(2024, 6, 12, tzinfo=UTC))
+
+
+def test_partial_ib_refetch_leaving_a_2x_seed_residual_is_ambiguous_not_done(tmp_path):
+    """The 6.0 self-check cannot see a 2x residual, so without the deterministic seed
+    check this repair records `done` while 2021-06-09/10 stay double-adjusted."""
+    _seed_aph(tmp_path)
+    manifest = _audit_manifest(tmp_path, "APH")
+    output_dir = tmp_path / "out"
+    # IB comes back short: nothing before 2021-06-11, so the corrupt pre-window rows
+    # survive the merge. The rows it does return straddle the split, so classification
+    # succeeds ("raw") and the run reaches the post-merge self-check.
+    ib_rows = [
+        {
+            "trade_date": d,
+            "symbol_id": 0,
+            "open": c,
+            "high": c,
+            "low": c,
+            "close": c,
+            "adj_close": c,
+            "volume": 100,
+            "source": "ib",
+            "price_basis": "split_adjusted",
+            "currency": "USD",
+        }
+        for d, c in (
+            (date(2021, 6, 11), 68.45),
+            (date(2021, 6, 14), 68.31),
+            (date(2024, 6, 11), 134.43),
+            (date(2024, 6, 12), 68.69),
+        )
+    ]
+
+    rc = repair_legacy_basis.run(
+        ["--audit-manifest", str(manifest), "--output-dir", str(output_dir)],
+        data_lake_root=tmp_path,
+        ib_factory=lambda: object(),
+        ib_fetcher_factory=_clean_ib_fetcher({"APH": ib_rows}),
+        as_of_date=date(2026, 7, 17),
+    )
+
+    assert rc == 0
+    cursor = json.loads((output_dir / "cursor.json").read_text())
+    assert cursor["completed"]["APH"]["status"] == "ambiguous"
+    # Pin the branch: it must fail on the SEED check, not on classification and not on
+    # the 6.0 heuristic — otherwise this test would pass with the detector removed.
+    sidecar = json.loads((output_dir / "symbols" / "APH.json").read_text())
+    assert "seed-boundary basis break at 2021-06-11" in sidecar["reason"]
+    # And bronze is untouched: a fail-closed repair writes zero bytes.
+    surviving = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").read_symbol_rows("APH")
+    assert {r["source"] for r in surviving} == {"legacy"}
+
+
 def test_main_delegates_to_run(monkeypatch):
     seen = {}
 

@@ -10,8 +10,9 @@ def _rows(pairs):
 # Real AAPL adjusted closes (production silver, frozen 2026-07-17): continuous.
 AAPL = _rows([("2024-01-02", 185.64), ("2024-01-03", 184.25), ("2024-01-04", 181.91)])
 
-# EQIX shape: an unexplained ~25x step at 2003-01-02 with no CA record.
-EQIX = _rows([("2002-12-27", 0.20), ("2002-12-30", 0.21), ("2003-01-02", 5.24), ("2003-01-03", 5.31)])
+# EQIX: an unexplained ~25x step at 2003-01-02 with no CA record (EQIX has zero
+# split events in the store). Real bronze closes, frozen 2026-07-17.
+EQIX = _rows([("2002-12-27", 0.22), ("2002-12-30", 0.21), ("2003-01-02", 5.24), ("2003-01-03", 5.08)])
 
 
 def test_find_breaks_enumerates_every_break_not_just_the_first():

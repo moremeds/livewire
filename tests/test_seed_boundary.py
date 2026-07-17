@@ -45,28 +45,35 @@ def _rows(pairs: list[tuple[str, float]]) -> list[dict]:
     return [{"trade_date": d, "close": c} for d, c in pairs]
 
 
-# NVDA stored bronze closes across the seed boundary (pre-repair, 2026-07-17):
-# pre-window rows were IB back-adjusted (/40) yet labelled raw.
-NVDA_ROWS = _rows(
+# FUBO — still corrupt in bronze today: the 2021-06-18 straggler bar was IB
+# back-adjusted for the 2026-03-24 12:1 REVERSE split (29.53 * 12 ~= 354) while its
+# neighbours stayed raw. The only large-fold seed case left unrepaired, so every
+# close below is a direct read rather than a reconstruction.
+FUBO_ROWS = _rows(
     [
-        ("2021-06-08", 17.39),
-        ("2021-06-09", 17.34),
-        ("2021-06-10", 17.43),
-        ("2021-06-11", 713.01),
-        ("2021-06-14", 723.72),
+        ("2021-06-15", 27.90),
+        ("2021-06-16", 28.62),
+        ("2021-06-17", 29.53),
+        ("2021-06-18", 351.1214),
+        ("2021-06-21", 31.62),
     ]
 )
+FUBO_SPLITS = [_split("FUBO", "2026-03-24", 12, 1)]
+
+# NVDA's real split history — used for fold arithmetic only. Its bronze rows were
+# repaired on 2026-07-17 (source='ib', true raw), so the pre-repair corrupt closes
+# no longer exist anywhere readable and are deliberately not reconstructed here.
 NVDA_SPLITS = [_split("NVDA", "2021-07-20", 1, 4), _split("NVDA", "2024-06-10", 1, 10)]
 
-# APH — the 2x case the 6.0 gate cannot see.
-APH_ROWS = _rows([("2021-06-09", 33.98), ("2021-06-10", 34.13), ("2021-06-11", 68.45), ("2021-06-14", 68.60)])
-APH_SPLITS = [_split("APH", "2026-03-04", 1, 2)]
+# APH — the 2x case the 6.0 gate cannot see. Real 2024-06-12 1:2 split; still corrupt.
+APH_ROWS = _rows([("2021-06-09", 34.07), ("2021-06-10", 34.13), ("2021-06-11", 68.45), ("2021-06-14", 68.31)])
+APH_SPLITS = [_split("APH", "2024-06-12", 1, 2)]
 
 # AAPL — no post-window split, flat boundary.
 AAPL_ROWS = _rows([("2021-06-09", 127.13), ("2021-06-10", 126.11), ("2021-06-11", 127.35), ("2021-06-14", 130.48)])
 
-# KLAC — post-window split (P=10) but re-pulled genuinely raw: flat boundary.
-KLAC_ROWS = _rows([("2021-06-09", 322.44), ("2021-06-10", 320.10), ("2021-06-11", 324.62), ("2021-06-14", 328.29)])
+# KLAC — post-window split (P=10) but genuinely raw: flat boundary.
+KLAC_ROWS = _rows([("2021-06-09", 314.16), ("2021-06-10", 319.31), ("2021-06-11", 320.11), ("2021-06-14", 325.21)])
 KLAC_SPLITS = [_split("KLAC", "2026-06-12", 1, 10)]
 
 
@@ -93,18 +100,18 @@ def test_predict_fold_ignores_cancelled_split():
 
 
 def test_measure_jump_finds_the_boundary_step():
-    assert measure_boundary_jump(NVDA_ROWS) == ("2021-06-11", pytest.approx(40.9, rel=0.01))
+    assert measure_boundary_jump(FUBO_ROWS) == ("2021-06-18", pytest.approx(11.89, rel=0.01))
 
 
 def test_measure_jump_returns_none_when_no_rows_in_window():
     assert measure_boundary_jump(_rows([("2024-01-02", 10.5), ("2024-01-03", 10.7)])) is None
 
 
-def test_nvda_is_corrupt_observed_matches_predicted():
+def test_fubo_is_corrupt_observed_matches_predicted():
     with pytest.raises(SeedBoundaryBreak) as exc:
-        check_seed_boundary(NVDA_ROWS, NVDA_SPLITS)
-    assert exc.value.date == "2021-06-11"
-    assert exc.value.predicted == pytest.approx(40.0)
+        check_seed_boundary(FUBO_ROWS, FUBO_SPLITS)
+    assert exc.value.date == "2021-06-18"
+    assert exc.value.predicted == pytest.approx(12.0)
 
 
 def test_aph_2x_is_corrupt_even_though_the_6x_gate_misses_it():
@@ -129,14 +136,14 @@ def test_low_fold_is_inconclusive_not_corrupt():
 
 def test_classify_reports_measurements():
     assert classify_seed_boundary(AAPL_ROWS, [])["verdict"] == "clean"
-    corrupt = classify_seed_boundary(NVDA_ROWS, NVDA_SPLITS)
+    corrupt = classify_seed_boundary(FUBO_ROWS, FUBO_SPLITS)
     assert corrupt["verdict"] == "corrupt"
-    assert corrupt["date"] == "2021-06-11"
-    assert corrupt["fold"] == pytest.approx(40.0)
+    assert corrupt["date"] == "2021-06-18"
+    assert corrupt["fold"] == pytest.approx(12.0)
 
 
 def test_non_positive_close_is_inconclusive_not_a_crash():
     assert (
-        classify_seed_boundary(_rows([("2021-06-10", 0.0), ("2021-06-11", 713.01)]), NVDA_SPLITS)["verdict"]
+        classify_seed_boundary(_rows([("2021-06-17", 0.0), ("2021-06-18", 351.1214)]), FUBO_SPLITS)["verdict"]
         == "inconclusive"
     )

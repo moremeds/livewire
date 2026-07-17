@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
@@ -127,17 +128,90 @@ def test_unknown_basis_symbol_classified_error_not_crash(tmp_path):
     assert manifest["counts"]["error"] == 1
 
 
-def test_empty_bronze_snapshot_classified_clean(tmp_path):
-    # A 0-row parquet is discoverable but read_symbol_rows returns [] — the guard
-    # must classify it clean without touching the adjustment engine.
+def test_symbol_with_zero_rows_is_error_not_clean(tmp_path):
+    # A 0-row parquet is discoverable but read_symbol_rows returns []. It is a broken
+    # symbol, not a clean one: calling it clean silently passes it through the audit
+    # and it never reaches repair. BronzeClient refuses to write an empty snapshot,
+    # so this shape can only be produced by writing the parquet directly.
     bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
     path = bronze.symbol_path("EMPTY")
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.table({"trade_date": pa.array([], type=pa.string())}), path)
     output = tmp_path / "audit.json"
     assert audit_legacy_basis.run(["--tickers", "EMPTY", "--output", str(output)], data_lake_root=tmp_path) == 0
-    manifest = json.loads(output.read_text())
-    assert manifest["symbols"][0]["klass"] == "clean"
+    entry = _entry(output, "EMPTY")
+    assert entry["klass"] == "error"
+    assert entry["error"] == "no bronze rows"
+
+
+def test_seed_boundary_symbol_classified_mixed_below_continuity_threshold(tmp_path):
+    """A 2x seed fold is invisible to the 6.0 gate but must be caught. Real APH
+    closes (production bronze, 2026-07-17) + its real 2024-06-12 1:2 split."""
+    root = tmp_path / "lake"
+    _seed_bronze(
+        root, "APH", [("2021-06-09", 34.07), ("2021-06-10", 34.13), ("2021-06-11", 68.45), ("2021-06-14", 68.31)]
+    )
+    _seed_split(root, "APH", "2024-06-12", 1, 2)
+    output = tmp_path / "audit.json"
+    assert (
+        audit_legacy_basis.run(
+            ["--tickers", "APH", "--output", str(output)], data_lake_root=root, as_of_date=date(2026, 7, 17)
+        )
+        == 0
+    )
+    entry = _entry(output, "APH")
+    assert entry["klass"] == "mixed"
+    assert entry["detector"] == "seed_boundary"
+    assert entry["seed_boundary"]["fold"] == pytest.approx(2.0)
+
+
+def test_predicted_fold_with_flat_boundary_stays_clean(tmp_path):
+    """KLAC has a 10:1 split after the window but was re-pulled raw — not corrupt."""
+    root = tmp_path / "lake"
+    _seed_bronze(
+        root, "KLAC", [("2021-06-09", 314.16), ("2021-06-10", 319.31), ("2021-06-11", 320.11), ("2021-06-14", 325.21)]
+    )
+    _seed_split(root, "KLAC", "2026-06-12", 1, 10)
+    output = tmp_path / "audit.json"
+    assert (
+        audit_legacy_basis.run(
+            ["--tickers", "KLAC", "--output", str(output)], data_lake_root=root, as_of_date=date(2026, 7, 17)
+        )
+        == 0
+    )
+    assert _entry(output, "KLAC")["klass"] == "clean"
+
+
+def test_requested_symbol_absent_from_bronze_is_recorded_as_error(tmp_path):
+    root = tmp_path / "lake"
+    _seed_bronze(root, "AAPL", [("2021-06-10", 126.11), ("2021-06-11", 127.35)])
+    output = tmp_path / "audit.json"
+    assert (
+        audit_legacy_basis.run(
+            ["--tickers", "AAPL", "NOTATICKER", "--output", str(output)],
+            data_lake_root=root,
+            as_of_date=date(2026, 7, 17),
+        )
+        == 0
+    )
+    entry = _entry(output, "NOTATICKER")
+    assert entry["klass"] == "error"
+    assert "not in bronze" in entry["error"]
+
+
+def test_audit_records_every_break_not_just_the_first(tmp_path):
+    """A single break_date under-reports multi-break symbols and starves the triage."""
+    root = tmp_path / "lake"
+    _seed_bronze(
+        root, "AAPL", [("2001-01-02", 1.00), ("2001-01-03", 50.00), ("2002-01-02", 51.00), ("2002-01-03", 4.00)]
+    )
+    output = tmp_path / "audit.json"
+    audit_legacy_basis.run(
+        ["--tickers", "AAPL", "--output", str(output)], data_lake_root=root, as_of_date=date(2026, 7, 17)
+    )
+    entry = _entry(output, "AAPL")
+    assert [b["date"] for b in entry["breaks"]] == ["2001-01-03", "2002-01-03"]
+    assert entry["break_date"] == "2001-01-03"  # first break, kept for repair compatibility
 
 
 def test_full_scope_scans_all_existing_symbols(tmp_path):

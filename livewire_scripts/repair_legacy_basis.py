@@ -25,6 +25,7 @@ from clients.corporate_action_store import CorporateActionStore
 from clients.ib_client import IBClient
 from clients.ingestion_common import load_preset
 from clients.price_basis import prepare_ib_rows_for_publish
+from clients.seed_boundary import check_seed_boundary
 from clients.silver_continuity import check_adjusted_continuity
 from clients.symbol_paths import encode_symbol
 from livewire_scripts.adjusted_history_sources import IBHistoryFetcher
@@ -118,6 +119,10 @@ def _repair_one(
         intervals = build_factor_intervals(merged, actions, as_of)
         adjusted = adjust_daily_rows(merged, intervals, revision=1)
         check_adjusted_continuity(adjusted, threshold=threshold)
+        # The heuristic above cannot see a 2x-5x residual. SeedBoundaryBreak
+        # subclasses ValueError, so a partial re-fetch fails closed as `ambiguous`
+        # rather than being recorded as a successful repair.
+        check_seed_boundary(merged, actions)
     except ValueError as exc:
         return "ambiguous", {"symbol": symbol, "reason": f"post_merge_discontinuous: {exc}"}
     inserted = bronze.merge_ticker_rows(symbol, ib_only)

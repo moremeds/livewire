@@ -22,7 +22,9 @@ from clients.adjustment_engine import adjust_daily_rows, build_factor_intervals
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.ingestion_common import load_preset
+from clients.seed_boundary import classify_seed_boundary
 from clients.silver_continuity import ContinuityBreak, check_adjusted_continuity
+from clients.silver_window import find_breaks
 from livewire_scripts.paths import data_lake_dir
 
 SCHEMA_VERSION = 1
@@ -53,31 +55,61 @@ def _write_atomic(path: Path, payload: dict) -> None:
 
 
 def _classify(bronze: BronzeClient, store: CorporateActionStore, symbol: str, as_of: date, threshold: float) -> dict:
-    rows = bronze.read_symbol_rows(symbol)
     path = bronze.symbol_path(symbol)
     entry: dict = {
         "symbol": symbol,
         "path": str(path),
-        "source_sha256": _sha256(path),
+        "source_sha256": _sha256(path) if path.is_file() else None,
         "klass": "clean",
         "max_ratio": None,
         "break_date": None,
+        "breaks": [],
+        "detector": None,
+        "seed_boundary": None,
     }
+    if not path.is_file():
+        entry["klass"] = "error"
+        entry["error"] = f"symbol not in bronze: {symbol}"
+        return entry
+    rows = bronze.read_symbol_rows(symbol)
     if not rows:
+        # An empty parquet is a broken symbol, not a clean one — never silently pass.
+        entry["klass"] = "error"
+        entry["error"] = "no bronze rows"
         return entry
     # Isolate ALL per-symbol failures so a single bad symbol never aborts --full.
     try:
         actions = store.latest_active(symbol)
+    except Exception as exc:
+        entry["klass"] = "error"
+        entry["error"] = str(exc)
+        return entry
+    # Seed-boundary first: deterministic (known location, predicted fold), so it
+    # resolves the sub-threshold population the continuity heuristic cannot see.
+    seed = classify_seed_boundary(rows, actions)
+    entry["seed_boundary"] = seed
+    if seed["verdict"] == "corrupt":
+        entry["klass"] = "mixed"
+        entry["detector"] = "seed_boundary"
+        entry["break_date"] = seed["date"]
+        entry["max_ratio"] = seed["observed"]
+        return entry
+    try:
         intervals = build_factor_intervals(rows, actions, as_of)
         adjusted = adjust_daily_rows(rows, intervals, revision=1)
+        # Enumerate EVERY break, not just the first: each one is a triage candidate,
+        # and a break the audit never reports is a break that never gets triaged and
+        # whose real history the window then trims away permanently.
+        entry["breaks"] = find_breaks(adjusted, threshold=threshold)
         check_adjusted_continuity(adjusted, threshold=threshold)
     except ContinuityBreak as exc:
         entry["klass"] = "mixed"
+        entry["detector"] = "continuity"
         entry["break_date"] = exc.date
         entry["max_ratio"] = exc.ratio
     except Exception as exc:
-        # build/adjust errors (e.g. `unknown price_basis` rows → WS3's 593, not a
-        # legacy-basis mix) or a non-positive-close ValueError. NOT fed to repair.
+        # build/adjust errors (e.g. `unknown price_basis` rows → WS3's backlog) or a
+        # non-positive-close ValueError. NOT fed to repair.
         entry["klass"] = "error"
         entry["error"] = str(exc)
     return entry
@@ -102,8 +134,9 @@ def run(
     store = CorporateActionStore(root)
 
     symbols = _resolve_symbols(args, bronze)
-    existing = bronze.get_existing_symbols()
-    entries = [_classify(bronze, store, s, as_of, args.continuity_threshold) for s in symbols if s in existing]
+    # Do NOT filter against get_existing_symbols(): a requested symbol that is
+    # missing must surface as an `error` entry, not vanish from the manifest.
+    entries = [_classify(bronze, store, s, as_of, args.continuity_threshold) for s in symbols]
     counts = {k: sum(e["klass"] == k for e in entries) for k in ("clean", "mixed", "error")}
     manifest = {
         "schema_version": SCHEMA_VERSION,
