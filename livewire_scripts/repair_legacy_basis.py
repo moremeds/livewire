@@ -22,7 +22,7 @@ from typing import Any
 from clients.adjustment_engine import adjust_daily_rows, build_factor_intervals
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
-from clients.ib_client import IBClient
+from clients.ib_client import IBClient, IBConnectionError
 from clients.ingestion_common import load_preset
 from clients.price_basis import prepare_ib_rows_for_publish
 from clients.seed_boundary import check_seed_boundary
@@ -87,13 +87,19 @@ def backup_symbol(bronze: BronzeClient, symbol: str, backup_dir: Path) -> dict:
 
 def _priority_rank(presets_dir: Path) -> dict[str, int]:
     rank: dict[str, int] = {}
+    found = 0
     for tier, name in enumerate(_PRIORITY_PRESETS):
         preset_path = presets_dir / f"{name}.json"
         if not preset_path.is_file():
             continue
+        found += 1
         _, tickers, _ = load_preset(preset_path)
         for ticker in tickers:
             rank.setdefault(ticker.upper(), tier)
+    if not found:
+        # --presets-dir defaults to a cwd-relative Path("presets"); from
+        # ~/market-warehouse this silently repaired zero symbols and exited 0.
+        raise ValueError(f"no priority preset found in {presets_dir.resolve()} (expected {_PRIORITY_PRESETS})")
     return rank
 
 
@@ -110,8 +116,14 @@ def _repair_one(
     as_of: date,
     threshold: float,
     backup_dir: Path | None,
+    audit_sha256: str | None,
 ) -> tuple[str, dict]:
     """Return (status, sidecar). status in {'done','would-repair','ambiguous','failed'}."""
+    path = bronze.symbol_path(symbol)
+    if audit_sha256 is not None and path.is_file():
+        if hashlib.sha256(path.read_bytes()).hexdigest() != audit_sha256:
+            # The audit's mixed/clean verdict describes bytes that no longer exist.
+            return "failed", {"symbol": symbol, "reason": "bronze changed since the audit"}
     existing = bronze.read_symbol_rows(symbol)
     if not existing:
         return "failed", {"symbol": symbol, "reason": "no_bronze_rows"}
@@ -176,20 +188,25 @@ def run(
 
     audit = json.loads(args.audit_manifest.read_text())
     audit_sha256 = _sha256(args.audit_manifest)
-    # CLAUDE.md repair contract: reject a different active data-lake root before mutation.
     manifest_root = audit.get("data_lake_root")
-    if manifest_root is not None and manifest_root != str(root.resolve()):
+    # CLAUDE.md repair contract: reject a different active data-lake root before
+    # mutation. A manifest with no root recorded cannot be checked → refuse it.
+    if manifest_root is None:
+        raise ValueError("audit manifest has no data_lake_root: refusing to mutate bronze")
+    if manifest_root != str(root.resolve()):
         raise ValueError(f"audit manifest data_lake_root {manifest_root} does not match active root {root.resolve()}")
     mixed = [item["symbol"] for item in audit["symbols"] if item.get("klass") == "mixed"]
-    rank = _priority_rank(args.presets_dir)
-    ordered = _order_symbols(mixed, rank)
+    rank = _priority_rank(args.presets_dir) if args.priority_only else {}
+    ordered = _order_symbols(mixed, rank) if rank else sorted(mixed)
     if args.priority_only:
         ordered = [s for s in ordered if s in rank]  # rank holds only preset members
 
     identity = {"schema_version": SCHEMA_VERSION, "audit_sha256": audit_sha256, "data_lake_root": str(root.resolve())}
     cursor_path = args.output_dir / "cursor.json"
     cursor = {"identity": identity, "completed": {}}
-    if args.resume and cursor_path.is_file():
+    if cursor_path.is_file():
+        if not args.resume:
+            raise ValueError(f"cursor already exists in {args.output_dir}: pass --resume to continue it")
         loaded = json.loads(cursor_path.read_text())
         if loaded.get("identity") != identity:
             raise ValueError("resume cursor does not match the active audit manifest")
@@ -236,8 +253,9 @@ def run(
                     as_of=as_of,
                     threshold=args.continuity_threshold,
                     backup_dir=None if args.dry_run else args.output_dir / "backup",
+                    audit_sha256=next((i["source_sha256"] for i in audit["symbols"] if i["symbol"] == symbol), None),
                 )
-            except (ConnectionError, OSError, TimeoutError) as exc:
+            except (IBConnectionError, ConnectionError, OSError, TimeoutError) as exc:
                 # IB session dropped mid-run. Aborting mirrors the initial-connect
                 # abort: every remaining symbol would fail through the dead socket,
                 # so mark this one failed and leave the rest for --resume.

@@ -552,6 +552,141 @@ def test_mismatched_data_lake_root_raises_before_mutation(tmp_path):
     assert bronze.symbol_path("NVDA").read_bytes() == before  # no mutation before the guard
 
 
+def test_ib_connection_error_mid_run_aborts_the_batch(tmp_path):
+    """IBConnectionError is the codebase's real session-drop signal, and it does NOT
+    subclass OSError — so it fell through to the per-symbol branch and the run ground
+    through every remaining symbol on a dead socket."""
+    import hashlib
+
+    from clients.ib_client import IBConnectionError
+
+    for sym in ("AAPL", "AMZN", "NVDA"):
+        _seed_mixed(tmp_path, sym)
+    bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
+
+    def _entry(sym):
+        p = bronze.symbol_path(sym)
+        return {
+            "symbol": sym,
+            "path": str(p),
+            "source_sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+            "klass": "mixed",
+            "break_date": "2021-06-18",
+        }
+
+    manifest_path = tmp_path / "audit.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "data_lake_root": str(tmp_path.resolve()),
+                "symbols": [_entry(s) for s in ("AAPL", "AMZN", "NVDA")],
+            }
+        )
+    )
+    calls: list[str] = []
+
+    def _dropping_factory(client):
+        def _fetch(symbol, start, end):
+            calls.append(symbol)
+            raise IBConnectionError("socket closed")
+
+        return _fetch
+
+    rc = repair_legacy_basis.run(
+        ["--audit-manifest", str(manifest_path), "--output-dir", str(tmp_path / "out")],
+        data_lake_root=tmp_path,
+        ib_factory=lambda: object(),
+        ib_fetcher_factory=_dropping_factory,
+        as_of_date=date(2026, 7, 17),
+    )
+
+    assert rc == 1
+    assert calls == ["AAPL"]  # aborted after the first, did not grind through AMZN/NVDA
+
+
+def test_missing_preset_dir_with_priority_only_is_an_error_not_an_empty_run(tmp_path):
+    import pytest
+
+    _seed_mixed(tmp_path, "NVDA")
+    manifest = _audit_manifest(tmp_path, "NVDA")
+    with pytest.raises(ValueError, match="no priority preset found"):
+        repair_legacy_basis.run(
+            [
+                "--audit-manifest",
+                str(manifest),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--priority-only",
+                "--presets-dir",
+                str(tmp_path / "nope"),
+            ],
+            data_lake_root=tmp_path,
+            ib_factory=lambda: object(),
+            ib_fetcher_factory=_clean_ib_fetcher({"NVDA": _clean_ib_rows_for("NVDA")}),
+        )
+
+
+def test_manifest_without_data_lake_root_is_rejected(tmp_path):
+    import pytest
+
+    _seed_mixed(tmp_path, "NVDA")
+    manifest = _audit_manifest(tmp_path, "NVDA")
+    payload = json.loads(manifest.read_text())
+    del payload["data_lake_root"]
+    manifest.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="audit manifest has no data_lake_root"):
+        repair_legacy_basis.run(
+            ["--audit-manifest", str(manifest), "--output-dir", str(tmp_path / "out")],
+            data_lake_root=tmp_path,
+            ib_factory=lambda: object(),
+            ib_fetcher_factory=_clean_ib_fetcher({"NVDA": _clean_ib_rows_for("NVDA")}),
+        )
+
+
+def test_existing_cursor_without_resume_is_rejected(tmp_path):
+    import pytest
+
+    _seed_mixed(tmp_path, "NVDA")
+    manifest = _audit_manifest(tmp_path, "NVDA")
+    output_dir = tmp_path / "out"
+    repair_legacy_basis.run(
+        ["--audit-manifest", str(manifest), "--output-dir", str(output_dir)],
+        data_lake_root=tmp_path,
+        ib_factory=lambda: object(),
+        ib_fetcher_factory=_clean_ib_fetcher({"NVDA": _clean_ib_rows_for("NVDA")}),
+    )
+    with pytest.raises(ValueError, match="cursor already exists"):
+        repair_legacy_basis.run(
+            ["--audit-manifest", str(manifest), "--output-dir", str(output_dir)],
+            data_lake_root=tmp_path,
+            ib_factory=lambda: object(),
+            ib_fetcher_factory=_clean_ib_fetcher({"NVDA": _clean_ib_rows_for("NVDA")}),
+        )
+
+
+def test_bronze_changed_since_the_audit_is_skipped_not_repaired(tmp_path):
+    """The audit's verdict describes bytes that no longer exist."""
+    _seed_mixed(tmp_path, "NVDA")
+    manifest = _audit_manifest(tmp_path, "NVDA")
+    output_dir = tmp_path / "out"
+    path = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").symbol_path("NVDA")
+    path.write_bytes(path.read_bytes() + b"\0")
+    after_tamper = path.read_bytes()
+
+    repair_legacy_basis.run(
+        ["--audit-manifest", str(manifest), "--output-dir", str(output_dir)],
+        data_lake_root=tmp_path,
+        ib_factory=lambda: object(),
+        ib_fetcher_factory=_clean_ib_fetcher({"NVDA": _clean_ib_rows_for("NVDA")}),
+    )
+
+    sidecar = json.loads((output_dir / "symbols" / "NVDA.json").read_text())
+    assert sidecar["status"] == "failed"
+    assert "changed since the audit" in sidecar["reason"]
+    assert path.read_bytes() == after_tamper  # refused to repair, wrote nothing
+
+
 def test_repair_backs_up_bronze_before_mutating(tmp_path):
     import hashlib
 
