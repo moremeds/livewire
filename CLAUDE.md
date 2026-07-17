@@ -191,6 +191,54 @@ Silver artifacts are published beneath `MDW_SILVER_DIR` (default
 factor files contain exhaustive date intervals. Immutable revision manifests are
 written before `current.json`, which is the final cross-file commit record.
 
+#### Silver publish continuity gate
+
+`rebuild-silver` runs a pure continuity invariant
+(`clients/silver_continuity.check_adjusted_continuity`, default threshold `6.0`,
+tunable via `--continuity-threshold`) on every symbol's adjusted series during
+staging. A symbol whose adjusted daily closes still have a >threshold adjacent-day
+jump — the signature of already-adjusted legacy rows mislabeled `price_basis='raw'`
+that got split-divided a second time — is **quarantined** into `failures` instead
+of published, while the rest of the universe still publishes. The gate is always
+on; there is no flag to disable it.
+
+#### Legacy-basis full repair → rev-3 (operator-reviewed, resumable)
+
+Two commands feed the gate: an offline audit that classifies the legacy population
+`clean`/`mixed`/`error`, and a resumable IB re-derivation that rewrites `mixed`
+symbols to canonical true-raw. Then a single `rebuild-silver --full` publishes
+rev-3. Run the phases in order and **review the `mixed` count before touching IB**:
+
+```bash
+# 1. Offline audit → manifest (read-only; never mutates bronze). REVIEW counts{clean,mixed,error}.
+python scripts/livewire_quality.py audit-legacy-basis --full \
+    --output <lake>/repairs/silver-legacy-basis/<stamp>/audit.json
+
+# 2a. FIRST BATCH ONLY — sp500 + ndx100 + r2k members (defer the ~10.6K tail).
+#     IB re-derivation is 2FA-gated and never auto-retries a connection failure.
+python scripts/livewire_store.py repair-legacy-basis \
+    --audit-manifest <.../audit.json> --output-dir <.../repair-batch1> --priority-only --resume
+
+# 2b. STOP GATE — quantify the tail BEFORE committing to it.
+python -c "import json; from livewire_scripts.repair_legacy_basis import summarize_progress; \
+print(json.dumps(summarize_progress(json.load(open('<.../audit.json>')), \
+json.load(open('<.../repair-batch1>/summary.json'))), indent=2))"
+# Decide from tail_mixed_exact + tail_estimated_unrepairable:
+#   small tail, low ambiguous rate  → run the full tail now (drop --priority-only, keep --resume,
+#                                     reuse --output-dir so the cursor skips done symbols)
+#   large tail / high ambiguous rate → schedule a dedicated 2FA-gated IB batch run first
+python scripts/livewire_store.py repair-legacy-basis \
+    --audit-manifest <.../audit.json> --output-dir <.../repair-batch1> --resume   # tail (no --priority-only)
+
+# 3. Freeze the three writers, single rev-3 publish, restore writers EVEN IF rebuild fails.
+WRITERS="com.livewire.daily-update com.livewire.intraday-catchup com.livewire.daily-update-watchdog"
+for L in $WRITERS; do launchctl unload ~/Library/LaunchAgents/$L.plist; done
+python scripts/livewire_store.py rebuild-silver --full; RC=$?   # continuity gate quarantines any residual mixed
+for L in $WRITERS; do launchctl load ~/Library/LaunchAgents/$L.plist; done   # restore regardless of RC
+
+# 4. After Apex adopts rev-3, smoke-test NVDA/AMZN/GOOGL/AGL (formerly corrupt) + INTC (fail-closed control).
+```
+
 Reliability foundation environment variables:
 - `MDW_TELEMETRY_PATH` (default `~/market-warehouse/logs/telemetry.jsonl`): telemetry JSONL append path; set to `none` to disable telemetry.
 - `MDW_QUALITY_AUDIT_PATH` (default `~/market-warehouse/logs/quality_audit.jsonl`): central quality-flag audit JSONL append path.
