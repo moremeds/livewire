@@ -23,6 +23,7 @@ COMMANDS = {
     "coverage": "livewire_scripts.coverage_report",
     "report": "livewire_scripts.data_quality_report",
     "resolve-split-basis": "livewire_scripts.resolve_split_basis",
+    "triage-breaks": "livewire_scripts.triage_breaks",
     "validate-adjusted-history": "livewire_scripts.validate_adjusted_history",
     "weekly": "livewire_scripts.weekly_quality_summary",
     "watchdog": "livewire_scripts.check_daily_update_watchdog",
