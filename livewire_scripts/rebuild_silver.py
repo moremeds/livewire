@@ -197,6 +197,46 @@ def _carry_forward(
     return artifacts, affected
 
 
+def _evict_unmanifested(
+    client: SilverClient,
+    current: SilverRevision | None,
+    manifested: list[PublishedArtifact],
+    scope: set[str],
+    revision: int,
+) -> list[str]:
+    """Move a quarantined symbol's daily artifact out of the served tree.
+
+    Apex resolves a symbol by constructing <root>/asset_class=equity/symbol=<S>/1d.parquet
+    and reading whatever is there (apex ohlc_provider.py:141-145); the manifest is a
+    reseed signal, not a view definition, and its per-symbol revision maps are
+    write-only with no eviction path. So dropping a symbol from the manifest leaves it
+    serving its stale corrupt artifact forever — moving the file is the only removal
+    signal apex can perceive, after which it fails closed with AdjustedDataUnavailable.
+
+    Moved, not unlinked, so an eviction is reversible. The FACTOR artifact stays: apex
+    joins bronze intraday onto factors independently of the daily file, and a missing
+    factor file is its own 500.
+    """
+    if current is None:
+        return []
+    kept = {artifact.path.resolve() for artifact in manifested}
+    evicted: list[str] = []
+    for artifact in current.artifacts:
+        if "symbol=" not in artifact.path or not artifact.path.endswith("1d.parquet"):
+            continue
+        symbol = artifact.path.split("symbol=")[1].split("/")[0]
+        if symbol not in scope:
+            continue
+        path = client.root / artifact.path
+        if not path.is_file() or path.resolve() in kept:
+            continue
+        destination = client.root / "evicted" / str(revision) / artifact.path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(path, destination)
+        evicted.append(symbol)
+    return sorted(evicted)
+
+
 def _matches_existing(client: SilverClient, staged: StagedSymbol) -> bool:
     daily_path = client.daily_path(staged.symbol)
     factor_path = client.factor_path(staged.symbol)
@@ -385,6 +425,16 @@ def run(
     # serving the older, longer, still-valid window.
     regressed = set() if args.allow_window_regression else {item["symbol"] for item in regressions}
     publishable = [item for item in staged if item.symbol not in regressed]
+    evicted: list[str] = []  # only a real publish can evict; a dry run never moves a file
+    # A symbol that failed staging but still has a published artifact must force a
+    # publish even when nothing else changed — otherwise the run early-returns and
+    # apex keeps serving the stale file until some unrelated symbol happens to move.
+    staged_ok = {item.symbol for item in staged}
+    quarantined = sorted(
+        symbol
+        for symbol in {s.upper() for s in symbols}
+        if symbol not in staged_ok and client.daily_path(symbol).is_file()
+    )
 
     if args.failure_output is not None:
         _write_json_atomic(
@@ -432,10 +482,11 @@ def run(
             unchanged=unchanged,
             trimmed=trimmed,
             window_regressions=len(regressions),
+            evicted=len(evicted),
         )
         return exit_code
 
-    if not changed:
+    if not changed and not quarantined:
         _summary(
             action_count=action_count,
             as_of_date=effective_as_of.isoformat(),
@@ -448,12 +499,13 @@ def run(
             unchanged=unchanged,
             trimmed=trimmed,
             window_regressions=len(regressions),
+            evicted=len(evicted),
         )
         return exit_code
 
     with publisher.transaction() as transaction:
         changed = [item for item in publishable if not _matches_existing(client, item)]
-        if not changed:
+        if not changed and not quarantined:
             revision = 0 if transaction.current is None else transaction.current.revision
             rebuilt = 0
             unchanged = len(staged)
@@ -478,7 +530,21 @@ def run(
             )
             artifacts.extend(carried_artifacts)
             affected.extend(carried_affected)
+            if not artifacts:
+                # Every in-scope symbol is quarantined. The publisher rejects an empty
+                # revision, and evicting against a manifest that still names the file
+                # would fail apex's sha256 check and reject the WHOLE revision.
+                raise SystemExit("every in-scope symbol failed staging: refusing to publish an empty revision")
             revision = transaction.commit(artifacts, affected, actions_as_of).revision
+            # Evict only AFTER the manifest that omits them is committed. Apex verifies
+            # every manifested artifact's sha256 on every 30s poll and rejects the whole
+            # revision atomically on a mismatch, so a moved file still named by the
+            # current manifest would take the entire service down, not just one symbol.
+            evicted = _evict_unmanifested(
+                client, transaction.current, artifacts, {s.upper() for s in symbols}, revision
+            )
+            for symbol in evicted:
+                print(f"{symbol}: evicted — quarantined, artifact moved out of the served tree", file=sys.stderr)
             rebuilt = len(changed)
             unchanged = len(staged) - rebuilt
 
@@ -494,6 +560,7 @@ def run(
         unchanged=unchanged,
         trimmed=trimmed,
         window_regressions=len(regressions),
+        evicted=len(evicted),
     )
     return exit_code
 

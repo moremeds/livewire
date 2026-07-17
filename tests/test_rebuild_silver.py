@@ -684,3 +684,73 @@ def test_no_regression_reported_when_the_window_is_stable(tmp_path):
     assert json.loads(failures.read_text())["window_regressions"] == []
     published = pq.ParquetFile(silver / "asset_class=equity/symbol=AAPL/1d.parquet").read().to_pylist()
     assert len(published) == 3  # the good new bar published normally
+
+
+def test_a_quarantined_symbols_stale_artifact_is_moved_not_just_unmanifested(tmp_path):
+    """Apex resolves symbols by path construction and never consults the manifest
+    (apex ohlc_provider.py:141-145). Un-manifesting a symbol leaves it serving stale
+    corrupt data forever; moving the file is the only eviction apex can perceive."""
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
+    _seed_bronze(root, "INTC", [("2000-07-28", 129.13), ("2000-07-31", 66.75)])
+    rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    assert (silver / "asset_class=equity/symbol=INTC/1d.parquet").exists()
+
+    # INTC now fails staging: unknown-basis rows against its real 2000-07-31 1:2 split.
+    _seed_bronze(root, "INTC", [("2000-07-28", 129.13), ("2000-07-31", 66.75)], price_basis="unknown")
+    _seed_split(root, "INTC", "2000-07-31", 1, 2)
+
+    rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+
+    assert not (silver / "asset_class=equity/symbol=INTC/1d.parquet").exists()
+    assert (silver / "asset_class=equity/symbol=AAPL/1d.parquet").exists()
+    current = json.loads((silver / "revisions/current.json").read_text())
+    assert not any("symbol=INTC" in a["path"] for a in current["artifacts"])
+    # Moved, not destroyed: an eviction must be reversible.
+    assert (silver / "evicted/2/asset_class=equity/symbol=INTC/1d.parquet").is_file()
+
+
+def test_eviction_leaves_the_factor_artifact_in_place(tmp_path):
+    """Apex joins bronze intraday onto factors independently of the daily file, so
+    removing the factor artifact is its own 500 rather than a clean fail-closed."""
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
+    _seed_bronze(root, "INTC", [("2000-07-28", 129.13), ("2000-07-31", 66.75)])
+    rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    _seed_bronze(root, "INTC", [("2000-07-28", 129.13), ("2000-07-31", 66.75)], price_basis="unknown")
+    _seed_split(root, "INTC", "2000-07-31", 1, 2)
+
+    rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+
+    assert (silver / "adjustments/asset_class=equity/symbol=INTC/factors.parquet").is_file()
+
+
+def test_a_dry_run_never_evicts(tmp_path):
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
+    _seed_bronze(root, "INTC", [("2000-07-28", 129.13), ("2000-07-31", 66.75)])
+    rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    _seed_bronze(root, "INTC", [("2000-07-28", 129.13), ("2000-07-31", 66.75)], price_basis="unknown")
+    _seed_split(root, "INTC", "2000-07-31", 1, 2)
+
+    rebuild_silver.run(["--full", "--dry-run"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+
+    assert (silver / "asset_class=equity/symbol=INTC/1d.parquet").is_file()  # untouched
+
+
+def test_an_all_quarantined_universe_refuses_to_publish_rather_than_evicting(tmp_path):
+    """Degenerate but load-bearing. The publisher rejects an empty revision, so if we
+    evicted anyway the current manifest would still name a file that is gone — and
+    apex verifies every artifact's sha256 on every poll and rejects the WHOLE revision
+    on a mismatch. One symbol going dark must never blank the entire service."""
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "INTC", [("2000-07-28", 129.13), ("2000-07-31", 66.75)])
+    rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    _seed_bronze(root, "INTC", [("2000-07-28", 129.13), ("2000-07-31", 66.75)], price_basis="unknown")
+    _seed_split(root, "INTC", "2000-07-31", 1, 2)
+
+    with pytest.raises(SystemExit, match="refusing to publish an empty revision"):
+        rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+
+    # Nothing moved: the manifest and the tree still agree.
+    assert (silver / "asset_class=equity/symbol=INTC/1d.parquet").is_file()
