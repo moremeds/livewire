@@ -45,3 +45,32 @@ def test_mixed_symbol_is_repaired_then_published_clean(tmp_path):
     rc = rebuild_silver.run(["--tickers", "NVDA"], data_lake_root=tmp_path, silver_root=silver_root)
     assert rc == 0
     assert (silver_root / "asset_class=equity/symbol=NVDA/1d.parquet").exists()
+
+
+def test_quarantined_symbol_is_absent_from_published_manifest(tmp_path):
+    # Guard the fail-closed lifecycle contract (plan Task 5): a symbol quarantined at
+    # the continuity gate must be omitted from the published rev manifest that Apex
+    # reads (manifest-driven serving), not merely skipped on disk. Seed a clean MSFT
+    # (publishes) alongside a still-mixed NVDA (no repair → quarantines), rebuild, and
+    # assert MSFT appears in current.json artifacts while NVDA does not.
+    clean = [{"trade_date": d, "symbol_id": 2, "open": c, "high": c, "low": c,
+              "close": c, "adj_close": c, "volume": 100, "source": "legacy", "price_basis": "raw"}
+             for d, c in (("2021-06-17", 258.0), ("2021-06-18", 259.4), ("2021-06-21", 259.9))]
+    BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").replace_ticker_rows("MSFT", clean)
+
+    mixed = [{"trade_date": d, "symbol_id": 1, "open": c, "high": c, "low": c,
+              "close": c, "adj_close": c, "volume": 100, "source": "legacy", "price_basis": "raw"}
+             for d, c in (("2021-06-17", 746.29), ("2021-06-18", 18.64), ("2021-06-21", 737.09))]
+    BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").replace_ticker_rows("NVDA", mixed)
+    split = MassiveSplit(provider_event_id="nvda", ticker="NVDA", execution_date=date(2021, 7, 20),
+                         split_from=Decimal("1"), split_to=Decimal("4"), payload_hash="s")
+    CorporateActionStore(tmp_path).reconcile("NVDA", [split], datetime(2021, 7, 20, tzinfo=UTC))
+
+    silver_root = tmp_path / "silver"
+    rc = rebuild_silver.run(["--tickers", "MSFT", "NVDA"], data_lake_root=tmp_path, silver_root=silver_root)
+    assert rc == 0  # quarantining one symbol while another publishes is not systemic failure
+
+    manifest = json.loads((silver_root / "revisions/current.json").read_text())
+    paths = [artifact["path"] for artifact in manifest["artifacts"]]
+    assert any("symbol=MSFT/" in p for p in paths)      # published → served by Apex
+    assert not any("symbol=NVDA/" in p for p in paths)  # quarantined → absent, Apex fails closed
