@@ -13,7 +13,7 @@ from clients.massive_client import MassiveSplit
 from livewire_scripts import audit_legacy_basis
 
 
-def _seed_symbol(root, ticker, rows_spec, split=None):
+def _seed_symbol(root, ticker, rows_spec, split=None, *, price_basis="raw"):
     rows = [
         {
             "trade_date": d,
@@ -25,7 +25,7 @@ def _seed_symbol(root, ticker, rows_spec, split=None):
             "adj_close": c,
             "volume": 100,
             "source": "legacy",
-            "price_basis": "raw",
+            "price_basis": price_basis,
         }
         for d, c in rows_spec
     ]
@@ -94,38 +94,32 @@ def test_clean_symbol_classified_clean(tmp_path):
 
 
 def test_unknown_basis_symbol_classified_error_not_crash(tmp_path):
-    # A price_basis='unknown' row + an applicable split makes build_factor_intervals
-    # raise (that's WS3's 593 territory, not a legacy-basis mix). Audit must isolate
-    # it as klass='error' and still exit 0 — never abort the whole --full run.
-    split = MassiveSplit(
-        provider_event_id="xyz",
-        ticker="XYZ",
-        execution_date=date(2021, 7, 20),
-        split_from=Decimal("1"),
-        split_to=Decimal("4"),
-        payload_hash="s",
+    """A price_basis='unknown' row + an applicable split makes build_factor_intervals
+    raise (that's the WS3 backlog, not a legacy-basis mix). Audit must isolate it as
+    klass='error' and still exit 0 — never abort the whole --full run.
+
+    Real INTC closes across its real 2000-07-31 1:2 split (production bronze, frozen
+    2026-07-17). INTC is the fail-closed control named in the Apex report: all 11,676
+    of its bronze rows are price_basis='unknown', source='legacy'.
+    """
+    _seed_bronze(
+        tmp_path,
+        "INTC",
+        [("2000-07-27", 137.00), ("2000-07-28", 129.13), ("2000-07-31", 66.75), ("2000-08-01", 64.63)],
+        price_basis="unknown",
     )
-    rows = [
-        {
-            "trade_date": "2021-06-17",
-            "symbol_id": 1,
-            "open": 10.0,
-            "high": 10.0,
-            "low": 10.0,
-            "close": 10.0,
-            "adj_close": 10.0,
-            "volume": 100,
-            "source": "legacy",
-            "price_basis": "unknown",
-        }
-    ]
-    BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").replace_ticker_rows("XYZ", rows)
-    CorporateActionStore(tmp_path).reconcile("XYZ", [split], datetime(2021, 7, 20, tzinfo=UTC))
+    _seed_split(tmp_path, "INTC", "2000-07-31", 1, 2)
     output = tmp_path / "audit.json"
-    assert audit_legacy_basis.run(["--tickers", "XYZ", "--output", str(output)], data_lake_root=tmp_path) == 0
-    manifest = json.loads(output.read_text())
-    assert manifest["symbols"][0]["klass"] == "error"
-    assert manifest["counts"]["error"] == 1
+    assert (
+        audit_legacy_basis.run(
+            ["--tickers", "INTC", "--output", str(output)], data_lake_root=tmp_path, as_of_date=date(2026, 7, 17)
+        )
+        == 0
+    )
+    entry = _entry(output, "INTC")
+    assert entry["klass"] == "error"
+    assert "unknown price_basis" in entry["error"]
+    assert json.loads(output.read_text())["counts"]["error"] == 1
 
 
 def test_symbol_with_zero_rows_is_error_not_clean(tmp_path):
