@@ -1204,23 +1204,32 @@ removal API:
   artifact degrades to empty bars (bronze) or per-symbol `AdjustedDataUnavailable`
   in `/health` (`ohlc_provider.py:143-151`), never a crash.
 
-So a quarantined symbol is removed simply by being **absent from a full-rebuild
-manifest**. Stale parquet on disk is harmless (Apex never scans). This task
-records the verified constraint and pins it with one e2e assertion.
+A **newly**-quarantined symbol that was never published is naturally absent from
+the manifest. But **the manifest is a delta, not a full snapshot** — `rebuild_silver`
+publishes only `changed` symbols (`rebuild_silver.py:262`) and the publisher does
+not merge with the prior revision (`silver_revision.py:116-124`) — so removing a
+symbol that was **already published in a prior revision** is NOT automatic. See
+the spec's "Revision removal (PARTIALLY resolved)" section for the full analysis.
+This task records what IS guaranteed and pins it with one e2e assertion; the
+previously-published-removal gap is tracked follow-up (spec), out of this PR's
+code scope.
 
-- [ ] **Step 1: Verified — Apex is manifest-driven (no action).**
+- [ ] **Step 1: Verified — Apex is manifest-driven; stale on-disk parquet is harmless.**
 
-Recorded above with file:line evidence. No disk-scan path exists, so no
-tombstone / artifact-deletion mechanism is required for correctness.
+Apex reads only manifest-listed, sha256-verified artifacts (no disk scan), so a
+parquet not named in the manifest is never served. No tombstone/deletion needed
+for *unlisted* files.
 
-- [ ] **Step 2: Hard constraint — rev-3 is `rebuild-silver --full`, never incremental.**
+- [ ] **Step 2: Known limitation — rebuild alone does NOT retract an already-served symbol.**
 
-A `--full` rebuild re-declares every healthy symbol and omits every quarantined
-one, so the manifest Apex reads is a complete healthy snapshot. An *incremental*
-commit lists only the run's `affected`, and Apex does not actively evict a symbol
-it reseeded from an earlier revision — so incremental removal is not reliable.
-The Task 4 runbook already uses `rebuild-silver --full`; this step forbids
-substituting an incremental publish for the rev-3 cutover.
+Because the manifest is a delta and a quarantined symbol is merely *omitted*
+(moved to `failures`, never signaled as removed) — and `if not changed: return`
+(`rebuild_silver.py:279`) can skip publishing entirely — a symbol published in
+rev-N and quarantined in rev-N+1 keeps being served by Apex from its rev-N
+reseed. For the first rev-3 this is low-risk (only the 3 experimental rev-2
+symbols could be affected; NVDA is repairable→republished). General fix is
+follow-up: verified Apex eviction-on-absence OR an explicit removal signal
+(emit the symbol in `affected` with artifact absent + drop the early-return).
 
 - [ ] **Step 3: Pin it with an e2e assertion — quarantined symbol absent from the published manifest**
 
