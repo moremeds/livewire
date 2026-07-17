@@ -111,8 +111,14 @@ def classify_existing_basis(
     yahoo_adjusted: dict[date, float],
     *,
     tol: float = 0.02,
+    abs_floor: float = 0.01,
 ) -> BasisClassification:
-    """Decide, per existing bronze row, whether it is already raw, adjusted, or neither."""
+    """Decide, per existing bronze row, whether it is already raw, adjusted, or neither.
+
+    ``abs_floor`` lets a sub-dollar penny stock match within a cent absolute — a 2%
+    relative band is only a few tenths of a cent there, so ordinary vendor close
+    disagreement would otherwise read as a mismatch on the whole illiquid tail.
+    """
     result = BasisClassification()
     for row in existing_rows:
         day = row["trade_date"]
@@ -123,10 +129,14 @@ def classify_existing_basis(
             result.unmatched.append(day)
             continue
         close = float(row["close"])
-        if _ratio_close(close, raw, tol):
+        if _close_match(close, raw, tol, abs_floor):
             result.relabel.append(day)
-        elif _ratio_close(close, adjusted, tol):
+        elif _close_match(close, adjusted, tol, abs_floor):
             result.rewrite.append(day)
         else:
             result.mismatch.append((day, close, raw, adjusted))
     return result
+
+
+def _close_match(a: float, b: float, tol: float, abs_floor: float) -> bool:
+    return _ratio_close(a, b, tol) or abs(a - b) <= abs_floor

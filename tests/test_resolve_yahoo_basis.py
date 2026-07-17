@@ -84,13 +84,31 @@ def test_split_the_store_lacks_fails_reconciliation(tmp_path):
     assert entry["store_missing_splits"] == [["2023-08-24", 0.1]]
 
 
-def test_row_that_is_neither_raw_nor_adjusted_is_mismatch(tmp_path):
-    # 5.00 is neither the raw 1.96 nor the adjusted 19.60 → the symbol fails closed.
+def test_large_mismatch_fraction_fails_high_mismatch(tmp_path):
+    # 5.00 matches neither raw 1.96 nor adjusted 19.60; 1 of 2 rows = 50% → not isolated.
     _seed_bronze(tmp_path, "AMC", [("2023-08-23", 5.00), ("2023-08-24", 14.37)], source="legacy", price_basis="unknown")
     _seed_split(tmp_path, "AMC", "2023-08-24", 10, 1)
     entry = _run(tmp_path)
-    assert entry["status"] == "row_mismatch"
+    assert entry["status"] == "high_mismatch"
     assert entry["mismatch"] == 1
+
+
+def test_isolated_mismatch_row_is_flagged_and_kept_not_failed(tmp_path, monkeypatch):
+    # One off row (99.0 vs Yahoo 12.43) stays at its bronze value, is flagged, and the
+    # symbol still resolves — the operator decision: never overwrite bronze on Yahoo alone.
+    monkeypatch.setattr(resolve_yahoo_basis, "_MAX_MISMATCH_FRACTION", 0.9)
+    _seed_bronze(
+        tmp_path,
+        "AMC",
+        [("2023-08-23", 19.60), ("2023-08-24", 14.37), ("2023-08-25", 99.0)],
+        source="legacy",
+        price_basis="unknown",
+    )
+    _seed_split(tmp_path, "AMC", "2023-08-24", 10, 1)
+    entry = _run(tmp_path)
+    assert entry["status"] == "would_resolve"
+    assert entry["mismatch"] == 1
+    assert entry["flagged"] == [["2023-08-25", 99.0, 12.43]]
 
 
 def test_symbol_absent_from_bronze_is_reported(tmp_path):

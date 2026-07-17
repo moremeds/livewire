@@ -28,6 +28,9 @@ from clients.yahoo_client import YahooClient, YahooError, YahooNotFound
 from livewire_scripts.paths import data_lake_dir
 
 _IB_EARLIEST = date(1962, 1, 1)
+# Above this share of rows disagreeing with Yahoo, the ticker is a different series
+# (reuse / wrong listing), not an isolated bad bar → fail closed.
+_MAX_MISMATCH_FRACTION = 0.05
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -88,24 +91,33 @@ def resolve_symbol(symbol: str, *, bronze: BronzeClient, store: CorporateActionS
     if not reconciliation.reconciled:
         result["status"] = "split_mismatch"
         return result
-    if not classification.clean:
-        result["status"] = "row_mismatch"
+    # An isolated row that matches neither raw nor adjusted is kept at its bronze value
+    # and flagged (operator decision: never overwrite bronze on Yahoo's word alone). But
+    # a LARGE mismatch fraction is not isolated noise — it is a different series behind the
+    # ticker (reuse / wrong listing), so fail closed rather than publish a chimera.
+    result["mismatch_fraction"] = round(len(classification.mismatch) / len(existing), 4)
+    if result["mismatch_fraction"] > _MAX_MISMATCH_FRACTION:
+        result["status"] = "high_mismatch"
         result["mismatch_sample"] = [
             [d.isoformat(), round(c, 4), round(r, 4), round(a, 4)] for d, c, r, a in classification.mismatch[:5]
         ]
         return result
-    # Would the corrected series stage? Rewrite adjusted rows to raw, stamp basis, and
-    # confirm build_factor_intervals no longer raises `unknown price_basis`.
-    rewrite = set(classification.rewrite)
+    # Corrected series: rewrite adjusted rows to raw; keep relabel and flagged-mismatch
+    # rows at their existing value; stamp every row price_basis='raw'. Confirm
+    # build_factor_intervals no longer raises `unknown price_basis`. A flagged row that is
+    # genuinely bad and >threshold off is caught downstream by the window continuity scan.
+    rewrite = {d: yahoo_raw[d] for d in classification.rewrite}
     corrected = [
-        {**row, "price_basis": "raw", "close": yahoo_raw.get(_as_date(row["trade_date"]), row["close"])}
-        if _as_date(row["trade_date"]) in rewrite
-        else {**row, "price_basis": "raw"}
+        {**row, "price_basis": "raw", "close": rewrite.get(_as_date(row["trade_date"]), row["close"])}
         for row in existing
     ]
     try:
         build_factor_intervals(corrected, actions, as_of)
         result["status"] = "would_resolve"
+        if classification.mismatch:
+            result["flagged"] = [
+                [d.isoformat(), round(c, 4), round(r, 4)] for d, c, r, a in classification.mismatch[:20]
+            ]
     except Exception as exc:
         result["status"] = "stage_fail"
         result["detail"] = str(exc)[:120]

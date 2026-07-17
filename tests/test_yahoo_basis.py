@@ -99,3 +99,12 @@ def test_classify_neither_raw_nor_adjusted_is_mismatch():
 def test_classify_date_absent_from_yahoo_is_unmatched():
     result = classify_existing_basis([{"trade_date": "1975-01-02", "close": 9.0}], _YRAW, _YADJ)
     assert result.unmatched == [date(1975, 1, 2)] and result.clean
+
+
+def test_classify_penny_stock_within_a_cent_is_relabel_not_mismatch():
+    # Real IBIO shape: bronze 0.245 vs Yahoo raw 0.25 is a 2% gap — a few tenths of a
+    # cent — ordinary vendor close disagreement on a sub-dollar name, not a basis error.
+    yraw = {date(2022, 8, 9): 0.25}
+    yadj = {date(2022, 8, 9): 125.0}
+    result = classify_existing_basis([{"trade_date": "2022-08-09", "close": 0.245}], yraw, yadj)
+    assert result.relabel == [date(2022, 8, 9)] and result.clean
