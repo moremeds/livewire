@@ -44,8 +44,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--host", default=os.environ.get("MDW_IB_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("MDW_IB_PORT", "4001")))
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--priority-only", action="store_true",
-                        help="repair only sp500/ndx100/r2k members; defer the tail to a later full run")
+    parser.add_argument(
+        "--priority-only",
+        action="store_true",
+        help="repair only sp500/ndx100/r2k members; defer the tail to a later full run",
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 

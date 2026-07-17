@@ -95,8 +95,9 @@ def test_quality_dispatches_split_basis_audit(monkeypatch) -> None:
 
 def test_quality_dispatches_audit_legacy_basis(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
-    monkeypatch.setattr(livewire_quality.importlib, "import_module",
-                        lambda name: _fake_module(calls, name, accepts_argv=True))
+    monkeypatch.setattr(
+        livewire_quality.importlib, "import_module", lambda name: _fake_module(calls, name, accepts_argv=True)
+    )
     assert livewire_quality.main(["audit-legacy-basis", "--full", "--output", "x.json"]) == 7
     assert calls == [("livewire_scripts.audit_legacy_basis", ["--full", "--output", "x.json"])]
 
@@ -151,12 +152,11 @@ def test_store_dispatches_split_basis_repair(monkeypatch) -> None:
 
 def test_store_dispatches_repair_legacy_basis(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
-    monkeypatch.setattr(livewire_store.importlib, "import_module",
-                        lambda name: _fake_module(calls, name, accepts_argv=True))
-    assert livewire_store.main(["repair-legacy-basis", "--audit-manifest", "a.json",
-                                "--output-dir", "out"]) == 7
-    assert calls == [("livewire_scripts.repair_legacy_basis",
-                      ["--audit-manifest", "a.json", "--output-dir", "out"])]
+    monkeypatch.setattr(
+        livewire_store.importlib, "import_module", lambda name: _fake_module(calls, name, accepts_argv=True)
+    )
+    assert livewire_store.main(["repair-legacy-basis", "--audit-manifest", "a.json", "--output-dir", "out"]) == 7
+    assert calls == [("livewire_scripts.repair_legacy_basis", ["--audit-manifest", "a.json", "--output-dir", "out"])]
 
 
 def test_ingest_daily_massive_bypasses_ib_preflight(monkeypatch) -> None:

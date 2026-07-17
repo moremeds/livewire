@@ -234,19 +234,31 @@ def test_mixed_basis_symbol_is_quarantined_not_published(tmp_path):
     # NVDA-style: true-raw ~713 and already-adjusted ~17 interleaved, all labeled raw.
     rows = []
     for d, close in (
-        ("2021-06-17", 746.29),   # true-raw
-        ("2021-06-18", 18.64),    # already-adjusted, mislabeled raw (lone bad bar)
-        ("2021-06-21", 737.09),   # true-raw
+        ("2021-06-17", 746.29),  # true-raw
+        ("2021-06-18", 18.64),  # already-adjusted, mislabeled raw (lone bad bar)
+        ("2021-06-21", 737.09),  # true-raw
     ):
-        rows.append({
-            "trade_date": d, "symbol_id": 1,
-            "open": close, "high": close, "low": close, "close": close, "adj_close": close,
-            "volume": 100, "source": "legacy", "price_basis": "raw",
-        })
+        rows.append(
+            {
+                "trade_date": d,
+                "symbol_id": 1,
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "adj_close": close,
+                "volume": 100,
+                "source": "legacy",
+                "price_basis": "raw",
+            }
+        )
     BronzeClient(bronze_root, "equity").replace_ticker_rows("NVDA", rows)
     split = MassiveSplit(
-        provider_event_id="nvda-2021", ticker="NVDA",
-        execution_date=date(2021, 7, 20), split_from=Decimal("1"), split_to=Decimal("4"),
+        provider_event_id="nvda-2021",
+        ticker="NVDA",
+        execution_date=date(2021, 7, 20),
+        split_from=Decimal("1"),
+        split_to=Decimal("4"),
         payload_hash="s",
     )
     CorporateActionStore(tmp_path).reconcile("NVDA", [split], datetime(2021, 7, 20, tzinfo=UTC))
@@ -254,9 +266,21 @@ def test_mixed_basis_symbol_is_quarantined_not_published(tmp_path):
     # Also seed a CLEAN symbol (no split) so the run has updated>0. A lone rejected
     # symbol makes updated==0 → resolve_exit_code returns 1; a second published symbol
     # proves quarantine doesn't fail the whole batch.
-    clean = [{"trade_date": d, "symbol_id": 2, "open": c, "high": c, "low": c,
-              "close": c, "adj_close": c, "volume": 100, "source": "legacy", "price_basis": "raw"}
-             for d, c in (("2021-06-17", 258.0), ("2021-06-18", 259.4), ("2021-06-21", 259.9))]
+    clean = [
+        {
+            "trade_date": d,
+            "symbol_id": 2,
+            "open": c,
+            "high": c,
+            "low": c,
+            "close": c,
+            "adj_close": c,
+            "volume": 100,
+            "source": "legacy",
+            "price_basis": "raw",
+        }
+        for d, c in (("2021-06-17", 258.0), ("2021-06-18", 259.4), ("2021-06-21", 259.9))
+    ]
     BronzeClient(bronze_root, "equity").replace_ticker_rows("MSFT", clean)
 
     failure_output = tmp_path / "failures.json"
@@ -269,6 +293,7 @@ def test_mixed_basis_symbol_is_quarantined_not_published(tmp_path):
     assert not (tmp_path / "silver/asset_class=equity/symbol=NVDA/1d.parquet").exists()
     assert (tmp_path / "silver/asset_class=equity/symbol=MSFT/1d.parquet").exists()
     import json
+
     failures = json.loads(failure_output.read_text())["failures"]
     assert any(f["symbol"] == "NVDA" and "continuity" in f["error"] for f in failures)
     assert rc == 0  # quarantining one symbol while another publishes is not systemic failure
