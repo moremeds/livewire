@@ -1186,27 +1186,63 @@ git commit -m "test(silver): end-to-end legacy-basis repair + rev-3 runbook"
 
 ---
 
-## Task 5: Fail-closed removal of quarantined-but-previously-published symbols (BLOCKER — needs a design decision)
+## Task 5: Fail-closed removal — verified as a natural consequence (no new contract)
 
-**Why:** (codex Critical F1) Skipping a symbol's publication is NOT the same as making it unavailable. A symbol published *corrupt* in rev-2 that now quarantines (repair couldn't fix it) keeps its old artifact on disk and in the manifest — Apex keeps serving the old garbage instead of failing closed like INTC. The gate + repair make *fixable* symbols correct; *unfixable* previously-published symbols need explicit removal/tombstone. Confirm one fact about Apex before specifying the rest:
+**Why:** (was codex Critical F1, now resolved) The concern was that a symbol
+published *corrupt* in a prior revision, if it quarantines instead of repairing,
+would keep serving stale garbage. Investigation of the Apex source at
+`~/projects/apex` closes this **without** a tombstone or a new `silver_revision`
+removal API:
+- Apex reads Silver **strictly manifest-driven** — only `artifacts[]` from
+  `revisions/current.json`, each sha256-verified
+  (`src/infrastructure/adapters/livewire/revisions.py:49-155`). No glob / listdir
+  / scandir / walk exists on the Livewire read path; an unlisted parquet is never
+  opened.
+- Acted-on set = Apex's active subscriptions ∩ manifest `affected`
+  (`src/application/subscriptions/manager.py:163-164`). A symbol dropped from the
+  manifest just stops being reseeded — no error, no global break. A missing
+  artifact degrades to empty bars (bronze) or per-symbol `AdjustedDataUnavailable`
+  in `/health` (`ohlc_provider.py:143-151`), never a crash.
 
-- [ ] **Step 1: Determine how Apex resolves which symbols to serve.**
+So a quarantined symbol is removed simply by being **absent from a full-rebuild
+manifest**. Stale parquet on disk is harmless (Apex never scans). This task
+records the verified constraint and pins it with one e2e assertion.
 
-Read the Apex silver-serving code (repo `~/apex-deploy` / apex-api). Answer: does Apex serve a symbol iff it appears in `current.json`'s `artifacts`/`affected` (manifest-driven), or does it disk-scan `silver/asset_class=equity/symbol=*`? Record the answer in this task before proceeding — it selects Step 2 vs Step 3.
+- [ ] **Step 1: Verified — Apex is manifest-driven (no action).**
 
-- [ ] **Step 2 (manifest-driven case): make rev-3 a full-manifest of healthy symbols.**
+Recorded above with file:line evidence. No disk-scan path exists, so no
+tombstone / artifact-deletion mechanism is required for correctness.
 
-Inspect `clients/silver_revision.py` (`_read_current`/`publish`) to confirm whether `current.json` is cumulative (all healthy symbols) or incremental (only this run's `affected`). If incremental, a symbol dropped from a rebuild still lingers in the last manifest that named it — add a rev-3 mode that publishes the full healthy set and omits quarantined symbols. Test: a symbol present in rev-2 but quarantined in rev-3 is absent from `current.json`.
+- [ ] **Step 2: Hard constraint — rev-3 is `rebuild-silver --full`, never incremental.**
 
-- [ ] **Step 3 (disk-scan case): tombstone/remove the quarantined artifact.**
+A `--full` rebuild re-declares every healthy symbol and omits every quarantined
+one, so the manifest Apex reads is a complete healthy snapshot. An *incremental*
+commit lists only the run's `affected`, and Apex does not actively evict a symbol
+it reseeded from an earlier revision — so incremental removal is not reliable.
+The Task 4 runbook already uses `rebuild-silver --full`; this step forbids
+substituting an incremental publish for the rev-3 cutover.
 
-If Apex disk-scans, `rebuild-silver` must delete (or tombstone) the stale `silver/.../symbol=<Q>/1d.parquet` + `factors.parquet` for quarantined-but-previously-published symbols, guarded by the data-lake-root check. Test: the artifact is gone after rev-3.
+- [ ] **Step 3: Pin it with an e2e assertion — quarantined symbol absent from the published manifest**
 
-- [ ] **Step 4: Smoke-test fail-closed.**
+Append `test_quarantined_symbol_is_absent_from_published_manifest` to
+`tests/test_silver_legacy_repair_e2e.py`: seed a clean MSFT (publishes) and a
+still-mixed NVDA (a 4:1 split breaks its adjusted continuity → quarantines at the
+gate, no repair applied), run
+`rebuild_silver.run(["--tickers", "MSFT", "NVDA"], ...)`, read
+`silver/revisions/current.json`, and assert a `symbol=MSFT/` artifact path IS
+present while no `symbol=NVDA/` path is, and `rc == 0`. This proves quarantined
+symbols are omitted from the manifest Apex reads (fail-closed).
 
-After rev-3, a formerly-published now-quarantined symbol returns HTTP 500 from Apex (fail-closed) like INTC — not a stale 200 with garbage.
+- [ ] **Step 4: Run it, then commit**
 
-> This is a genuine lifecycle gap in the current silver revision model, surfaced by review. It may warrant folding into the spec as a first-class "revision removal" contract rather than a bolt-on. **Flag to the spec owner before implementing.**
+Run: `uv run pytest tests/test_silver_legacy_repair_e2e.py -v` — both e2e tests pass.
+Commit: `test(silver): guard quarantined symbols are absent from published manifest`.
+
+> **Residual, disclosed:** whether Apex actively evicts a previously-reseeded
+> symbol under *incremental* adjusted publishing is unverified. It does not affect
+> the rev-3 full publish (Silver has only an experimental 3-symbol rev-2 and Apex
+> master is still bronze-raw mode). Revisit before adopting incremental adjusted
+> revisions.
 
 ---
 
