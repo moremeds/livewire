@@ -383,6 +383,51 @@ def test_resume_cursor_identity_mismatch_raises(tmp_path):
         )
 
 
+def test_summarize_progress_quantifies_tail():
+    # Full audit saw 300 mixed of 8305; first batch attempted 100, 8 ambiguous.
+    audit = {"counts": {"clean": 8000, "mixed": 300, "error": 5}}
+    batch = {"counts": {"done": 90, "ambiguous": 8, "failed": 2}}
+    s = repair_legacy_basis.summarize_progress(audit, batch)
+    assert s["audit_mixed"] == 300
+    assert s["audit_mixed_rate"] == round(300 / 8305, 4)
+    assert s["batch_attempted"] == 100
+    assert s["batch_ambiguous_rate"] == 0.08
+    assert s["tail_mixed_exact"] == 200            # 300 total mixed − 100 attempted
+    assert s["tail_estimated_unrepairable"] == 16  # 200 × 0.08, rounded
+
+
+def test_priority_only_skips_unranked_tail_symbols(tmp_path):
+    _seed_mixed(tmp_path, "AAPL")   # sp500 member
+    _seed_mixed(tmp_path, "ZZZQ")   # in no priority preset
+    bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
+    import hashlib
+    def _entry(sym):
+        p = bronze.symbol_path(sym)
+        return {"symbol": sym, "path": str(p),
+                "source_sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+                "klass": "mixed", "break_date": "2021-06-18"}
+    manifest_path = tmp_path / "audit.json"
+    manifest_path.write_text(json.dumps(
+        {"schema_version": 1, "data_lake_root": str(tmp_path.resolve()),
+         "symbols": [_entry("AAPL"), _entry("ZZZQ")]}))
+    ib_rows = {s: [{"trade_date": d, "symbol_id": 0, "open": c, "high": c, "low": c,
+                    "close": c, "adj_close": c, "volume": 100, "source": "ib",
+                    "price_basis": "split_adjusted", "currency": "USD"}
+                   for d, c in ((date(2021, 6, 17), 186.57), (date(2021, 6, 18), 186.4),
+                                (date(2021, 6, 21), 184.27))]
+               for s in ("AAPL", "ZZZQ")}
+    output_dir = tmp_path / "out"
+    rc = repair_legacy_basis.run(
+        ["--audit-manifest", str(manifest_path), "--output-dir", str(output_dir),
+         "--priority-only"],
+        data_lake_root=tmp_path, ib_factory=lambda: object(),
+        ib_fetcher_factory=_clean_ib_fetcher(ib_rows))
+    assert rc == 0
+    cursor = json.loads((output_dir / "cursor.json").read_text())
+    assert "AAPL" in cursor["completed"]      # ranked → processed
+    assert "ZZZQ" not in cursor["completed"]  # unranked tail → deferred
+
+
 def test_main_delegates_to_run(monkeypatch):
     seen = {}
 

@@ -44,6 +44,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--host", default=os.environ.get("MDW_IB_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("MDW_IB_PORT", "4001")))
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--priority-only", action="store_true",
+                        help="repair only sp500/ndx100/r2k members; defer the tail to a later full run")
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -136,7 +138,10 @@ def run(
     audit = json.loads(args.audit_manifest.read_text())
     audit_sha256 = _sha256(args.audit_manifest)
     mixed = [item["symbol"] for item in audit["symbols"] if item.get("klass") == "mixed"]
-    ordered = _order_symbols(mixed, _priority_rank(args.presets_dir))
+    rank = _priority_rank(args.presets_dir)
+    ordered = _order_symbols(mixed, rank)
+    if args.priority_only:
+        ordered = [s for s in ordered if s in rank]  # rank holds only preset members
 
     identity = {"schema_version": SCHEMA_VERSION, "audit_sha256": audit_sha256, "data_lake_root": str(root.resolve())}
     cursor_path = args.output_dir / "cursor.json"
@@ -216,6 +221,33 @@ def run(
     )
     print(json.dumps({"counts": counts, "symbols": len(ordered)}, sort_keys=True))
     return 0 if counts["failed"] == 0 else 1
+
+
+def summarize_progress(audit_manifest: dict, batch_summary: dict) -> dict:
+    """Quantify remaining tail work from a full audit + a first (priority-only) batch.
+
+    The audit is full-universe, so ``tail_mixed_exact`` is exact, not projected.
+    Only the tail's un-repairable share is estimated, using the batch's observed
+    ambiguous rate as the sample (each tail mixed symbol = one deep IB fetch).
+    """
+    ac = audit_manifest["counts"]
+    total = ac["clean"] + ac["mixed"] + ac["error"]
+    mixed_total = ac["mixed"]
+    bc = batch_summary["counts"]
+    attempted = bc["done"] + bc["ambiguous"] + bc["failed"]
+    tail_mixed = max(0, mixed_total - attempted)
+    amb_rate = (bc["ambiguous"] / attempted) if attempted else 0.0
+    return {
+        "audit_total": total,
+        "audit_mixed": mixed_total,
+        "audit_mixed_rate": round(mixed_total / total, 4) if total else 0.0,
+        "batch_attempted": attempted,
+        "batch_done": bc["done"],
+        "batch_ambiguous": bc["ambiguous"],
+        "batch_ambiguous_rate": round(amb_rate, 4),
+        "tail_mixed_exact": tail_mixed,
+        "tail_estimated_unrepairable": round(tail_mixed * amb_rate),
+    }
 
 
 def main(argv: Sequence[str] | None = None) -> int:
