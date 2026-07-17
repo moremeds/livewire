@@ -144,9 +144,14 @@ def triage_break(
             raise RetryableProviderError(f"{symbol}@{break_date}: {exc}") from exc
         result["reason"] = f"provider error: {exc}"
         return result
-    except Exception as exc:  # a provider adapter we do not model — never crash the batch
-        result["reason"] = f"provider error: {exc}"
-        return result
+    except Exception as exc:
+        # An exception we do not model is the LEAST evidence we have that the provider
+        # actually answered, so it must not become the most permanent kind of answer.
+        # Only the cases above — where the provider demonstrably replied — may
+        # checkpoint. Retryable does not crash the batch: triage_breaks aborts without
+        # checkpointing and --resume re-asks. Failing loudly on an unmodelled error
+        # beats silently trimming real history on it.
+        raise RetryableProviderError(f"{symbol}@{break_date}: unexpected {type(exc).__name__}: {exc}") from exc
     if not raw:
         result["reason"] = "provider returned no raw bars for the window"
         return result

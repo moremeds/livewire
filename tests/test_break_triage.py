@@ -89,16 +89,18 @@ def test_provider_missing_the_break_date_is_inconclusive():
     assert result["verdict"] == "inconclusive"
 
 
-def test_an_unmodelled_adapter_error_is_inconclusive_not_a_crash():
-    """A bug in our own adapter must not take the batch down. Deliberately NOT a
-    transient — those raise (see the retryable tests below)."""
+def test_an_unmodelled_adapter_error_is_retryable_not_a_permanent_verdict():
+    """An exception we do not model is the LEAST evidence the provider answered, so it
+    must not produce the most permanent kind of answer: inconclusive trims, and the
+    verdict store is durable, so one unmodelled blip would amputate real history for
+    good. Retryable is not a crash — the batch aborts without checkpointing and
+    --resume re-asks. Only a provider that demonstrably replied may checkpoint."""
 
     def _boom(symbol, start, end):
         raise RuntimeError("bar payload had no 'c' key")
 
-    result = triage_break("NVDA", "2021-06-11", 40.9, fetch_raw=_boom, fetch_adjusted=_boom)
-    assert result["verdict"] == "inconclusive"
-    assert "no 'c' key" in result["reason"]
+    with pytest.raises(RetryableProviderError, match="unexpected RuntimeError"):
+        triage_break("NVDA", "2021-06-11", 40.9, fetch_raw=_boom, fetch_adjusted=_boom)
 
 
 def test_a_wrapped_connection_failure_is_retryable_not_a_verdict():

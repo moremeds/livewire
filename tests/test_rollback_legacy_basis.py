@@ -128,3 +128,37 @@ def test_main_delegates_to_run(monkeypatch):
     monkeypatch.setattr(rollback_legacy_basis, "run", _fake_run)
     assert rollback_legacy_basis.main(["--output-dir", "out"]) == 0
     assert seen["argv"] == ["--output-dir", "out"]
+
+
+def test_a_crash_between_the_bronze_mutation_and_the_final_sidecar_is_still_undoable(tmp_path):
+    """Bronze is the system of record, so every mutation must be undoable by the
+    supplied command — not merely by an operator who knows the backup naming scheme.
+    _repair_one mutates bronze and only then returns, and the caller writes the
+    terminal sidecar after that; a kill in between (OOM, power cut) used to leave
+    mutated bronze plus a backup nothing pointed at, which rollback skipped because it
+    only restores symbols a sidecar names. The write-ahead intent sidecar closes it."""
+    bronze_path, output_dir, before = _repair(tmp_path)
+    mutated = bronze_path.read_bytes()
+    sidecar_path = next((output_dir / "symbols").glob("*.json"))
+    sidecar = json.loads(sidecar_path.read_text())
+
+    # Rewind to the crash window: bronze is already mutated, the backup exists, but the
+    # terminal sidecar never landed — only the write-ahead intent did.
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "symbol": sidecar["symbol"],
+                "status": "in_progress",
+                "backup_path": sidecar["backup_path"],
+                "backup_sha256": sidecar["backup_sha256"],
+            }
+        )
+    )
+
+    rc = rollback_legacy_basis.run(["--output-dir", str(output_dir)], data_lake_root=tmp_path)
+
+    assert rc == 0
+    restored = bronze_path.read_bytes()
+    assert restored != mutated  # the mutation was undone, not stranded
+    assert restored == before
+    assert hashlib.sha256(restored).hexdigest() == sidecar["backup_sha256"]

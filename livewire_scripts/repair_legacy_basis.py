@@ -162,6 +162,22 @@ def _repair_one(
     if backup_dir is None:
         return "would-repair", {"symbol": symbol, "rows_would_write": len(ib_only)}
     saved = backup_symbol(bronze, symbol, backup_dir)
+    # Write-ahead intent, NOT a redundant sidecar: the next line mutates bronze, the
+    # system of record, and the caller does not write this symbol's sidecar until
+    # _repair_one returns. A crash in that window (OOM kill, power cut) would leave
+    # mutated bronze plus a backup that nothing points at, and rollback restores only
+    # symbols a sidecar names — i.e. a mutation that cannot be undone by the supplied
+    # command. Record where the undo lives BEFORE taking the action that needs undoing.
+    # The caller atomically replaces this with the terminal sidecar.
+    _write_atomic(
+        backup_dir.parent / "symbols" / f"{encode_symbol(symbol)}.json",
+        {
+            "symbol": symbol,
+            "status": "in_progress",
+            "backup_path": saved["backup_path"],
+            "backup_sha256": saved["sha256"],
+        },
+    )
     inserted = bronze.merge_ticker_rows(symbol, ib_only)
     return "done", {
         "symbol": symbol,

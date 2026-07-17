@@ -101,6 +101,12 @@ def _classify(bronze: BronzeClient, store: CorporateActionStore, symbol: str, as
         # and a break the audit never reports is a break that never gets triaged and
         # whose real history the window then trims away permanently.
         entry["breaks"] = find_breaks(adjusted, threshold=threshold)
+        # Not a redundant second scan of what find_breaks just computed — do NOT
+        # "simplify" it into `if entry["breaks"]`. The two disagree on purpose about a
+        # non-positive close: find_breaks records it as a break (ratio None), this
+        # raises a plain ValueError, which the handler below routes to `error`. That
+        # routing matters — `mixed` is fed to IB repair, `error` is not, and a symbol
+        # with a zero close is not a basis problem repair can fix.
         check_adjusted_continuity(adjusted, threshold=threshold)
     except ContinuityBreak as exc:
         entry["klass"] = "mixed"

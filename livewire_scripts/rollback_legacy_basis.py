@@ -45,7 +45,12 @@ def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None
     for sidecar_path in sorted((args.output_dir / "symbols").glob("*.json")):
         sidecar = json.loads(sidecar_path.read_text())
         symbol = sidecar.get("symbol")
-        if sidecar.get("status") != "done":
+        # "in_progress" means the repair recorded its write-ahead intent and then died
+        # before its terminal sidecar — bronze may or may not have been mutated, and
+        # only this restore can tell the difference. Skipping it would strand exactly
+        # the mutation that most needs undoing. Restoring an unmutated symbol just
+        # rewrites identical bytes.
+        if sidecar.get("status") not in ("done", "in_progress"):
             continue
         if wanted is not None and symbol not in wanted:
             continue
