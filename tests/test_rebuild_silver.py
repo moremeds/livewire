@@ -44,6 +44,39 @@ def _split(root, symbol="NVDA"):
     CorporateActionStore(root).reconcile(symbol, [event], datetime(2026, 1, 4, tzinfo=UTC))
 
 
+def _seed_bronze(root, symbol, rows_spec, *, source="massive", price_basis="raw"):
+    """Bronze rows at explicit ISO dates. `rows_spec` is [(iso_date, close), ...]."""
+    rows = [
+        {
+            "trade_date": iso_date,
+            "symbol_id": 7,
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "adj_close": close,
+            "volume": 1_000,
+            "source": source,
+            "price_basis": price_basis,
+        }
+        for iso_date, close in rows_spec
+    ]
+    BronzeClient(root / "bronze/asset_class=equity", "equity").replace_ticker_rows(symbol, rows)
+
+
+def _seed_split(root, symbol, ex_date, split_from, split_to):
+    """One active split at an explicit ex-date."""
+    event = MassiveSplit(
+        provider_event_id=f"{symbol}-{ex_date}",
+        ticker=symbol,
+        execution_date=date.fromisoformat(ex_date),
+        split_from=Decimal(str(split_from)),
+        split_to=Decimal(str(split_to)),
+        payload_hash=f"{symbol}-{ex_date}-hash",
+    )
+    CorporateActionStore(root).reconcile(symbol, [event], datetime(2026, 1, 4, tzinfo=UTC))
+
+
 def test_targeted_rebuild_publishes_daily_factors_and_manifest(tmp_path, capsys):
     _bronze(tmp_path, "NVDA")
     _split(tmp_path)

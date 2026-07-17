@@ -35,6 +35,27 @@ def _seed_symbol(root, ticker, rows_spec, split=None):
     return bronze / f"symbol={ticker}/1d.parquet"
 
 
+_seed_bronze = _seed_symbol
+
+
+def _seed_split(root, symbol, ex_date, split_from, split_to):
+    event = MassiveSplit(
+        provider_event_id=f"{symbol}-{ex_date}",
+        ticker=symbol,
+        execution_date=date.fromisoformat(ex_date),
+        split_from=Decimal(str(split_from)),
+        split_to=Decimal(str(split_to)),
+        payload_hash=f"{symbol}-{ex_date}-hash",
+    )
+    CorporateActionStore(root).reconcile(symbol, [event], datetime(2026, 1, 4, tzinfo=UTC))
+
+
+def _entry(output_path, symbol):
+    """The manifest entry for one symbol."""
+    manifest = json.loads(output_path.read_text())
+    return next(item for item in manifest["symbols"] if item["symbol"] == symbol)
+
+
 def test_mixed_symbol_classified_mixed_and_audit_is_read_only(tmp_path):
     split = MassiveSplit(
         provider_event_id="nvda",
