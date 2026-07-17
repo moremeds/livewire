@@ -64,17 +64,10 @@ def predict_boundary_fold(actions: list[CorporateAction], *, window_end: str = S
     return max(fold, 1.0 / fold)
 
 
-def measure_boundary_jump(
-    rows: list[dict], *, window_start: str = SEED_WINDOW_START, window_end: str = SEED_WINDOW_END
-) -> tuple[str, float] | None:
-    """Largest adjacent-day close-ratio magnitude stepping into the seed window.
-
-    Returns ``(date, ratio)`` for the largest step whose *later* date is inside the
-    window, or ``None`` when no such adjacent pair exists (symbol seeded later, or
-    no pre-window history).
-    """
+def _steps_into_window(rows: list[dict], window_start: str, window_end: str) -> list[tuple[str, float]]:
+    """Every adjacent-day close-ratio magnitude whose later date is inside the window."""
     ordered = sorted(rows, key=lambda row: str(row["trade_date"])[:10])
-    best: tuple[str, float] | None = None
+    steps: list[tuple[str, float]] = []
     for previous, current in zip(ordered, ordered[1:], strict=False):
         current_date = str(current["trade_date"])[:10]
         if not (window_start <= current_date <= window_end):
@@ -88,10 +81,25 @@ def measure_boundary_jump(
             continue
         if previous_close <= 0 or current_close <= 0:
             continue
-        ratio = max(current_close / previous_close, previous_close / current_close)
-        if best is None or ratio > best[1]:
-            best = (current_date, ratio)
-    return best
+        steps.append((current_date, max(current_close / previous_close, previous_close / current_close)))
+    return steps
+
+
+def measure_boundary_jump(
+    rows: list[dict], *, window_start: str = SEED_WINDOW_START, window_end: str = SEED_WINDOW_END
+) -> tuple[str, float] | None:
+    """Largest adjacent-day close-ratio magnitude stepping into the seed window.
+
+    Returns ``(date, ratio)`` for the largest step whose *later* date is inside the
+    window, or ``None`` when no such adjacent pair exists (symbol seeded later, or
+    no pre-window history). Largest is the right choice for *detection* — it is the
+    strongest evidence the symbol carries. Deciding the trim floor is a different
+    question; see :func:`classify_seed_boundary`.
+    """
+    steps = _steps_into_window(rows, window_start, window_end)
+    if not steps:
+        return None
+    return max(steps, key=lambda step: step[1])
 
 
 def classify_seed_boundary(
@@ -104,13 +112,22 @@ def classify_seed_boundary(
 ) -> dict:
     """Measure the boundary against the predicted fold.
 
-    ``corrupt`` when the observed step matches the predicted fold within
-    ``tolerance`` (log space) and the fold outruns daily noise; ``inconclusive``
-    when the fold is too small to be evidence or the boundary is unmeasurable;
-    ``clean`` otherwise — including a predicted fold with a flat boundary.
+    ``corrupt`` when an observed step matches the predicted fold within ``tolerance``
+    (log space) and the fold outruns daily noise; ``inconclusive`` when the fold is
+    too small to be evidence or the boundary is unmeasurable; ``clean`` otherwise —
+    including a predicted fold with a flat boundary.
+
+    ``date`` is the EARLIEST step matching the fold, not the largest. Callers trim to
+    it, and the seed boundary is where the back-adjusted prefix ends — anything later
+    that also matches is a straggler bad bar sitting inside otherwise-good history
+    (APH: a true boundary at 2021-06-11 and a lone back-adjusted bar at 2021-06-18,
+    whose step is marginally the larger of the two). Trimming to the straggler would
+    both amputate the good days between them and publish the straggler as the
+    window's FIRST bar.
     """
     fold = predict_boundary_fold(actions, window_end=window_end)
-    measured = measure_boundary_jump(rows, window_start=window_start, window_end=window_end)
+    steps = _steps_into_window(rows, window_start, window_end)
+    measured = max(steps, key=lambda step: step[1]) if steps else None
     result: dict = {
         "fold": fold,
         "observed": None if measured is None else measured[1],
@@ -125,8 +142,12 @@ def classify_seed_boundary(
     if abs(math.log(fold)) < MIN_CONFIDENT_LOG_FOLD:
         result["verdict"] = "inconclusive"
         return result
-    if abs(math.log(measured[1]) - math.log(fold)) <= tolerance:
+    matching = [step for step in steps if abs(math.log(step[1]) - math.log(fold)) <= tolerance]
+    if matching:
+        boundary = min(matching, key=lambda step: step[0])
         result["verdict"] = "corrupt"
+        result["date"] = boundary[0]
+        result["observed"] = boundary[1]
     return result
 
 

@@ -166,3 +166,27 @@ def test_a_non_numeric_close_is_skipped_rather_than_crashing():
 def test_a_non_finite_close_is_skipped_rather_than_crashing():
     rows = [{"trade_date": "2021-06-17", "close": float("inf")}, {"trade_date": "2021-06-18", "close": 351.1214}]
     assert measure_boundary_jump(rows) is None
+
+
+def test_the_floor_is_the_earliest_matching_step_not_the_largest():
+    """Real APH bronze (frozen 2026-07-17): a true seed boundary at 2021-06-11 and a
+    lone back-adjusted straggler at 2021-06-18, whose step (2.03x) is marginally the
+    LARGER. Trimming to the straggler would drop the good 06-11..06-17 days and
+    publish the straggler's corrupt 33.14 close as the window's first bar."""
+    rows = _rows(
+        [
+            ("2021-06-10", 34.13),
+            ("2021-06-11", 68.45),
+            ("2021-06-14", 68.31),
+            ("2021-06-15", 68.43),
+            ("2021-06-16", 68.22),
+            ("2021-06-17", 67.39),
+            ("2021-06-18", 33.14),
+            ("2021-06-21", 67.03),
+        ]
+    )
+    result = classify_seed_boundary(rows, APH_SPLITS)
+    assert result["verdict"] == "corrupt"
+    assert result["date"] == "2021-06-11"  # the boundary, not the 2.03x straggler
+    # measure_boundary_jump still reports the strongest evidence, for detection.
+    assert measure_boundary_jump(rows) == ("2021-06-18", pytest.approx(2.03, rel=0.01))
