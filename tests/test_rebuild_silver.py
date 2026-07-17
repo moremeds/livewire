@@ -754,3 +754,41 @@ def test_an_all_quarantined_universe_refuses_to_publish_rather_than_evicting(tmp
 
     # Nothing moved: the manifest and the tree still agree.
     assert (silver / "asset_class=equity/symbol=INTC/1d.parquet").is_file()
+
+
+def test_a_vanished_artifact_is_not_carried_into_the_manifest(tmp_path):
+    """Apex verifies every manifested artifact's sha256 on each poll and rejects the
+    whole revision on a mismatch, so manifesting a file that is no longer on disk
+    would blank the service rather than drop one symbol."""
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
+    _seed_bronze(root, "MSFT", [("2024-01-02", 370.87), ("2024-01-03", 370.60)])
+    rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    # MSFT's artifact disappears out from under us (operator action, disk fault).
+    (silver / "asset_class=equity/symbol=MSFT/1d.parquet").unlink()
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25), ("2024-01-04", 181.91)])
+
+    rebuild_silver.run(["--tickers", "AAPL"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+
+    current = json.loads((silver / "revisions/current.json").read_text())
+    paths = [a["path"] for a in current["artifacts"]]
+    assert any("symbol=AAPL" in p for p in paths)
+    assert not any("symbol=MSFT" in p for p in paths)  # not manifested — it is gone
+
+
+def test_an_unreadable_published_artifact_is_treated_as_changed(tmp_path):
+    """_matches_existing must not crash the rebuild on a truncated parquet."""
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
+    rebuild_silver.run(["--tickers", "AAPL"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    (silver / "asset_class=equity/symbol=AAPL/1d.parquet").write_bytes(b"not a parquet")
+
+    assert (
+        rebuild_silver.run(
+            ["--tickers", "AAPL"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17)
+        )
+        == 0
+    )
+
+    published = pq.ParquetFile(silver / "asset_class=equity/symbol=AAPL/1d.parquet").read().to_pylist()
+    assert len(published) == 2  # republished over the corruption

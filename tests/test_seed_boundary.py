@@ -147,3 +147,22 @@ def test_non_positive_close_is_inconclusive_not_a_crash():
         classify_seed_boundary(_rows([("2021-06-17", 0.0), ("2021-06-18", 351.1214)]), FUBO_SPLITS)["verdict"]
         == "inconclusive"
     )
+
+
+def test_a_split_with_no_ratio_recorded_is_ignored_not_a_crash():
+    """split_from/split_to are nullable in the CA store."""
+    assert predict_boundary_fold([_split("FUBO", "2026-03-24", None, None)]) == pytest.approx(1.0)
+
+
+def test_a_zero_ratio_split_cannot_produce_a_nonsense_fold():
+    assert predict_boundary_fold([_split("FUBO", "2026-03-24", 0, 12)]) == pytest.approx(1.0)
+
+
+def test_a_non_numeric_close_is_skipped_rather_than_crashing():
+    rows = [{"trade_date": "2021-06-17", "close": "n/a"}, {"trade_date": "2021-06-18", "close": 351.1214}]
+    assert measure_boundary_jump(rows) is None
+
+
+def test_a_non_finite_close_is_skipped_rather_than_crashing():
+    rows = [{"trade_date": "2021-06-17", "close": float("inf")}, {"trade_date": "2021-06-18", "close": 351.1214}]
+    assert measure_boundary_jump(rows) is None

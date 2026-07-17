@@ -76,9 +76,11 @@ Postgres publishes replayable `md.*` analytical tables from canonical bronze par
 
 ## IB Gateway / IBC
 
-**IB Gateway + IBC run on the Mac mini, not on this MacBook.** Livewire is a remote consumer of that infrastructure — this repo does not install, configure, or restart the Gateway. (Earlier local-install notes here — `/opt/ibc/`, `~/ibc/`, local watchdog LaunchAgents — described a setup that no longer applies to this machine.)
+**IB Gateway + IBC run on the Mac mini — which is the host these sessions run ON.** Livewire is a consumer of that infrastructure and this repo does not install, configure, or restart the Gateway. (Earlier local-install notes here — `/opt/ibc/`, `~/ibc/`, local watchdog LaunchAgents — described a setup that no longer applies.)
 
-- **Connection**: `MDW_IB_HOST`/`MDW_IB_PORT` env vars or `--host`/`--port` flags. The code default is `127.0.0.1:4001`; point at the mini for real runs.
+⚠️ **Connect to `127.0.0.1:4001`, never the LAN IP.** The mini's LAN address is TCP-open, so `nc -z` succeeds against it — but `TrustedTwsApiClientIPs` is empty, so an API connection there silently times out after ~4 minutes with no error. A "hanging" IB run is almost always this. An earlier version of this file framed the Gateway as remote from the working host; it is not.
+
+- **Connection**: `MDW_IB_HOST`/`MDW_IB_PORT` env vars or `--host`/`--port` flags. The code default, `127.0.0.1:4001`, is already correct — do not override it with the LAN IP.
 - **Gateway version**: pinned to **10.45** (10.46 is incompatible)
 - **Trading mode**: live; **2FA** is approved manually in IBKR Mobile on every fresh login — livewire cannot bypass this
 - **Do NOT**: write order-management workflows, attempt to restart/manage the Gateway from this repo, or auto-retry on connection failure (failures usually mean 2FA, IBKR maintenance, session conflict, or market-data permission — not something livewire should recover)
@@ -120,10 +122,15 @@ Operational commands for this contract are
 `scripts/livewire_quality.py calibrate-daily-basis`,
 `scripts/livewire_store.py migrate-price-basis`,
 `scripts/livewire_quality.py audit-split-basis`,
-`scripts/livewire_quality.py resolve-split-basis`, and
-`scripts/livewire_store.py repair-split-basis`. Audit manifests record their
+`scripts/livewire_quality.py resolve-split-basis`,
+`scripts/livewire_store.py repair-split-basis`,
+`scripts/livewire_quality.py audit-legacy-basis`,
+`scripts/livewire_quality.py triage-breaks`,
+`scripts/livewire_store.py repair-legacy-basis`, and
+`scripts/livewire_store.py rollback-legacy-basis`. Audit manifests record their
 resolved data-lake root; repair and rollback reject a different active root
-before mutation. Prehistory splits do not affect stored rows; post-history
+before mutation, and reject a manifest with no root recorded rather than failing
+open. Prehistory splits do not affect stored rows; post-history
 splits stay pending until repeated provider evidence confirms the effective
 post-event basis. Ambiguous in-history events may be resolved from resumable,
 repeated IB evidence, which the audit replays against current Bronze and action
@@ -134,6 +141,14 @@ ambiguous; repeated provider evidence may also repair
 nonpositive OHLC fields in the row's existing basis. Silver applies split
 factors only to rows marked raw and fails closed on split-affected unknown rows;
 dividend adjustment remains independent.
+
+⚠️ **~90% of the equity universe is `price_basis='unknown'`** (`source='legacy'`).
+Those symbols stage today only because they have no splits — `build_factor_intervals`
+raises `unknown price_basis for split-affected row` the moment a split touches one,
+and the symbol is quarantined and evicted. INTC is exactly this shape (`unknown` ×
+11,676 rows). Any new split against that population converts a clean symbol into a
+quarantined one, so this is the standing threat to "newly added data is always
+silver grade" — not a hypothetical.
 
 ### IB BarData → Futures Bronze mapping
 
@@ -169,6 +184,10 @@ python scripts/livewire_ingest.py corporate-actions --workers 4 --resume --full-
 python scripts/livewire_ingest.py corporate-actions --dry-run                                    # Compare without publishing
 python scripts/livewire_store.py rebuild-silver --tickers NVDA AAPL SPY                          # Targeted adjusted daily/factor rebuild
 python scripts/livewire_store.py rebuild-silver --full --dry-run                                 # Full comparison without publishing
+python scripts/livewire_quality.py audit-legacy-basis --full --output <lake>/repairs/.../audit.json  # Read-only basis audit (both detectors)
+python scripts/livewire_quality.py triage-breaks --audit-manifest <.../audit.json> --output <lake>/repairs/triage/current.json --resume
+python scripts/livewire_store.py repair-legacy-basis --audit-manifest <.../audit.json> --output-dir <.../batch1> --priority-only --resume
+python scripts/livewire_store.py rollback-legacy-basis --output-dir <.../batch1>                 # Undo a repair batch from its backups
 python livewire_scripts/validate_silver_canary.py --tickers NVDA AAPL SPY --control SYMBOL       # Read-only factor/OHLCV/bronze-integrity canary
 python scripts/livewire_ingest.py historical --preset presets/futures-index.json --asset-class futures  # CME/CBOT index futures
 python scripts/livewire_ingest.py historical --preset presets/futures-energy.json --asset-class futures  # NYMEX energy futures
@@ -191,52 +210,156 @@ Silver artifacts are published beneath `MDW_SILVER_DIR` (default
 factor files contain exhaustive date intervals. Immutable revision manifests are
 written before `current.json`, which is the final cross-file commit record.
 
-#### Silver publish continuity gate
+#### The silver-grade window
 
-`rebuild-silver` runs a pure continuity invariant
-(`clients/silver_continuity.check_adjusted_continuity`, default threshold `6.0`,
-tunable via `--continuity-threshold`) on every symbol's adjusted series during
-staging. A symbol whose adjusted daily closes still have a >threshold adjacent-day
-jump — the signature of already-adjusted legacy rows mislabeled `price_basis='raw'`
-that got split-divided a second time — is **quarantined** into `failures` instead
-of published, while the rest of the universe still publishes. The gate is always
-on; there is no flag to disable it.
+**The contract: every symbol publishes the longest suffix of its history that is
+silver grade. Deep history is not a goal — a symbol may publish a short series;
+what it publishes must be right. Data added at either end (backfilled history or a
+new daily bar) is silver grade or it does not publish.**
+
+The window is **derived on every publish and never persisted**, so backfilled
+history extends it by itself once the data supports it.
+
+`rebuild-silver` applies **two trims, in this order**. Neither subsumes the other:
+
+1. **The seed floor** — `clients/seed_boundary.classify_seed_boundary`, applied to
+   **raw bronze before adjustment**. Deterministic: it looks at a known location
+   (the 2021-06-11→21 bulk-seed window) and compares the observed step against the
+   fold *predicted* from the corporate-action store. No threshold to tune. This is
+   the only detector that sees the **2×–5× class** — the blind heuristic missed 63
+   such symbols (APH, TSLA, GE, WMT, CSX, SOXX…), which classified `clean` while
+   their pre-seed history was double-adjusted. It **measures rather than assumes**:
+   KLAC/COO have a predicted fold but a flat boundary and stay clean. A
+   seed-corrupt symbol is **trimmed to its post-seed window, not quarantined** —
+   its ~5 years of post-2021-06 history are perfectly good.
+2. **The window scan** — `clients/silver_window.resolve_window`, a blind
+   >`--continuity-threshold` (default `6.0`) scan over the **adjusted** series, for
+   every other unexplained break. Exempt evidence-backed dates with
+   `--continuity-allowlist <ISO_DATE>…` (global by date, not per-symbol).
+
+Everything this design does happens **above 6.0**. A symbol whose only unexplained
+break is 3×–5× publishes with that break intact — a 4× single-day move is ordinary
+for a small cap, and trimming them all would amputate more real history than it
+repairs. The honest claim is: *everything published is silver grade at the 6.0
+definition.* Nothing assumes 6.0; lower the threshold and re-triage if that changes.
+
+A symbol that cannot stage at all (e.g. `unknown price_basis` against a split) is
+quarantined — and quarantine means its artifact is **moved to
+`<silver>/evicted/<revision>/…`**, not merely dropped from the manifest. Apex
+resolves symbols by path construction and never consults the manifest for
+membership, so an un-manifested file keeps serving stale data forever; moving it is
+the only eviction Apex can perceive (it then fails closed with HTTP 500).
+
+Factor intervals are deliberately **wider** than the daily window: Apex LEFT JOINs
+bronze intraday bars onto them and hard-fails on any uncovered bar, and bronze
+intraday extends before a trimmed window. Never narrow factors to match the daily
+file.
+
+#### Break triage — keeping real market moves
+
+Not every discontinuity is corruption. `scripts/livewire_quality.py triage-breaks`
+classifies each break the audit recorded against Massive as a *second source*
+(`clients/break_triage.py`), using both bases:
+
+| Signal | Verdict | Effect |
+|---|---|---|
+| Our jump present in Massive's **raw** series | `real_move` | keep — never trimmed |
+| Our jump absent from Massive's raw series | `bad_data` | trim |
+| Massive's **adjusted÷raw** factor steps across the date | `missing_action` | trim (the record is what's missing, not the price) |
+| Provider cannot answer | `inconclusive` | trim |
+
+```bash
+python scripts/livewire_quality.py triage-breaks \
+    --audit-manifest <.../audit.json> --output <lake>/repairs/triage/current.json --resume
+```
+
+- **`/v2/aggs` is entitled for a rolling ~5 years only** (floor measured
+  **2021-07-12** on 2026-07-17). Every older break is `inconclusive` — always. A
+  large `inconclusive` count is the expected shape, not a failure.
+- **The floor rolls, so the verdict manifest is durable and default-loaded** from
+  `<data-lake-root>/repairs/triage/current.json`. The nightly job passes no flags;
+  without the verdicts at that path every confirmed `real_move` is re-read as an
+  unexplained break and trimmed the next night. Never delete the verdict store to
+  "force a re-triage" — a verdict obtained today may be unobtainable next year.
+- Transient provider failures (rate-limit, 5xx, timeout, a wrapped connection
+  failure) **abort the run and are never checkpointed**; `--resume` re-asks them.
+- The run probes the credentials against an entitled date first: a bad key 401s on
+  every request, which is indistinguishable from the entitlement floor and would
+  otherwise trim the whole population silently.
+
+#### Window regressions — the prevention invariant
+
+A symbol whose window start moves **later** than the revision currently serving it
+is **withheld from republication** and keeps serving its previous window. This is
+the fail-closed half of the contract: the suffix rule trusts the newer side of a
+break, which is right for the 2021-06 seed artifact and wrong for a bad new bar —
+a corrupt close arriving tonight would otherwise collapse the window onto itself
+and publish one garbage row. The nightly digest reports the count under
+**Silver rebuild**; the run still exits 0, so the digest is the only alert.
+
+`--allow-window-regression` overrides it. **Required exactly once, for the rev-3
+bootstrap**, because rev-2 published untrimmed history and every intentional trim
+looks like a regression on that first run.
 
 #### Legacy-basis full repair → rev-3 (operator-reviewed, resumable)
 
-Two commands feed the gate: an offline audit that classifies the legacy population
-`clean`/`mixed`/`error`, and a resumable IB re-derivation that rewrites `mixed`
-symbols to canonical true-raw. Then a single `rebuild-silver --full` publishes
-rev-3. Run the phases in order and **review the `mixed` count before touching IB**:
+Two commands feed the window: an offline audit that classifies the legacy population
+`clean`/`mixed`/`error` with **both** detectors, and a resumable IB re-derivation
+that rewrites `mixed` symbols to canonical true-raw. Then a single
+`rebuild-silver --full` publishes rev-3. Run the phases in order and **review the
+`mixed` count before touching IB**:
 
 ```bash
+# Run these FROM THE REPO ROOT: --presets-dir defaults to a cwd-relative Path("presets"),
+# so --priority-only elsewhere used to silently repair zero symbols and exit 0. It now errors.
+
 # 1. Offline audit → manifest (read-only; never mutates bronze). REVIEW counts{clean,mixed,error}.
 python scripts/livewire_quality.py audit-legacy-basis --full \
     --output <lake>/repairs/silver-legacy-basis/<stamp>/audit.json
 
 # 2a. FIRST BATCH ONLY — sp500 + ndx100 + r2k members (defer the ~10.6K tail).
 #     IB re-derivation is 2FA-gated and never auto-retries a connection failure.
+#     --dry-run first: fetch, classify and self-check with no bronze write (status "would-repair").
+python scripts/livewire_store.py repair-legacy-basis \
+    --audit-manifest <.../audit.json> --output-dir <.../repair-batch1> --priority-only --dry-run
 python scripts/livewire_store.py repair-legacy-basis \
     --audit-manifest <.../audit.json> --output-dir <.../repair-batch1> --priority-only --resume
+# Every mutated parquet is copied verbatim to <output-dir>/backup/ FIRST; the sidecar
+# records backup_sha256. To undo the batch (or one symbol):
+python scripts/livewire_store.py rollback-legacy-basis --output-dir <.../repair-batch1> [--tickers NVDA]
 
 # 2b. STOP GATE — quantify the tail BEFORE committing to it.
 python -c "import json; from livewire_scripts.repair_legacy_basis import summarize_progress; \
 print(json.dumps(summarize_progress(json.load(open('<.../audit.json>')), \
-json.load(open('<.../repair-batch1>/summary.json'))), indent=2))"
-# Decide from tail_mixed_exact + tail_estimated_unrepairable:
+json.load(open('<.../repair-batch1>/summary.json')), \
+cursor=json.load(open('<.../repair-batch1>/cursor.json'))), indent=2))"
+# tail_mixed_exact appears only when the batch ran to completion; an aborted batch
+# reports tail_mixed_lower_bound instead. Decide with tail_estimated_unrepairable:
 #   small tail, low ambiguous rate  → run the full tail now (drop --priority-only, keep --resume,
 #                                     reuse --output-dir so the cursor skips done symbols)
 #   large tail / high ambiguous rate → schedule a dedicated 2FA-gated IB batch run first
 python scripts/livewire_store.py repair-legacy-basis \
     --audit-manifest <.../audit.json> --output-dir <.../repair-batch1> --resume   # tail (no --priority-only)
 
-# 3. Freeze the three writers, single rev-3 publish, restore writers EVEN IF rebuild fails.
+# 3. Triage what repair cannot fix, so real market moves are not trimmed as corruption.
+python scripts/livewire_quality.py triage-breaks \
+    --audit-manifest <.../audit.json> --output <lake>/repairs/triage/current.json --resume
+
+# 4. Review the trim BEFORE publishing: window_regressions is every symbol that would
+#    lose published history. On the rev-3 bootstrap this is expected and large.
+python scripts/livewire_store.py rebuild-silver --full --dry-run --failure-output /tmp/rev3-dry.json
+
+# 5. Freeze the three writers, single rev-3 publish, restore writers EVEN IF rebuild fails.
 WRITERS="com.livewire.daily-update com.livewire.intraday-catchup com.livewire.daily-update-watchdog"
 for L in $WRITERS; do launchctl unload ~/Library/LaunchAgents/$L.plist; done
-python scripts/livewire_store.py rebuild-silver --full; RC=$?   # continuity gate quarantines any residual mixed
+# --allow-window-regression is required EXACTLY ONCE, here: rev-2 published untrimmed
+# history, so every intentional trim reads as a regression on this first run only.
+python scripts/livewire_store.py rebuild-silver --full --allow-window-regression; RC=$?
 for L in $WRITERS; do launchctl load ~/Library/LaunchAgents/$L.plist; done   # restore regardless of RC
 
-# 4. After Apex adopts rev-3, smoke-test NVDA/AMZN/GOOGL/AGL (formerly corrupt) + INTC (fail-closed control).
+# 6. After Apex adopts rev-3, smoke-test NVDA/AMZN/GOOGL/AGL (formerly corrupt) + INTC (fail-closed control).
+#    Production runs APEX_LIVEWIRE_PRICE_MODE=raw, so it serves BRONZE — a production
+#    smoke test proves nothing about the adjusted path. Use an adjusted-mode canary.
 ```
 
 Reliability foundation environment variables:
@@ -573,7 +696,7 @@ Catches: AWS keys, API key/secret/password assignments, private key headers, Git
 
 Common traps that derail debugging sessions — check these before investigating further:
 
-- **IB Gateway availability**: the Gateway runs on the Mac mini — check reachability with `nc -z "${MDW_IB_HOST:?set MDW_IB_HOST to the Mac mini host}" "${MDW_IB_PORT:-4001}"` before assuming IB is up. Do NOT attempt restarts from this machine: failures usually mean 2FA, IBKR maintenance, or session conflict, not something livewire should recover.
+- **IB Gateway availability**: the Gateway runs on the mini, which is the host you are on — check with `nc -z 127.0.0.1 "${MDW_IB_PORT:-4001}"` before assuming IB is up. **A `nc -z` against the LAN IP also succeeds and is a trap**: the port is open but `TrustedTwsApiClientIPs` is empty, so the API connection silently times out. Do NOT attempt restarts: failures usually mean 2FA, IBKR maintenance, or session conflict, not something livewire should recover.
 - **Empty IB head timestamps**: IB returns empty head timestamps for some symbols. The fallback to `IB_EARLIEST_DATE` is intentional — don't treat it as an error.
 - **IB error 326 (client ID in use)**: Handled by auto-retry in `IBClient.connect()`. Don't manually reassign client IDs.
 - **Weekend/holiday runs**: IB returns no data on non-trading days. These are harmless no-ops — don't debug "no data returned" on weekends or holidays.

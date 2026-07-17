@@ -118,3 +118,12 @@ def test_a_trailing_unusable_row_leaves_no_publishable_window():
     result = resolve_window(rows)
     assert result["start"] is None
     assert result["rows_dropped"] == 3
+
+
+def test_a_non_numeric_close_is_reported_rather_than_crashing_the_scan():
+    """Bronze is typed, but a hand-written or migrated parquet can carry junk. One bad
+    symbol must not take down a --full rebuild."""
+    rows = [{"trade_date": "2024-01-02", "close": 185.64}, {"trade_date": "2024-01-03", "close": "n/a"}]
+    breaks = find_breaks(rows)
+    assert [b["date"] for b in breaks] == ["2024-01-03"]
+    assert breaks[0]["ratio"] is None

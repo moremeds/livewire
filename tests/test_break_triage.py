@@ -142,3 +142,25 @@ def test_a_4xx_provider_error_is_a_final_verdict_not_a_retry():
     result = triage_break("ACDC", "2021-09-23", 250000.0, fetch_raw=_gone, fetch_adjusted=_gone)
     assert result["verdict"] == "inconclusive"
     assert "404" in result["reason"]
+
+
+def test_a_non_positive_provider_close_cannot_manufacture_a_ratio():
+    """A zero close would make the ratio infinite and read as a giant 'real move'."""
+    rows = [("2021-07-19", 0.0), ("2021-07-20", 186.12)]
+    result = triage_break("NVDA", "2021-07-20", 4.04, fetch_raw=_fetcher(rows), fetch_adjusted=_fetcher(rows))
+    assert result["verdict"] == "inconclusive"
+    assert result["provider_raw_ratio"] is None
+
+
+def test_a_non_numeric_provider_close_is_inconclusive():
+    rows = [("2021-07-19", "n/a"), ("2021-07-20", 186.12)]
+    result = triage_break("NVDA", "2021-07-20", 4.04, fetch_raw=_fetcher(rows), fetch_adjusted=_fetcher(rows))
+    assert result["verdict"] == "inconclusive"
+
+
+def test_a_non_positive_close_cannot_manufacture_a_factor_step():
+    """factor = adjusted/raw; a zero raw close would divide by zero."""
+    raw = [("2021-07-19", 0.0), ("2021-07-20", 186.12)]
+    adjusted = [("2021-07-19", 18.7798), ("2021-07-20", 18.612)]
+    result = triage_break("NVDA", "2021-07-20", 4.04, fetch_raw=_fetcher(raw), fetch_adjusted=_fetcher(adjusted))
+    assert result["provider_factor_step"] is None
