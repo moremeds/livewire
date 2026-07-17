@@ -44,17 +44,33 @@
 > dividend defect, and MCHB is a constant `85.00` repeated 23 times against ~13–16
 > closes. The sibling plan's "11 terminal + 3 ticker reuse" is not what the data shows.
 >
-> **Cheaper path to the 518 than R5** (structural inference — **not yet verified**,
-> requires a 2FA-gated IB dry-run to confirm): the 518 are `unknown price_basis`, which
-> is exactly what `repair-legacy-basis` already fixes by re-deriving basis from IB.
-> They are excluded from it only by `audit_legacy_basis._classify`'s catch-all
-> `except Exception` labelling them `error`, whose stated justification ("a symbol with
-> a zero close is not a basis problem repair can fix") is true for the dividend/zero-close
-> class and **false** for `unknown price_basis`. `repair_legacy_basis` never reads
-> `break_date` (0 references) and never reads the existing `price_basis` — it classifies
-> freshly-fetched IB rows via `prepare_ib_rows_for_publish` — so it is structurally
-> indifferent to the old label. Splitting that handler may feed all 518 to machinery that
-> already exists and is already tested.
+> **The "cheaper 518 path" was TESTED against IB 2026-07-17 and FALSIFIED.** The
+> structural inference held — `repair_legacy_basis` is indeed indifferent to the old
+> `unknown` label; it re-classifies freshly-fetched IB rows via
+> `prepare_ib_rows_for_publish`, never reads `break_date` (0 refs) or the existing
+> `price_basis`. A 10-symbol dry-run (relabel `mixed`, `--dry-run`) ran the whole path
+> cleanly. But the **outcome was 10/10 `ambiguous`, 0 `would-repair`** — the machinery
+> runs and then refuses every symbol. Root cause: `clients/price_basis.py`
+> `classify_split_events` infers each series' basis from the **single-day price step**
+> across each split ex-date (`observed = following[0].close / previous[-1].close`,
+> line 88-92), and that step is contaminated by real market movement on the ex-date.
+> AMC's 2023-08-24 10:1 reverse split: IB `TRADES` shows 19.60→14.37 (a real −27% day,
+> no split jump — IB `TRADES` was already split-adjusted), so `observed=0.733` matches
+> neither `factor` nor `1` within the 0.15 log-tolerance → ambiguous. INTC is ambiguous
+> at exactly one split, 1987-10-29, ten days after Black Monday. **The single-day step
+> is a broken validator and must be scrapped, not tuned.**
+>
+> **Correct fix (the real R5, redesigned): confirm basis against an authoritative
+> raw/adjusted reference, never infer it from price.** Two same-date series divided
+> cancel the real move and leave only the adjustment factor (`ADJUSTED_LAST÷TRADES ≡ 1.0`
+> across AMC's split proved IB `TRADES` is adjusted, zero ambiguity). IB `TRADES` is NOT
+> reliably raw; IB `ADJUSTED_LAST` is a deep-limited one-shot; Massive raw is entitled
+> only ~5y. **Yahoo `Close`+`Adj Close` is the authoritative deep reference** (free,
+> covers INTC-1987 / AIG-2009); `Adj Close/Close` is the exact cumulative
+> split+dividend factor per date. Anchor at the known-raw recent end, walk back applying
+> known split factors, and label each bronze row raw/adjusted by direct comparison.
+> Genuinely unreachable history (delisted from every provider) fails closed — a
+> data-availability limit, not the current self-inflicted ambiguity.
 >
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
