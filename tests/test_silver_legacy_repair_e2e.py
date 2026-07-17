@@ -108,7 +108,12 @@ def test_quarantined_symbol_is_absent_from_published_manifest(tmp_path):
     ]
     BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").replace_ticker_rows("MSFT", clean)
 
-    mixed = [
+    # A staging FAILURE, not a discontinuity: real INTC closes across its real
+    # 2000-07-31 1:2 split with price_basis='unknown', which makes
+    # build_factor_intervals raise. A discontinuity no longer quarantines — it
+    # publishes a trimmed window (rebuild_silver's two-trim staging) — so the
+    # fail-closed contract has to be exercised with something that cannot stage.
+    unknown_basis = [
         {
             "trade_date": d,
             "symbol_id": 1,
@@ -119,26 +124,26 @@ def test_quarantined_symbol_is_absent_from_published_manifest(tmp_path):
             "adj_close": c,
             "volume": 100,
             "source": "legacy",
-            "price_basis": "raw",
+            "price_basis": "unknown",
         }
-        for d, c in (("2021-06-17", 746.29), ("2021-06-18", 18.64), ("2021-06-21", 737.09))
+        for d, c in (("2000-07-27", 137.00), ("2000-07-28", 129.13), ("2000-07-31", 66.75), ("2000-08-01", 64.63))
     ]
-    BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").replace_ticker_rows("NVDA", mixed)
+    BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").replace_ticker_rows("INTC", unknown_basis)
     split = MassiveSplit(
-        provider_event_id="nvda",
-        ticker="NVDA",
-        execution_date=date(2021, 7, 20),
+        provider_event_id="intc",
+        ticker="INTC",
+        execution_date=date(2000, 7, 31),
         split_from=Decimal("1"),
-        split_to=Decimal("4"),
+        split_to=Decimal("2"),
         payload_hash="s",
     )
-    CorporateActionStore(tmp_path).reconcile("NVDA", [split], datetime(2021, 7, 20, tzinfo=UTC))
+    CorporateActionStore(tmp_path).reconcile("INTC", [split], datetime(2000, 7, 31, tzinfo=UTC))
 
     silver_root = tmp_path / "silver"
-    rc = rebuild_silver.run(["--tickers", "MSFT", "NVDA"], data_lake_root=tmp_path, silver_root=silver_root)
+    rc = rebuild_silver.run(["--tickers", "MSFT", "INTC"], data_lake_root=tmp_path, silver_root=silver_root)
     assert rc == 0  # quarantining one symbol while another publishes is not systemic failure
 
     manifest = json.loads((silver_root / "revisions/current.json").read_text())
     paths = [artifact["path"] for artifact in manifest["artifacts"]]
     assert any("symbol=MSFT/" in p for p in paths)  # published → served by Apex
-    assert not any("symbol=NVDA/" in p for p in paths)  # quarantined → absent, Apex fails closed
+    assert not any("symbol=INTC/" in p for p in paths)  # quarantined → absent, Apex fails closed

@@ -19,15 +19,19 @@ import pyarrow.parquet as pq
 from clients.adjustment_engine import FactorInterval, adjust_daily_rows, build_factor_intervals
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateAction, CorporateActionStore
-from clients.silver_client import SilverClient
-from clients.silver_continuity import check_adjusted_continuity
-from clients.silver_revision import AffectedSymbol, SilverRevisionPublisher
+from clients.seed_boundary import classify_seed_boundary
+from clients.silver_client import PublishedArtifact, SilverClient
+from clients.silver_revision import AffectedSymbol, ManifestArtifact, SilverRevision, SilverRevisionPublisher
+from clients.silver_window import resolve_window
 from livewire_scripts.daily_outcomes import resolve_exit_code
 from livewire_scripts.paths import data_lake_dir
 
 TIMEFRAMES = ("1d", "1m", "5m", "30m", "1h")
 NEW_YORK = ZoneInfo("America/New_York")
 CONTINUITY_THRESHOLD = 6.0
+# Resolved against the data-lake root. The nightly job passes no flags
+# (run_daily_update_job.py:129), so the verdicts must be found, not passed.
+DEFAULT_TRIAGE_MANIFEST = "repairs/triage/current.json"
 
 
 @dataclass(frozen=True)
@@ -37,6 +41,7 @@ class StagedSymbol:
     intervals: list[FactorInterval]
     actions: list[CorporateAction]
     earliest_date: date
+    window: dict
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -62,6 +67,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=[],
         metavar="ISO_DATE",
         help="iso dates exempt from the continuity gate (evidence-backed halts/relistings)",
+    )
+    parser.add_argument(
+        "--triage-manifest",
+        type=Path,
+        help=(
+            f"break-triage verdicts; real_move dates are kept rather than trimmed "
+            f"(default: <data-lake-root>/{DEFAULT_TRIAGE_MANIFEST} when present)"
+        ),
     )
     return parser.parse_args(list(argv) if argv is not None else None)
 
@@ -103,6 +116,80 @@ def _factor_semantics(intervals: list[FactorInterval]) -> list[tuple]:
         )
         for item in sorted(intervals, key=lambda item: item.effective_start)
     ]
+
+
+def _load_keep_dates(root: Path, explicit: Path | None) -> dict[str, frozenset[str]]:
+    """Triage-confirmed real_move dates, per symbol.
+
+    Read from the default path when no flag is given: the nightly job passes none
+    (run_daily_update_job.py:129), and without the verdicts every confirmed real move
+    is re-read as an unexplained break and its history trimmed away the next night.
+    """
+    triage_path = explicit or (root / DEFAULT_TRIAGE_MANIFEST)
+    keep_by_symbol: dict[str, frozenset[str]] = {}
+    if triage_path.is_file():
+        payload = json.loads(triage_path.read_text())
+        for verdict in payload.get("verdicts", []):
+            if verdict.get("verdict") == "real_move":
+                symbol = str(verdict["symbol"]).upper()
+                keep_by_symbol[symbol] = keep_by_symbol.get(symbol, frozenset()) | {str(verdict["date"])}
+    elif explicit is not None:
+        # An explicitly-named manifest that does not exist is an operator error, not
+        # "no verdicts" — silently trimming every real move is the failure we are
+        # trying to prevent.
+        raise SystemExit(f"triage manifest not found: {triage_path}")
+    return keep_by_symbol
+
+
+def _carry_forward(
+    client: SilverClient,
+    current: SilverRevision | None,
+    staged: list[StagedSymbol],
+    changed: list[StagedSymbol],
+    scope: set[str],
+) -> tuple[list[PublishedArtifact], list[AffectedSymbol]]:
+    """Re-list still-valid symbols this run did not republish.
+
+    Carried: symbols outside ``scope`` (a targeted rebuild must not evict the
+    universe) and in-scope symbols that staged cleanly but were byte-identical to
+    what is published. NOT carried: symbols republished here (already added), and
+    in-scope symbols that failed staging — dropping them is the quarantine.
+    """
+    if current is None:
+        return [], []
+    staged_ok = {item.symbol for item in staged}
+    republished = {item.symbol for item in changed}
+    previous_affected = {item.symbol: item for item in current.affected}
+    by_symbol: dict[str, list[ManifestArtifact]] = {}
+    for artifact in current.artifacts:
+        if "symbol=" not in artifact.path:
+            continue
+        by_symbol.setdefault(artifact.path.split("symbol=")[1].split("/")[0], []).append(artifact)
+
+    artifacts: list[PublishedArtifact] = []
+    affected: list[AffectedSymbol] = []
+    for symbol, entries in sorted(by_symbol.items()):
+        if symbol in republished:
+            continue
+        if symbol in scope and symbol not in staged_ok:
+            continue
+        previous = previous_affected.get(symbol)
+        if previous is None:
+            continue
+        resolved: list[PublishedArtifact] = []
+        for artifact in entries:
+            path = client.root / artifact.path
+            if not path.is_file():
+                resolved = []
+                break
+            # row_count is not serialized into the manifest but PublishedArtifact
+            # requires it — read the footer rather than inventing a number.
+            resolved.append(PublishedArtifact(path, artifact.sha256, pq.ParquetFile(path).metadata.num_rows))
+        if not resolved:
+            continue  # a vanished artifact must not be manifested
+        artifacts.extend(resolved)
+        affected.append(previous)  # one per symbol: _validate_affected rejects dupes
+    return artifacts, affected
 
 
 def _matches_existing(client: SilverClient, staged: StagedSymbol) -> bool:
@@ -212,6 +299,7 @@ def run(
         raise SystemExit("no equity bronze symbols found")
     effective_as_of = as_of_date or datetime.now(NEW_YORK).date()
     threshold = args.continuity_threshold
+    keep_by_symbol = _load_keep_dates(root, args.triage_manifest)
 
     staged: list[StagedSymbol] = []
     failures: list[dict] = []
@@ -223,16 +311,45 @@ def run(
             if not rows:
                 raise ValueError("missing equity bronze rows")
             actions = action_store.latest_active(symbol)
+            # Trim 1 — the seed floor, applied to RAW bronze before adjustment. The
+            # only detector that sees the 2x-5x class; a corrupt symbol's pre-window
+            # rows are IB back-adjusted, its rows on/after the window are true raw.
+            # Trim rather than quarantine: the post-seed years are perfectly good.
+            seed = classify_seed_boundary(rows, actions)
+            if seed["verdict"] == "corrupt":
+                rows = [row for row in rows if str(row["trade_date"])[:10] >= seed["date"]]
             intervals = build_factor_intervals(rows, actions, effective_as_of)
             adjusted = adjust_daily_rows(rows, intervals, revision=1)
-            check_adjusted_continuity(adjusted, threshold=threshold, allowlist=frozenset(args.continuity_allowlist))
+            # Trim 2 — the blind window scan over the ADJUSTED series, for every other
+            # unexplained break. Keep triage-confirmed real moves and allowlisted dates.
+            window = resolve_window(
+                adjusted,
+                threshold=threshold,
+                allowlist=frozenset(args.continuity_allowlist),
+                keep_dates=keep_by_symbol.get(symbol, frozenset()),
+            )
+            if window["start"] is None:
+                # No suffix excludes the offending row — it is the newest one. Fail
+                # closed rather than publishing a series that starts on a bad bar.
+                raise ValueError(f"no silver-grade window: {window['reason']}")
+            kept = [row for row in rows if str(row["trade_date"])[:10] >= window["start"]]
+            # NOTE: `intervals` stay built over the FULL pre-trim `rows`. Do NOT rebuild
+            # them over `kept` to "make the factor file match the daily file" — that is
+            # a correctness trap. Apex's adjusted-intraday path LEFT JOINs BRONZE
+            # intraday bars onto these factor intervals and hard-fails when any bronze
+            # bar has no interval (apex `ohlc_provider.py:236-240`,
+            # "incomplete or overlapping factor coverage" -> HTTP 500). Bronze intraday
+            # extends before the trimmed daily window, so narrowing the factors to the
+            # daily window breaks intraday for exactly the symbols we just trimmed.
+            # Factors WIDER than the daily rows are harmless; narrower is fatal.
             staged.append(
                 StagedSymbol(
                     symbol,
-                    rows,
+                    kept,
                     intervals,
                     actions,
-                    min(_trade_date(row["trade_date"]) for row in rows),
+                    min(_trade_date(row["trade_date"]) for row in kept),
+                    window,
                 )
             )
         except Exception as exc:
@@ -258,6 +375,7 @@ def run(
     effective_action_count = sum(action.ex_date <= effective_as_of for item in staged for action in item.actions)
     future_action_count = action_count - effective_action_count
     earliest = min((item.earliest_date for item in staged), default=None)
+    trimmed = sum(1 for item in staged if item.window["trimmed_at"])
     # Publish the successfully staged subset even when some symbols fail: a small,
     # stable set of unresolved symbols must not block the rest of the universe.
     # Exit code fails only on systemic breakage (all symbols failed, or the failure
@@ -280,6 +398,7 @@ def run(
             rebuilt=len(changed),
             revision=predicted_revision,
             unchanged=unchanged,
+            trimmed=trimmed,
         )
         return exit_code
 
@@ -294,6 +413,7 @@ def run(
             rebuilt=0,
             revision=current_revision,
             unchanged=unchanged,
+            trimmed=trimmed,
         )
         return exit_code
 
@@ -304,11 +424,11 @@ def run(
             rebuilt = 0
             unchanged = len(staged)
         else:
+            revision = transaction.revision
             artifacts = []
             affected = []
             actions_as_of = datetime.now(UTC)
             for item in changed:
-                revision = transaction.revision
                 daily_rows = adjust_daily_rows(item.rows, item.intervals, revision=revision)
                 intervals = [replace(interval, adjustment_revision=revision) for interval in item.intervals]
                 artifacts.append(client.publish_daily(item.symbol, daily_rows))
@@ -316,6 +436,14 @@ def run(
                 affected.append(AffectedSymbol(item.symbol, item.earliest_date, TIMEFRAMES))
                 if item.actions:
                     actions_as_of = max(actions_as_of, *(action.fetched_at for action in item.actions))
+            # The publisher writes exactly what it is handed and never merges the
+            # previous revision, so a targeted rebuild would manifest only its own
+            # symbols and drop the rest of the universe.
+            carried_artifacts, carried_affected = _carry_forward(
+                client, transaction.current, staged, changed, {s.upper() for s in symbols}
+            )
+            artifacts.extend(carried_artifacts)
+            affected.extend(carried_affected)
             revision = transaction.commit(artifacts, affected, actions_as_of).revision
             rebuilt = len(changed)
             unchanged = len(staged) - rebuilt
@@ -330,6 +458,7 @@ def run(
         rebuilt=rebuilt,
         revision=revision,
         unchanged=unchanged,
+        trimmed=trimmed,
     )
     return exit_code
 

@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pyarrow.parquet as pq
+import pytest
 
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
@@ -87,13 +88,13 @@ def test_continuity_allowlist_exempts_an_evidenced_date(tmp_path):
     _seed_bronze(root, "EQIX", [("2002-12-30", 0.21), ("2003-01-02", 5.24), ("2003-01-03", 5.08)])
     silver = tmp_path / "silver"
 
-    # Baseline: the gate quarantines it, so nothing publishes.
+    # Baseline: unexplained, so the window trims everything before the step.
     assert (
-        rebuild_silver.run(
-            ["--tickers", "EQIX"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17)
-        )
-        == 1
+        rebuild_silver.run(["--tickers", "EQIX"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+        == 0
     )
+    trimmed = pq.ParquetFile(silver / "asset_class=equity/symbol=EQIX/1d.parquet").read().to_pylist()
+    assert [str(r["trade_date"]) for r in trimmed] == ["2003-01-02", "2003-01-03"]
 
     assert (
         rebuild_silver.run(
@@ -104,6 +105,9 @@ def test_continuity_allowlist_exempts_an_evidenced_date(tmp_path):
         )
         == 0
     )
+
+    kept = pq.ParquetFile(silver / "asset_class=equity/symbol=EQIX/1d.parquet").read().to_pylist()
+    assert [str(r["trade_date"]) for r in kept] == ["2002-12-30", "2003-01-02", "2003-01-03"]
 
 
 def test_targeted_rebuild_publishes_daily_factors_and_manifest(tmp_path, capsys):
@@ -281,7 +285,7 @@ def test_total_staging_failure_fails_the_run_and_publishes_nothing(tmp_path, cap
     assert not (silver / "revisions/current.json").exists()
 
 
-def test_mixed_basis_symbol_is_quarantined_not_published(tmp_path):
+def test_mixed_basis_symbol_publishes_its_window_not_nothing(tmp_path):
     # Seed a legacy/raw symbol whose series mixes already-adjusted and true-raw
     # rows around a split, so the adjusted output has a >6x residual jump.
     from datetime import UTC, date, datetime
@@ -351,14 +355,16 @@ def test_mixed_basis_symbol_is_quarantined_not_published(tmp_path):
         data_lake_root=tmp_path,
         silver_root=tmp_path / "silver",
     )
-    # NVDA quarantined (no artifact); MSFT published.
-    assert not (tmp_path / "silver/asset_class=equity/symbol=NVDA/1d.parquet").exists()
-    assert (tmp_path / "silver/asset_class=equity/symbol=MSFT/1d.parquet").exists()
     import json
 
-    failures = json.loads(failure_output.read_text())["failures"]
-    assert any(f["symbol"] == "NVDA" and "continuity" in f["error"] for f in failures)
-    assert rc == 0  # quarantining one symbol while another publishes is not systemic failure
+    # NVDA is no longer dropped whole: the lone bad 2021-06-18 bar breaks continuity
+    # twice (into it and out of it), so the window starts after the second break and
+    # publishes only the true-raw 2021-06-21 row — shorter, but every row correct.
+    published = pq.ParquetFile(tmp_path / "silver/asset_class=equity/symbol=NVDA/1d.parquet").read().to_pylist()
+    assert [str(r["trade_date"]) for r in published] == ["2021-06-21"]
+    assert (tmp_path / "silver/asset_class=equity/symbol=MSFT/1d.parquet").exists()
+    assert json.loads(failure_output.read_text())["failures"] == []
+    assert rc == 0
 
 
 def test_dry_run_reports_changes_without_creating_silver_root(tmp_path, capsys):
@@ -492,3 +498,104 @@ def test_dry_run_writes_evidence_grade_failure_report(tmp_path):
         }
     ]
     assert not silver.exists()
+
+
+def test_seed_corrupt_symbol_publishes_its_post_seed_window_rather_than_quarantining(tmp_path):
+    """The 2x class the 6.0 scan cannot see: APH must publish from the seed date on,
+    NOT be dropped. Real APH closes + its real 2024-06-12 1:2 split."""
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(
+        root, "APH", [("2021-06-09", 34.07), ("2021-06-10", 34.13), ("2021-06-11", 68.45), ("2021-06-14", 68.31)]
+    )
+    _seed_split(root, "APH", "2024-06-12", 1, 2)
+    failures = tmp_path / "failures.json"
+
+    assert (
+        rebuild_silver.run(
+            ["--tickers", "APH", "--failure-output", str(failures)],
+            data_lake_root=root,
+            silver_root=silver,
+            as_of_date=date(2026, 7, 17),
+        )
+        == 0
+    )
+
+    assert json.loads(failures.read_text())["failures"] == []  # published, not quarantined
+    published = pq.ParquetFile(silver / "asset_class=equity/symbol=APH/1d.parquet").read().to_pylist()
+    assert [str(r["trade_date"]) for r in published] == ["2021-06-11", "2021-06-14"]
+
+
+def test_factor_intervals_still_cover_dates_trimmed_out_of_the_daily_window(tmp_path):
+    """Factors must NOT be narrowed to the daily window. Apex LEFT JOINs bronze
+    intraday onto these intervals and 500s on any uncovered bronze bar
+    (apex ohlc_provider.py:236-240); bronze intraday predates the trimmed window."""
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "EQIX", [("2002-12-30", 0.21), ("2003-01-02", 5.24), ("2003-01-03", 5.08)])
+
+    rebuild_silver.run(["--tickers", "EQIX"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+
+    daily = pq.ParquetFile(silver / "asset_class=equity/symbol=EQIX/1d.parquet").read().to_pylist()
+    factors = pq.ParquetFile(silver / "adjustments/asset_class=equity/symbol=EQIX/factors.parquet").read().to_pylist()
+    assert min(str(r["trade_date"]) for r in daily) == "2003-01-02"  # daily IS trimmed
+    assert min(str(f["effective_start"]) for f in factors) == "2002-12-30"  # factors are NOT
+
+
+def test_triage_confirmed_real_move_is_not_trimmed(tmp_path):
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "MRNA", [("2020-11-13", 89.39), ("2020-11-16", 900.00), ("2020-11-17", 905.00)])
+    triage = tmp_path / "triage.json"
+    triage.write_text(json.dumps({"verdicts": [{"symbol": "MRNA", "date": "2020-11-16", "verdict": "real_move"}]}))
+
+    rebuild_silver.run(
+        ["--tickers", "MRNA", "--triage-manifest", str(triage)],
+        data_lake_root=root,
+        silver_root=silver,
+        as_of_date=date(2026, 7, 17),
+    )
+
+    published = pq.ParquetFile(silver / "asset_class=equity/symbol=MRNA/1d.parquet").read().to_pylist()
+    assert len(published) == 3
+
+
+def test_verdicts_at_the_default_path_are_honoured_without_any_flag(tmp_path):
+    """The nightly job passes no flags (run_daily_update_job.py:129). If the verdicts
+    are not found by default, every real move is re-trimmed the night after rev-3."""
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "MRNA", [("2020-11-13", 89.39), ("2020-11-16", 900.00), ("2020-11-17", 905.00)])
+    default = root / "repairs" / "triage" / "current.json"
+    default.parent.mkdir(parents=True)
+    default.write_text(json.dumps({"verdicts": [{"symbol": "MRNA", "date": "2020-11-16", "verdict": "real_move"}]}))
+
+    rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+
+    published = pq.ParquetFile(silver / "asset_class=equity/symbol=MRNA/1d.parquet").read().to_pylist()
+    assert len(published) == 3
+
+
+def test_an_explicitly_named_missing_triage_manifest_is_an_error_not_silence(tmp_path):
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
+    with pytest.raises(SystemExit, match="triage manifest not found"):
+        rebuild_silver.run(
+            ["--tickers", "AAPL", "--triage-manifest", str(tmp_path / "nope.json")],
+            data_lake_root=root,
+            silver_root=silver,
+            as_of_date=date(2026, 7, 17),
+        )
+
+
+def test_targeted_rebuild_keeps_previously_published_symbols_in_the_manifest(tmp_path):
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
+    _seed_bronze(root, "MSFT", [("2024-01-02", 370.87), ("2024-01-03", 370.60)])
+    rebuild_silver.run(
+        ["--tickers", "AAPL", "MSFT"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17)
+    )
+    _seed_bronze(root, "MSFT", [("2024-01-02", 370.87), ("2024-01-03", 370.60), ("2024-01-04", 367.94)])
+
+    rebuild_silver.run(["--tickers", "MSFT"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+
+    current = json.loads((silver / "revisions/current.json").read_text())
+    symbols = {a["path"].split("symbol=")[1].split("/")[0] for a in current["artifacts"]}
+    assert symbols == {"AAPL", "MSFT"}  # AAPL must not vanish
+    assert current["revision"] == 2
