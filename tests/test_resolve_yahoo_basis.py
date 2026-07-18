@@ -6,7 +6,10 @@ Fixtures are REAL AMC split-adjusted closes across its 2023-08-24 1:10 reverse s
 
 from datetime import date
 
+import pytest
+
 from clients.bronze_client import BronzeClient
+from clients.corporate_action_store import CorporateActionStore
 from clients.yahoo_client import YahooBar, YahooSplit
 from livewire_scripts import resolve_yahoo_basis, rollback_legacy_basis
 from tests.test_rebuild_silver import _seed_bronze, _seed_split
@@ -176,6 +179,62 @@ def test_apply_without_relabel_only_is_refused(tmp_path):
         )
 
 
+def _bronze_row(tmp_path, symbol, iso_date):
+    rows = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").read_symbol_rows(symbol)
+    return next(r for r in rows if str(r["trade_date"])[:10] == iso_date)
+
+
+def test_scale_row_scales_ohlc_by_factor_and_volume_inversely():
+    # A 10:1 reverse split fold is 0.1: prices ×0.1, volume ÷0.1 (=×10).
+    row = {"open": 20.0, "high": 22.0, "low": 19.0, "close": 19.6, "adj_close": 19.6, "volume": 1000, "price_basis": "unknown"}
+    scaled = resolve_yahoo_basis._scale_row(row, 0.1)
+    assert scaled["open"] == pytest.approx(2.0) and scaled["high"] == pytest.approx(2.2)
+    assert scaled["low"] == pytest.approx(1.9) and scaled["close"] == pytest.approx(1.96)
+    assert scaled["volume"] == 10000 and scaled["price_basis"] == "raw"
+
+
+def test_apply_rewrite_rewrites_full_ohlcv_to_raw_and_rolls_back(tmp_path):
+    # Bronze stores the pre-split row at its ADJUSTED value (19.60); the ex-date and later
+    # rows are already post-split. apply_rewrite must fold ONLY the pre-split row to raw.
+    _seed_bronze(
+        tmp_path,
+        "AMC",
+        [("2023-08-23", 19.60), ("2023-08-24", 14.37), ("2023-08-25", 12.43)],
+        source="legacy",
+        price_basis="unknown",
+    )
+    _seed_split(tmp_path, "AMC", "2023-08-24", 10, 1)
+    out, output_dir = tmp_path / "m.json", tmp_path / "rewrite"
+    resolve_yahoo_basis.run(
+        ["--tickers", "AMC", "--output", str(out), "--apply", "--output-dir", str(output_dir), "--allow-rewrite"],
+        data_lake_root=tmp_path,
+        yahoo_factory=_FakeYahoo,
+        as_of_date=AS_OF,
+    )
+    pre = _bronze_row(tmp_path, "AMC", "2023-08-23")  # folded ×0.1 → 1.96, volume ÷0.1 → 10000
+    assert pre["close"] == pytest.approx(1.96) and pre["open"] == pytest.approx(1.96)
+    assert pre["high"] == pytest.approx(1.96) and pre["low"] == pytest.approx(1.96)
+    assert pre["volume"] == 10000 and pre["price_basis"] == "raw"
+    ex = _bronze_row(tmp_path, "AMC", "2023-08-24")  # ex-date row untouched but relabeled
+    assert ex["close"] == pytest.approx(14.37) and ex["volume"] == 1000 and ex["price_basis"] == "raw"
+    assert _bronze_basis(tmp_path, "AMC") == {"raw"}
+    # rollback restores the original adjusted value + unknown basis
+    assert rollback_legacy_basis.run(["--output-dir", str(output_dir)], data_lake_root=tmp_path) == 0
+    assert _bronze_row(tmp_path, "AMC", "2023-08-23")["close"] == pytest.approx(19.60)
+    assert _bronze_basis(tmp_path, "AMC") == {"unknown"}
+
+
+def test_apply_rewrite_refuses_unresolvable_symbol(tmp_path):
+    # Store lacks the split → split_mismatch → apply_rewrite must refuse (never write).
+    _seed_bronze(tmp_path, "AMC", [("2023-08-23", 19.60), ("2023-08-24", 14.37)], source="legacy", price_basis="unknown")
+    bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
+    store = CorporateActionStore(tmp_path)
+    with pytest.raises(ValueError, match="refusing rewrite"):
+        resolve_yahoo_basis.apply_rewrite(
+            "AMC", bronze=bronze, store=store, yahoo=_FakeYahoo(), as_of=AS_OF, output_dir=tmp_path / "x"
+        )
+
+
 def test_reads_symbols_file_and_main(tmp_path, monkeypatch):
     _seed_bronze(tmp_path, "AMC", [("2023-08-23", 1.96), ("2023-08-24", 14.37)], source="legacy", price_basis="unknown")
     _seed_split(tmp_path, "AMC", "2023-08-24", 10, 1)
@@ -188,3 +247,23 @@ def test_reads_symbols_file_and_main(tmp_path, monkeypatch):
         resolve_yahoo_basis.run(["--symbols-file", str(symbols_file), "--output", str(output)], as_of_date=AS_OF) == 0
     )
     assert __import__("json").loads(output.read_text())["counts"]["would_resolve"] == 1
+
+
+def test_relabel_only_defers_rewrite_symbol(tmp_path):
+    # A rewrite>0 symbol under --relabel-only is deferred (skipped_rewrite), bronze untouched.
+    _seed_bronze(
+        tmp_path, "AMC", [("2023-08-23", 19.60), ("2023-08-24", 14.37), ("2023-08-25", 12.43)], source="legacy", price_basis="unknown"
+    )
+    _seed_split(tmp_path, "AMC", "2023-08-24", 10, 1)
+    out = tmp_path / "m.json"
+    resolve_yahoo_basis.run(
+        ["--tickers", "AMC", "--output", str(out), "--apply", "--output-dir", str(tmp_path / "a"), "--relabel-only"],
+        data_lake_root=tmp_path,
+        yahoo_factory=_FakeYahoo,
+        as_of_date=AS_OF,
+    )
+    assert _bronze_basis(tmp_path, "AMC") == {"unknown"}  # deferred, not mutated
+    import json
+
+    entry = next(s for s in json.loads(out.read_text())["symbols"] if s["symbol"] == "AMC")
+    assert entry["applied"] == "skipped_rewrite"

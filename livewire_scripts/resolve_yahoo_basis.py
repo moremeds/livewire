@@ -19,6 +19,7 @@ import json
 import os
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -50,6 +51,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="apply only zero-value-change symbols (rewrite==0): flip price_basis to raw, never touch prices",
     )
+    parser.add_argument(
+        "--allow-rewrite",
+        action="store_true",
+        help="also apply symbols with adjusted deep rows (rewrite>0): rewrite full OHLCV to true raw",
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -71,18 +77,29 @@ def _store_split_ratios(actions) -> list[tuple[date, float]]:
     ]
 
 
-def resolve_symbol(symbol: str, *, bronze: BronzeClient, store: CorporateActionStore, yahoo, as_of: date) -> dict:
+@dataclass(frozen=True)
+class _Resolution:
+    """Outcome of resolving one symbol. ``corrected`` (the full-OHLCV true-raw series)
+    is populated only when ``result['status'] == 'would_resolve'`` — the apply step
+    writes exactly these rows, so it can never diverge from what staging validated."""
+
+    result: dict
+    corrected: list[dict] | None
+    actions: list
+
+
+def _resolve(symbol: str, *, bronze: BronzeClient, store: CorporateActionStore, yahoo, as_of: date) -> _Resolution:
     existing = bronze.read_symbol_rows(symbol)
     if not existing:
-        return {"symbol": symbol, "status": "no_bronze_rows"}
+        return _Resolution({"symbol": symbol, "status": "no_bronze_rows"}, None, [])
     try:
         ybars, ysplits = yahoo.get_daily(symbol, _IB_EARLIEST, as_of)
     except YahooNotFound:
-        return {"symbol": symbol, "status": "yahoo_missing"}
+        return _Resolution({"symbol": symbol, "status": "yahoo_missing"}, None, [])
     except YahooError as exc:
-        return {"symbol": symbol, "status": "yahoo_error", "detail": str(exc)[:80]}
+        return _Resolution({"symbol": symbol, "status": "yahoo_error", "detail": str(exc)[:80]}, None, [])
     if not ybars:
-        return {"symbol": symbol, "status": "yahoo_empty"}
+        return _Resolution({"symbol": symbol, "status": "yahoo_empty"}, None, [])
     actions = store.latest_active(symbol)
     reconciliation = reconcile_splits(ysplits, _store_split_ratios(actions))
     yahoo_raw = reconstruct_raw_closes(ybars, ysplits)
@@ -100,7 +117,7 @@ def resolve_symbol(symbol: str, *, bronze: BronzeClient, store: CorporateActionS
     }
     if not reconciliation.reconciled:
         result["status"] = "split_mismatch"
-        return result
+        return _Resolution(result, None, actions)
     # An isolated row that matches neither raw nor adjusted is kept at its bronze value
     # and flagged (operator decision: never overwrite bronze on Yahoo's word alone). But
     # a LARGE mismatch fraction is not isolated noise — it is a different series behind the
@@ -111,16 +128,13 @@ def resolve_symbol(symbol: str, *, bronze: BronzeClient, store: CorporateActionS
         result["mismatch_sample"] = [
             [d.isoformat(), round(c, 4), round(r, 4), round(a, 4)] for d, c, r, a in classification.mismatch[:5]
         ]
-        return result
-    # Corrected series: rewrite adjusted rows to raw; keep relabel and flagged-mismatch
-    # rows at their existing value; stamp every row price_basis='raw'. Confirm
-    # build_factor_intervals no longer raises `unknown price_basis`. A flagged row that is
-    # genuinely bad and >threshold off is caught downstream by the window continuity scan.
-    rewrite = {d: yahoo_raw[d] for d in classification.rewrite}
-    corrected = [
-        {**row, "price_basis": "raw", "close": rewrite.get(_as_date(row["trade_date"]), row["close"])}
-        for row in existing
-    ]
+        return _Resolution(result, None, actions)
+    # Corrected series: rewrite adjusted rows to true raw (full OHLCV, not just close —
+    # a split scales all price fields uniformly and volume inversely); keep relabel and
+    # flagged-mismatch rows at their existing value; stamp every row price_basis='raw'.
+    # Confirm build_factor_intervals no longer raises `unknown price_basis`. A flagged row
+    # that is genuinely bad and >threshold off is caught by the window continuity scan.
+    corrected = _corrected_rows(existing, yahoo_raw, yahoo_adjusted, classification.rewrite)
     try:
         build_factor_intervals(corrected, actions, as_of)
         result["status"] = "would_resolve"
@@ -131,11 +145,51 @@ def resolve_symbol(symbol: str, *, bronze: BronzeClient, store: CorporateActionS
     except Exception as exc:
         result["status"] = "stage_fail"
         result["detail"] = str(exc)[:120]
-    return result
+        return _Resolution(result, None, actions)
+    return _Resolution(result, corrected, actions)
+
+
+def resolve_symbol(symbol: str, *, bronze: BronzeClient, store: CorporateActionStore, yahoo, as_of: date) -> dict:
+    return _resolve(symbol, bronze=bronze, store=store, yahoo=yahoo, as_of=as_of).result
 
 
 def _as_date(value) -> date:
     return value if isinstance(value, date) else date.fromisoformat(str(value)[:10])
+
+
+def _scale_row(row: dict, factor: float) -> dict:
+    """Rescale one adjusted row to raw. A split scales every price field by ``factor``
+    and volume inversely, so OHLC internal ratios (the bar's shape) are preserved."""
+    scaled = {
+        **row,
+        "open": float(row["open"]) * factor,
+        "high": float(row["high"]) * factor,
+        "low": float(row["low"]) * factor,
+        "close": float(row["close"]) * factor,
+        "adj_close": float(row["adj_close"]) * factor,
+        "price_basis": "raw",
+    }
+    if factor:
+        scaled["volume"] = int(round(float(row["volume"]) / factor))
+    return scaled
+
+
+def _corrected_rows(existing: list[dict], yahoo_raw: dict, yahoo_adjusted: dict, rewrite_dates) -> list[dict]:
+    """Full-OHLCV true-raw series. Rewrite dates are scaled adjusted->raw by that date's
+    split fold (``yahoo_raw / yahoo_adjusted`` — pure split ratio, independent of the close
+    value); every other row keeps its bronze value. All rows are stamped price_basis='raw'."""
+    rewrite = set(rewrite_dates)
+    corrected: list[dict] = []
+    for row in existing:
+        day = _as_date(row["trade_date"])
+        if day in rewrite:
+            adjusted = yahoo_adjusted.get(day)
+            raw = yahoo_raw.get(day)
+            factor = (raw / adjusted) if adjusted else 1.0
+            corrected.append(_scale_row(row, factor))
+        else:
+            corrected.append({**row, "price_basis": "raw"})
+    return corrected
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -145,13 +199,10 @@ def _write_json(path: Path, payload: dict) -> None:
     os.replace(tmp, path)
 
 
-def apply_relabel_only(symbol: str, *, bronze: BronzeClient, output_dir: Path) -> dict:
-    """Flip every existing row's price_basis to 'raw' — no price/volume change at all.
-
-    Backs the parquet up verbatim first and records a write-ahead intent sidecar, so a
-    crash mid-write is still undoable by ``rollback-legacy-basis --output-dir``. Only
-    valid for symbols the resolver classified as pure relabel (rewrite == 0).
-    """
+def _backup_and_write(symbol: str, *, bronze: BronzeClient, output_dir: Path, new_rows: list[dict], mode: str) -> dict:
+    """Back the parquet up verbatim, record a write-ahead intent sidecar, then replace the
+    rows. A crash mid-write is still undoable by ``rollback-legacy-basis --output-dir``
+    because the backup and its sha256 are durable before any bronze mutation."""
     source = bronze.symbol_path(symbol)
     original = source.read_bytes()
     sha = hashlib.sha256(original).hexdigest()
@@ -165,19 +216,54 @@ def apply_relabel_only(symbol: str, *, bronze: BronzeClient, output_dir: Path) -
         tmp.unlink(missing_ok=True)
     sidecar_path = output_dir / "symbols" / f"{encode_symbol(symbol)}.json"
     _write_json(
-        sidecar_path, {"symbol": symbol, "status": "in_progress", "backup_path": str(backup_path), "backup_sha256": sha}
+        sidecar_path,
+        {
+            "symbol": symbol,
+            "status": "in_progress",
+            "mode": mode,
+            "backup_path": str(backup_path),
+            "backup_sha256": sha,
+        },
     )
-    rows = bronze.read_symbol_rows(symbol)
-    written = bronze.replace_ticker_rows(symbol, [{**row, "price_basis": "raw"} for row in rows])
+    written = bronze.replace_ticker_rows(symbol, new_rows)
     sidecar = {
         "symbol": symbol,
         "status": "done",
+        "mode": mode,
         "backup_path": str(backup_path),
         "backup_sha256": sha,
-        "rows_relabeled": written,
+        "rows_written": written,
     }
     _write_json(sidecar_path, sidecar)
     return sidecar
+
+
+def apply_relabel_only(symbol: str, *, bronze: BronzeClient, output_dir: Path) -> dict:
+    """Flip every existing row's price_basis to 'raw' — no price/volume change at all.
+    Only valid for symbols the resolver classified as pure relabel (rewrite == 0)."""
+    rows = bronze.read_symbol_rows(symbol)
+    return _backup_and_write(
+        symbol,
+        bronze=bronze,
+        output_dir=output_dir,
+        new_rows=[{**row, "price_basis": "raw"} for row in rows],
+        mode="relabel",
+    )
+
+
+def apply_rewrite(
+    symbol: str, *, bronze: BronzeClient, store: CorporateActionStore, yahoo, as_of: date, output_dir: Path
+) -> dict:
+    """Rewrite adjusted deep rows to true raw (full OHLCV) and stamp price_basis='raw'.
+
+    Re-resolves the symbol so the bytes written are exactly the series that just passed
+    ``build_factor_intervals``; refuses any symbol that does not resolve cleanly."""
+    resolution = _resolve(symbol, bronze=bronze, store=store, yahoo=yahoo, as_of=as_of)
+    if resolution.result["status"] != "would_resolve" or resolution.corrected is None:
+        raise ValueError(f"refusing rewrite: {symbol} status={resolution.result['status']}")
+    return _backup_and_write(
+        symbol, bronze=bronze, output_dir=output_dir, new_rows=resolution.corrected, mode="rewrite"
+    )
 
 
 def run(
@@ -196,11 +282,10 @@ def run(
     if args.apply:
         if args.output_dir is None:
             raise ValueError("--apply requires --output-dir")
-        if not args.relabel_only:
-            # apply_relabel_only never touches prices; the value-rewriting phase (the 34
-            # symbols with adjusted deep rows) is a separate tool, so refuse to run apply
-            # without the flag that names what it actually does.
-            raise ValueError("--apply currently supports --relabel-only only (value-rewrite phase not built)")
+        if not (args.relabel_only or args.allow_rewrite):
+            # Refuse to run apply without a flag that names what it will do: --relabel-only
+            # (never touches prices) or --allow-rewrite (rewrites adjusted deep rows to raw).
+            raise ValueError("--apply requires --relabel-only or --allow-rewrite")
     cursor = {"identity": {"data_lake_root": str(root.resolve())}, "completed": {}}
     counts: dict[str, int] = {}
     results = []
@@ -209,12 +294,21 @@ def run(
             entry = resolve_symbol(symbol, bronze=bronze, store=store, yahoo=yahoo, as_of=as_of)
         except Exception as exc:  # one bad symbol never aborts the sweep
             entry = {"symbol": symbol, "status": "error", "detail": str(exc)[:120]}
-        if args.apply and entry["status"] == "would_resolve" and entry.get("rewrite", 0) == 0:
+        if args.apply and entry["status"] == "would_resolve":
             try:
-                apply_relabel_only(symbol, bronze=bronze, output_dir=args.output_dir)
-                entry["applied"] = "relabeled"
-                cursor["completed"][symbol] = {"status": "done"}
-                _write_json(args.output_dir / "cursor.json", cursor)
+                if args.allow_rewrite:
+                    apply_rewrite(
+                        symbol, bronze=bronze, store=store, yahoo=yahoo, as_of=as_of, output_dir=args.output_dir
+                    )
+                    entry["applied"] = "rewritten" if entry.get("rewrite", 0) else "relabeled"
+                elif entry.get("rewrite", 0) == 0:
+                    apply_relabel_only(symbol, bronze=bronze, output_dir=args.output_dir)
+                    entry["applied"] = "relabeled"
+                else:
+                    entry["applied"] = "skipped_rewrite"  # --relabel-only defers value rewrites
+                if entry["applied"] in ("relabeled", "rewritten"):
+                    cursor["completed"][symbol] = {"status": "done"}
+                    _write_json(args.output_dir / "cursor.json", cursor)
             except Exception as exc:
                 entry["applied"] = f"apply_failed: {exc}"
         counts[entry["status"]] = counts.get(entry["status"], 0) + 1
