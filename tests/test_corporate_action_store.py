@@ -210,7 +210,13 @@ def test_apply_repairs_cancels_spurious_split_but_keeps_lineage(tmp_path):
         "NVDA",
         [
             _split(provider_event_id="real", execution_date=date(2024, 6, 10)),
-            _split(provider_event_id="spurious", execution_date=date(2023, 5, 5), split_from=Decimal("100"), split_to=Decimal("103"), payload_hash="spur"),
+            _split(
+                provider_event_id="spurious",
+                execution_date=date(2023, 5, 5),
+                split_from=Decimal("100"),
+                split_to=Decimal("103"),
+                payload_hash="spur",
+            ),
         ],
         FETCHED_AT,
     )
@@ -225,7 +231,19 @@ def test_apply_repairs_cancels_spurious_split_but_keeps_lineage(tmp_path):
 
 def test_apply_repairs_add_and_cancel_in_one_mutation(tmp_path):
     store = CorporateActionStore(tmp_path)
-    store.reconcile("NVDA", [_split(provider_event_id="spur", execution_date=date(2019, 3, 1), split_from=Decimal("50"), split_to=Decimal("51"), payload_hash="s")], FETCHED_AT)
+    store.reconcile(
+        "NVDA",
+        [
+            _split(
+                provider_event_id="spur",
+                execution_date=date(2019, 3, 1),
+                split_from=Decimal("50"),
+                split_to=Decimal("51"),
+                payload_hash="s",
+            )
+        ],
+        FETCHED_AT,
+    )
     result = store.apply_repairs(
         "NVDA",
         add_splits=[SplitAddition(date(2001, 6, 27), split_from=1.0, split_to=2.0)],

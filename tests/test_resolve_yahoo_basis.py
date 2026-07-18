@@ -186,7 +186,15 @@ def _bronze_row(tmp_path, symbol, iso_date):
 
 def test_scale_row_scales_ohlc_by_factor_and_volume_inversely():
     # A 10:1 reverse split fold is 0.1: prices ×0.1, volume ÷0.1 (=×10).
-    row = {"open": 20.0, "high": 22.0, "low": 19.0, "close": 19.6, "adj_close": 19.6, "volume": 1000, "price_basis": "unknown"}
+    row = {
+        "open": 20.0,
+        "high": 22.0,
+        "low": 19.0,
+        "close": 19.6,
+        "adj_close": 19.6,
+        "volume": 1000,
+        "price_basis": "unknown",
+    }
     scaled = resolve_yahoo_basis._scale_row(row, 0.1)
     assert scaled["open"] == pytest.approx(2.0) and scaled["high"] == pytest.approx(2.2)
     assert scaled["low"] == pytest.approx(1.9) and scaled["close"] == pytest.approx(1.96)
@@ -226,7 +234,9 @@ def test_apply_rewrite_rewrites_full_ohlcv_to_raw_and_rolls_back(tmp_path):
 
 def test_apply_rewrite_refuses_unresolvable_symbol(tmp_path):
     # Store lacks the split → split_mismatch → apply_rewrite must refuse (never write).
-    _seed_bronze(tmp_path, "AMC", [("2023-08-23", 19.60), ("2023-08-24", 14.37)], source="legacy", price_basis="unknown")
+    _seed_bronze(
+        tmp_path, "AMC", [("2023-08-23", 19.60), ("2023-08-24", 14.37)], source="legacy", price_basis="unknown"
+    )
     bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
     store = CorporateActionStore(tmp_path)
     with pytest.raises(ValueError, match="refusing rewrite"):
@@ -252,7 +262,11 @@ def test_reads_symbols_file_and_main(tmp_path, monkeypatch):
 def test_relabel_only_defers_rewrite_symbol(tmp_path):
     # A rewrite>0 symbol under --relabel-only is deferred (skipped_rewrite), bronze untouched.
     _seed_bronze(
-        tmp_path, "AMC", [("2023-08-23", 19.60), ("2023-08-24", 14.37), ("2023-08-25", 12.43)], source="legacy", price_basis="unknown"
+        tmp_path,
+        "AMC",
+        [("2023-08-23", 19.60), ("2023-08-24", 14.37), ("2023-08-25", 12.43)],
+        source="legacy",
+        price_basis="unknown",
     )
     _seed_split(tmp_path, "AMC", "2023-08-24", 10, 1)
     out = tmp_path / "m.json"
