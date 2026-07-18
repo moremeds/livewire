@@ -850,3 +850,29 @@ def test_eviction_is_retried_after_a_previous_run_left_the_file_behind(tmp_path)
 
     rebuild_silver.run(args, data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
     assert not served.is_file()  # re-evicted, not left serving stale data
+
+
+def test_full_rebuild_remanifests_orphaned_silver_files(tmp_path, capsys):
+    # Two clean symbols → a full rebuild publishes both.
+    _bronze(tmp_path, "AAA")
+    _bronze(tmp_path, "BBB")
+    silver = tmp_path / "silver"
+    assert rebuild_silver.run(["--full"], data_lake_root=tmp_path, silver_root=silver) == 0
+    capsys.readouterr()
+
+    # Simulate manifest drift a past --tickers rebuild could leave: drop BBB from the
+    # manifest but keep its (still-correct) file on disk → an orphan apex can't serve.
+    current_path = silver / "revisions/current.json"
+    manifest = json.loads(current_path.read_text())
+    manifest["affected"] = [a for a in manifest["affected"] if a["symbol"] != "BBB"]
+    manifest["artifacts"] = [a for a in manifest["artifacts"] if "symbol=BBB" not in a["path"]]
+    current_path.write_text(json.dumps(manifest))
+    assert (silver / "asset_class=equity/symbol=BBB/1d.parquet").is_file()
+
+    # A full rebuild must re-manifest the orphan by reference (no rewrite) and advance rev.
+    assert rebuild_silver.run(["--full"], data_lake_root=tmp_path, silver_root=silver) == 0
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["orphans_remanifested"] == 1
+    assert summary["rebuilt"] == 0  # BBB carried by reference, AAA unchanged
+    remanifested = json.loads(current_path.read_text())
+    assert {a["symbol"] for a in remanifested["affected"]} == {"AAA", "BBB"}
