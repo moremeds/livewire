@@ -22,6 +22,7 @@ COMMANDS = {
     "repair-split-basis": "livewire_scripts.repair_split_basis",
     "repair-legacy-basis": "livewire_scripts.repair_legacy_basis",
     "rollback-legacy-basis": "livewire_scripts.rollback_legacy_basis",
+    "repair-single-bar": "livewire_scripts.repair_single_bar",
     "archive-otc": "livewire_scripts.archive_otc_symbols",
     "rebuild-silver": "livewire_scripts.rebuild_silver",
 }

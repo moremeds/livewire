@@ -26,6 +26,19 @@ _AMC = [
 ]
 
 
+# Real AMC split-adjusted OHLCV for the same window, frozen 2026-07-18 (o, h, l, v).
+_AMC_OHLCV = {
+    "2023-08-17": (36.70, 40.60, 36.40, 7147800),
+    "2023-08-18": (40.60, 41.90, 38.60, 5165850),
+    "2023-08-21": (40.00, 40.30, 30.50, 11371260),
+    "2023-08-22": (31.00, 31.10, 24.60, 10872410),
+    "2023-08-23": (19.50, 22.00, 19.40, 19985440),
+    "2023-08-24": (16.31, 16.60, 13.33, 26408000),
+    "2023-08-25": (13.44, 14.45, 12.40, 24061600),
+    "2023-08-28": (11.99, 12.35, 11.05, 24658900),
+}
+
+
 def _epoch(iso: str) -> int:
     # Yahoo stamps bars at market open (~13:30 UTC); .date() still yields the US date.
     return int(datetime.combine(date.fromisoformat(iso), time(13, 30), tzinfo=UTC).timestamp())
@@ -39,7 +52,15 @@ def _amc_payload(*, null_at: str | None = None):
                 {
                     "timestamp": [_epoch(iso) for iso, _ in _AMC],
                     "indicators": {
-                        "quote": [{"close": closes}],
+                        "quote": [
+                            {
+                                "close": closes,
+                                "open": [_AMC_OHLCV[iso][0] for iso, _ in _AMC],
+                                "high": [_AMC_OHLCV[iso][1] for iso, _ in _AMC],
+                                "low": [_AMC_OHLCV[iso][2] for iso, _ in _AMC],
+                                "volume": [_AMC_OHLCV[iso][3] for iso, _ in _AMC],
+                            }
+                        ],
                         "adjclose": [{"adjclose": closes}],
                     },
                     "events": {
@@ -95,6 +116,58 @@ def test_reconstructed_raw_matches_the_known_values_across_the_split():
     by_date = {bar.trade_date: raw(bar) for bar in bars}
     assert by_date[date(2023, 8, 23)] == pytest.approx(1.96)  # pre-split raw
     assert by_date[date(2023, 8, 24)] == pytest.approx(14.37)  # ex-date, no factor
+
+
+@responses.activate
+def test_get_daily_ohlcv_parses_full_bars_and_reconstructs_raw():
+    from clients.yahoo_client import YahooOHLCVBar
+
+    responses.add(responses.GET, "https://query1.finance.yahoo.com/v8/finance/chart/AMC", json=_amc_payload())
+    bars, splits = YahooClient().get_daily_ohlcv("amc", date(2023, 8, 17), date(2023, 8, 28))
+
+    assert len(bars) == 8
+    assert isinstance(bars[0], YahooOHLCVBar)
+    ex = next(b for b in bars if b.trade_date == date(2023, 8, 24))
+    assert (ex.open, ex.high, ex.low, ex.close) == pytest.approx((16.31, 16.60, 13.33, 14.37))
+    assert ex.volume == 26408000
+    # raw across the reverse split: pre-split 2023-08-23 raw = split-adjusted x 0.1.
+    pre = next(b for b in bars if b.trade_date == date(2023, 8, 23))
+    mult = 1.0
+    for split in splits:
+        if split.ex_date > pre.trade_date:
+            mult *= split.price_multiplier
+    assert pre.close * mult == pytest.approx(1.96, abs=0.01)
+
+
+@responses.activate
+def test_get_daily_ohlcv_skips_bar_missing_any_field():
+    responses.add(
+        responses.GET,
+        "https://query1.finance.yahoo.com/v8/finance/chart/AMC",
+        json={
+            "chart": {
+                "result": [
+                    {
+                        "timestamp": [_epoch("2023-08-17"), _epoch("2023-08-18")],
+                        "indicators": {
+                            "quote": [
+                                {
+                                    "open": [36.70, 40.60],
+                                    "high": [40.60, 41.90],
+                                    "low": [36.40, 38.60],
+                                    "close": [40.40, None],  # second bar has no close
+                                    "volume": [7147800, 5165850],
+                                }
+                            ]
+                        },
+                    }
+                ],
+                "error": None,
+            }
+        },
+    )
+    bars, _ = YahooClient().get_daily_ohlcv("AMC", date(2023, 8, 17), date(2023, 8, 18))
+    assert [b.trade_date for b in bars] == [date(2023, 8, 17)]
 
 
 @responses.activate
