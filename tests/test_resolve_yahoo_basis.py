@@ -6,8 +6,9 @@ Fixtures are REAL AMC split-adjusted closes across its 2023-08-24 1:10 reverse s
 
 from datetime import date
 
+from clients.bronze_client import BronzeClient
 from clients.yahoo_client import YahooBar, YahooSplit
-from livewire_scripts import resolve_yahoo_basis
+from livewire_scripts import resolve_yahoo_basis, rollback_legacy_basis
 from tests.test_rebuild_silver import _seed_bronze, _seed_split
 
 AS_OF = date(2026, 7, 17)
@@ -127,6 +128,52 @@ def test_yahoo_missing_is_reported(tmp_path):
 
     entry = _run(tmp_path, yahoo=_Missing())
     assert entry["status"] == "yahoo_missing"
+
+
+def _bronze_basis(tmp_path, symbol):
+    rows = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").read_symbol_rows(symbol)
+    return {str(r["price_basis"]) for r in rows}
+
+
+def test_apply_relabel_only_flips_basis_without_touching_prices(tmp_path):
+    # A pure-relabel symbol: bronze already holds raw values (1.96 pre-split), basis unknown.
+    _seed_bronze(
+        tmp_path,
+        "AMC",
+        [("2023-08-23", 1.96), ("2023-08-24", 14.37), ("2023-08-25", 12.43)],
+        source="legacy",
+        price_basis="unknown",
+    )
+    _seed_split(tmp_path, "AMC", "2023-08-24", 10, 1)
+    out = tmp_path / "manifest.json"
+    output_dir = tmp_path / "apply"
+    before = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").read_symbol_rows("AMC")
+    resolve_yahoo_basis.run(
+        ["--tickers", "AMC", "--output", str(out), "--apply", "--output-dir", str(output_dir), "--relabel-only"],
+        data_lake_root=tmp_path,
+        yahoo_factory=_FakeYahoo,
+        as_of_date=AS_OF,
+    )
+    after = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").read_symbol_rows("AMC")
+    assert _bronze_basis(tmp_path, "AMC") == {"raw"}  # basis flipped
+    # prices untouched
+    assert [r["close"] for r in sorted(after, key=lambda x: str(x["trade_date"]))] == [
+        r["close"] for r in sorted(before, key=lambda x: str(x["trade_date"]))
+    ]
+    # rollback restores the original bytes (basis back to unknown)
+    assert rollback_legacy_basis.run(["--output-dir", str(output_dir)], data_lake_root=tmp_path) == 0
+    assert _bronze_basis(tmp_path, "AMC") == {"unknown"}
+
+
+def test_apply_without_relabel_only_is_refused(tmp_path):
+    _seed_bronze(tmp_path, "AMC", [("2023-08-23", 1.96)], source="legacy", price_basis="unknown")
+    with __import__("pytest").raises(ValueError, match="relabel-only"):
+        resolve_yahoo_basis.run(
+            ["--tickers", "AMC", "--output", str(tmp_path / "m.json"), "--apply", "--output-dir", str(tmp_path / "a")],
+            data_lake_root=tmp_path,
+            yahoo_factory=_FakeYahoo,
+            as_of_date=AS_OF,
+        )
 
 
 def test_reads_symbols_file_and_main(tmp_path, monkeypatch):
