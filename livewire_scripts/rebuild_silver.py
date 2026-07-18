@@ -197,6 +197,58 @@ def _carry_forward(
     return artifacts, affected
 
 
+def _orphan_staged(
+    client: SilverClient,
+    publishable: list[StagedSymbol],
+    changed: list[StagedSymbol],
+    current: SilverRevision | None,
+) -> list[StagedSymbol]:
+    """Staged symbols with valid on-disk silver files that are absent from the current
+    manifest — orphaned by a past partial (``--tickers``) rebuild.
+
+    ``_matches_existing`` reads the on-disk file and reports such a symbol ``unchanged``,
+    so it never enters ``changed`` and ``_carry_forward`` (which only re-lists the current
+    manifest) never re-adds it. Apex serves by manifest, so the file sits on disk unserved
+    forever. These must be carried back into the manifest for ``--full`` to reach full
+    coverage without rewriting ~9k already-correct files.
+    """
+    manifested = {
+        artifact.path.split("symbol=")[1].split("/")[0]
+        for artifact in (current.artifacts if current else ())
+        if "symbol=" in artifact.path
+    }
+    republished = {item.symbol for item in changed}
+    orphans = []
+    for item in publishable:
+        if item.symbol in manifested or item.symbol in republished:
+            continue
+        if client.daily_path(item.symbol).is_file() and client.factor_path(item.symbol).is_file():
+            orphans.append(item)
+    return orphans
+
+
+def _carry_orphans(
+    client: SilverClient, orphans: list[StagedSymbol]
+) -> tuple[list[PublishedArtifact], list[AffectedSymbol]]:
+    """Manifest each orphan's existing daily+factor files by reference (their bytes already
+    match current staging, so no rewrite is needed), computing the sha the manifest stores."""
+    artifacts: list[PublishedArtifact] = []
+    affected: list[AffectedSymbol] = []
+    for item in sorted(orphans, key=lambda entry: entry.symbol):
+        resolved: list[PublishedArtifact] = []
+        for path in (client.daily_path(item.symbol), client.factor_path(item.symbol)):
+            sha = _sha256(path)
+            if sha is None:  # vanished between checks — skip rather than manifest a gap
+                resolved = []
+                break
+            resolved.append(PublishedArtifact(path, sha, pq.ParquetFile(path).metadata.num_rows))
+        if not resolved:
+            continue
+        artifacts.extend(resolved)
+        affected.append(AffectedSymbol(item.symbol, item.earliest_date, TIMEFRAMES))
+    return artifacts, affected
+
+
 def _evict_quarantined(
     client: SilverClient,
     quarantined: list[str],
@@ -476,8 +528,9 @@ def run(
     exit_code = resolve_exit_code(updated=len(staged), no_trade=0, partial=0, errors=failed)
 
     changed = [item for item in publishable if not _matches_existing(client, item)]
+    orphans = _orphan_staged(client, publishable, changed, current)
     unchanged = len(staged) - len(changed)
-    predicted_revision = current_revision + 1 if changed else current_revision
+    predicted_revision = current_revision + 1 if (changed or orphans) else current_revision
     if args.dry_run:
         _summary(
             action_count=action_count,
@@ -492,10 +545,11 @@ def run(
             trimmed=trimmed,
             window_regressions=len(regressions),
             evicted=len(evicted),
+            orphans_remanifested=len(orphans),
         )
         return exit_code
 
-    if not changed and not quarantined:
+    if not changed and not orphans and not quarantined:
         _summary(
             action_count=action_count,
             as_of_date=effective_as_of.isoformat(),
@@ -514,7 +568,8 @@ def run(
 
     with publisher.transaction() as transaction:
         changed = [item for item in publishable if not _matches_existing(client, item)]
-        if not changed and not quarantined:
+        orphans = _orphan_staged(client, publishable, changed, transaction.current)
+        if not changed and not orphans and not quarantined:
             revision = 0 if transaction.current is None else transaction.current.revision
             rebuilt = 0
             unchanged = len(staged)
@@ -539,6 +594,11 @@ def run(
             )
             artifacts.extend(carried_artifacts)
             affected.extend(carried_affected)
+            # Re-manifest orphaned-but-valid silver files (on disk, absent from the current
+            # manifest) so --full restores full coverage without rewriting them.
+            orphan_artifacts, orphan_affected = _carry_orphans(client, orphans)
+            artifacts.extend(orphan_artifacts)
+            affected.extend(orphan_affected)
             if not artifacts:
                 # Every in-scope symbol is quarantined. The publisher rejects an empty
                 # revision, and evicting against a manifest that still names the file
@@ -556,7 +616,7 @@ def run(
                 for artifact in (transaction.current.artifacts if transaction.current else ())
                 if "symbol=" in artifact.path
             }
-            if changed or still_manifested.intersection(quarantined):
+            if changed or orphans or still_manifested.intersection(quarantined):
                 revision = transaction.commit(artifacts, affected, actions_as_of).revision
             else:
                 revision = 0 if transaction.current is None else transaction.current.revision
@@ -583,6 +643,7 @@ def run(
         trimmed=trimmed,
         window_regressions=len(regressions),
         evicted=len(evicted),
+        orphans_remanifested=len(orphans),
     )
     return exit_code
 
