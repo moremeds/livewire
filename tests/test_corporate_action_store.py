@@ -7,7 +7,7 @@ from decimal import Decimal
 import pyarrow.parquet as pq
 import pytest
 
-from clients.corporate_action_store import CorporateActionStore
+from clients.corporate_action_store import CorporateActionStore, SplitAddition
 from clients.massive_client import MassiveDividend, MassiveSplit
 
 FETCHED_AT = datetime(2026, 7, 13, 1, 2, 3, tzinfo=UTC)
@@ -179,3 +179,100 @@ def test_publish_failure_leaves_existing_file_unchanged(tmp_path, monkeypatch):
         )
 
     assert store.path_for("NVDA").read_bytes() == original
+
+
+# --- apply_repairs (Yahoo split add / spurious cancel) -------------------------------
+
+_FIXED_AT = datetime(2026, 7, 18, 0, 0, 0, tzinfo=UTC)
+
+
+def test_apply_repairs_adds_reference_split(tmp_path):
+    store = CorporateActionStore(tmp_path)
+    result = store.apply_repairs(
+        "NVDA",
+        add_splits=[SplitAddition(date(2007, 9, 11), split_from=1.0, split_to=1.5)],
+        cancel_ex_dates=[],
+        fetched_at=_FIXED_AT,
+    )
+    assert result.added == 1 and result.cancelled == 0
+    active = store.latest_active("NVDA")
+    assert len(active) == 1
+    added = active[0]
+    assert added.provider == "yahoo" and added.action_type == "split"
+    assert added.ex_date == date(2007, 9, 11)
+    assert added.split_to / added.split_from == 1.5
+
+
+def test_apply_repairs_cancels_spurious_split_but_keeps_lineage(tmp_path):
+    store = CorporateActionStore(tmp_path)
+    # A real Massive split at 2024-06-10 plus a spurious 1.03 stock-dividend-as-split.
+    store.reconcile(
+        "NVDA",
+        [
+            _split(provider_event_id="real", execution_date=date(2024, 6, 10)),
+            _split(
+                provider_event_id="spurious",
+                execution_date=date(2023, 5, 5),
+                split_from=Decimal("100"),
+                split_to=Decimal("103"),
+                payload_hash="spur",
+            ),
+        ],
+        FETCHED_AT,
+    )
+    result = store.apply_repairs("NVDA", add_splits=[], cancel_ex_dates=[date(2023, 5, 5)], fetched_at=_FIXED_AT)
+    assert result.cancelled == 1 and result.added == 0
+    active = store.latest_active("NVDA")
+    assert [row.ex_date for row in active] == [date(2024, 6, 10)]  # spurious gone from active
+    # lineage retained: the cancelled revision still exists on disk
+    all_rows = pq.ParquetFile(store.path_for("NVDA")).read().to_pylist()
+    assert any(r["status"] == "cancelled" and r["ex_date"] == date(2023, 5, 5) for r in all_rows)
+
+
+def test_apply_repairs_add_and_cancel_in_one_mutation(tmp_path):
+    store = CorporateActionStore(tmp_path)
+    store.reconcile(
+        "NVDA",
+        [
+            _split(
+                provider_event_id="spur",
+                execution_date=date(2019, 3, 1),
+                split_from=Decimal("50"),
+                split_to=Decimal("51"),
+                payload_hash="s",
+            )
+        ],
+        FETCHED_AT,
+    )
+    result = store.apply_repairs(
+        "NVDA",
+        add_splits=[SplitAddition(date(2001, 6, 27), split_from=1.0, split_to=2.0)],
+        cancel_ex_dates=[date(2019, 3, 1)],
+        fetched_at=_FIXED_AT,
+    )
+    assert result.added == 1 and result.cancelled == 1
+    assert [row.ex_date for row in store.latest_active("NVDA")] == [date(2001, 6, 27)]
+
+
+def test_apply_repairs_dry_run_writes_nothing(tmp_path):
+    store = CorporateActionStore(tmp_path)
+    store.reconcile("NVDA", [_split()], FETCHED_AT)
+    before = store.path_for("NVDA").read_bytes()
+    result = store.apply_repairs(
+        "NVDA",
+        add_splits=[SplitAddition(date(2000, 1, 3), split_from=1.0, split_to=2.0)],
+        cancel_ex_dates=[date(2024, 6, 10)],
+        fetched_at=_FIXED_AT,
+        dry_run=True,
+    )
+    assert result.added == 1 and result.cancelled == 1
+    assert store.path_for("NVDA").read_bytes() == before  # no mutation on dry-run
+
+
+def test_apply_repairs_reinserting_active_split_is_noop(tmp_path):
+    store = CorporateActionStore(tmp_path)
+    add = [SplitAddition(date(2007, 9, 11), split_from=1.0, split_to=1.5)]
+    store.apply_repairs("NVDA", add_splits=add, cancel_ex_dates=[], fetched_at=_FIXED_AT)
+    second = store.apply_repairs("NVDA", add_splits=add, cancel_ex_dates=[], fetched_at=_FIXED_AT)
+    assert second.added == 0  # already active → not re-added
+    assert len(store.latest_active("NVDA")) == 1

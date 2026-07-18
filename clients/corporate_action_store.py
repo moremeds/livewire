@@ -54,6 +54,27 @@ class ReconcileResult:
         return self.inserted + self.revised + self.cancelled > 0
 
 
+@dataclass(frozen=True)
+class SplitAddition:
+    """A split to insert from a non-Massive reference (Yahoo). ``split_from``/``split_to``
+    follow the store convention: ratio = split_to / split_from (a 2:1 forward split is
+    split_from=1, split_to=2; a 10:1 reverse is split_from=10, split_to=1)."""
+
+    ex_date: date
+    split_from: float
+    split_to: float
+
+
+@dataclass(frozen=True)
+class RepairResult:
+    added: int = 0
+    cancelled: int = 0
+
+    @property
+    def changed(self) -> bool:
+        return self.added + self.cancelled > 0
+
+
 class CorporateActionStore:
     """Publish per-symbol corporate-action histories with retained lineage."""
 
@@ -160,6 +181,94 @@ class CorporateActionStore:
                     cancelled += 1
 
             result = ReconcileResult(inserted, revised, cancelled, unchanged)
+            if result.changed and not dry_run:
+                ordered = sorted(rows, key=lambda row: row.action_id)
+                table = pa.Table.from_pylist([asdict(row) for row in ordered], schema=self.schema)
+                publish_parquet(path, table, sort_column="action_id")
+            return result
+
+    def apply_repairs(
+        self,
+        symbol: str,
+        *,
+        add_splits: list[SplitAddition],
+        cancel_ex_dates: list[date],
+        fetched_at: datetime,
+        provider: str = "yahoo",
+        dry_run: bool = False,
+    ) -> RepairResult:
+        """Add reference splits and cancel spurious active splits in one atomic mutation.
+
+        Adds insert fresh active ``provider`` rows (revision 1). Cancels target the active
+        split matching each ex-date and append a superseding ``cancelled`` revision — the
+        lineage is retained, never deleted, mirroring ``reconcile``'s cancellation path.
+        """
+        symbol = canonical_symbol(symbol)
+        path = self.path_for(symbol)
+        lock = nullcontext() if dry_run else symbol_lock(path)
+        with lock:
+            rows = self._read(path)
+            latest = self._latest_by_provider_id(rows)
+            # ponytail: one active split per ex-date is assumed; splits colliding on a date
+            # are vanishingly rare and reconcile never emits an add+cancel on the same date.
+            active_split_by_exdate = {
+                row.ex_date: row for row in latest.values() if row.action_type == "split" and row.status == "active"
+            }
+            added = cancelled = 0
+
+            for addition in add_splits:
+                event_id = f"{provider}|{symbol}|{addition.ex_date.isoformat()}|split"
+                existing = latest.get(event_id)
+                if existing is not None and existing.status == "active":
+                    continue
+                payload = f"{provider}|{symbol}|{addition.ex_date}|{addition.split_from}|{addition.split_to}"
+                payload_hash = hashlib.blake2b(payload.encode(), digest_size=16).hexdigest()
+                action = CorporateAction(
+                    action_id=self._action_id(provider, event_id, 1, payload_hash),
+                    provider=provider,
+                    provider_event_id=event_id,
+                    event_revision=1,
+                    supersedes_action_id=None,
+                    symbol=symbol,
+                    action_type="split",
+                    ex_date=addition.ex_date,
+                    split_from=float(addition.split_from),
+                    split_to=float(addition.split_to),
+                    cash_amount=None,
+                    currency=None,
+                    declaration_date=None,
+                    record_date=None,
+                    pay_date=None,
+                    status="active",
+                    fetched_at=fetched_at,
+                    payload_hash=payload_hash,
+                )
+                rows.append(action)
+                latest[event_id] = action
+                added += 1
+
+            for ex_date in cancel_ex_dates:
+                previous = active_split_by_exdate.get(ex_date)
+                if previous is None:
+                    continue
+                cancelled_row = replace(
+                    previous,
+                    action_id=self._action_id(
+                        previous.provider,
+                        previous.provider_event_id,
+                        previous.event_revision + 1,
+                        previous.payload_hash,
+                    ),
+                    event_revision=previous.event_revision + 1,
+                    supersedes_action_id=previous.action_id,
+                    status="cancelled",
+                    fetched_at=fetched_at,
+                )
+                rows.append(cancelled_row)
+                latest[previous.provider_event_id] = cancelled_row
+                cancelled += 1
+
+            result = RepairResult(added, cancelled)
             if result.changed and not dry_run:
                 ordered = sorted(rows, key=lambda row: row.action_id)
                 table = pa.Table.from_pylist([asdict(row) for row in ordered], schema=self.schema)

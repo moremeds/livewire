@@ -49,8 +49,16 @@ def build_factor_intervals(
         raise ValueError("duplicate bronze trade dates")
 
     first_trade_date = dates[0]
+    last_trade_date = dates[-1]
+    # An action whose ex-date is after the final bar has no observable ex-date drop in
+    # this series, so it cannot be back-adjusted for. Bounding by last_trade_date (not
+    # just as_of_date) excludes those — e.g. a terminal liquidating distribution paid the
+    # trading week after a fund's last bar, whose cash == NAV would otherwise trip the
+    # "dividend < previous close" gate and quarantine the whole symbol. When bronze later
+    # extends past the ex-date, the window is re-derived and the action re-enters.
+    horizon = min(as_of_date, last_trade_date)
     active_actions = sorted(
-        (action for action in actions if action.status == "active" and first_trade_date < action.ex_date <= as_of_date),
+        (action for action in actions if action.status == "active" and first_trade_date < action.ex_date <= horizon),
         key=lambda action: (action.ex_date, 0 if action.action_type == "split" else 1, action.action_id),
     )
     factors_by_action: dict[str, tuple[Decimal, Decimal]] = {}

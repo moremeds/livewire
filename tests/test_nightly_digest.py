@@ -87,7 +87,7 @@ def test_build_digest_renders_failed_phases(tmp_path):
 def test_build_digest_missing_inputs_render_not_found(tmp_path):
     out = build_digest(date(2026, 7, 2), tmp_path / "empty_logs", tmp_path)
     assert isinstance(out, str)
-    assert out.count("(not found)") == 3  # outcomes, phases, coverage
+    assert out.count("(not found)") == 4  # outcomes, phases, silver, coverage
     assert "Disk:" in out
 
 
@@ -198,3 +198,49 @@ def test_body_file_honors_log_dir_override(tmp_path, monkeypatch):
     assert body_file.parent == custom_log_dir
     assert body_file.exists()
     assert not (wrong_log_dir / "nightly_digest_2026-07-02.txt").exists()
+
+
+def _write_silver_summary(log_dir, run, **fields):
+    """Append rebuild-silver's SUMMARY_JSON to the daily log, as the lane really does."""
+    import json
+
+    summary = {"revision": 3, "rebuilt": 12, "unchanged": 5, "trimmed": 2, "failed": 0, "window_regressions": 0}
+    summary.update(fields)
+    path = log_dir / f"daily_update_{run}.log"
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    path.write_text(existing + SUMMARY_PREFIX + json.dumps(summary, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def test_digest_reports_the_silver_rebuild(tmp_path):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    _write_silver_summary(log_dir, "2026-07-02")
+
+    body = build_digest(date(2026, 7, 2), log_dir, tmp_path)
+
+    assert "Silver rebuild:" in body
+    assert "revision=3" in body
+    assert "trimmed=2" in body
+    assert "withheld" not in body  # a clean rebuild raises no window alarm
+
+
+def test_digest_flags_window_regressions_loudly(tmp_path):
+    """A withheld symbol means new data cost published history. Nothing else surfaces
+    it — the run still exits 0, because the symbol keeps serving its old window."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    _write_silver_summary(log_dir, "2026-07-02", window_regressions=4)
+
+    body = build_digest(date(2026, 7, 2), log_dir, tmp_path)
+
+    assert "⚠ 4 symbol(s) withheld" in body
+    assert "cost published history" in body
+
+
+def test_digest_silver_section_tolerates_a_missing_rebuild(tmp_path):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+
+    body = build_digest(date(2026, 7, 2), log_dir, tmp_path)
+
+    assert "Silver rebuild:\n  (not found)" in body
