@@ -108,3 +108,65 @@ def test_classify_penny_stock_within_a_cent_is_relabel_not_mismatch():
     yadj = {date(2022, 8, 9): 125.0}
     result = classify_existing_basis([{"trade_date": "2022-08-09", "close": 0.245}], yraw, yadj)
     assert result.relabel == [date(2022, 8, 9)] and result.clean
+
+
+# --- IB anchor verdict (compare reconstruction to IB on the post-last-split window) ---
+
+from clients.yahoo_basis import AnchorVerdict, ib_anchor_verdict, last_split_ex_date  # noqa: E402
+
+# Real frozen AMC raw closes across the 2023-08-24 1:10 reverse split.
+_CORRECTED = [
+    {"trade_date": date(2023, 8, 23), "close": 1.96},   # raw (pre-split, folded)
+    {"trade_date": date(2023, 8, 24), "close": 14.37},  # ex-date
+    {"trade_date": date(2023, 8, 25), "close": 12.43},  # post-split
+    {"trade_date": date(2023, 8, 28), "close": 11.90},  # post-split
+]
+_LAST_SPLIT = date(2023, 8, 24)
+
+
+def test_last_split_ex_date_picks_the_max():
+    assert last_split_ex_date([(date(2020, 1, 2), 2.0), (date(2023, 8, 24), 0.1)]) == date(2023, 8, 24)
+    assert last_split_ex_date([]) is None
+
+
+def test_anchor_verified_when_ib_matches_post_split_window():
+    ib = [
+        {"trade_date": date(2023, 8, 25), "close": 12.43},
+        {"trade_date": date(2023, 8, 28), "close": 11.90},
+    ]
+    v = ib_anchor_verdict(_CORRECTED, ib, last_split_ex=_LAST_SPLIT, min_overlap=2)
+    assert v.verified and v.reason == "verified" and v.overlap == 2
+
+
+def test_anchor_ignores_pre_split_rows_entirely():
+    # IB carries a DIFFERENT (adjusted) pre-split value; the anchor must not look before the split.
+    ib = [
+        {"trade_date": date(2023, 8, 23), "close": 19.60},  # would mismatch if compared — but it is pre-split
+        {"trade_date": date(2023, 8, 25), "close": 12.43},
+        {"trade_date": date(2023, 8, 28), "close": 11.90},
+    ]
+    v = ib_anchor_verdict(_CORRECTED, ib, last_split_ex=_LAST_SPLIT, min_overlap=2)
+    assert v.verified
+
+
+def test_anchor_mismatch_when_ib_recent_close_disagrees():
+    ib = [
+        {"trade_date": date(2023, 8, 25), "close": 12.43},
+        {"trade_date": date(2023, 8, 28), "close": 8.00},  # wrong entity / broken reconstruction
+    ]
+    v = ib_anchor_verdict(_CORRECTED, ib, last_split_ex=_LAST_SPLIT, min_overlap=2)
+    assert not v.verified and v.reason == "ib_mismatch"
+    assert v.mismatches == [(date(2023, 8, 28), 11.90, 8.00)]
+
+
+def test_anchor_insufficient_overlap_fails_closed():
+    ib = [{"trade_date": date(2023, 8, 25), "close": 12.43}]  # 1 < min_overlap
+    v = ib_anchor_verdict(_CORRECTED, ib, last_split_ex=_LAST_SPLIT, min_overlap=5)
+    assert not v.verified and v.reason == "ib_insufficient_overlap" and v.overlap == 1
+
+
+def test_anchor_no_split_uses_full_overlap():
+    corrected = [{"trade_date": date(2026, 7, d), "close": c} for d, c in [(13, 100.0), (14, 101.0), (15, 102.0)]]
+    ib = [{"trade_date": date(2026, 7, d), "close": c} for d, c in [(13, 100.0), (14, 101.0), (15, 102.0)]]
+    v = ib_anchor_verdict(corrected, ib, last_split_ex=None, min_overlap=3)
+    assert v.verified and v.overlap == 3
