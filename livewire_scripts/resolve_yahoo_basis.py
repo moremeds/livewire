@@ -27,8 +27,16 @@ from clients.adjustment_engine import build_factor_intervals
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.symbol_paths import encode_symbol
-from clients.yahoo_basis import classify_existing_basis, reconcile_splits, reconstruct_raw_closes
+from clients.ib_client import IBClient, IBConnectionError
+from clients.yahoo_basis import (
+    classify_existing_basis,
+    ib_anchor_verdict,
+    last_split_ex_date,
+    reconcile_splits,
+    reconstruct_raw_closes,
+)
 from clients.yahoo_client import YahooClient, YahooError, YahooNotFound
+from livewire_scripts.adjusted_history_sources import IBHistoryFetcher
 from livewire_scripts.paths import data_lake_dir
 from livewire_scripts.repair_legacy_basis import _order_symbols, _priority_rank
 
@@ -69,6 +77,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--limit", type=int, help="process at most N not-yet-completed symbols this session")
     parser.add_argument("--priority-order", action="store_true", help="order sp500 -> ndx100 -> r2k -> tail")
     parser.add_argument("--presets-dir", type=Path, default=Path("presets"), help="preset dir for --priority-order")
+    parser.add_argument(
+        "--ib-verify",
+        action="store_true",
+        help="confirm each reconstruction against IB on the post-last-split window before writing",
+    )
+    parser.add_argument("--ib-host", default=os.environ.get("MDW_IB_HOST", "127.0.0.1"))
+    parser.add_argument("--ib-port", type=int, default=int(os.environ.get("MDW_IB_PORT", "4001")))
+    parser.add_argument("--ib-tolerance", type=float, default=0.02)
+    parser.add_argument("--ib-window-cap", type=int, default=250)
+    parser.add_argument("--ib-min-overlap", type=int, default=5)
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -178,6 +196,21 @@ def _resolve(symbol: str, *, bronze: BronzeClient, store: CorporateActionStore, 
 
 def resolve_symbol(symbol: str, *, bronze: BronzeClient, store: CorporateActionStore, yahoo, as_of: date) -> dict:
     return _resolve(symbol, bronze=bronze, store=store, yahoo=yahoo, as_of=as_of).result
+
+
+def _anchor_ok(
+    resolution: _Resolution, symbol: str, *, fetcher, as_of: date, tol: float, window_cap: int, min_overlap: int
+) -> tuple[bool, str]:
+    """Confirm the reconstructed true-raw series against IB on the post-last-split window.
+    IB is a gate, never written into bronze."""
+    corrected = resolution.corrected or []
+    last_ex = last_split_ex_date(_store_split_ratios(resolution.actions))
+    start = min(_as_date(r["trade_date"]) for r in corrected)
+    ib_rows = fetcher(symbol, start, as_of)
+    verdict = ib_anchor_verdict(
+        corrected, ib_rows, last_split_ex=last_ex, tol=tol, min_overlap=min_overlap, window_cap=window_cap
+    )
+    return verdict.verified, verdict.reason
 
 
 def _as_date(value) -> date:
@@ -298,6 +331,8 @@ def run(
     *,
     data_lake_root: Path | None = None,
     yahoo_factory: Callable[[], object] = YahooClient,
+    ib_factory: Callable[[], object] = IBClient,
+    ib_fetcher_factory: Callable[[object], Callable[[str, date, date], list[dict]]] = IBHistoryFetcher,
     as_of_date: date | None = None,
 ) -> int:
     args = parse_args(argv)
@@ -313,6 +348,10 @@ def run(
             # Refuse to run apply without a flag that names what it will do: --relabel-only
             # (never touches prices) or --allow-rewrite (rewrites adjusted deep rows to raw).
             raise ValueError("--apply requires --relabel-only or --allow-rewrite")
+        if not args.ib_verify:
+            # No publish without IB confirmation — the reconstruction is only trusted once
+            # its post-last-split window is confirmed against IB.
+            raise ValueError("--apply requires --ib-verify (no publish without IB confirmation)")
     cursor = {"identity": {"data_lake_root": str(root.resolve())}, "completed": {}}
     cursor_path = (args.output_dir / "cursor.json") if args.output_dir else None
     if args.resume and cursor_path and cursor_path.is_file():
@@ -323,39 +362,90 @@ def run(
     counts: dict[str, int] = {}
     results = []
     processed = 0
-    for symbol in _ordered_symbols(args, _symbols(args)):
-        if args.resume and cursor["completed"].get(symbol, {}).get("status") == "done":
-            continue
-        if args.limit is not None and processed >= args.limit:
-            break
-        processed += 1
-        try:
-            entry = resolve_symbol(symbol, bronze=bronze, store=store, yahoo=yahoo, as_of=as_of)
-        except Exception as exc:  # one bad symbol never aborts the sweep
-            entry = {"symbol": symbol, "status": "error", "detail": str(exc)[:120]}
-        if args.apply and entry["status"] == "would_resolve":
+    ib_client = None
+    fetcher: Callable[[str, date, date], list[dict]] | None = None
+    aborted = False
+    try:
+        for symbol in _ordered_symbols(args, _symbols(args)):
+            if args.resume and cursor["completed"].get(symbol, {}).get("status") == "done":
+                continue
+            if args.limit is not None and processed >= args.limit:
+                break
+            processed += 1
             try:
-                if args.allow_rewrite:
-                    apply_rewrite(
-                        symbol, bronze=bronze, store=store, yahoo=yahoo, as_of=as_of, output_dir=args.output_dir
-                    )
-                    entry["applied"] = "rewritten" if entry.get("rewrite", 0) else "relabeled"
-                elif entry.get("rewrite", 0) == 0:
-                    apply_relabel_only(symbol, bronze=bronze, output_dir=args.output_dir)
-                    entry["applied"] = "relabeled"
-                else:
-                    entry["applied"] = "skipped_rewrite"  # --relabel-only defers value rewrites
-                if entry["applied"] in ("relabeled", "rewritten"):
-                    cursor["completed"][symbol] = {"status": "done"}
-                    _write_json(args.output_dir / "cursor.json", cursor)
-            except Exception as exc:
-                entry["applied"] = f"apply_failed: {exc}"
-        counts[entry["status"]] = counts.get(entry["status"], 0) + 1
-        results.append(entry)
-        print(
-            f"{symbol}: {entry['status']}{' [' + entry['applied'] + ']' if entry.get('applied') else ''}",
-            file=sys.stderr,
-        )
+                resolution = _resolve(symbol, bronze=bronze, store=store, yahoo=yahoo, as_of=as_of)
+                entry = resolution.result
+            except Exception as exc:  # one bad symbol never aborts the sweep
+                resolution = None
+                entry = {"symbol": symbol, "status": "error", "detail": str(exc)[:120]}
+            if args.apply and entry["status"] == "would_resolve":
+                if args.ib_verify:
+                    if fetcher is None:
+                        # Lazy-connect once. A connection failure ABORTS the run and is never
+                        # a per-symbol verdict — livewire never auto-retries an IB connection
+                        # failure (2FA / maintenance / session conflict). --resume re-asks it.
+                        try:
+                            ib_client = ib_factory()
+                            ib_client.connect(host=args.ib_host, port=args.ib_port)
+                            fetcher = ib_fetcher_factory(ib_client)
+                        except Exception as exc:
+                            print(f"IB connection failed, aborting run: {exc}", file=sys.stderr)
+                            aborted = True
+                            break
+                    try:
+                        ok, reason = _anchor_ok(
+                            resolution,
+                            symbol,
+                            fetcher=fetcher,
+                            as_of=as_of,
+                            tol=args.ib_tolerance,
+                            window_cap=args.ib_window_cap,
+                            min_overlap=args.ib_min_overlap,
+                        )
+                    except (IBConnectionError, ConnectionError, OSError, TimeoutError) as exc:
+                        # Session dropped mid-run: every remaining symbol would fail through the
+                        # dead socket. Record this one as an IB error (not a verdict) and abort;
+                        # it stays uncheckpointed so --resume re-asks it.
+                        print(f"IB session lost mid-run, aborting run: {exc}", file=sys.stderr)
+                        entry["ib_verdict"] = f"ib_error: {exc}"
+                        counts[entry["status"]] = counts.get(entry["status"], 0) + 1
+                        results.append(entry)
+                        aborted = True
+                        break
+                    entry["ib_verdict"] = reason
+                    if not ok:
+                        # Not confirmed → withheld to the review queue, bronze untouched.
+                        entry["applied"] = "withheld_ib"
+                        counts[entry["status"]] = counts.get(entry["status"], 0) + 1
+                        results.append(entry)
+                        continue
+                try:
+                    if args.allow_rewrite:
+                        apply_rewrite(
+                            symbol, bronze=bronze, store=store, yahoo=yahoo, as_of=as_of, output_dir=args.output_dir
+                        )
+                        entry["applied"] = "rewritten" if entry.get("rewrite", 0) else "relabeled"
+                    elif entry.get("rewrite", 0) == 0:
+                        apply_relabel_only(symbol, bronze=bronze, output_dir=args.output_dir)
+                        entry["applied"] = "relabeled"
+                    else:
+                        entry["applied"] = "skipped_rewrite"  # --relabel-only defers value rewrites
+                    if entry["applied"] in ("relabeled", "rewritten"):
+                        cursor["completed"][symbol] = {"status": "done"}
+                        _write_json(args.output_dir / "cursor.json", cursor)
+                except Exception as exc:
+                    entry["applied"] = f"apply_failed: {exc}"
+            counts[entry["status"]] = counts.get(entry["status"], 0) + 1
+            results.append(entry)
+            print(
+                f"{symbol}: {entry['status']}{' [' + entry['applied'] + ']' if entry.get('applied') else ''}",
+                file=sys.stderr,
+            )
+    finally:
+        if ib_client is not None:
+            disconnect = getattr(ib_client, "disconnect", None)
+            if callable(disconnect):
+                disconnect()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(
@@ -364,8 +454,8 @@ def run(
             sort_keys=True,
         )
     )
-    print(json.dumps({"counts": counts, "symbols": len(results)}, sort_keys=True))
-    return 0
+    print(json.dumps({"counts": counts, "symbols": len(results), "aborted": aborted}, sort_keys=True))
+    return 1 if aborted else 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

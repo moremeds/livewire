@@ -153,9 +153,12 @@ def test_apply_relabel_only_flips_basis_without_touching_prices(tmp_path):
     output_dir = tmp_path / "apply"
     before = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").read_symbol_rows("AMC")
     resolve_yahoo_basis.run(
-        ["--tickers", "AMC", "--output", str(out), "--apply", "--output-dir", str(output_dir), "--relabel-only"],
+        ["--tickers", "AMC", "--output", str(out), "--apply", "--output-dir", str(output_dir),
+         "--relabel-only", "--ib-verify", "--ib-min-overlap", "1"],
         data_lake_root=tmp_path,
         yahoo_factory=_FakeYahoo,
+        ib_factory=_FakeIB,
+        ib_fetcher_factory=_fetcher(_AMC_IB_MATCH),
         as_of_date=AS_OF,
     )
     after = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").read_symbol_rows("AMC")
@@ -215,9 +218,12 @@ def test_apply_rewrite_rewrites_full_ohlcv_to_raw_and_rolls_back(tmp_path):
     _seed_split(tmp_path, "AMC", "2023-08-24", 10, 1)
     out, output_dir = tmp_path / "m.json", tmp_path / "rewrite"
     resolve_yahoo_basis.run(
-        ["--tickers", "AMC", "--output", str(out), "--apply", "--output-dir", str(output_dir), "--allow-rewrite"],
+        ["--tickers", "AMC", "--output", str(out), "--apply", "--output-dir", str(output_dir),
+         "--allow-rewrite", "--ib-verify", "--ib-min-overlap", "1"],
         data_lake_root=tmp_path,
         yahoo_factory=_FakeYahoo,
+        ib_factory=_FakeIB,
+        ib_fetcher_factory=_fetcher(_AMC_IB_MATCH),
         as_of_date=AS_OF,
     )
     pre = _bronze_row(tmp_path, "AMC", "2023-08-23")  # folded ×0.1 → 1.96, volume ÷0.1 → 10000
@@ -321,9 +327,12 @@ def test_relabel_only_defers_rewrite_symbol(tmp_path):
     _seed_split(tmp_path, "AMC", "2023-08-24", 10, 1)
     out = tmp_path / "m.json"
     resolve_yahoo_basis.run(
-        ["--tickers", "AMC", "--output", str(out), "--apply", "--output-dir", str(tmp_path / "a"), "--relabel-only"],
+        ["--tickers", "AMC", "--output", str(out), "--apply", "--output-dir", str(tmp_path / "a"),
+         "--relabel-only", "--ib-verify", "--ib-min-overlap", "1"],
         data_lake_root=tmp_path,
         yahoo_factory=_FakeYahoo,
+        ib_factory=_FakeIB,
+        ib_fetcher_factory=_fetcher(_AMC_IB_MATCH),
         as_of_date=AS_OF,
     )
     assert _bronze_basis(tmp_path, "AMC") == {"unknown"}  # deferred, not mutated
@@ -331,3 +340,114 @@ def test_relabel_only_defers_rewrite_symbol(tmp_path):
 
     entry = next(s for s in json.loads(out.read_text())["symbols"] if s["symbol"] == "AMC")
     assert entry["applied"] == "skipped_rewrite"
+
+
+# --- IB anchor gate wired into apply (Task 3) ---
+
+# Real frozen AMC closes: pre-split row ADJUSTED (19.60), post-split rows at raw values.
+_AMC_MULTI = [("2023-08-23", 19.60), ("2023-08-24", 14.37), ("2023-08-25", 12.43),
+              ("2023-08-28", 11.90), ("2023-08-29", 11.50), ("2023-08-30", 11.20), ("2023-08-31", 11.00)]
+# IB post-last-split window (definitionally raw there); matches the reconstruction.
+_AMC_IB_MATCH = [{"trade_date": date.fromisoformat(d), "close": c} for d, c in _AMC_MULTI if d > "2023-08-24"]
+
+
+class _FakeIB:
+    def connect(self, **k):
+        pass
+
+    def disconnect(self):
+        pass
+
+
+def _fetcher(rows):
+    return lambda client: (lambda symbol, start, end: [r for r in rows if start <= r["trade_date"] <= end])
+
+
+def _multi_yahoo():
+    return _FakeYahoo(bars=[YahooBar(date.fromisoformat(d), c, c) for d, c in _AMC_MULTI], splits=_AMC_SPLIT)
+
+
+def _seed_amc_multi(tmp_path):
+    _seed_bronze(tmp_path, "AMC", _AMC_MULTI, source="legacy", price_basis="unknown")
+    _seed_split(tmp_path, "AMC", "2023-08-24", 10, 1)
+
+
+def test_apply_requires_ib_verify(tmp_path):
+    _seed_bronze(tmp_path, "AMC", [("2023-08-23", 1.96)], source="legacy", price_basis="unknown")
+    with pytest.raises(ValueError, match="ib-verify"):
+        resolve_yahoo_basis.run(
+            ["--tickers", "AMC", "--output", str(tmp_path / "m.json"), "--apply",
+             "--output-dir", str(tmp_path / "a"), "--allow-rewrite"],
+            data_lake_root=tmp_path, yahoo_factory=_FakeYahoo, as_of_date=AS_OF,
+        )
+
+
+def test_ib_verified_symbol_is_written(tmp_path):
+    _seed_amc_multi(tmp_path)
+    rc = resolve_yahoo_basis.run(
+        ["--tickers", "AMC", "--output", str(tmp_path / "m.json"), "--apply",
+         "--output-dir", str(tmp_path / "a"), "--allow-rewrite", "--ib-verify", "--ib-min-overlap", "5"],
+        data_lake_root=tmp_path, yahoo_factory=_multi_yahoo,
+        ib_factory=_FakeIB, ib_fetcher_factory=_fetcher(_AMC_IB_MATCH), as_of_date=AS_OF,
+    )
+    assert rc == 0
+    assert _bronze_basis(tmp_path, "AMC") == {"raw"}  # published
+
+
+def test_ib_mismatch_leaves_bronze_untouched(tmp_path):
+    _seed_amc_multi(tmp_path)
+    bad_ib = [{**r, "close": r["close"] * 0.5} for r in _AMC_IB_MATCH]  # wrong entity
+    out = tmp_path / "m.json"
+    rc = resolve_yahoo_basis.run(
+        ["--tickers", "AMC", "--output", str(out), "--apply",
+         "--output-dir", str(tmp_path / "a"), "--allow-rewrite", "--ib-verify", "--ib-min-overlap", "5"],
+        data_lake_root=tmp_path, yahoo_factory=_multi_yahoo,
+        ib_factory=_FakeIB, ib_fetcher_factory=_fetcher(bad_ib), as_of_date=AS_OF,
+    )
+    assert rc == 0
+    assert _bronze_basis(tmp_path, "AMC") == {"unknown"}  # NOT written
+    entry = next(s for s in json.loads(out.read_text())["symbols"] if s["symbol"] == "AMC")
+    assert entry["ib_verdict"] == "ib_mismatch" and entry["applied"] == "withheld_ib"
+
+
+def test_ib_connection_failure_aborts_without_checkpoint(tmp_path):
+    _seed_amc_multi(tmp_path)
+
+    class _DeadIB:
+        def connect(self, **k):
+            from clients.ib_client import IBConnectionError
+            raise IBConnectionError("gateway down / 2FA")
+
+        def disconnect(self):
+            pass
+
+    output_dir = tmp_path / "a"
+    rc = resolve_yahoo_basis.run(
+        ["--tickers", "AMC", "--output", str(tmp_path / "m.json"), "--apply",
+         "--output-dir", str(output_dir), "--allow-rewrite", "--ib-verify"],
+        data_lake_root=tmp_path, yahoo_factory=_multi_yahoo,
+        ib_factory=_DeadIB, ib_fetcher_factory=_fetcher(_AMC_IB_MATCH), as_of_date=AS_OF,
+    )
+    assert rc == 1  # aborted
+    assert _bronze_basis(tmp_path, "AMC") == {"unknown"}  # untouched
+    cursor = output_dir / "cursor.json"
+    assert not cursor.is_file() or "AMC" not in json.loads(cursor.read_text()).get("completed", {})
+
+
+def test_ib_session_lost_midrun_aborts(tmp_path):
+    _seed_amc_multi(tmp_path)
+
+    def _dead_fetch(client):
+        def _f(symbol, start, end):
+            from clients.ib_client import IBConnectionError
+            raise IBConnectionError("session dropped mid-run")
+        return _f
+
+    rc = resolve_yahoo_basis.run(
+        ["--tickers", "AMC", "--output", str(tmp_path / "m.json"), "--apply",
+         "--output-dir", str(tmp_path / "a"), "--allow-rewrite", "--ib-verify"],
+        data_lake_root=tmp_path, yahoo_factory=_multi_yahoo,
+        ib_factory=_FakeIB, ib_fetcher_factory=_dead_fetch, as_of_date=AS_OF,
+    )
+    assert rc == 1
+    assert _bronze_basis(tmp_path, "AMC") == {"unknown"}  # untouched
