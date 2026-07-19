@@ -4,6 +4,7 @@ Fixtures are REAL AMC split-adjusted closes across its 2023-08-24 1:10 reverse s
 (frozen 2026-07-17). No network — the Yahoo client is a fake returning frozen bars.
 """
 
+import json
 from datetime import date
 
 import pytest
@@ -257,6 +258,55 @@ def test_reads_symbols_file_and_main(tmp_path, monkeypatch):
         resolve_yahoo_basis.run(["--symbols-file", str(symbols_file), "--output", str(output)], as_of_date=AS_OF) == 0
     )
     assert __import__("json").loads(output.read_text())["counts"]["would_resolve"] == 1
+
+
+def test_failure_manifest_filters_to_split_affected_unknown(tmp_path):
+    manifest = tmp_path / "fail.json"
+    manifest.write_text(json.dumps({"failed": [
+        {"symbol": "AMC", "reason": "unknown price_basis for split-affected row"},
+        {"symbol": "KO", "reason": "dividend currency does not match bronze currency"},
+    ]}))
+    from livewire_scripts.resolve_yahoo_basis import _symbols, parse_args
+    args = parse_args(["--failure-manifest", str(manifest), "--output", str(tmp_path / "o.json")])
+    assert _symbols(args) == ["AMC"]  # KO's dividend reason is out of scope
+
+
+def test_limit_caps_processed_symbols(tmp_path):
+    for sym, close in [("AMC", 1.96), ("BBW", 20.0)]:
+        _seed_bronze(tmp_path, sym, [("2026-07-14", close)], source="legacy", price_basis="unknown")
+    out = tmp_path / "m.json"
+    resolve_yahoo_basis.run(
+        ["--tickers", "AMC", "BBW", "--limit", "1", "--output", str(out)],
+        data_lake_root=tmp_path, yahoo_factory=_FakeYahoo, as_of_date=AS_OF,
+    )
+    assert len(json.loads(out.read_text())["symbols"]) == 1
+
+
+def test_resume_skips_symbol_marked_done_in_cursor(tmp_path):
+    _seed_bronze(tmp_path, "AMC", [("2023-08-23", 1.96)], source="legacy", price_basis="unknown")
+    output_dir = tmp_path / "batch"
+    output_dir.mkdir()
+    identity = {"data_lake_root": str(tmp_path.resolve())}
+    (output_dir / "cursor.json").write_text(json.dumps({"identity": identity, "completed": {"AMC": {"status": "done"}}}))
+    calls = {"n": 0}
+    class _CountingYahoo(_FakeYahoo):
+        def get_daily(self, *a, **k):
+            calls["n"] += 1
+            return super().get_daily(*a, **k)
+    resolve_yahoo_basis.run(
+        ["--tickers", "AMC", "--output", str(tmp_path / "m.json"), "--output-dir", str(output_dir), "--resume"],
+        data_lake_root=tmp_path, yahoo_factory=_CountingYahoo, as_of_date=AS_OF,
+    )
+    assert calls["n"] == 0  # AMC already done → never re-fetched
+    assert json.loads((tmp_path / "m.json").read_text())["symbols"] == []
+
+
+def test_priority_order_orders_by_preset(tmp_path, monkeypatch):
+    from livewire_scripts import resolve_yahoo_basis as R
+    monkeypatch.setattr(R, "_priority_rank", lambda d: {"BBW": 0, "AMC": 1})
+    from livewire_scripts.resolve_yahoo_basis import _ordered_symbols, parse_args
+    args = parse_args(["--tickers", "AMC", "BBW", "--priority-order", "--output", str(tmp_path / "o.json")])
+    assert _ordered_symbols(args, ["AMC", "BBW"]) == ["BBW", "AMC"]
 
 
 def test_relabel_only_defers_rewrite_symbol(tmp_path):

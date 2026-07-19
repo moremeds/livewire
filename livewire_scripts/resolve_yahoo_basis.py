@@ -30,6 +30,10 @@ from clients.symbol_paths import encode_symbol
 from clients.yahoo_basis import classify_existing_basis, reconcile_splits, reconstruct_raw_closes
 from clients.yahoo_client import YahooClient, YahooError, YahooNotFound
 from livewire_scripts.paths import data_lake_dir
+from livewire_scripts.repair_legacy_basis import _order_symbols, _priority_rank
+
+# Reason string Silver raises when a split lands on an unknown-basis row (the batch-1 target).
+_SPLIT_UNKNOWN_REASON = "unknown price_basis for split-affected row"
 
 _IB_EARLIEST = date(1962, 1, 1)
 # Above this share of rows disagreeing with Yahoo, the ticker is a different series
@@ -56,17 +60,40 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="also apply symbols with adjusted deep rows (rewrite>0): rewrite full OHLCV to true raw",
     )
+    parser.add_argument(
+        "--failure-manifest",
+        type=Path,
+        help="rebuild-silver --failure-output JSON; uses its split-affected unknown-basis failures as the symbol source",
+    )
+    parser.add_argument("--resume", action="store_true", help="skip symbols already recorded done in cursor.json")
+    parser.add_argument("--limit", type=int, help="process at most N not-yet-completed symbols this session")
+    parser.add_argument("--priority-order", action="store_true", help="order sp500 -> ndx100 -> r2k -> tail")
+    parser.add_argument("--presets-dir", type=Path, default=Path("presets"), help="preset dir for --priority-order")
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
 def _symbols(args: argparse.Namespace) -> list[str]:
     if args.tickers:
         return [t.upper() for t in args.tickers]
+    if getattr(args, "failure_manifest", None):
+        payload = json.loads(args.failure_manifest.read_text())
+        return [
+            str(f["symbol"]).upper()
+            for f in payload.get("failed", [])
+            if _SPLIT_UNKNOWN_REASON in str(f.get("reason", ""))
+        ]
     if args.symbols_file:
         payload = json.loads(args.symbols_file.read_text())
         raw = payload[args.symbols_key] if isinstance(payload, dict) else payload
         return [str(t).upper() for t in raw]
-    raise ValueError("provide --tickers or --symbols-file")
+    raise ValueError("provide --tickers, --symbols-file, or --failure-manifest")
+
+
+def _ordered_symbols(args: argparse.Namespace, symbols: list[str]) -> list[str]:
+    if not args.priority_order:
+        return symbols
+    rank = _priority_rank(args.presets_dir)  # raises if no preset found (never a silent zero-symbol run)
+    return _order_symbols(symbols, rank)
 
 
 def _store_split_ratios(actions) -> list[tuple[date, float]]:
@@ -287,9 +314,21 @@ def run(
             # (never touches prices) or --allow-rewrite (rewrites adjusted deep rows to raw).
             raise ValueError("--apply requires --relabel-only or --allow-rewrite")
     cursor = {"identity": {"data_lake_root": str(root.resolve())}, "completed": {}}
+    cursor_path = (args.output_dir / "cursor.json") if args.output_dir else None
+    if args.resume and cursor_path and cursor_path.is_file():
+        loaded = json.loads(cursor_path.read_text())
+        if loaded.get("identity") != cursor["identity"]:
+            raise ValueError("resume cursor does not match the active data-lake root")
+        cursor = loaded
     counts: dict[str, int] = {}
     results = []
-    for symbol in _symbols(args):
+    processed = 0
+    for symbol in _ordered_symbols(args, _symbols(args)):
+        if args.resume and cursor["completed"].get(symbol, {}).get("status") == "done":
+            continue
+        if args.limit is not None and processed >= args.limit:
+            break
+        processed += 1
         try:
             entry = resolve_symbol(symbol, bronze=bronze, store=store, yahoo=yahoo, as_of=as_of)
         except Exception as exc:  # one bad symbol never aborts the sweep
