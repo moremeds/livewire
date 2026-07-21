@@ -113,8 +113,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     quarantined = publish_stats.get("quarantined") or []
     if quarantined:
         log.error(
-            "%d symbol(s) had unreadable parquet and were quarantined; each needs a "
-            "targeted backfill: %s",
+            "%d symbol(s) had unreadable parquet and were quarantined; each needs a targeted backfill: %s",
             len(quarantined),
             ", ".join(sorted(quarantined)),
         )

@@ -95,9 +95,7 @@ class TestRunWatchdog:
         _healthy_run(config)
         log_file = build_daily_log_file(config.log_dir, "2026-03-11")
         log_file.write_text(
-            "\n".join(
-                line for line in log_file.read_text(encoding="utf-8").splitlines() if "Done silver" not in line
-            )
+            "\n".join(line for line in log_file.read_text(encoding="utf-8").splitlines() if "Done silver" not in line)
             + "\n",
             encoding="utf-8",
         )

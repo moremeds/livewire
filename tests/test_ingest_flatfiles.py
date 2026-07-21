@@ -116,24 +116,18 @@ class TestVerifyPublishCoverage:
 
     def test_under_publish_fails_the_run(self):
         store = self._Store({f"T{i}" for i in range(100)})
-        rc = ingest_flatfiles.verify_publish_coverage(
-            store, [date(2026, 6, 5)], {"tickers": 40, "resumed": 0}
-        )
+        rc = ingest_flatfiles.verify_publish_coverage(store, [date(2026, 6, 5)], {"tickers": 40, "resumed": 0})
         assert rc == 1
 
     def test_full_publish_passes(self):
         store = self._Store({f"T{i}" for i in range(100)})
-        rc = ingest_flatfiles.verify_publish_coverage(
-            store, [date(2026, 6, 5)], {"tickers": 100, "resumed": 0}
-        )
+        rc = ingest_flatfiles.verify_publish_coverage(store, [date(2026, 6, 5)], {"tickers": 100, "resumed": 0})
         assert rc == 0
 
     def test_resumed_run_is_not_judged(self):
         """A resumed run legitimately publishes fewer than the window holds."""
         store = self._Store({f"T{i}" for i in range(100)})
-        rc = ingest_flatfiles.verify_publish_coverage(
-            store, [date(2026, 6, 5)], {"tickers": 0, "resumed": 31}
-        )
+        rc = ingest_flatfiles.verify_publish_coverage(store, [date(2026, 6, 5)], {"tickers": 0, "resumed": 31})
         assert rc == 0
 
     def test_empty_raw_is_not_a_failure(self):

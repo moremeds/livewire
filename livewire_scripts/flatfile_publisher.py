@@ -135,12 +135,9 @@ def publish_dates(
                     # One unreadable per-symbol file used to abort the entire
                     # whole-market publish: a single truncated 1m.parquet took
                     # down all ~12K symbols every night, for a week, silently.
-                    moved = quarantine_corrupt_parquet(
-                        one_minute.bronze_dir / f"symbol={ticker}" / "1m.parquet"
-                    )
+                    moved = quarantine_corrupt_parquet(one_minute.bronze_dir / f"symbol={ticker}" / "1m.parquet")
                     log.error(
-                        "%s: unreadable 1m parquet quarantined to %s — symbol skipped, "
-                        "needs a targeted backfill: %s",
+                        "%s: unreadable 1m parquet quarantined to %s — symbol skipped, needs a targeted backfill: %s",
                         ticker,
                         moved,
                         exc,

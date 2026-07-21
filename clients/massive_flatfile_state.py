@@ -8,7 +8,6 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
-
 # Enough to resume any in-flight run and its immediate predecessors. The
 # append-only manifest keeps the full history; this snapshot does not need to.
 MAX_RETAINED_SCOPES = 10

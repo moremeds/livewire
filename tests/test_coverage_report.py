@@ -14,12 +14,12 @@ import pyarrow.parquet as pq
 import pytest
 
 from livewire_scripts.coverage_report import (
+    NON_EQUITY_ASSET_CLASSES,
     CoverageResult,
     RecoveryOutcome,
     _resolve_target_date,
     _send_alert,
     auto_recover,
-    NON_EQUITY_ASSET_CLASSES,
     compute_coverage,
     compute_non_equity_coverage,
     format_missing_blocks,

@@ -13,19 +13,6 @@ import pytest
 
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts import run_daily_update_job as daily_runner
-
-
-@pytest.fixture(autouse=True)
-def no_real_quality_spawn():
-    """Keep main() from shelling out to the real quality CLI.
-
-    main() ends by spawning coverage/weekly/digest. Unpatched, a unit test
-    launches `livewire_quality.py coverage` against the operator's live
-    warehouse — and coverage runs auto-recovery subprocesses that write
-    bronze. Autouse so a new main() test cannot forget it.
-    """
-    with patch("livewire_scripts.run_daily_update_job.run_post_success_quality") as spawn:
-        yield spawn
 from livewire_scripts.run_daily_update_job import (
     ASSET_CLASSES,
     AlertRequest,
@@ -44,11 +31,24 @@ from livewire_scripts.run_daily_update_job import (
     main,
     node_binary_exists,
     run_cboe_volatility_sync,
-    run_post_success_quality,
     run_daily_update_attempt,
+    run_post_success_quality,
     run_with_retries,
     send_failure_alert,
 )
+
+
+@pytest.fixture(autouse=True)
+def no_real_quality_spawn():
+    """Keep main() from shelling out to the real quality CLI.
+
+    main() ends by spawning coverage/weekly/digest. Unpatched, a unit test
+    launches `livewire_quality.py coverage` against the operator's live
+    warehouse — and coverage runs auto-recovery subprocesses that write
+    bronze. Autouse so a new main() test cannot forget it.
+    """
+    with patch("livewire_scripts.run_daily_update_job.run_post_success_quality") as spawn:
+        yield spawn
 
 
 def _config(tmp_path: Path, *, node_bin: str = "/opt/homebrew/bin/node") -> RunnerConfig:
