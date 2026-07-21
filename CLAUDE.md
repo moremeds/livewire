@@ -202,7 +202,49 @@ Provider corrections increment `event_revision` and link through
 `supersedes_action_id`; full reconciliations may append cancellation revisions,
 while targeted runs never infer disappearance by default. The scheduled daily
 job reconciles actions first (full provider reconciliation on Sunday), runs all
-market-data lanes, and rebuilds Silver only when every prerequisite succeeds.
+market-data lanes, and rebuilds Silver when **its own inputs** succeeded.
+
+### IB is not a single point of failure
+
+`rebuild-silver` reads equity bronze and the corporate-action store — both
+Massive-backed. It never reads IB. So the Silver gate depends on exactly those
+two lanes, **not** on futures/cmdty/fx (IB daily) or CBOE. Gating on every lane
+meant one stale FX contract blocked the adjusted rebuild for the whole ~13K
+equity universe.
+
+IB legitimately owns futures/cmdty/fx daily and volatility intraday
+(VIX/SPX/NDX/RUT/VXN/RVX). The rule is that IB *failure* must not cascade:
+
+- An unreachable Gateway exits `GATEWAY_DOWN_EXIT_CODE` (86, distinct from 1
+  and argparse's 2). The lane is **skipped, not retried** — 2FA and IBKR
+  maintenance are not something livewire recovers, and retrying burns
+  3×`retry_delay_seconds` against a dead port. It logs `=== Skipped <scope> ===`
+  and the run is DEGRADED, not failed.
+- `fetch_batch` maps a raised fetch to the exception, never to `[]`. Collapsing
+  both meant a total IB outage classified every ticker `no_trade`, held
+  `errors` at 0, and `resolve_exit_code` reported success for a run that
+  ingested nothing.
+
+### Scheduled-job invariants worth not re-breaking
+
+- **The plists must point at the main checkout, never a worktree.** `.env` is
+  gitignored, so a worktree has none; pointing launchd at
+  `.worktrees/<branch>/` resolved every credential to nothing and killed both
+  ingestion and the failure alert that would have reported it. `.env` is now
+  resolved by walking up to `$HOME`, but the plists should still name the repo.
+- **Alerts that fail to send are persisted** to `<log_dir>/alerts_undelivered/`
+  and counted by the watchdog. A WARNING in the log the job just broke is not
+  an alert.
+- **The watchdog requires the `silver` scope** and reads the equity
+  `SUMMARY_JSON`: `=== Done equity ===` with `updated=0` is not healthy.
+- **coverage/weekly/digest run once, after Silver.** They used to fire inside
+  each asset class's success branch — four digests a night, all before Silver,
+  so `_silver_section` parsed a log that could not yet contain Silver's
+  summary and the `window_regressions` warning was structurally unreachable.
+- **A corrupt per-symbol parquet is quarantined, not fatal.** One truncated
+  `1m.parquet` aborted the entire whole-market publish every night from
+  2026-07-14; the file is now moved to `<lake>/quarantine/<stamp>/` and the
+  symbol reported for targeted backfill while the rest of the market publishes.
 
 Silver artifacts are published beneath `MDW_SILVER_DIR` (default
 `data-lake/silver`). Daily files preserve Apex-required OHLCV names and add
@@ -381,6 +423,13 @@ Massive S3 flat-file environment variables:
 - `MDW_FLATFILE_BUCKETS` (default `256`): raw ticker buckets per trading day.
 - `MDW_FLATFILE_STORAGE_MULTIPLIER` (default `8`): capacity-planning multiplier for a full build.
 - `MDW_FLATFILE_MIN_FREE_GB` (default `25`): required free-space reserve after a full build.
+- `MDW_FLATFILE_MIN_PUBLISH_RATIO` (default `0.9`): minimum share of the raw
+  file's ticker set a publish must cover before the run fails. Nothing checked
+  this before — a raw file holding 12,000 symbols could publish 40 and exit 0.
+  Skipped on a resumed run, where a low published count is legitimate.
+- `MDW_SYNC_PHASE_TIMEOUT_SECONDS` (default `21600`, 6h): hard per-phase budget
+  in `daily-backfill`. There was no timeout on this path at all, so a wedged IB
+  call blocked its phase forever and launchd would not start another instance.
 
 Postgres analytical publish environment variables:
 - `MDW_POSTGRES_DSN`: Postgres DSN for `scripts/livewire_store.py rebuild-postgres` and `scripts/livewire_store.py smoke-postgres`.
