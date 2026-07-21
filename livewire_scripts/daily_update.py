@@ -52,7 +52,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.daily_bar_fallback import DailyBarFallbackClient
-from clients.ib_client import IBClient, IBError
+from clients.ib_client import IBClient
 from clients.ingestion_common import (
     ROOT_EXCHANGE_MAP,  # noqa: F401
     SUPPORTED_IB_FX_PAIRS,  # noqa: F401
@@ -521,17 +521,25 @@ async def fetch_batch(
     ib: IBClient,
     max_concurrent: int = 6,
     asset_class: str = "equity",
-) -> dict[str, list]:
-    """Fetch bars for a batch of tickers. Returns ``{ticker: bars}``."""
-    semaphore = asyncio.Semaphore(max_concurrent)
-    results: dict[str, list] = {}
+) -> dict[str, list | BaseException]:
+    """Fetch bars for a batch of tickers. Returns ``{ticker: bars_or_exception}``.
 
-    async def _safe_fetch(ticker: str, duration: str) -> tuple[str, list]:
+    A ticker whose fetch raised maps to the exception, NOT to an empty list.
+    Collapsing both into ``[]`` made a total IB outage indistinguishable from
+    "the instrument didn't trade": every ticker classified ``no_trade``,
+    ``errors`` stayed 0, and ``resolve_exit_code`` reported success for a run
+    that ingested nothing. The caller re-raises so the existing per-ticker
+    handler counts it as ``error``.
+    """
+    semaphore = asyncio.Semaphore(max_concurrent)
+    results: dict[str, list | BaseException] = {}
+
+    async def _safe_fetch(ticker: str, duration: str) -> tuple[str, list | BaseException]:
         try:
             return await fetch_ticker_update(ticker, duration, ib, semaphore, asset_class=asset_class)
-        except (IBError, Exception) as exc:
+        except Exception as exc:
             console.print(f"    [red]{ticker}: {type(exc).__name__} — {exc}[/red]")
-            return (ticker, [])
+            return (ticker, exc)
 
     gathered = await asyncio.gather(*[_safe_fetch(t, d) for t, d in tickers_with_durations])
     for ticker, bars in gathered:
@@ -862,6 +870,11 @@ def main():  # pragma: no cover — only exercised by integration tests
                 for ticker, _duration in batch:
                     try:
                         bars = ticker_bars.get(ticker, [])
+                        if isinstance(bars, BaseException):
+                            # The fetch raised. Surface it through the handler
+                            # below so it counts as `error`; a swallowed fetch
+                            # would otherwise read as `no_trade` and exit 0.
+                            raise bars
                         valid_bars, issues = validate_bars(bars, ticker, asset_class=asset_class)
                         total_issues.extend(issues)
                         total_validated += len(bars)

@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts import run_daily_update_job as daily_runner
 from livewire_scripts.run_daily_update_job import (
     ASSET_CLASSES,
@@ -834,33 +835,59 @@ class TestMain:
         )
         cboe_mock.assert_not_called()
 
-    def test_main_returns_nonzero_if_any_asset_class_fails(self):
+    def _main_with(self, *, lane_codes=None, action=0, cboe=0, gateway_down=()):
+        """Run main() with each lane's exit code stubbed. Returns (rc, silver_mock)."""
         config = _config(Path("/tmp/test"))
+        codes = dict(lane_codes or {})
 
         def _run(cfg, args, env, completion_scope=None):
-            if "--asset-class" in args and args[args.index("--asset-class") + 1] == "futures":
-                return 1
-            return 0
+            name = args[args.index("--asset-class") + 1]
+            if name in gateway_down:
+                return GATEWAY_DOWN_EXIT_CODE
+            return codes.get(name, 0)
 
         with (
             patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
-            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=action),
             patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=_run),
-            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0),
-            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild") as silver,
+            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=cboe),
+            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", return_value=0) as silver,
+            patch("livewire_scripts.run_daily_update_job.append_log"),
         ):
-            assert main([]) == 1
+            return main([]), silver
+
+    def test_main_returns_nonzero_if_any_asset_class_fails(self):
+        rc, _ = self._main_with(lane_codes={"futures": 1})
+        assert rc == 1
+
+    def test_ib_lane_failure_does_not_block_silver(self):
+        """Silver reads equity bronze + corporate actions. Nothing else gates it.
+
+        A stale FX contract or a failed futures lane used to skip the adjusted
+        rebuild for the whole ~13K equity universe.
+        """
+        rc, silver = self._main_with(lane_codes={"futures": 1, "fx": 1, "cmdty": 1})
+        assert rc == 1
+        silver.assert_called_once()
+
+    def test_cboe_failure_does_not_block_silver(self):
+        rc, silver = self._main_with(cboe=1)
+        assert rc == 1
+        silver.assert_called_once()
+
+    def test_equity_failure_blocks_silver(self):
+        rc, silver = self._main_with(lane_codes={"equity": 1})
+        assert rc == 1
         silver.assert_not_called()
 
-    def test_main_returns_nonzero_if_cboe_fails(self):
-        config = _config(Path("/tmp/test"))
-
-        with (
-            patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
-            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
-            patch("livewire_scripts.run_daily_update_job.run_with_retries", return_value=0),
-            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=1),
-            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild") as silver,
-        ):
-            assert main([]) == 1
+    def test_corporate_action_failure_blocks_silver(self):
+        """Silver would otherwise rebuild against a stale action store."""
+        rc, silver = self._main_with(action=1)
+        assert rc == 1
         silver.assert_not_called()
+
+    def test_gateway_down_is_degraded_not_failed(self):
+        """A 2FA-gated Gateway is an expected state, not a data failure."""
+        rc, silver = self._main_with(gateway_down=("futures", "cmdty", "fx"))
+        assert rc == 0
+        silver.assert_called_once()

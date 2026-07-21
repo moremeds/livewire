@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts.paths import warehouse_dir as resolve_warehouse_dir
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -330,6 +331,17 @@ def run_with_retries(
         result = run_daily_update_attempt(command, log_file, env=env, runner=runner)
         final_exit_code = result.returncode
 
+        if result.returncode == GATEWAY_DOWN_EXIT_CODE:
+            # A down Gateway means 2FA, IBKR maintenance, or a session
+            # conflict. Retrying burns 3x the retry delay and never helps, and
+            # this is not a data failure — the caller keeps it out of the gate
+            # for lanes that do not read IB.
+            append_log(
+                log_file,
+                f"=== Skipped {done_scope} {now_fn():%Y-%m-%dT%H:%M:%SZ} (IB Gateway unreachable) ===",
+            )
+            return GATEWAY_DOWN_EXIT_CODE
+
         if result.returncode == 0:
             append_log(
                 log_file,
@@ -519,26 +531,45 @@ def main(argv: Sequence[str] | None = None) -> int:
     action_code = run_corporate_action_sync(config, dry_run=dry_run, env=env)
 
     # Otherwise, run all asset classes sequentially.
-    final_code = action_code
+    lane_codes: dict[str, int] = {}
     for asset_class in ASSET_CLASSES:
-        code = run_with_retries(
+        lane_codes[asset_class] = run_with_retries(
             config,
             args + ["--asset-class", asset_class],
             env=env,
             completion_scope=asset_class,
         )
-        if code != 0:
-            final_code = code
 
     # Sync all volatility indices via CBOE API (authoritative source)
     cboe_code = run_cboe_volatility_sync(config, env=env)
-    if cboe_code != 0:
-        final_code = cboe_code
 
-    if final_code == 0:
+    # A Gateway outage is a degraded run, not a failed one. It must not mark
+    # the job failed and must not gate anything that does not read IB.
+    degraded = sorted(name for name, code in lane_codes.items() if code == GATEWAY_DOWN_EXIT_CODE)
+    failed = {name: code for name, code in lane_codes.items() if code not in (0, GATEWAY_DOWN_EXIT_CODE)}
+
+    final_code = action_code or cboe_code or next(iter(failed.values()), 0)
+
+    # Silver reads equity bronze and the corporate-action store — nothing
+    # else. Gating it on every lane meant one stale FX contract or a 2FA-gated
+    # Gateway blocked the adjusted rebuild for the whole equity universe.
+    silver_inputs_ok = action_code == 0 and lane_codes.get("equity", 0) == 0
+    if silver_inputs_ok:
         silver_code = run_silver_rebuild(config, dry_run=dry_run, env=env)
         if silver_code != 0:
-            final_code = silver_code
+            final_code = final_code or silver_code
+    else:
+        blocker = "corporate-actions" if action_code != 0 else "equity"
+        append_log(
+            build_log_file(config.log_dir, _utc_now()),
+            f"=== Skipped silver {_utc_now():%Y-%m-%dT%H:%M:%SZ} (blocked by {blocker}) ===",
+        )
+
+    if degraded:
+        append_log(
+            build_log_file(config.log_dir, _utc_now()),
+            f"DEGRADED: IB Gateway unreachable; lanes skipped: {', '.join(degraded)}",
+        )
 
     return final_code
 

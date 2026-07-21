@@ -752,11 +752,27 @@ class TestFetchBatch:
         assert "NVDA" in result
 
     def test_handles_error(self):
+        """A raised fetch maps to the exception, never to an empty list.
+
+        Collapsing a raise into `[]` made it indistinguishable from "the
+        instrument didn't trade", so a total IB outage classified every ticker
+        `no_trade`, kept `errors` at 0, and exited 0.
+        """
         mock_ib = MagicMock()
         mock_ib.ib.qualifyContractsAsync = AsyncMock(side_effect=Exception("fail"))
 
         result = asyncio.run(fetch_batch([("FAIL", "5 D")], mock_ib, max_concurrent=6))
-        assert result["FAIL"] == []
+        assert isinstance(result["FAIL"], Exception)
+        assert str(result["FAIL"]) == "fail"
+
+    def test_no_bars_is_still_an_empty_list(self):
+        """A genuine no-trade stays `[]` so it keeps classifying as no_trade."""
+        mock_ib = MagicMock()
+        mock_ib.ib.qualifyContractsAsync = AsyncMock(return_value=[])
+        mock_ib.get_historical_data_async = AsyncMock(return_value=[])
+
+        result = asyncio.run(fetch_batch([("QUIET", "5 D")], mock_ib, max_concurrent=6))
+        assert result["QUIET"] == []
 
 
 class TestQualityHookIntegration:

@@ -20,6 +20,13 @@ DEFAULT_PORT = 4001
 STATUS_SCRIPT = Path.home() / "trading-stack" / "scripts" / "ibc_gateway_status.sh"
 RUNBOOK = Path.home() / "runbooks" / "trading-stack" / "ib-gateway-ibc.md"
 
+# Distinct from 1 (generic failure) and 2 (argparse usage error) so a scheduled
+# wrapper can tell "Gateway is down" apart from "the lane genuinely failed".
+# A down Gateway is an expected operational state — 2FA, IBKR maintenance, a
+# session conflict — that livewire must not retry and must not treat as a data
+# failure that blocks non-IB work.
+GATEWAY_DOWN_EXIT_CODE = 86
+
 
 def _tcp_reachable(host: str, port: int, timeout: float) -> bool:
     try:
@@ -56,4 +63,4 @@ def assert_gateway_up(
         print(f"--- {STATUS_SCRIPT} ---", file=sys.stderr)
         subprocess.run(["bash", str(STATUS_SCRIPT)], check=False)
     print(f"--- Runbook: {RUNBOOK} ---", file=sys.stderr)
-    sys.exit(2)
+    sys.exit(GATEWAY_DOWN_EXIT_CODE)
