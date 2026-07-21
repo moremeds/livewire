@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pyarrow as pa
@@ -28,6 +28,28 @@ def _bronze_rows(ticker: str, rows: list[dict]) -> list[dict]:
         row["symbol_id"] = stable_symbol_id(ticker)
         result.append(row)
     return result
+
+
+def quarantine_corrupt_parquet(path: Path) -> Path | None:
+    """Move an unreadable parquet aside so the run can continue past it.
+
+    A corrupt 1m file cannot be rebuilt from a sibling — it IS the source, and
+    the publisher only holds the current window, so rewriting it here would
+    silently truncate that symbol's history. Moving it aside makes the loss
+    explicit and recoverable by a targeted backfill.
+    """
+    if not path.exists():
+        return None
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    target_dir = path.parent.parent.parent / "quarantine" / stamp / path.parent.name
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / path.name
+        path.replace(target)
+    except OSError as exc:  # pragma: no cover - last-resort path
+        log.error("could not quarantine %s: %s", path, exc)
+        return None
+    return target
 
 
 def _merge_or_rebuild_derived(
@@ -64,12 +86,12 @@ def publish_dates(
     workers: int = 1,
 ) -> dict[str, int]:
     if not days:
-        return {"tickers": 0, "rows_1m": 0, "resumed": 0}
+        return {"tickers": 0, "rows_1m": 0, "resumed": 0, "quarantined": []}
     scope = scope or f"{days[0].isoformat()}_{days[-1].isoformat()}_{len(days)}"
     # `resumed` counts buckets and tickers this run skipped as already complete.
     # A caller verifying publish coverage can only do so when this is 0 — on a
     # resumed run the published count legitimately undercounts the window.
-    totals = {"tickers": 0, "rows_1m": 0, "resumed": 0}
+    totals = {"tickers": 0, "rows_1m": 0, "resumed": 0, "quarantined": []}
     totals_lock = threading.Lock()
 
     def _process_bucket(bucket: int) -> None:
@@ -107,7 +129,25 @@ def publish_dates(
                 # Catch-up / repair: `rows` is only the new days. Merge into 1m, then
                 # aggregate just the new bars and merge into each derived parquet —
                 # overwrite_existing=True replaces any overlapping window timestamps.
-                local_rows += one_minute.merge_ticker_rows(ticker, rows, overwrite_existing=True)
+                try:
+                    local_rows += one_minute.merge_ticker_rows(ticker, rows, overwrite_existing=True)
+                except (OSError, pa.ArrowInvalid) as exc:
+                    # One unreadable per-symbol file used to abort the entire
+                    # whole-market publish: a single truncated 1m.parquet took
+                    # down all ~12K symbols every night, for a week, silently.
+                    moved = quarantine_corrupt_parquet(
+                        one_minute.bronze_dir / f"symbol={ticker}" / "1m.parquet"
+                    )
+                    log.error(
+                        "%s: unreadable 1m parquet quarantined to %s — symbol skipped, "
+                        "needs a targeted backfill: %s",
+                        ticker,
+                        moved,
+                        exc,
+                    )
+                    with totals_lock:
+                        totals["quarantined"].append(ticker)
+                    continue
                 for timeframe in DERIVED_TIMEFRAMES:
                     derived = aggregate_bars(rows, source_tf="1m", target_tf=timeframe)
                     _merge_or_rebuild_derived(

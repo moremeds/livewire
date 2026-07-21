@@ -110,6 +110,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         download_stats.skipped,
         publish_stats["tickers"],
     )
+    quarantined = publish_stats.get("quarantined") or []
+    if quarantined:
+        log.error(
+            "%d symbol(s) had unreadable parquet and were quarantined; each needs a "
+            "targeted backfill: %s",
+            len(quarantined),
+            ", ".join(sorted(quarantined)),
+        )
     return verify_publish_coverage(store, dates, publish_stats)
 
 
