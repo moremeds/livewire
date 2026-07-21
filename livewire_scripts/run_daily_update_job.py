@@ -282,6 +282,24 @@ def completed_scopes(log_file: Path) -> set[str]:
     return scopes
 
 
+def skipped_scopes(log_file: Path) -> set[str]:
+    """Scopes the run deliberately skipped (Gateway down, blocked prerequisite).
+
+    A skipped scope is neither done nor missing. Without this the watchdog
+    reads a 2FA-gated Gateway as "the sync never ran".
+    """
+    scopes: set[str] = set()
+    try:
+        for line in log_file.read_text(encoding="utf-8").splitlines():
+            if line.startswith("=== Skipped "):
+                remainder = line.removeprefix("=== Skipped ").strip()
+                if remainder:
+                    scopes.add(remainder.split(maxsplit=1)[0])
+    except FileNotFoundError:
+        return set()
+    return scopes
+
+
 def log_has_completion_marker(log_file: Path) -> bool:
     return bool(completed_scopes(log_file))
 
@@ -347,22 +365,6 @@ def run_with_retries(
                 log_file,
                 (f"=== Done {done_scope} {now_fn():%Y-%m-%dT%H:%M:%SZ} (attempt {attempt}/{config.max_attempts}) ==="),
             )
-            # Coverage + weekly were tied to a container entrypoint that no
-            # longer exists; run them here after a successful daily job so
-            # they resume daily. Coverage may launch a recovery subprocess,
-            # so give it a longer budget. weekly self-skips on non-Sunday.
-            # Run these before the digest so the digest sees fresh coverage.
-            _spawn_post_success_quality(runner, log_file, ["coverage"], "coverage report", timeout=600)
-            _spawn_post_success_quality(runner, log_file, ["weekly"], "weekly quality report")
-            # One trustworthy nightly digest replaces the noisy per-warrant
-            # summary email.
-            run_date = log_file.stem.removeprefix("daily_update_")
-            _spawn_post_success_quality(
-                runner,
-                log_file,
-                ["digest", "--run-date", run_date, "--email"],
-                "nightly digest",
-            )
             return 0
 
         append_log(
@@ -412,8 +414,84 @@ def run_with_retries(
             log_file,
             (f"WARNING: failure alert returned non-zero exit code {alert_result.returncode}. {alert_output}").strip(),
         )
+        record_undelivered_alert(config, alert_request, alert_output, log_file)
 
     return final_exit_code
+
+
+def run_post_success_quality(
+    config: RunnerConfig,
+    log_file: Path,
+    runner: callable = subprocess.run,
+) -> None:
+    """Run coverage, weekly, and the nightly digest exactly once, last.
+
+    These used to fire inside each asset class's success branch — up to four
+    coverage runs and four digest emails a night, all of them before the
+    Silver rebuild. `_silver_section` parses the same log for Silver's
+    SUMMARY_JSON, which had not been written yet, so the window_regressions
+    warning the digest is supposed to carry could never appear.
+    """
+    # Coverage may launch a recovery subprocess, so give it a longer budget.
+    _spawn_post_success_quality(runner, log_file, ["coverage"], "coverage report", timeout=600)
+    # weekly self-skips on non-Sunday.
+    _spawn_post_success_quality(runner, log_file, ["weekly"], "weekly quality report")
+    run_date = log_file.stem.removeprefix("daily_update_")
+    _spawn_post_success_quality(
+        runner,
+        log_file,
+        ["digest", "--run-date", run_date, "--email"],
+        "nightly digest",
+    )
+
+
+def undelivered_dir(config: RunnerConfig) -> Path:
+    """Queue for scheduled-job alerts that could not be sent.
+
+    Deliberately not MDW_UNDELIVERED_DIR — that knob belongs to per-flag
+    quality alerts, and folding two different producers into one directory
+    would make the watchdog's count mean two different things.
+    """
+    return config.log_dir / "alerts_undelivered"
+
+
+def record_undelivered_alert(
+    config: RunnerConfig,
+    request: AlertRequest,
+    alert_output: str,
+    log_file: Path,
+) -> Path | None:
+    """Persist an alert that could not be sent.
+
+    A failed send previously left only a WARNING inside the same log nobody
+    reads when the job is broken — the alert channel and the thing it reports
+    on died from one cause (a missing `.env`) and the outage ran six days
+    unnoticed. This leaves a durable artifact the watchdog and digest count.
+    """
+    target_dir = undelivered_dir(config)
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / f"{request.run_date}_{log_file.stem}.txt"
+        path.write_text(
+            "\n".join(
+                [
+                    f"run_date: {request.run_date}",
+                    f"log_file: {request.log_file}",
+                    f"attempts: {request.attempts}",
+                    f"exit_code: {request.exit_code}",
+                    f"send_output: {alert_output}",
+                    "",
+                    request.error_summary,
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:  # pragma: no cover - last-resort path
+        append_log(log_file, f"WARNING: could not persist undelivered alert: {exc}")
+        return None
+    append_log(log_file, f"Undelivered alert persisted to {path}")
+    return path
 
 
 def run_cboe_volatility_sync(
@@ -570,6 +648,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             build_log_file(config.log_dir, _utc_now()),
             f"DEGRADED: IB Gateway unreachable; lanes skipped: {', '.join(degraded)}",
         )
+
+    # Last, so the digest sees fresh coverage AND Silver's SUMMARY_JSON.
+    run_post_success_quality(config, build_log_file(config.log_dir, _utc_now()))
 
     return final_code
 

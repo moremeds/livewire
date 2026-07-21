@@ -16,6 +16,7 @@ REPO_ROOT = SCRIPT_DIR.parent
 if str(REPO_ROOT) not in sys.path:  # pragma: no cover - direct script bootstrap only
     sys.path.insert(0, str(REPO_ROOT))
 
+from livewire_scripts.daily_outcomes import parse_all_summary_json
 from livewire_scripts.run_daily_update_job import (
     ASSET_CLASSES,
     AlertRequest,
@@ -25,10 +26,49 @@ from livewire_scripts.run_daily_update_job import (
     completed_scopes,
     log_has_completion_marker,
     send_failure_alert,
+    skipped_scopes,
+    undelivered_dir,
 )
 
 WATCHDOG_ALERT_SENT_EXIT_CODE = 1
 WATCHDOG_ALERT_FAILED_EXIT_CODE = 2
+
+# Silver is the served artifact. It was absent from the required set, so a
+# rebuild that never ran — or ran and failed — passed the watchdog silently
+# while Apex kept serving the previous revision.
+REQUIRED_DAILY_SCOPES = set(ASSET_CLASSES) | {"cboe", "silver"}
+
+
+def stale_equity_summary(log_file: Path) -> str | None:
+    """Return a reason string if the equity lane ingested nothing.
+
+    Scope markers only prove the process reached the end. A run where every
+    ticker errored or returned no bars still writes `=== Done equity ===`, so
+    the watchdog needs the outcome counts to tell "ran" from "worked".
+    """
+    try:
+        text = log_file.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    equity = [s for s in parse_all_summary_json(text) if s.get("asset_class") == "equity"]
+    if not equity:
+        return None
+    latest = equity[-1]
+    updated = latest.get("updated", 0)
+    errors = latest.get("errors", 0)
+    if updated == 0 and (errors or latest.get("no_trade", 0)):
+        return (
+            f"Equity lane completed but published nothing: updated=0, "
+            f"errors={errors}, no_trade={latest.get('no_trade', 0)}."
+        )
+    return None
+
+
+def undelivered_alert_count(config: RunnerConfig) -> int:
+    try:
+        return len(list(undelivered_dir(config).glob("*.txt")))
+    except OSError:  # pragma: no cover - unreadable dir
+        return 0
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -101,13 +141,22 @@ def run_watchdog(
     quality_marker = config.log_dir / f"quality_summary_{run_date}.marker"
 
     daily_scopes = completed_scopes(daily_log_file)
-    required_daily_scopes = set(ASSET_CLASSES) | {"cboe"}
-    missing_daily_scopes = sorted(required_daily_scopes - daily_scopes)
+    degraded_scopes = sorted(skipped_scopes(daily_log_file))
+    missing_daily_scopes = sorted(REQUIRED_DAILY_SCOPES - daily_scopes - set(degraded_scopes))
     daily_complete = ("*" in daily_scopes) or not missing_daily_scopes
     quality_complete = quality_marker.exists()
     intraday_complete = log_has_completion_marker(intraday_log_file)
+    stale_reason = stale_equity_summary(daily_log_file)
+    undelivered = undelivered_alert_count(config)
 
-    if daily_complete and quality_complete and intraday_complete:
+    if (
+        daily_complete
+        and quality_complete
+        and intraday_complete
+        and not degraded_scopes
+        and stale_reason is None
+        and undelivered == 0
+    ):
         return 0
 
     reasons: list[str] = []
@@ -120,6 +169,15 @@ def run_watchdog(
         reasons.append(
             f"Daily sync completed on {run_date} but the end-of-day quality "
             f"summary marker is missing at {quality_marker}."
+        )
+    if stale_reason is not None:
+        reasons.append(stale_reason)
+    if degraded_scopes:
+        reasons.append(f"DEGRADED: lanes skipped on {run_date}: {', '.join(degraded_scopes)}.")
+    if undelivered:
+        reasons.append(
+            f"{undelivered} alert(s) could not be delivered and are queued in "
+            f"{undelivered_dir(config)}; the alert channel itself may be broken."
         )
     if not intraday_complete:
         reasons.append(determine_intraday_watchdog_error(intraday_log_file, run_date))
