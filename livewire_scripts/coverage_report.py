@@ -159,9 +159,26 @@ def compute_coverage(
     # instruments that did not trade from the "missing" count.
     traded_today = _raw_symbols_for_date(target_date, bronze_root)
 
+    if not traded_today:
+        # Be loud about it: with no raw partition the no-trade exemption
+        # silently switches off and the same code reports a different, stricter
+        # denominator with nothing in the log saying which one ran.
+        log.warning(
+            "No raw minute partition for %s — coverage runs without the no-trade "
+            "exemption and intraday denominators fall back to files on disk.",
+            target_date,
+        )
+
     for tf in TIMEFRAMES:
         parquet_paths = sorted((bronze_root / "asset_class=equity").glob(f"symbol=*/{_filename_for(tf)}"))
-        universe = {_symbol_from_parquet_path(path) for path in parquet_paths}
+        on_disk = {_symbol_from_parquet_path(path) for path in parquet_paths}
+
+        # For intraday, the provider's traded set is the honest denominator.
+        # Globbing files on disk made the denominator self-defining: a symbol
+        # with no 5m.parquet was not in the 5m universe, so a symbol that
+        # silently stopped receiving intraday — or never got a file at all —
+        # could never be counted missing, and coverage read 100% forever.
+        universe = on_disk if (tf == "1d" or not traded_today) else set(traded_today)
 
         column_name = "trade_date" if tf == "1d" else "bar_timestamp"
         latest_by_symbol = {
@@ -173,7 +190,7 @@ def compute_coverage(
             symbol
             for symbol in universe
             if (latest_by_symbol.get(symbol) or date.min) >= target_date
-            or (traded_today and symbol not in traded_today)
+            or (tf == "1d" and traded_today and symbol not in traded_today)
         }
         missing = sorted(universe - present_symbols)
         results[tf] = CoverageResult(
@@ -264,46 +281,63 @@ def auto_recover(
     target_date: date | None = None,
     safety_cap: int = DEFAULT_SAFETY_CAP,
 ) -> RecoveryOutcome:
-    """Trigger a targeted backfill subprocess and re-check coverage."""
+    """Trigger a targeted backfill subprocess and re-check coverage.
+
+    The cap used to abort outright, which made it self-perpetuating: recovery
+    only ran below the alert ratio AND below the cap, so a large outage landed
+    in a dead zone where coverage was bad enough to alarm but too bad to act,
+    and the same symbols were dropped and re-emailed every night forever.
+    1d recovery now runs in cap-sized batches instead.
+
+    The cap never applied to intraday in the first place: that branch passes no
+    symbols at all — it republishes the whole day's flat file — so its cost is
+    date-shaped, not symbol-shaped, and refusing to run because 101 symbols are
+    missing was measuring the wrong quantity.
+    """
     if not missing_symbols:
         return RecoveryOutcome(timeframe=timeframe, attempted=[], recovered=0, still_missing=[])
-
-    if len(missing_symbols) > safety_cap:
-        return RecoveryOutcome(
-            timeframe=timeframe,
-            attempted=list(missing_symbols),
-            recovered=0,
-            still_missing=list(missing_symbols),
-            aborted=True,
-            reason=f"safety_cap (>{safety_cap} missing symbols)",
-        )
 
     effective_target = target_date or datetime.now(UTC).date()
 
     if timeframe == "1d":
-        cmd = [
-            sys.executable,
-            str(_INGEST_SCRIPT),
-            "daily",
-            "--source",
-            "massive",
-            "--force",
-            "--target-date",
-            effective_target.isoformat(),
-            "--tickers",
-            *missing_symbols,
-        ]
+        batches = [missing_symbols[i : i + safety_cap] for i in range(0, len(missing_symbols), safety_cap)]
+        if len(batches) > 1:
+            console.print(
+                f"[cyan]Auto-recover 1d: {len(missing_symbols)} symbols in {len(batches)} "
+                f"batch(es) of up to {safety_cap}[/cyan]"
+            )
+        for batch in batches:
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(_INGEST_SCRIPT),
+                    "daily",
+                    "--source",
+                    "massive",
+                    "--force",
+                    "--target-date",
+                    effective_target.isoformat(),
+                    "--tickers",
+                    *batch,
+                ],
+                check=False,
+            )
     else:
-        cmd = [
-            sys.executable,
-            str(_INGEST_SCRIPT),
-            "flatfile-ingest",
-            "repair",
-            "--dates",
-            effective_target.isoformat(),
-        ]
-    console.print(f"[cyan]Auto-recover {timeframe}: launching backfill for {len(missing_symbols)} symbols[/cyan]")
-    subprocess.run(cmd, check=False)
+        console.print(
+            f"[cyan]Auto-recover {timeframe}: republishing {effective_target} "
+            f"({len(missing_symbols)} symbols missing)[/cyan]"
+        )
+        subprocess.run(
+            [
+                sys.executable,
+                str(_INGEST_SCRIPT),
+                "flatfile-ingest",
+                "repair",
+                "--dates",
+                effective_target.isoformat(),
+            ],
+            check=False,
+        )
 
     rechecked = compute_coverage(effective_target, bronze_root=bronze_root)[timeframe]
     still_missing = [s for s in missing_symbols if s in rechecked.missing_symbols]
