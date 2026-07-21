@@ -14,7 +14,7 @@ from clients.massive_flatfile_store import MassiveFlatfileStore
 from clients.trading_calendar import trading_dates_in_range
 from livewire_scripts.flatfile_downloader import download_dates
 from livewire_scripts.flatfile_planner import discover_plan, require_capacity
-from livewire_scripts.flatfile_publisher import publish_dates
+from livewire_scripts.flatfile_publisher import PublishStats, publish_dates
 from livewire_scripts.paths import cursor_dir, warehouse_dir
 
 log = logging.getLogger("livewire.ingest_flatfiles")
@@ -123,7 +123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def verify_publish_coverage(
     store: MassiveFlatfileStore,
     dates: list[date],
-    publish_stats: dict[str, int],
+    publish_stats: PublishStats,
     min_ratio: float | None = None,
 ) -> int:
     """Fail the run when publish covered far fewer tickers than the raw files hold.
@@ -132,19 +132,39 @@ def verify_publish_coverage(
     could write 40, and the phase exited 0 — indistinguishable from a full run
     in the log, the exit code, SUMMARY_JSON and the digest.
 
-    Skipped on a resumed run, where the published count legitimately undercounts
-    the window because earlier buckets are already complete.
+    An unmeasurable window fails rather than passes, and a partially-resumed run
+    scales the floor instead of switching the check off.
     """
-    if publish_stats.get("resumed"):
-        log.info("Publish coverage check skipped: resumed run (%d already complete)", publish_stats["resumed"])
+    total_buckets = publish_stats.get("buckets", 0)
+    resumed_buckets = publish_stats.get("resumed_buckets", 0)
+    if total_buckets and resumed_buckets >= total_buckets:
+        log.info("Publish coverage check skipped: all %d buckets were already complete", total_buckets)
         return 0
+
     expected = set()
     for day in dates:
         expected |= store.symbols_for_date(day)
     if not expected:
-        return 0
+        # Fail, do not pass. `symbols_for_date` returns an empty set for a missing
+        # or unreadable `_symbols.parquet`, so "I cannot measure coverage" used to
+        # be indistinguishable from "coverage is fine" — the exact blindness this
+        # function exists to remove, reproduced inside it.
+        log.error(
+            "Publish coverage cannot be verified: no raw symbol set for %s — "
+            "the _symbols.parquet for these dates is missing or unreadable.",
+            ", ".join(d.isoformat() for d in dates),
+        )
+        return 1
+
     ratio_floor = min_ratio if min_ratio is not None else float(os.getenv("MDW_FLATFILE_MIN_PUBLISH_RATIO", "0.9"))
-    published = publish_stats.get("tickers", 0)
+    # Tickers skipped as already complete were published by an earlier run of this
+    # scope, so they count as covered. Whole buckets skipped were never enumerated,
+    # so scale the floor by the share of the window this run could actually see
+    # rather than abandoning the check — one resumed bucket out of 256 used to
+    # disable it outright, which is nearly every nightly catch-up.
+    published = publish_stats.get("tickers", 0) + publish_stats.get("resumed", 0)
+    if total_buckets:
+        ratio_floor *= (total_buckets - resumed_buckets) / total_buckets
     ratio = published / len(expected)
     if ratio < ratio_floor:
         log.error(

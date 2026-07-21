@@ -680,8 +680,13 @@ def main():  # pragma: no cover — only exercised by integration tests
         latest_dates = bronze.get_latest_dates()
 
         if not latest_dates and args.tickers is None:
-            console.print("[yellow]No tickers found in bronze parquet. Run fetch_ib_historical.py first.[/yellow]")
-            return
+            # Nonzero, not a bare return. An empty universe on a scheduled run means
+            # the bronze tree is unmounted, the data-lake root misresolved, or the
+            # asset class renamed — never "nothing to do". Exiting 0 here made the
+            # wrapper write `=== Done <class> ===` with no SUMMARY_JSON at all, so
+            # the watchdog's staleness check had nothing to read and passed.
+            console.print("[red]No tickers found in bronze parquet — is the data-lake root correct?[/red]")
+            return 1
         if not latest_dates and args.tickers is not None:
             latest_dates = {ticker.upper(): previous_trading_day(target).isoformat() for ticker in args.tickers}
 
@@ -689,8 +694,10 @@ def main():  # pragma: no cover — only exercised by integration tests
         if preset_tickers is not None:
             latest_dates = {k: v for k, v in latest_dates.items() if k in preset_tickers}
             if not latest_dates:
-                console.print("[yellow]No preset tickers found in bronze parquet.[/yellow]")
-                return
+                # Same reasoning: a preset that intersects bronze in zero symbols is
+                # a misconfiguration, not an empty work queue.
+                console.print("[red]No preset tickers found in bronze parquet.[/red]")
+                return 1
         if args.tickers is not None:
             explicit_tickers = {ticker.upper() for ticker in args.tickers}
             missing_explicit = explicit_tickers - set(latest_dates)

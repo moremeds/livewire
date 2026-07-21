@@ -339,11 +339,22 @@ def run_sync(
     # ArrowInvalid propagated out of run_sync, so Postgres never ran AND the
     # SUMMARY_JSON line below was never printed — leaving the wrapper to scrape
     # the last log line and the nightly digest with no phase table at all.
+    #
+    # Recorded in phase_results, not just `failures`: SUMMARY_JSON["failed"] is
+    # derived from phase_results alone, so appending to `failures` turned the run
+    # red while the digest and the watchdog both read "failed": [] — the exit code
+    # and the machine-readable summary disagreed about the same run.
+    _derive_start = time.monotonic()
+    derive_rc = 0
     try:
         _derive_vol_1h(config.vol_preset)
     except Exception as exc:  # noqa: BLE001 - one lane must not kill the summary
         logger.error("vol_1h_derive failed: %s", exc)
+        derive_rc = 1
         failures.append("vol_1h_derive")
+    phase_results.append(
+        {"label": "vol_1h_derive", "exit": derive_rc, "duration_s": round(time.monotonic() - _derive_start, 1)}
+    )
 
     # Phase 6: Postgres rebuild (conditional)
     if os.getenv("MDW_POSTGRES_DSN"):

@@ -71,8 +71,13 @@ def test_main_executes_full_pipeline_modes(monkeypatch, tmp_path, mode):
         patch(
             "livewire_scripts.ingest_flatfiles.download_dates", return_value=MagicMock(downloaded=1, skipped=0)
         ) as download,
-        patch("livewire_scripts.ingest_flatfiles.publish_dates", return_value={"tickers": 1}) as publish,
+        patch("livewire_scripts.ingest_flatfiles.MassiveFlatfileStore") as MockStore,
+        patch(
+            "livewire_scripts.ingest_flatfiles.publish_dates",
+            return_value={"tickers": 1, "resumed": 0, "resumed_buckets": 0, "buckets": 1, "quarantined": []},
+        ) as publish,
     ):
+        MockStore.return_value.symbols_for_date.return_value = {"AAPL"}
         assert main(args) == 0
     assert capacity.call_count == (1 if mode == "backfill" else 0)
     assert download.call_count == 1
@@ -124,14 +129,49 @@ class TestVerifyPublishCoverage:
         rc = ingest_flatfiles.verify_publish_coverage(store, [date(2026, 6, 5)], {"tickers": 100, "resumed": 0})
         assert rc == 0
 
-    def test_resumed_run_is_not_judged(self):
-        """A resumed run legitimately publishes fewer than the window holds."""
+    def test_resumed_tickers_count_as_covered(self):
+        """Tickers skipped as complete were published by an earlier run of this scope."""
         store = self._Store({f"T{i}" for i in range(100)})
-        rc = ingest_flatfiles.verify_publish_coverage(store, [date(2026, 6, 5)], {"tickers": 0, "resumed": 31})
-        assert rc == 0
-
-    def test_empty_raw_is_not_a_failure(self):
         rc = ingest_flatfiles.verify_publish_coverage(
-            self._Store(set()), [date(2026, 6, 5)], {"tickers": 0, "resumed": 0}
+            store,
+            [date(2026, 6, 5)],
+            {"tickers": 40, "resumed": 60, "resumed_buckets": 0, "buckets": 256},
         )
         assert rc == 0
+
+    def test_one_resumed_bucket_does_not_disable_the_check(self):
+        """The whole guard used to switch off on any resumed bucket.
+
+        Catch-up reuses its scope string, so `resumed` was almost always
+        non-zero — the check that exists to catch a near-empty publish was
+        inert on nearly every nightly run.
+        """
+        store = self._Store({f"T{i}" for i in range(100)})
+        rc = ingest_flatfiles.verify_publish_coverage(
+            store,
+            [date(2026, 6, 5)],
+            {"tickers": 5, "resumed": 0, "resumed_buckets": 1, "buckets": 256},
+        )
+        assert rc == 1
+
+    def test_fully_resumed_window_is_a_genuine_noop(self):
+        store = self._Store({f"T{i}" for i in range(100)})
+        rc = ingest_flatfiles.verify_publish_coverage(
+            store,
+            [date(2026, 6, 5)],
+            {"tickers": 0, "resumed": 0, "resumed_buckets": 256, "buckets": 256},
+        )
+        assert rc == 0
+
+    def test_unmeasurable_window_fails_rather_than_passes(self):
+        """A missing `_symbols.parquet` yields an empty set, not an exception.
+
+        Passing on it made "I cannot measure coverage" identical to "coverage
+        is fine" — inside the function written to remove exactly that blindness.
+        """
+        rc = ingest_flatfiles.verify_publish_coverage(
+            self._Store(set()),
+            [date(2026, 6, 5)],
+            {"tickers": 0, "resumed": 0, "resumed_buckets": 0, "buckets": 256},
+        )
+        assert rc == 1

@@ -1409,8 +1409,12 @@ class TestMain:
             main()  # No bronze data → early return
 
     @pytest.mark.integration
-    def test_no_tickers_in_bronze(self, monkeypatch):
-        """main() exits when no tickers are available in bronze."""
+    def test_no_tickers_in_bronze_fails(self, monkeypatch):
+        """An empty bronze universe is a failure, not a clean no-op.
+
+        Exiting 0 here made the scheduled wrapper write `=== Done equity ===`
+        with no SUMMARY_JSON, leaving the watchdog nothing to judge the run by.
+        """
         monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
 
         with (
@@ -1422,7 +1426,8 @@ class TestMain:
             mock_bronze.__exit__ = MagicMock(return_value=False)
             mock_bronze.get_latest_dates.return_value = {}
             MockBronze.return_value = mock_bronze
-            main()
+            # `!= 0` would pass on a bare `return` too — None != 0 is True.
+            assert main() == 1
 
     @pytest.mark.integration
     def test_all_up_to_date(self, monkeypatch):

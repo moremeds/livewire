@@ -102,6 +102,8 @@ def test_publish_dates_handles_empty_replace_and_resume(tmp_path):
         "tickers": 0,
         "rows_1m": 0,
         "resumed": 0,
+        "resumed_buckets": 0,
+        "buckets": 0,
         "quarantined": [],
     }
 
@@ -110,13 +112,23 @@ def test_publish_dates_handles_empty_replace_and_resume(tmp_path):
     day = date(2024, 6, 3)
     store.stage_gzip(day, source)
     stats = publish_dates(store, state, [day], tmp_path / "bronze", replace_complete=True, scope="history")
-    assert stats == {"tickers": 1, "rows_1m": 1, "resumed": 0, "quarantined": []}
+    assert stats == {
+        "tickers": 1,
+        "rows_1m": 1,
+        "resumed": 0,
+        "resumed_buckets": 0,
+        "buckets": 1,
+        "quarantined": [],
+    }
 
-    # Re-run of a completed scope: the bucket is already done, so `resumed`
-    # is what tells the caller not to read 0 published as under-publishing.
+    # Re-run of a completed scope: the whole bucket is skipped. That is counted
+    # separately from resumed *tickers* — a skipped bucket's tickers were never
+    # enumerated, so it is the only part of the window a coverage check cannot
+    # measure, and it must not be conflated with tickers already published.
     again = publish_dates(store, state, [day], tmp_path / "bronze", scope="history")
     assert again["tickers"] == 0
-    assert again["resumed"] > 0
+    assert again["resumed_buckets"] == again["buckets"] > 0
+    assert again["resumed"] == 0
 
     partial = MassiveFlatfileState(tmp_path / "partial")
     partial.mark_ticker_completed("partial", 0, "AAPL")

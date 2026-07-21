@@ -451,6 +451,29 @@ class TestRunSync:
             rc = run_sync(config, runner=_fail_runner, trading_day_fn=lambda: "2026-05-28")
         assert rc == 1
 
+    def test_derive_failure_reaches_the_summary_not_just_the_exit_code(self, tmp_path, capsys):
+        """SUMMARY_JSON["failed"] is built from phase_results, not from `failures`.
+
+        The derivation appended to `failures` alone, so a broken 1h derive
+        exited 1 while the machine-readable summary reported "failed": [] —
+        and the digest and watchdog both read the summary, not the exit code.
+        """
+        config = _make_config(tmp_path)
+
+        def ok(command, **kwargs):
+            return CompletedProcess(args=command, returncode=0)
+
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", side_effect=OSError("unreadable 30m parquet")):
+            rc = run_sync(config, runner=ok, trading_day_fn=lambda: "2026-05-28")
+
+        assert rc == 1
+        summary = json.loads(
+            next(
+                line for line in capsys.readouterr().out.splitlines() if line.startswith("SUMMARY_JSON ")
+            ).removeprefix("SUMMARY_JSON ")
+        )
+        assert "vol_1h_derive" in summary["failed"]
+
     def test_postgres_rebuild_when_dsn_set(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MDW_POSTGRES_DSN", "postgresql://test/db")
         config = _make_config(tmp_path)

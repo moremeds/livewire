@@ -24,15 +24,26 @@ log = logging.getLogger(__name__)
 class PublishStats(TypedDict):
     """What one publish run covered.
 
-    `resumed` counts buckets and tickers skipped as already complete — a caller
-    verifying publish coverage can only do so when it is 0, because a resumed
-    run legitimately undercounts the window. `quarantined` holds symbols whose
-    parquet was unreadable and was moved aside; each needs a targeted backfill.
+    `resumed` counts *tickers* skipped as already complete; those were published
+    by an earlier run of the same scope, so a coverage check may count them as
+    covered. `resumed_buckets` counts whole buckets skipped — their tickers were
+    never enumerated this run, so they are the only genuinely unmeasurable part
+    of the window, and `buckets` gives the denominator to size that against.
+
+    These were one field. Conflating them meant a single already-complete bucket
+    out of 256 read as "this is a resumed run" and disabled the coverage check
+    entirely — which is nearly every nightly catch-up, since catch-up reuses the
+    scope string.
+
+    `quarantined` holds symbols whose parquet was unreadable and was moved
+    aside; each needs a targeted backfill.
     """
 
     tickers: int
     rows_1m: int
     resumed: int
+    resumed_buckets: int
+    buckets: int
     quarantined: list[str]
 
 
@@ -102,18 +113,22 @@ def publish_dates(
     workers: int = 1,
 ) -> PublishStats:
     if not days:
-        return {"tickers": 0, "rows_1m": 0, "resumed": 0, "quarantined": []}
+        return {"tickers": 0, "rows_1m": 0, "resumed": 0, "resumed_buckets": 0, "buckets": 0, "quarantined": []}
     scope = scope or f"{days[0].isoformat()}_{days[-1].isoformat()}_{len(days)}"
-    # `resumed` counts buckets and tickers this run skipped as already complete.
-    # A caller verifying publish coverage can only do so when this is 0 — on a
-    # resumed run the published count legitimately undercounts the window.
-    totals: PublishStats = {"tickers": 0, "rows_1m": 0, "resumed": 0, "quarantined": []}
+    totals: PublishStats = {
+        "tickers": 0,
+        "rows_1m": 0,
+        "resumed": 0,
+        "resumed_buckets": 0,
+        "buckets": 0,
+        "quarantined": [],
+    }
     totals_lock = threading.Lock()
 
     def _process_bucket(bucket: int) -> None:
         if state.bucket_completed(scope, bucket):
             with totals_lock:
-                totals["resumed"] += 1
+                totals["resumed_buckets"] += 1
             return
         state.record("bucket_started", scope=scope, bucket=bucket)
         local_published = 0
@@ -179,6 +194,7 @@ def publish_dates(
             totals["resumed"] += local_resumed
 
     buckets = sorted(store.available_buckets(days))
+    totals["buckets"] = len(buckets)
 
     if workers <= 1:
         for bucket in buckets:
