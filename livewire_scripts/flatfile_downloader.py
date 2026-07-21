@@ -55,7 +55,13 @@ def download_dates(
         # Skip days the provider has already told us are missing (e.g. NYSE special closures
         # the local calendar doesn't know about). Persisted in raw_unavailable so a single
         # NOT_FOUND doesn't get re-inspected on every restart.
-        if state.raw_unavailable(day):
+        #
+        # `replace=True` is repair mode — the operator explicitly asking to try this date
+        # again. Honouring the durable NOT_FOUND there made the blacklist permanent: a
+        # transient 404 (a mid-publish race, an object briefly replaced) blacklisted the
+        # trade date forever and `flatfile-ingest repair --dates <date>` skipped it, leaving
+        # hand-editing the state file as the only recovery.
+        if state.raw_unavailable(day) and not replace:
             _bump("skipped")
             return
         info = None

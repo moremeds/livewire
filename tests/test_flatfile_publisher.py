@@ -76,19 +76,26 @@ def test_publish_dates_preserves_case_distinct_provider_symbols(tmp_path):
 def test_publish_dates_handles_empty_replace_and_resume(tmp_path):
     state = MassiveFlatfileState(tmp_path / "cursors")
     store = MassiveFlatfileStore(tmp_path, bucket_count=1)
-    assert publish_dates(store, state, [], tmp_path / "bronze") == {"tickers": 0, "rows_1m": 0}
+    assert publish_dates(store, state, [], tmp_path / "bronze") == {"tickers": 0, "rows_1m": 0, "resumed": 0}
 
     source = tmp_path / "day.csv.gz"
     _write_flatfile(source)
     day = date(2024, 6, 3)
     store.stage_gzip(day, source)
     stats = publish_dates(store, state, [day], tmp_path / "bronze", replace_complete=True, scope="history")
-    assert stats == {"tickers": 1, "rows_1m": 1}
-    assert publish_dates(store, state, [day], tmp_path / "bronze", scope="history") == {"tickers": 0, "rows_1m": 0}
+    assert stats == {"tickers": 1, "rows_1m": 1, "resumed": 0}
+
+    # Re-run of a completed scope: the bucket is already done, so `resumed`
+    # is what tells the caller not to read 0 published as under-publishing.
+    again = publish_dates(store, state, [day], tmp_path / "bronze", scope="history")
+    assert again["tickers"] == 0
+    assert again["resumed"] > 0
 
     partial = MassiveFlatfileState(tmp_path / "partial")
     partial.mark_ticker_completed("partial", 0, "AAPL")
-    assert publish_dates(store, partial, [day], tmp_path / "other", scope="partial") == {"tickers": 0, "rows_1m": 0}
+    resumed_ticker = publish_dates(store, partial, [day], tmp_path / "other", scope="partial")
+    assert resumed_ticker["tickers"] == 0
+    assert resumed_ticker["resumed"] == 1
 
 
 def test_publish_dates_recovers_corrupt_derived_timeframe_from_1m(tmp_path):

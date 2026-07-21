@@ -110,4 +110,44 @@ def main(argv: Sequence[str] | None = None) -> int:
         download_stats.skipped,
         publish_stats["tickers"],
     )
+    return verify_publish_coverage(store, dates, publish_stats)
+
+
+def verify_publish_coverage(
+    store: MassiveFlatfileStore,
+    dates: list[date],
+    publish_stats: dict[str, int],
+    min_ratio: float | None = None,
+) -> int:
+    """Fail the run when publish covered far fewer tickers than the raw files hold.
+
+    Nothing checked this before: the raw file could hold 12,000 symbols, publish
+    could write 40, and the phase exited 0 — indistinguishable from a full run
+    in the log, the exit code, SUMMARY_JSON and the digest.
+
+    Skipped on a resumed run, where the published count legitimately undercounts
+    the window because earlier buckets are already complete.
+    """
+    if publish_stats.get("resumed"):
+        log.info("Publish coverage check skipped: resumed run (%d already complete)", publish_stats["resumed"])
+        return 0
+    expected = set()
+    for day in dates:
+        expected |= store.symbols_for_date(day)
+    if not expected:
+        return 0
+    ratio_floor = min_ratio if min_ratio is not None else float(os.getenv("MDW_FLATFILE_MIN_PUBLISH_RATIO", "0.9"))
+    published = publish_stats.get("tickers", 0)
+    ratio = published / len(expected)
+    if ratio < ratio_floor:
+        log.error(
+            "Publish coverage %.1f%% (%d of %d raw tickers) is below the %.1f%% floor; "
+            "the run wrote far less than the raw files hold.",
+            ratio * 100,
+            published,
+            len(expected),
+            ratio_floor * 100,
+        )
+        return 1
+    log.info("Publish coverage %.1f%% (%d of %d raw tickers)", ratio * 100, published, len(expected))
     return 0

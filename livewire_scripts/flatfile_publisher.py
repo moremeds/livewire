@@ -64,22 +64,29 @@ def publish_dates(
     workers: int = 1,
 ) -> dict[str, int]:
     if not days:
-        return {"tickers": 0, "rows_1m": 0}
+        return {"tickers": 0, "rows_1m": 0, "resumed": 0}
     scope = scope or f"{days[0].isoformat()}_{days[-1].isoformat()}_{len(days)}"
-    totals = {"tickers": 0, "rows_1m": 0}
+    # `resumed` counts buckets and tickers this run skipped as already complete.
+    # A caller verifying publish coverage can only do so when this is 0 — on a
+    # resumed run the published count legitimately undercounts the window.
+    totals = {"tickers": 0, "rows_1m": 0, "resumed": 0}
     totals_lock = threading.Lock()
 
     def _process_bucket(bucket: int) -> None:
         if state.bucket_completed(scope, bucket):
+            with totals_lock:
+                totals["resumed"] += 1
             return
         state.record("bucket_started", scope=scope, bucket=bucket)
         local_published = 0
         local_rows = 0
+        local_resumed = 0
         # Hoist client creation per-bucket; each worker thread gets its own instances.
         one_minute = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe="1m")
         derived_clients = {tf: IntradayBronzeClient(bronze_dir=bronze_dir, timeframe=tf) for tf in DERIVED_TIMEFRAMES}
         for ticker, raw_rows in store.scan_bucket_by_ticker(bucket, days):
             if state.ticker_completed(scope, bucket, ticker):
+                local_resumed += 1
                 continue
             state.record("ticker_started", scope=scope, bucket=bucket, ticker=ticker)
             rows = _bronze_rows(ticker, raw_rows)
@@ -116,6 +123,7 @@ def publish_dates(
         with totals_lock:
             totals["tickers"] += local_published
             totals["rows_1m"] += local_rows
+            totals["resumed"] += local_resumed
 
     buckets = sorted(store.available_buckets(days))
 

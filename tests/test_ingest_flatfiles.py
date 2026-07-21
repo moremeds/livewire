@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from livewire_scripts import ingest_flatfiles
 from livewire_scripts.ingest_flatfiles import _parse_dates, _require_credentials, main
 
 
@@ -101,3 +102,42 @@ def test_main_reports_capacity_failure_without_downloading(monkeypatch, tmp_path
     ):
         main(["backfill"])
     download.assert_not_called()
+
+
+class TestVerifyPublishCoverage:
+    """Publish used to exit 0 no matter how little it wrote."""
+
+    class _Store:
+        def __init__(self, symbols):
+            self._symbols = symbols
+
+        def symbols_for_date(self, day):
+            return set(self._symbols)
+
+    def test_under_publish_fails_the_run(self):
+        store = self._Store({f"T{i}" for i in range(100)})
+        rc = ingest_flatfiles.verify_publish_coverage(
+            store, [date(2026, 6, 5)], {"tickers": 40, "resumed": 0}
+        )
+        assert rc == 1
+
+    def test_full_publish_passes(self):
+        store = self._Store({f"T{i}" for i in range(100)})
+        rc = ingest_flatfiles.verify_publish_coverage(
+            store, [date(2026, 6, 5)], {"tickers": 100, "resumed": 0}
+        )
+        assert rc == 0
+
+    def test_resumed_run_is_not_judged(self):
+        """A resumed run legitimately publishes fewer than the window holds."""
+        store = self._Store({f"T{i}" for i in range(100)})
+        rc = ingest_flatfiles.verify_publish_coverage(
+            store, [date(2026, 6, 5)], {"tickers": 0, "resumed": 31}
+        )
+        assert rc == 0
+
+    def test_empty_raw_is_not_a_failure(self):
+        rc = ingest_flatfiles.verify_publish_coverage(
+            self._Store(set()), [date(2026, 6, 5)], {"tickers": 0, "resumed": 0}
+        )
+        assert rc == 0

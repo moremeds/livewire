@@ -1,11 +1,16 @@
 """Publish bucketed Massive daily raw data into canonical per-symbol bronze 1d parquet.
 
-Policy: only writes per-ticker 1d.parquet for symbols that do NOT already have a
-bronze daily snapshot. The existing IB-backed `daily` command owns the preset
-universe (sp500 ∪ ndx100 ∪ r2k), some of which carry pre-2003 history that
-day_aggs cannot supply. This pipeline strictly widens — it fills the new-symbol
-gap (~17.5K tickers per the audit) and leaves established per-ticker files
-untouched.
+Policy: this lane owns the ~17.5K SIP symbols outside the preset universe and
+keeps them current. The preset universe (sp500 ∪ ndx100 ∪ r2k) is owned by the
+`daily` command — some of those carry pre-2003 history day_aggs cannot supply —
+so those symbols are passed in as `protected_symbols` and skipped here.
+
+Writes MERGE rather than replace. The previous policy skipped every symbol that
+already had a 1d.parquet, which meant a symbol this lane created was never
+written again: ~17.5K tickers were frozen at whatever 7-day window happened to
+be in force the night they first appeared, and the run still exited 0. Replace
+was also latently wrong for the same reason — a re-run would truncate a
+symbol's history to the current window.
 """
 
 from __future__ import annotations
@@ -49,7 +54,7 @@ def _process_bucket_worker(
     bronze_dir: str,
     days_iso: list[str],
     bucket: int,
-    existing_symbols: frozenset[str],
+    protected_symbols: frozenset[str],
 ) -> tuple[int, int, int]:
     """ProcessPool entrypoint — each worker re-instantiates its own clients.
 
@@ -62,13 +67,15 @@ def _process_bucket_worker(
     skipped = 0
     rows_written = 0
     for ticker, raw_rows in store.scan_bucket_by_ticker(bucket, days):
-        if ticker in existing_symbols:
+        if ticker in protected_symbols:
             skipped += 1
             continue
         rows = _bronze_rows(ticker, raw_rows)
         if not rows:
             continue
-        rows_written += bronze.replace_ticker_rows(ticker, rows)
+        # Merge, never replace: replace would truncate this symbol's history to
+        # the current catch-up window on every re-run.
+        rows_written += bronze.merge_ticker_rows(ticker, rows)
         written += 1
     return written, rows_written, skipped
 
@@ -82,16 +89,15 @@ def publish_daily_dates(
     scope: str | None = None,
     workers: int = 1,
     use_processes: bool = True,
-    existing_symbols: frozenset[str] | None = None,
+    protected_symbols: frozenset[str] | None = None,
 ) -> dict[str, int]:
     """Publish per-bucket; safe to resume via per-(scope, bucket) state cursor.
 
-    `existing_symbols` is the set of tickers whose per-ticker 1d.parquet already
-    exists in `bronze_dir`; those are skipped (the IB-backed `daily` command owns
-    them). If None, the set is read once from disk before fan-out so workers see
-    a frozen snapshot — no cross-worker race when two buckets touch the same new
-    ticker is possible because `scan_bucket_by_ticker` is bucket-scoped (each
-    ticker hashes to exactly one bucket).
+    `protected_symbols` is the preset universe owned by the `daily` command;
+    those are skipped. Everything else is merged and kept current. Defaults to
+    the empty set — callers pass the preset union explicitly. It used to default
+    to *every* symbol already on disk, which froze each symbol permanently the
+    moment this lane created it.
 
     Parallelism: process-pool by default since per-bucket work is CPU-bound
     (pyarrow parquet decode + per-ticker writes). Set use_processes=False to
@@ -100,8 +106,8 @@ def publish_daily_dates(
     if not days:
         return {"tickers": 0, "rows_1d": 0, "skipped_existing": 0}
     scope = scope or f"daily_{days[0].isoformat()}_{days[-1].isoformat()}_{len(days)}"
-    if existing_symbols is None:
-        existing_symbols = frozenset(BronzeClient(bronze_dir=bronze_dir, asset_class="equity").get_existing_symbols())
+    if protected_symbols is None:
+        protected_symbols = frozenset()
     totals = {"tickers": 0, "rows_1d": 0, "skipped_existing": 0}
     totals_lock = threading.Lock()
 
@@ -127,7 +133,7 @@ def publish_daily_dates(
                 str(bronze_dir),
                 [d.isoformat() for d in days],
                 bucket,
-                existing_symbols,
+                protected_symbols,
             )
             _record_done(bucket, written, rows, skipped)
         return totals
@@ -145,7 +151,7 @@ def publish_daily_dates(
                 str(bronze_dir),
                 days_iso,
                 bucket,
-                existing_symbols,
+                protected_symbols,
             )
             futures[fut] = bucket
         first_exc: Exception | None = None
