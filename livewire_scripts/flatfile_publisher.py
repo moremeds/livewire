@@ -7,6 +7,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import TypedDict
 
 import pyarrow as pa
 
@@ -18,6 +19,21 @@ from clients.timeframe_aggregator import aggregate_bars
 
 DERIVED_TIMEFRAMES = ("5m", "30m", "1h")
 log = logging.getLogger(__name__)
+
+
+class PublishStats(TypedDict):
+    """What one publish run covered.
+
+    `resumed` counts buckets and tickers skipped as already complete — a caller
+    verifying publish coverage can only do so when it is 0, because a resumed
+    run legitimately undercounts the window. `quarantined` holds symbols whose
+    parquet was unreadable and was moved aside; each needs a targeted backfill.
+    """
+
+    tickers: int
+    rows_1m: int
+    resumed: int
+    quarantined: list[str]
 
 
 def _bronze_rows(ticker: str, rows: list[dict]) -> list[dict]:
@@ -84,14 +100,14 @@ def publish_dates(
     replace_complete: bool = False,
     scope: str | None = None,
     workers: int = 1,
-) -> dict[str, int]:
+) -> PublishStats:
     if not days:
         return {"tickers": 0, "rows_1m": 0, "resumed": 0, "quarantined": []}
     scope = scope or f"{days[0].isoformat()}_{days[-1].isoformat()}_{len(days)}"
     # `resumed` counts buckets and tickers this run skipped as already complete.
     # A caller verifying publish coverage can only do so when this is 0 — on a
     # resumed run the published count legitimately undercounts the window.
-    totals = {"tickers": 0, "rows_1m": 0, "resumed": 0, "quarantined": []}
+    totals: PublishStats = {"tickers": 0, "rows_1m": 0, "resumed": 0, "quarantined": []}
     totals_lock = threading.Lock()
 
     def _process_bucket(bucket: int) -> None:
