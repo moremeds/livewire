@@ -12,6 +12,7 @@ Spec: docs/superpowers/specs/2026-04-06-multi-timeframe-design.md § 17 Layer 2.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import subprocess
@@ -209,7 +210,41 @@ def format_missing_blocks(results: dict[str, CoverageResult], max_listed: int = 
     return blocks
 
 
-def write_coverage_log(target_date: date, line: str, missing_blocks: Iterable[str]) -> Path:
+MISSING_JSON_PREFIX = "MISSING_JSON "
+
+
+def format_missing_json(results: dict[str, CoverageResult]) -> str:
+    """One machine-readable line carrying the COMPLETE missing lists.
+
+    The human `missing:` blocks are truncated to 10 names for readability, and
+    the weekly report parsed only those — so a symbol whose name sorted after
+    the first ten could never be detected as a persistent gap no matter how
+    many consecutive days it was absent.
+    """
+    payload = {tf: results[tf].missing_symbols for tf in TIMEFRAMES if results[tf].missing_symbols}
+    return MISSING_JSON_PREFIX + json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
+def parse_missing_json(text: str) -> dict[str, list[str]] | None:
+    """Return the last well-formed MISSING_JSON payload in *text*, or None."""
+    result = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(MISSING_JSON_PREFIX):
+            continue
+        try:
+            result = json.loads(stripped[len(MISSING_JSON_PREFIX) :])
+        except json.JSONDecodeError:
+            continue
+    return result
+
+
+def write_coverage_log(
+    target_date: date,
+    line: str,
+    missing_blocks: Iterable[str],
+    results: dict[str, CoverageResult] | None = None,
+) -> Path:
     resolved_log_dir = _resolved_log_dir()
     resolved_log_dir.mkdir(parents=True, exist_ok=True)
     log_path = resolved_log_dir / f"coverage_{target_date:%Y-%m-%d}.log"
@@ -217,6 +252,8 @@ def write_coverage_log(target_date: date, line: str, missing_blocks: Iterable[st
         fh.write(line + "\n")
         for block in missing_blocks:
             fh.write(block + "\n")
+        if results is not None:
+            fh.write(format_missing_json(results) + "\n")
     return log_path
 
 
@@ -360,7 +397,7 @@ def main() -> None:
     blocks = format_missing_blocks(results)
     for block in blocks:
         console.print(block)
-    log_path = write_coverage_log(target, line, blocks)
+    log_path = write_coverage_log(target, line, blocks, results)
 
     if args.no_recover:
         return

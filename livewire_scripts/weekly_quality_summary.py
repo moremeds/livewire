@@ -26,6 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
 
 from rich.console import Console
 
+from livewire_scripts.coverage_report import parse_missing_json
 from livewire_scripts.paths import log_dir
 
 log = logging.getLogger(__name__)
@@ -33,7 +34,10 @@ console = Console()
 
 _LOG_DIR: Path | None = None
 
-_TIMEFRAMES: tuple[str, ...] = ("1d", "1m", "1h", "5m")
+# 30m was absent here and from _MISSING_RE, so a symbol missing 30m bars for a
+# month appeared in zero weekly reports. Kept in sync with
+# coverage_report.TIMEFRAMES.
+_TIMEFRAMES: tuple[str, ...] = ("1d", "1m", "1h", "5m", "30m")
 
 # Match the leading line written by coverage_report.format_one_liner
 # Example: "2026-04-06 coverage: 1d=1166/1166 (100.00%) 1m=1160/1166 (99.49%) 1h=1162/1166 (99.66%) 5m=1158/1166 (99.31%)"
@@ -46,7 +50,7 @@ _HEADER_RE = re.compile(
 )
 
 # Match a per-timeframe missing block, e.g. "  5m missing: NEWA, RECENT_IPO, ... (8 total)"
-_MISSING_RE = re.compile(r"^\s+(1d|1m|1h|5m) missing:\s*(.+?)\s*$")
+_MISSING_RE = re.compile(r"^\s+(1d|1m|1h|5m|30m) missing:\s*(.+?)\s*$")
 _TOTAL_SUFFIX_RE = re.compile(r",\s*\.\.\.\s*\((\d+) total\)\s*$")
 
 
@@ -85,12 +89,21 @@ def parse_coverage_log(path: Path) -> CoverageEntry | None:
     if header is None:
         return None
 
+    # Prefer the complete machine-readable list. The human `missing:` blocks are
+    # truncated to 10 names, so parsing those meant a symbol sorting after the
+    # first ten could never register as a persistent gap however long it was out.
+    complete = parse_missing_json(text)
+    if complete is not None:
+        for tf, symbols in complete.items():
+            header.missing.setdefault(tf, []).extend(symbols)
+        return header
+
     for line in lines:
         m = _MISSING_RE.match(line)
         if not m:
             continue
         tf, symbols_part = m.group(1), m.group(2)
-        # Strip the "... (N total)" suffix if present — we only have a sample
+        # Older logs predate MISSING_JSON: only the truncated sample is available.
         symbols_part = _TOTAL_SUFFIX_RE.sub("", symbols_part)
         symbols = [s.strip() for s in symbols_part.split(",") if s.strip()]
         header.missing.setdefault(tf, []).extend(symbols)

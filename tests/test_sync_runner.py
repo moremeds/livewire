@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -10,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from livewire_scripts import sync_runner
 from livewire_scripts.sync_runner import (
     SyncConfig,
     _derive_vol_1h,
@@ -545,3 +547,36 @@ class TestMain:
             main([])
         config = mock.call_args[0][0]
         assert config.target_date is None
+
+
+class TestPhaseTimeout:
+    """There was no timeout on this path at all.
+
+    The wrapper's docstring claimed daily-backfill owns "activity-based stall
+    detection"; grep found none. A wedged IB call blocked the phase forever and
+    launchd will not start a second instance while the first lives, so the
+    nightly job silently stopped running.
+    """
+
+    def test_phase_that_exceeds_its_budget_is_killed(self, tmp_path):
+        def fake_runner(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 1))
+
+        rc = sync_runner.run_phase("stuck", ["sleep", "99999"], tmp_path, runner=fake_runner, timeout=1)
+
+        assert rc == sync_runner.TIMEOUT_EXIT_CODE
+
+    def test_timeout_is_passed_to_the_runner(self, tmp_path):
+        seen = {}
+
+        def fake_runner(cmd, **kwargs):
+            seen.update(kwargs)
+            return CompletedProcess(args=cmd, returncode=0)
+
+        sync_runner.run_phase("ok", ["true"], tmp_path, runner=fake_runner, timeout=42)
+
+        assert seen["timeout"] == 42
+
+    def test_budget_is_env_tunable(self, monkeypatch):
+        monkeypatch.setenv("MDW_SYNC_PHASE_TIMEOUT_SECONDS", "900")
+        assert sync_runner.phase_timeout_seconds() == 900

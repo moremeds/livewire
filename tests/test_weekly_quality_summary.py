@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+from livewire_scripts import coverage_report as weekly_coverage
+from livewire_scripts import weekly_quality_summary as weekly
 from livewire_scripts.weekly_quality_summary import (
     CoverageEntry,
     _iso_week_start,
@@ -329,3 +331,57 @@ class TestMain:
                 main()
         files = list(tmp_path.glob("quality_weekly_*.md"))
         assert len(files) == 1
+
+
+def test_persistent_gap_survives_the_top_ten_truncation(tmp_path, monkeypatch):
+    """A symbol sorting after the first ten must still be detectable.
+
+    The human `missing:` block lists 10 names then "... (N total)". The weekly
+    parser read only that sample, so an alphabetically-late symbol could never
+    register as a persistent gap however many days it was out.
+    """
+    monkeypatch.setattr(weekly, "_LOG_DIR", tmp_path)
+    late = "ZZZZ"
+    for offset in range(3):
+        day = date(2026, 4, 6) + timedelta(days=offset)
+        head = ", ".join(f"AAA{i}" for i in range(10))
+        (tmp_path / f"coverage_{day:%Y-%m-%d}.log").write_text(
+            f"{day} coverage: 1d=1/2 (50.00%) 1m=1/2 (50.00%) 1h=1/2 (50.00%) "
+            f"5m=1/2 (50.00%) 30m=1/2 (50.00%)\n"
+            f"  1d missing: {head}, ... (11 total)\n"
+            + weekly_coverage.format_missing_json(
+                {
+                    tf: weekly_coverage.CoverageResult(
+                        timeframe=tf,
+                        total=2,
+                        present=1,
+                        missing_symbols=[f"AAA{i}" for i in range(10)] + [late],
+                    )
+                    for tf in weekly_coverage.TIMEFRAMES
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    entries = weekly.load_week(date(2026, 4, 6))
+    persistent = weekly.detect_persistent_gaps(entries)
+
+    assert late in persistent, persistent
+
+
+def test_30m_missing_block_is_parsed(tmp_path, monkeypatch):
+    """30m was absent from _TIMEFRAMES and _MISSING_RE entirely."""
+    monkeypatch.setattr(weekly, "_LOG_DIR", tmp_path)
+    day = date(2026, 4, 6)
+    (tmp_path / f"coverage_{day:%Y-%m-%d}.log").write_text(
+        f"{day} coverage: 1d=2/2 (100.00%) 1m=2/2 (100.00%) 1h=2/2 (100.00%) "
+        f"5m=2/2 (100.00%) 30m=1/2 (50.00%)\n"
+        "  30m missing: LATEONE\n",
+        encoding="utf-8",
+    )
+
+    entry = weekly.parse_coverage_log(tmp_path / f"coverage_{day:%Y-%m-%d}.log")
+
+    assert entry is not None
+    assert entry.missing.get("30m") == ["LATEONE"]
