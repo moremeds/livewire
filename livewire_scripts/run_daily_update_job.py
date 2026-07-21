@@ -437,12 +437,34 @@ def run_post_success_quality(
     # weekly self-skips on non-Sunday.
     _spawn_post_success_quality(runner, log_file, ["weekly"], "weekly quality report")
     run_date = log_file.stem.removeprefix("daily_update_")
+
+    # Coverage only ever compares the target day against each file's max date,
+    # so an interior hole three months back is arithmetically invisible to it.
+    # `health` is the only scheduled detector of interior gaps — it was
+    # reachable by hand only, so nothing in production ever scanned for one.
+    # Weekly because a full scan reads whole columns across the universe.
+    if _is_sunday(run_date):
+        _spawn_post_success_quality(
+            runner,
+            log_file,
+            ["health", "--intraday", "--timeframe", "5m"],
+            "interior gap scan",
+            timeout=3600,
+        )
+
     _spawn_post_success_quality(
         runner,
         log_file,
         ["digest", "--run-date", run_date, "--email"],
         "nightly digest",
     )
+
+
+def _is_sunday(run_date: str) -> bool:
+    try:
+        return datetime.strptime(run_date, "%Y-%m-%d").weekday() == 6
+    except ValueError:
+        return False
 
 
 def undelivered_dir(config: RunnerConfig) -> Path:

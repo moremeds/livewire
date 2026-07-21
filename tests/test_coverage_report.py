@@ -19,7 +19,9 @@ from livewire_scripts.coverage_report import (
     _resolve_target_date,
     _send_alert,
     auto_recover,
+    NON_EQUITY_ASSET_CLASSES,
     compute_coverage,
+    compute_non_equity_coverage,
     format_missing_blocks,
     format_one_liner,
     main,
@@ -703,3 +705,32 @@ class TestIntradayDenominator:
         results = compute_coverage(target, bronze_root=root)
 
         assert results["1d"].missing_symbols == []
+
+
+class TestNonEquityCoverage:
+    """These asset classes were in no denominator at any timeframe."""
+
+    def _write_non_equity(self, root, asset_class, symbol, dates):
+        sym_dir = root / f"asset_class={asset_class}" / f"symbol={symbol}"
+        sym_dir.mkdir(parents=True, exist_ok=True)
+        pq.write_table(
+            pa.table({"trade_date": pa.array(dates, type=pa.date32())}),
+            sym_dir / "1d.parquet",
+        )
+
+    def test_stale_volatility_index_is_detected(self, tmp_path):
+        root = tmp_path / "bronze"
+        target = date(2026, 4, 6)
+        self._write_non_equity(root, "volatility", "VIX", [target])
+        self._write_non_equity(root, "volatility", "VVIX", [date(2026, 3, 1)])
+        self._write_non_equity(root, "rates", "DGS10", [target])
+
+        results = compute_non_equity_coverage(target, bronze_root=root)
+
+        assert results["volatility"].missing_symbols == ["VVIX"]
+        assert results["rates"].missing_symbols == []
+
+    def test_absent_asset_class_is_empty_not_an_error(self, tmp_path):
+        results = compute_non_equity_coverage(date(2026, 4, 6), bronze_root=tmp_path / "bronze")
+        for asset_class in NON_EQUITY_ASSET_CLASSES:
+            assert results[asset_class].total == 0

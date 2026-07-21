@@ -227,6 +227,46 @@ def format_missing_blocks(results: dict[str, CoverageResult], max_listed: int = 
     return blocks
 
 
+# Daily-only asset classes. They were in no denominator at any timeframe, so
+# VIX going stale for a week was invisible to coverage. There is no recovery
+# path for these (CBOE/FRED/IB own them), so this reports and alerts only.
+NON_EQUITY_ASSET_CLASSES: tuple[str, ...] = ("volatility", "futures", "rates")
+
+
+def compute_non_equity_coverage(
+    target_date: date,
+    bronze_root: Path | None = None,
+) -> dict[str, CoverageResult]:
+    """Return per-asset-class 1d freshness for the non-equity universes.
+
+    No no-trade exemption: these are small, continuously-quoted universes
+    (~14 volatility indices, a handful of futures, 4 Treasury series). A stale
+    one is a real gap, not an instrument that happened not to print.
+    """
+    bronze_root = bronze_root or _resolved_data_lake() / "bronze"
+    results: dict[str, CoverageResult] = {}
+    for asset_class in NON_EQUITY_ASSET_CLASSES:
+        paths = sorted((bronze_root / f"asset_class={asset_class}").glob("symbol=*/1d.parquet"))
+        universe = {_symbol_from_parquet_path(p) for p in paths}
+        present = {
+            _symbol_from_parquet_path(p)
+            for p in paths
+            if (latest := _latest_date_in_parquet(p, "trade_date")) is not None and latest >= target_date
+        }
+        results[asset_class] = CoverageResult(
+            timeframe=asset_class,
+            total=len(universe),
+            present=len(present),
+            missing_symbols=sorted(universe - present),
+        )
+    return results
+
+
+def format_non_equity_line(target_date: date, results: dict[str, CoverageResult]) -> str:
+    parts = [f"{ac}={results[ac].present}/{results[ac].total}" for ac in NON_EQUITY_ASSET_CLASSES]
+    return f"{target_date} non-equity 1d: " + " ".join(parts)
+
+
 MISSING_JSON_PREFIX = "MISSING_JSON "
 
 
@@ -431,7 +471,16 @@ def main() -> None:
     blocks = format_missing_blocks(results)
     for block in blocks:
         console.print(block)
-    log_path = write_coverage_log(target, line, blocks, results)
+    # Non-equity was in no denominator at all: a stale VIX, a stale DGS10 or a
+    # stale futures contract could never register as missing.
+    non_equity = compute_non_equity_coverage(target)
+    non_equity_line = format_non_equity_line(target, non_equity)
+    console.print(non_equity_line)
+    stale_non_equity = {ac: r.missing_symbols for ac, r in non_equity.items() if r.missing_symbols}
+    for asset_class, symbols in stale_non_equity.items():
+        console.print(f"  [yellow]{asset_class} stale:[/yellow] {', '.join(symbols)}")
+
+    log_path = write_coverage_log(target, line, [*blocks, non_equity_line], results)
 
     if args.no_recover:
         return
@@ -450,6 +499,25 @@ def main() -> None:
         outcomes.append(outcome)
 
     if not outcomes:
+        if stale_non_equity:
+            # No recovery path exists for these — CBOE/FRED/IB own them — so
+            # reporting is all we can honestly do, but silence was worse.
+            _send_alert(
+                target,
+                [
+                    RecoveryOutcome(
+                        timeframe=asset_class,
+                        attempted=symbols,
+                        recovered=0,
+                        still_missing=symbols,
+                        aborted=True,
+                        reason="no recovery path for this asset class",
+                    )
+                    for asset_class, symbols in stale_non_equity.items()
+                ],
+                log_path,
+            )
+            return
         log.info("Coverage above threshold for all timeframes — no recovery needed")
         return
 
