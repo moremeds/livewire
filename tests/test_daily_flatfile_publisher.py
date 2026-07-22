@@ -49,8 +49,11 @@ def test_publish_daily_writes_per_ticker_bronze_1d_for_new_tickers(tmp_path):
     assert bronze.get_existing_symbols() == {"AAPL", "MSFT"}
 
 
-def test_publish_daily_skips_tickers_with_existing_parquet(tmp_path):
-    """Pre-existing 1d.parquet (e.g. from the IB-backed `daily` command) is left alone."""
+def test_publish_daily_skips_protected_preset_tickers(tmp_path):
+    """A preset ticker is owned by the `daily` command and left alone.
+
+    Its pre-2003 history is deeper than day_aggs can supply.
+    """
     bronze_dir = tmp_path / "bronze"
     pre_existing = BronzeClient(bronze_dir, asset_class="equity")
     pre_existing.replace_ticker_rows(
@@ -76,7 +79,14 @@ def test_publish_daily_skips_tickers_with_existing_parquet(tmp_path):
     store.stage_gzip(day, source)
     state = MassiveFlatfileState(tmp_path / "cursors", name="massive_daily_flatfile")
 
-    stats = publish_daily_dates(store, state, [day], bronze_dir, use_processes=False)
+    stats = publish_daily_dates(
+        store,
+        state,
+        [day],
+        bronze_dir,
+        protected_symbols=frozenset({"AAPL"}),
+        use_processes=False,
+    )
     assert stats == {"tickers": 1, "rows_1d": 1, "skipped_existing": 1}
 
     aapl_rows = pre_existing.read_symbol_rows("AAPL")
@@ -84,8 +94,42 @@ def test_publish_daily_skips_tickers_with_existing_parquet(tmp_path):
     assert aapl_rows[0]["trade_date"] == "1980-12-12"
 
 
-def test_publish_daily_explicit_existing_symbols_set(tmp_path):
-    """Caller may pass a frozen set instead of reading the bronze dir."""
+def test_publish_daily_updates_a_symbol_this_lane_created(tmp_path):
+    """The freeze bug: an unprotected symbol must keep getting new bars.
+
+    The old policy skipped every ticker that already had a 1d.parquet, so the
+    ~17.5K non-preset SIP symbols were written exactly once — frozen at
+    whatever window was in force the night they first appeared — while the run
+    kept exiting 0.
+    """
+    bronze_dir = tmp_path / "bronze"
+    store = MassiveDailyFlatfileStore(tmp_path, bucket_count=4)
+    state = MassiveFlatfileState(tmp_path / "cursors", name="massive_daily_flatfile")
+
+    first = tmp_path / "day1.csv.gz"
+    _write_day(first, [_row("ZZZZ", _TS_20240603)])
+    day_one = date(2024, 6, 3)
+    store.stage_gzip(day_one, first)
+    publish_daily_dates(store, state, [day_one], bronze_dir, scope="s1", use_processes=False)
+
+    second = tmp_path / "day2.csv.gz"
+    _write_day(second, [_row("ZZZZ", _TS_20240604)])
+    day_two = date(2024, 6, 4)
+    store.stage_gzip(day_two, second)
+    stats = publish_daily_dates(store, state, [day_two], bronze_dir, scope="s2", use_processes=False)
+
+    assert stats["tickers"] == 1
+    rows = BronzeClient(bronze_dir, asset_class="equity").read_symbol_rows("ZZZZ")
+    # Merged, not replaced — day one survives day two's publish. (Trade dates
+    # come from the store's epoch->ET conversion, so assert the shape, not
+    # hardcoded calendar days.)
+    dates = sorted(r["trade_date"] for r in rows)
+    assert len(dates) == 2
+    assert dates[0] < dates[1]
+
+
+def test_publish_daily_defaults_to_protecting_nothing(tmp_path):
+    """Default must not be 'every symbol on disk' — that is what froze them."""
     source = tmp_path / "day.csv.gz"
     _write_day(source, [_row("AAPL", _TS_20240603), _row("MSFT", _TS_20240603)])
     day = date(2024, 6, 3)
@@ -93,17 +137,10 @@ def test_publish_daily_explicit_existing_symbols_set(tmp_path):
     store.stage_gzip(day, source)
     state = MassiveFlatfileState(tmp_path / "cursors", name="massive_daily_flatfile")
 
-    stats = publish_daily_dates(
-        store,
-        state,
-        [day],
-        tmp_path / "bronze",
-        existing_symbols=frozenset({"AAPL"}),
-        use_processes=False,
-    )
-    assert stats == {"tickers": 1, "rows_1d": 1, "skipped_existing": 1}
+    stats = publish_daily_dates(store, state, [day], tmp_path / "bronze", use_processes=False)
+    assert stats == {"tickers": 2, "rows_1d": 2, "skipped_existing": 0}
     bronze = BronzeClient(tmp_path / "bronze", asset_class="equity")
-    assert bronze.get_existing_symbols() == {"MSFT"}
+    assert bronze.get_existing_symbols() == {"AAPL", "MSFT"}
 
 
 def test_publish_daily_resume_via_scope_cursor(tmp_path):

@@ -52,7 +52,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.daily_bar_fallback import DailyBarFallbackClient
-from clients.ib_client import IBClient, IBError
+from clients.ib_client import IBClient
 from clients.ingestion_common import (
     ROOT_EXCHANGE_MAP,  # noqa: F401
     SUPPORTED_IB_FX_PAIRS,  # noqa: F401
@@ -521,17 +521,25 @@ async def fetch_batch(
     ib: IBClient,
     max_concurrent: int = 6,
     asset_class: str = "equity",
-) -> dict[str, list]:
-    """Fetch bars for a batch of tickers. Returns ``{ticker: bars}``."""
-    semaphore = asyncio.Semaphore(max_concurrent)
-    results: dict[str, list] = {}
+) -> dict[str, list | BaseException]:
+    """Fetch bars for a batch of tickers. Returns ``{ticker: bars_or_exception}``.
 
-    async def _safe_fetch(ticker: str, duration: str) -> tuple[str, list]:
+    A ticker whose fetch raised maps to the exception, NOT to an empty list.
+    Collapsing both into ``[]`` made a total IB outage indistinguishable from
+    "the instrument didn't trade": every ticker classified ``no_trade``,
+    ``errors`` stayed 0, and ``resolve_exit_code`` reported success for a run
+    that ingested nothing. The caller re-raises so the existing per-ticker
+    handler counts it as ``error``.
+    """
+    semaphore = asyncio.Semaphore(max_concurrent)
+    results: dict[str, list | BaseException] = {}
+
+    async def _safe_fetch(ticker: str, duration: str) -> tuple[str, list | BaseException]:
         try:
             return await fetch_ticker_update(ticker, duration, ib, semaphore, asset_class=asset_class)
-        except (IBError, Exception) as exc:
+        except Exception as exc:
             console.print(f"    [red]{ticker}: {type(exc).__name__} — {exc}[/red]")
-            return (ticker, [])
+            return (ticker, exc)
 
     gathered = await asyncio.gather(*[_safe_fetch(t, d) for t, d in tickers_with_durations])
     for ticker, bars in gathered:
@@ -672,8 +680,13 @@ def main():  # pragma: no cover — only exercised by integration tests
         latest_dates = bronze.get_latest_dates()
 
         if not latest_dates and args.tickers is None:
-            console.print("[yellow]No tickers found in bronze parquet. Run fetch_ib_historical.py first.[/yellow]")
-            return
+            # Nonzero, not a bare return. An empty universe on a scheduled run means
+            # the bronze tree is unmounted, the data-lake root misresolved, or the
+            # asset class renamed — never "nothing to do". Exiting 0 here made the
+            # wrapper write `=== Done <class> ===` with no SUMMARY_JSON at all, so
+            # the watchdog's staleness check had nothing to read and passed.
+            console.print("[red]No tickers found in bronze parquet — is the data-lake root correct?[/red]")
+            return 1
         if not latest_dates and args.tickers is not None:
             latest_dates = {ticker.upper(): previous_trading_day(target).isoformat() for ticker in args.tickers}
 
@@ -681,8 +694,10 @@ def main():  # pragma: no cover — only exercised by integration tests
         if preset_tickers is not None:
             latest_dates = {k: v for k, v in latest_dates.items() if k in preset_tickers}
             if not latest_dates:
-                console.print("[yellow]No preset tickers found in bronze parquet.[/yellow]")
-                return
+                # Same reasoning: a preset that intersects bronze in zero symbols is
+                # a misconfiguration, not an empty work queue.
+                console.print("[red]No preset tickers found in bronze parquet.[/red]")
+                return 1
         if args.tickers is not None:
             explicit_tickers = {ticker.upper() for ticker in args.tickers}
             missing_explicit = explicit_tickers - set(latest_dates)
@@ -862,6 +877,11 @@ def main():  # pragma: no cover — only exercised by integration tests
                 for ticker, _duration in batch:
                     try:
                         bars = ticker_bars.get(ticker, [])
+                        if isinstance(bars, BaseException):
+                            # The fetch raised. Surface it through the handler
+                            # below so it counts as `error`; a swallowed fetch
+                            # would otherwise read as `no_trade` and exit 0.
+                            raise bars
                         valid_bars, issues = validate_bars(bars, ticker, asset_class=asset_class)
                         total_issues.extend(issues)
                         total_validated += len(bars)

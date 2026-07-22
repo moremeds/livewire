@@ -66,7 +66,7 @@ class TestAssertGatewayUp:
         ):
             with pytest.raises(SystemExit) as exc_info:
                 pf.assert_gateway_up()
-        assert exc_info.value.code == 2
+        assert exc_info.value.code == pf.GATEWAY_DOWN_EXIT_CODE
         mock_run.assert_called_once_with(["bash", str(script)], check=False)
         err = capsys.readouterr().err
         assert "IB Gateway not reachable" in err
@@ -83,7 +83,7 @@ class TestAssertGatewayUp:
         ):
             with pytest.raises(SystemExit) as exc_info:
                 pf.assert_gateway_up()
-        assert exc_info.value.code == 2
+        assert exc_info.value.code == pf.GATEWAY_DOWN_EXIT_CODE
         mock_run.assert_not_called()
         err = capsys.readouterr().err
         assert "IB Gateway not reachable" in err

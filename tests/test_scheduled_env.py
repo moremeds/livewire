@@ -83,3 +83,54 @@ def test_load_scheduled_env_skips_missing_files(tmp_path: Path, monkeypatch) -> 
 
     # Must not raise
     scheduled_env.load_scheduled_env(repo)
+
+
+def test_find_repo_env_walks_up_from_a_worktree(tmp_path: Path, monkeypatch) -> None:
+    """A git worktree has no `.env` of its own — it is gitignored.
+
+    Pointing the launchd plists at `.worktrees/<branch>/` resolved every
+    credential to nothing: ingest died on MASSIVE_API_KEY and the failure
+    alert died on MDW_ALERT_EMAIL_FROM, so a six-day outage stayed silent.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    repo = home / "projects" / "livewire"
+    worktree = repo / ".worktrees" / "some-branch"
+    worktree.mkdir(parents=True)
+    (repo / ".env").write_text("MASSIVE_API_KEY=key-from-main-checkout\n", encoding="utf-8")
+
+    monkeypatch.setattr(scheduled_env.Path, "home", classmethod(lambda cls: home))
+
+    assert scheduled_env.find_repo_env(worktree) == repo / ".env"
+
+
+def test_worktree_invocation_loads_main_checkout_env(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    repo = home / "projects" / "livewire"
+    worktree = repo / ".worktrees" / "some-branch"
+    worktree.mkdir(parents=True)
+    (repo / ".env").write_text("MASSIVE_API_KEY=key-from-main-checkout\n", encoding="utf-8")
+    warehouse = tmp_path / "warehouse"
+    warehouse.mkdir()
+
+    monkeypatch.setattr(scheduled_env.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(warehouse))
+    monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+
+    scheduled_env.load_scheduled_env(worktree)
+
+    assert os.environ["MASSIVE_API_KEY"] == "key-from-main-checkout"
+
+
+def test_find_repo_env_stops_at_home(tmp_path: Path, monkeypatch) -> None:
+    """Never reach outside $HOME for credentials."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (tmp_path / ".env").write_text("LEAKED=1\n", encoding="utf-8")
+    nested = home / "projects" / "livewire"
+    nested.mkdir(parents=True)
+
+    monkeypatch.setattr(scheduled_env.Path, "home", classmethod(lambda cls: home))
+
+    assert scheduled_env.find_repo_env(nested) is None

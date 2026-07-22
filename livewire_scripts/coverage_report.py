@@ -12,6 +12,7 @@ Spec: docs/superpowers/specs/2026-04-06-multi-timeframe-design.md § 17 Layer 2.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import subprocess
@@ -158,9 +159,26 @@ def compute_coverage(
     # instruments that did not trade from the "missing" count.
     traded_today = _raw_symbols_for_date(target_date, bronze_root)
 
+    if not traded_today:
+        # Be loud about it: with no raw partition the no-trade exemption
+        # silently switches off and the same code reports a different, stricter
+        # denominator with nothing in the log saying which one ran.
+        log.warning(
+            "No raw minute partition for %s — coverage runs without the no-trade "
+            "exemption and intraday denominators fall back to files on disk.",
+            target_date,
+        )
+
     for tf in TIMEFRAMES:
         parquet_paths = sorted((bronze_root / "asset_class=equity").glob(f"symbol=*/{_filename_for(tf)}"))
-        universe = {_symbol_from_parquet_path(path) for path in parquet_paths}
+        on_disk = {_symbol_from_parquet_path(path) for path in parquet_paths}
+
+        # For intraday, the provider's traded set is the honest denominator.
+        # Globbing files on disk made the denominator self-defining: a symbol
+        # with no 5m.parquet was not in the 5m universe, so a symbol that
+        # silently stopped receiving intraday — or never got a file at all —
+        # could never be counted missing, and coverage read 100% forever.
+        universe = on_disk if (tf == "1d" or not traded_today) else set(traded_today)
 
         column_name = "trade_date" if tf == "1d" else "bar_timestamp"
         latest_by_symbol = {
@@ -172,7 +190,7 @@ def compute_coverage(
             symbol
             for symbol in universe
             if (latest_by_symbol.get(symbol) or date.min) >= target_date
-            or (traded_today and symbol not in traded_today)
+            or (tf == "1d" and traded_today and symbol not in traded_today)
         }
         missing = sorted(universe - present_symbols)
         results[tf] = CoverageResult(
@@ -209,7 +227,81 @@ def format_missing_blocks(results: dict[str, CoverageResult], max_listed: int = 
     return blocks
 
 
-def write_coverage_log(target_date: date, line: str, missing_blocks: Iterable[str]) -> Path:
+# Daily-only asset classes. They were in no denominator at any timeframe, so
+# VIX going stale for a week was invisible to coverage. There is no recovery
+# path for these (CBOE/FRED/IB own them), so this reports and alerts only.
+NON_EQUITY_ASSET_CLASSES: tuple[str, ...] = ("volatility", "futures", "rates")
+
+
+def compute_non_equity_coverage(
+    target_date: date,
+    bronze_root: Path | None = None,
+) -> dict[str, CoverageResult]:
+    """Return per-asset-class 1d freshness for the non-equity universes.
+
+    No no-trade exemption: these are small, continuously-quoted universes
+    (~14 volatility indices, a handful of futures, 4 Treasury series). A stale
+    one is a real gap, not an instrument that happened not to print.
+    """
+    bronze_root = bronze_root or _resolved_data_lake() / "bronze"
+    results: dict[str, CoverageResult] = {}
+    for asset_class in NON_EQUITY_ASSET_CLASSES:
+        paths = sorted((bronze_root / f"asset_class={asset_class}").glob("symbol=*/1d.parquet"))
+        universe = {_symbol_from_parquet_path(p) for p in paths}
+        present = {
+            _symbol_from_parquet_path(p)
+            for p in paths
+            if (latest := _latest_date_in_parquet(p, "trade_date")) is not None and latest >= target_date
+        }
+        results[asset_class] = CoverageResult(
+            timeframe=asset_class,
+            total=len(universe),
+            present=len(present),
+            missing_symbols=sorted(universe - present),
+        )
+    return results
+
+
+def format_non_equity_line(target_date: date, results: dict[str, CoverageResult]) -> str:
+    parts = [f"{ac}={results[ac].present}/{results[ac].total}" for ac in NON_EQUITY_ASSET_CLASSES]
+    return f"{target_date} non-equity 1d: " + " ".join(parts)
+
+
+MISSING_JSON_PREFIX = "MISSING_JSON "
+
+
+def format_missing_json(results: dict[str, CoverageResult]) -> str:
+    """One machine-readable line carrying the COMPLETE missing lists.
+
+    The human `missing:` blocks are truncated to 10 names for readability, and
+    the weekly report parsed only those — so a symbol whose name sorted after
+    the first ten could never be detected as a persistent gap no matter how
+    many consecutive days it was absent.
+    """
+    payload = {tf: results[tf].missing_symbols for tf in TIMEFRAMES if results[tf].missing_symbols}
+    return MISSING_JSON_PREFIX + json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
+def parse_missing_json(text: str) -> dict[str, list[str]] | None:
+    """Return the last well-formed MISSING_JSON payload in *text*, or None."""
+    result = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(MISSING_JSON_PREFIX):
+            continue
+        try:
+            result = json.loads(stripped[len(MISSING_JSON_PREFIX) :])
+        except json.JSONDecodeError:
+            continue
+    return result
+
+
+def write_coverage_log(
+    target_date: date,
+    line: str,
+    missing_blocks: Iterable[str],
+    results: dict[str, CoverageResult] | None = None,
+) -> Path:
     resolved_log_dir = _resolved_log_dir()
     resolved_log_dir.mkdir(parents=True, exist_ok=True)
     log_path = resolved_log_dir / f"coverage_{target_date:%Y-%m-%d}.log"
@@ -217,6 +309,8 @@ def write_coverage_log(target_date: date, line: str, missing_blocks: Iterable[st
         fh.write(line + "\n")
         for block in missing_blocks:
             fh.write(block + "\n")
+        if results is not None:
+            fh.write(format_missing_json(results) + "\n")
     return log_path
 
 
@@ -227,46 +321,63 @@ def auto_recover(
     target_date: date | None = None,
     safety_cap: int = DEFAULT_SAFETY_CAP,
 ) -> RecoveryOutcome:
-    """Trigger a targeted backfill subprocess and re-check coverage."""
+    """Trigger a targeted backfill subprocess and re-check coverage.
+
+    The cap used to abort outright, which made it self-perpetuating: recovery
+    only ran below the alert ratio AND below the cap, so a large outage landed
+    in a dead zone where coverage was bad enough to alarm but too bad to act,
+    and the same symbols were dropped and re-emailed every night forever.
+    1d recovery now runs in cap-sized batches instead.
+
+    The cap never applied to intraday in the first place: that branch passes no
+    symbols at all — it republishes the whole day's flat file — so its cost is
+    date-shaped, not symbol-shaped, and refusing to run because 101 symbols are
+    missing was measuring the wrong quantity.
+    """
     if not missing_symbols:
         return RecoveryOutcome(timeframe=timeframe, attempted=[], recovered=0, still_missing=[])
-
-    if len(missing_symbols) > safety_cap:
-        return RecoveryOutcome(
-            timeframe=timeframe,
-            attempted=list(missing_symbols),
-            recovered=0,
-            still_missing=list(missing_symbols),
-            aborted=True,
-            reason=f"safety_cap (>{safety_cap} missing symbols)",
-        )
 
     effective_target = target_date or datetime.now(UTC).date()
 
     if timeframe == "1d":
-        cmd = [
-            sys.executable,
-            str(_INGEST_SCRIPT),
-            "daily",
-            "--source",
-            "massive",
-            "--force",
-            "--target-date",
-            effective_target.isoformat(),
-            "--tickers",
-            *missing_symbols,
-        ]
+        batches = [missing_symbols[i : i + safety_cap] for i in range(0, len(missing_symbols), safety_cap)]
+        if len(batches) > 1:
+            console.print(
+                f"[cyan]Auto-recover 1d: {len(missing_symbols)} symbols in {len(batches)} "
+                f"batch(es) of up to {safety_cap}[/cyan]"
+            )
+        for batch in batches:
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(_INGEST_SCRIPT),
+                    "daily",
+                    "--source",
+                    "massive",
+                    "--force",
+                    "--target-date",
+                    effective_target.isoformat(),
+                    "--tickers",
+                    *batch,
+                ],
+                check=False,
+            )
     else:
-        cmd = [
-            sys.executable,
-            str(_INGEST_SCRIPT),
-            "flatfile-ingest",
-            "repair",
-            "--dates",
-            effective_target.isoformat(),
-        ]
-    console.print(f"[cyan]Auto-recover {timeframe}: launching backfill for {len(missing_symbols)} symbols[/cyan]")
-    subprocess.run(cmd, check=False)
+        console.print(
+            f"[cyan]Auto-recover {timeframe}: republishing {effective_target} "
+            f"({len(missing_symbols)} symbols missing)[/cyan]"
+        )
+        subprocess.run(
+            [
+                sys.executable,
+                str(_INGEST_SCRIPT),
+                "flatfile-ingest",
+                "repair",
+                "--dates",
+                effective_target.isoformat(),
+            ],
+            check=False,
+        )
 
     rechecked = compute_coverage(effective_target, bronze_root=bronze_root)[timeframe]
     still_missing = [s for s in missing_symbols if s in rechecked.missing_symbols]
@@ -360,7 +471,16 @@ def main() -> None:
     blocks = format_missing_blocks(results)
     for block in blocks:
         console.print(block)
-    log_path = write_coverage_log(target, line, blocks)
+    # Non-equity was in no denominator at all: a stale VIX, a stale DGS10 or a
+    # stale futures contract could never register as missing.
+    non_equity = compute_non_equity_coverage(target)
+    non_equity_line = format_non_equity_line(target, non_equity)
+    console.print(non_equity_line)
+    stale_non_equity = {ac: r.missing_symbols for ac, r in non_equity.items() if r.missing_symbols}
+    for asset_class, symbols in stale_non_equity.items():
+        console.print(f"  [yellow]{asset_class} stale:[/yellow] {', '.join(symbols)}")
+
+    log_path = write_coverage_log(target, line, [*blocks, non_equity_line], results)
 
     if args.no_recover:
         return
@@ -379,6 +499,25 @@ def main() -> None:
         outcomes.append(outcome)
 
     if not outcomes:
+        if stale_non_equity:
+            # No recovery path exists for these — CBOE/FRED/IB own them — so
+            # reporting is all we can honestly do, but silence was worse.
+            _send_alert(
+                target,
+                [
+                    RecoveryOutcome(
+                        timeframe=asset_class,
+                        attempted=symbols,
+                        recovered=0,
+                        still_missing=symbols,
+                        aborted=True,
+                        reason="no recovery path for this asset class",
+                    )
+                    for asset_class, symbols in stale_non_equity.items()
+                ],
+                log_path,
+            )
+            return
         log.info("Coverage above threshold for all timeframes — no recovery needed")
         return
 

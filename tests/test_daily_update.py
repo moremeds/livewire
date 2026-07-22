@@ -752,11 +752,27 @@ class TestFetchBatch:
         assert "NVDA" in result
 
     def test_handles_error(self):
+        """A raised fetch maps to the exception, never to an empty list.
+
+        Collapsing a raise into `[]` made it indistinguishable from "the
+        instrument didn't trade", so a total IB outage classified every ticker
+        `no_trade`, kept `errors` at 0, and exited 0.
+        """
         mock_ib = MagicMock()
         mock_ib.ib.qualifyContractsAsync = AsyncMock(side_effect=Exception("fail"))
 
         result = asyncio.run(fetch_batch([("FAIL", "5 D")], mock_ib, max_concurrent=6))
-        assert result["FAIL"] == []
+        assert isinstance(result["FAIL"], Exception)
+        assert str(result["FAIL"]) == "fail"
+
+    def test_no_bars_is_still_an_empty_list(self):
+        """A genuine no-trade stays `[]` so it keeps classifying as no_trade."""
+        mock_ib = MagicMock()
+        mock_ib.ib.qualifyContractsAsync = AsyncMock(return_value=[])
+        mock_ib.get_historical_data_async = AsyncMock(return_value=[])
+
+        result = asyncio.run(fetch_batch([("QUIET", "5 D")], mock_ib, max_concurrent=6))
+        assert result["QUIET"] == []
 
 
 class TestQualityHookIntegration:
@@ -1393,8 +1409,12 @@ class TestMain:
             main()  # No bronze data → early return
 
     @pytest.mark.integration
-    def test_no_tickers_in_bronze(self, monkeypatch):
-        """main() exits when no tickers are available in bronze."""
+    def test_no_tickers_in_bronze_fails(self, monkeypatch):
+        """An empty bronze universe is a failure, not a clean no-op.
+
+        Exiting 0 here made the scheduled wrapper write `=== Done equity ===`
+        with no SUMMARY_JSON, leaving the watchdog nothing to judge the run by.
+        """
         monkeypatch.setattr("sys.argv", ["daily_update.py", "--source", "ib"])
 
         with (
@@ -1406,7 +1426,8 @@ class TestMain:
             mock_bronze.__exit__ = MagicMock(return_value=False)
             mock_bronze.get_latest_dates.return_value = {}
             MockBronze.return_value = mock_bronze
-            main()
+            # `!= 0` would pass on a bare `return` too — None != 0 is True.
+            assert main() == 1
 
     @pytest.mark.integration
     def test_all_up_to_date(self, monkeypatch):

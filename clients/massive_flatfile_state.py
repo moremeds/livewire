@@ -8,6 +8,10 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+# Enough to resume any in-flight run and its immediate predecessors. The
+# append-only manifest keeps the full history; this snapshot does not need to.
+MAX_RETAINED_SCOPES = 10
+
 
 def _date_value(day: date | str) -> str:
     return day.isoformat() if isinstance(day, date) else day
@@ -43,10 +47,25 @@ class MassiveFlatfileState:
 
     def save(self) -> None:
         with self._lock:
+            self._prune_scopes()
             self.cursor_dir.mkdir(parents=True, exist_ok=True)
             tmp = self.state_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.data, indent=2, sort_keys=True), encoding="utf-8")
             tmp.replace(self.state_path)
+
+    def _prune_scopes(self) -> None:
+        """Keep only the most recent scopes.
+
+        The catch-up window slides daily, so the scope key is a new string every
+        night and nothing ever removed the old ones — publish_scopes grew by one
+        entry per night forever, and every save re-serialised all of them.
+        Insertion order is chronological, so the tail is the newest.
+        """
+        scopes = self.data.get("publish_scopes")
+        if not scopes or len(scopes) <= MAX_RETAINED_SCOPES:
+            return
+        for stale in list(scopes)[: len(scopes) - MAX_RETAINED_SCOPES]:
+            del scopes[stale]
 
     def mark_raw_completed(self, day: date | str) -> None:
         value = _date_value(day)
@@ -105,13 +124,23 @@ class MassiveFlatfileState:
             return ticker in self._scope(scope)["tickers_completed"].get(str(bucket), [])
 
     def mark_ticker_completed(self, scope: str, bucket: int, ticker: str) -> None:
+        """Record a completed ticker WITHOUT rewriting the state snapshot.
+
+        This used to `save()` per ticker, re-serialising the entire state file
+        — 5 MB and growing — for each of ~12K tickers, plus an O(n log n) sort
+        on every insert. That is tens of GB of write amplification per run and
+        is why the publish phase appeared to hang.
+
+        The durable record is the append-only manifest, which `record()` still
+        writes per ticker. The snapshot is a resume cache, flushed at each
+        bucket boundary. A crash mid-bucket loses that bucket's ticker marks
+        and re-publishes them, which is idempotent (merge overwrites).
+        """
         with self._lock:
             per_bucket = self._scope(scope)["tickers_completed"].setdefault(str(bucket), [])
             if ticker not in per_bucket:
                 per_bucket.append(ticker)
-                per_bucket.sort()
                 self.record("ticker_completed", scope=scope, bucket=bucket, ticker=ticker)
-                self.save()
 
     def mark_bucket_completed(self, scope: str, bucket: int) -> None:
         with self._lock:

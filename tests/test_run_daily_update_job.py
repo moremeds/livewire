@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts import run_daily_update_job as daily_runner
 from livewire_scripts.run_daily_update_job import (
     ASSET_CLASSES,
@@ -31,9 +32,23 @@ from livewire_scripts.run_daily_update_job import (
     node_binary_exists,
     run_cboe_volatility_sync,
     run_daily_update_attempt,
+    run_post_success_quality,
     run_with_retries,
     send_failure_alert,
 )
+
+
+@pytest.fixture(autouse=True)
+def no_real_quality_spawn():
+    """Keep main() from shelling out to the real quality CLI.
+
+    main() ends by spawning coverage/weekly/digest. Unpatched, a unit test
+    launches `livewire_quality.py coverage` against the operator's live
+    warehouse — and coverage runs auto-recovery subprocesses that write
+    bronze. Autouse so a new main() test cannot forget it.
+    """
+    with patch("livewire_scripts.run_daily_update_job.run_post_success_quality") as spawn:
+        yield spawn
 
 
 def _config(tmp_path: Path, *, node_bin: str = "/opt/homebrew/bin/node") -> RunnerConfig:
@@ -302,7 +317,21 @@ class TestSubprocessPaths:
 
 
 class TestEndOfDayQualityReport:
-    def test_digest_invoked_after_successful_daily(self, tmp_path):
+    """These jobs run once, after Silver — not inside each lane's success branch.
+
+    They used to fire from run_with_retries, so four asset classes produced
+    four coverage runs and four digest emails, all before the Silver rebuild.
+    """
+
+    _LOG_TS = datetime(2026, 5, 18, 20, 0, tzinfo=UTC)
+
+    def _run(self, config, fake_runner):
+        log_file = build_log_file(config.log_dir, self._LOG_TS)
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        run_post_success_quality(config, log_file, runner=fake_runner)
+        return log_file
+
+    def test_quality_jobs_not_spawned_by_run_with_retries(self, tmp_path):
         config = _config(tmp_path)
         calls = []
 
@@ -315,9 +344,20 @@ class TestEndOfDayQualityReport:
             daily_update_args=[],
             runner=fake_runner,
             sleep_fn=lambda s: None,
-            now_fn=lambda: datetime(2026, 5, 18, 20, 0, tzinfo=UTC),
+            now_fn=lambda: self._LOG_TS,
         )
         assert rc == 0
+        assert not [c for c in calls if any("livewire_quality.py" in str(x) for x in c)]
+
+    def test_digest_invoked_with_email_and_run_date(self, tmp_path):
+        config = _config(tmp_path)
+        calls = []
+
+        def fake_runner(cmd, **kwargs):
+            calls.append(list(cmd))
+            return CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
+
+        self._run(config, fake_runner)
         quality_calls = [c for c in calls if any("livewire_quality.py" in str(x) for x in c)]
         # The emailed nightly digest replaces the old report --view summary email.
         digest_cmd = next(c for c in quality_calls if "digest" in c)
@@ -325,7 +365,7 @@ class TestEndOfDayQualityReport:
         assert "--run-date" in digest_cmd
         assert not any("report" in c and "summary" in c for c in quality_calls)
 
-    def test_coverage_and_weekly_spawned_after_successful_daily(self, tmp_path):
+    def test_coverage_and_weekly_spawned(self, tmp_path):
         config = _config(tmp_path)
         calls = []
 
@@ -333,19 +373,12 @@ class TestEndOfDayQualityReport:
             calls.append(list(cmd))
             return CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
 
-        rc = run_with_retries(
-            config,
-            daily_update_args=[],
-            runner=fake_runner,
-            sleep_fn=lambda s: None,
-            now_fn=lambda: datetime(2026, 5, 18, 20, 0, tzinfo=UTC),
-        )
-        assert rc == 0
+        self._run(config, fake_runner)
         quality_calls = [c for c in calls if any("livewire_quality.py" in str(x) for x in c)]
-        assert any(c[-1] == "coverage" or "coverage" in c for c in quality_calls)
+        assert any("coverage" in c for c in quality_calls)
         assert any("weekly" in c for c in quality_calls)
 
-    def test_coverage_spawn_failure_does_not_fail_daily(self, tmp_path):
+    def test_coverage_spawn_failure_is_logged_not_raised(self, tmp_path):
         config = _config(tmp_path)
 
         def fake_runner(cmd, **kwargs):
@@ -354,38 +387,16 @@ class TestEndOfDayQualityReport:
             is_coverage = any("livewire_quality.py" in str(x) for x in cmd) and "coverage" in cmd
             return CompletedProcess(args=cmd, returncode=3 if is_coverage else 0, stdout=b"", stderr=b"")
 
-        rc = run_with_retries(
-            config,
-            daily_update_args=[],
-            runner=fake_runner,
-            sleep_fn=lambda s: None,
-            now_fn=lambda: datetime(2026, 5, 18, 20, 0, tzinfo=UTC),
-        )
-        assert rc == 0
-        log_file = build_log_file(config.log_dir, datetime(2026, 5, 18, 20, 0, tzinfo=UTC))
+        log_file = self._run(config, fake_runner)
         assert "WARNING: coverage report failed" in log_file.read_text(encoding="utf-8")
 
-    def test_digest_failure_does_not_fail_daily(self, tmp_path):
+    def test_digest_failure_is_logged_not_raised(self, tmp_path):
         config = _config(tmp_path)
-        calls = []
 
         def fake_runner(cmd, **kwargs):
-            calls.append(list(cmd))
-            rc = 0 if "livewire_ingest.py" in " ".join(str(c) for c in cmd) else 2
-            return CompletedProcess(args=cmd, returncode=rc, stdout=b"", stderr=b"digest failed")
+            return CompletedProcess(args=cmd, returncode=2, stdout=b"", stderr=b"digest failed")
 
-        rc = run_with_retries(
-            config,
-            daily_update_args=[],
-            runner=fake_runner,
-            sleep_fn=lambda s: None,
-            now_fn=lambda: datetime(2026, 5, 18, 20, 0, tzinfo=UTC),
-        )
-        assert rc == 0
-        log_file = build_log_file(
-            config.log_dir,
-            datetime(2026, 5, 18, 20, 0, tzinfo=UTC),
-        )
+        log_file = self._run(config, fake_runner)
         assert "WARNING: nightly digest failed" in log_file.read_text(encoding="utf-8")
 
     def test_send_failure_alert_skips_when_node_missing(self, tmp_path):
@@ -834,33 +845,71 @@ class TestMain:
         )
         cboe_mock.assert_not_called()
 
-    def test_main_returns_nonzero_if_any_asset_class_fails(self):
+    def _main_with(self, *, lane_codes=None, action=0, cboe=0, gateway_down=()):
+        """Run main() with each lane's exit code stubbed. Returns (rc, silver_mock)."""
         config = _config(Path("/tmp/test"))
+        codes = dict(lane_codes or {})
 
         def _run(cfg, args, env, completion_scope=None):
-            if "--asset-class" in args and args[args.index("--asset-class") + 1] == "futures":
-                return 1
-            return 0
+            name = args[args.index("--asset-class") + 1]
+            if name in gateway_down:
+                return GATEWAY_DOWN_EXIT_CODE
+            return codes.get(name, 0)
 
         with (
             patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
-            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=action),
             patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=_run),
-            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0),
-            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild") as silver,
+            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=cboe),
+            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", return_value=0) as silver,
+            patch("livewire_scripts.run_daily_update_job.append_log"),
         ):
-            assert main([]) == 1
+            return main([]), silver
+
+    def test_main_returns_nonzero_if_any_asset_class_fails(self):
+        rc, _ = self._main_with(lane_codes={"futures": 1})
+        assert rc == 1
+
+    def test_ib_lane_failure_does_not_block_silver(self):
+        """Silver reads equity bronze + corporate actions. Nothing else gates it.
+
+        A stale FX contract or a failed futures lane used to skip the adjusted
+        rebuild for the whole ~13K equity universe.
+        """
+        rc, silver = self._main_with(lane_codes={"futures": 1, "fx": 1, "cmdty": 1})
+        assert rc == 1
+        silver.assert_called_once()
+
+    def test_cboe_failure_does_not_block_silver(self):
+        rc, silver = self._main_with(cboe=1)
+        assert rc == 1
+        silver.assert_called_once()
+
+    def test_equity_failure_blocks_silver(self):
+        rc, silver = self._main_with(lane_codes={"equity": 1})
+        assert rc == 1
         silver.assert_not_called()
 
-    def test_main_returns_nonzero_if_cboe_fails(self):
-        config = _config(Path("/tmp/test"))
-
-        with (
-            patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
-            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
-            patch("livewire_scripts.run_daily_update_job.run_with_retries", return_value=0),
-            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=1),
-            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild") as silver,
-        ):
-            assert main([]) == 1
+    def test_corporate_action_failure_blocks_silver(self):
+        """Silver would otherwise rebuild against a stale action store."""
+        rc, silver = self._main_with(action=1)
+        assert rc == 1
         silver.assert_not_called()
+
+    def test_gateway_down_is_degraded_not_failed(self):
+        """A 2FA-gated Gateway is an expected state, not a data failure."""
+        rc, silver = self._main_with(gateway_down=("futures", "cmdty", "fx"))
+        assert rc == 0
+        silver.assert_called_once()
+
+    def test_quality_jobs_run_once_after_silver(self, no_real_quality_spawn):
+        """Four asset classes used to mean four coverage runs and four digests.
+
+        All of them fired before the Silver rebuild, so the digest's Silver
+        section — the only channel carrying window_regressions — parsed a log
+        that could not yet contain Silver's SUMMARY_JSON.
+        """
+        rc, silver = self._main_with()
+        assert rc == 0
+        silver.assert_called_once()
+        assert no_real_quality_spawn.call_count == 1

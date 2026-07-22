@@ -14,6 +14,7 @@ import logging
 import os
 from collections.abc import Sequence
 from datetime import date, timedelta
+from pathlib import Path
 
 from clients.massive_daily_flatfile_store import MassiveDailyFlatfileStore
 from clients.massive_flatfile_client import S3_PREFIX_DAILY, MassiveFlatfileClient, require_flatfile_credentials
@@ -23,8 +24,11 @@ from livewire_scripts.daily_flatfile_publisher import publish_daily_dates
 from livewire_scripts.flatfile_downloader import download_dates
 from livewire_scripts.flatfile_planner import discover_plan, require_capacity
 from livewire_scripts.paths import cursor_dir, warehouse_dir
+from livewire_scripts.sync_runner import EQUITY_PRESETS, ticker_union
 
 log = logging.getLogger("livewire.ingest_daily_flatfiles")
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _require_credentials() -> None:
@@ -66,6 +70,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=int,
         default=int(os.getenv("MDW_FLATFILE_DAILY_BUCKETS", "32")),
         help="Raw ticker buckets per trading day (default 32; env MDW_FLATFILE_DAILY_BUCKETS).",
+    )
+    parser.add_argument(
+        "--protect-preset",
+        nargs="+",
+        default=[str(REPO_ROOT / p) for p in EQUITY_PRESETS],
+        help=(
+            "Preset files whose tickers the `daily` command owns; this lane skips them. "
+            "Everything else in the SIP universe is merged and kept current."
+        ),
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -118,6 +131,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         bronze_dir,
         scope=scope,
         workers=args.workers,
+        protected_symbols=frozenset(ticker_union(args.protect_preset)),
     )
     log.info(
         "Downloaded=%d skipped=%d published_tickers=%d rows=%d skipped_existing=%d",

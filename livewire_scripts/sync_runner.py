@@ -32,6 +32,8 @@ logger = logging.getLogger("livewire.sync_runner")
 
 EQUITY_PRESETS = ("presets/sp500.json", "presets/ndx100.json", "presets/r2k.json")
 VOL_PRESET = "presets/volatility-intraday.json"
+# Distinct so the digest and failure summary can name a stall as a stall.
+TIMEOUT_EXIT_CODE = 124
 VOL_DAILY_PRESET = "presets/volatility.json"
 EQUITY_INTRADAY_TIMEFRAMES = ("1m", "5m", "1h")
 VOL_INTRADAY_TIMEFRAMES = ("30m", "5m")
@@ -108,6 +110,18 @@ def _format_command(cmd: Sequence[str], limit: int = 24) -> str:
     return " ".join(parts[:limit]) + f" ... [{len(parts) - limit} more args]"
 
 
+def phase_timeout_seconds() -> int:
+    """Hard per-phase wall-clock budget.
+
+    There was no timeout anywhere on this path, despite the wrapper's docstring
+    claiming `daily-backfill` owns "activity-based stall detection" — it does
+    not. A wedged IB call in the volatility phase blocked the phase forever;
+    launchd will not start a second instance while the first lives, so the
+    nightly job silently stopped running until an operator noticed.
+    """
+    return int(os.getenv("MDW_SYNC_PHASE_TIMEOUT_SECONDS", str(6 * 60 * 60)))
+
+
 def run_phase(
     label: str,
     command: list[str],
@@ -115,20 +129,27 @@ def run_phase(
     *,
     allow_completed_summary: bool = False,
     runner: callable = subprocess.run,
+    timeout: int | None = None,
 ) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"{label}.log"
     offset = log_file.stat().st_size if log_file.exists() else 0
     logger.info("CMD %s: %s", label, _format_command(command))
 
+    budget = phase_timeout_seconds() if timeout is None else timeout
     with log_file.open("a", encoding="utf-8") as fh:
-        result = runner(
-            command,
-            stdout=fh,
-            stderr=subprocess.STDOUT,
-            text=True,
-            check=False,
-        )
+        try:
+            result = runner(
+                command,
+                stdout=fh,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+                timeout=budget,
+            )
+        except subprocess.TimeoutExpired:
+            logger.error("%s exceeded its %ds budget and was killed", label, budget)
+            return TIMEOUT_EXIT_CODE
 
     if result.returncode != 0:
         if allow_completed_summary:
@@ -313,8 +334,27 @@ def run_sync(
         if rc != 0:
             failures.append(f"vol_intraday_{tf}")
 
-    # Phase 5b: Derive 1h from 30m locally
-    _derive_vol_1h(config.vol_preset)
+    # Phase 5b: Derive 1h from 30m locally.
+    # Wrapped because this ran outside the phase harness: any OSError or
+    # ArrowInvalid propagated out of run_sync, so Postgres never ran AND the
+    # SUMMARY_JSON line below was never printed — leaving the wrapper to scrape
+    # the last log line and the nightly digest with no phase table at all.
+    #
+    # Recorded in phase_results, not just `failures`: SUMMARY_JSON["failed"] is
+    # derived from phase_results alone, so appending to `failures` turned the run
+    # red while the digest and the watchdog both read "failed": [] — the exit code
+    # and the machine-readable summary disagreed about the same run.
+    _derive_start = time.monotonic()
+    derive_rc = 0
+    try:
+        _derive_vol_1h(config.vol_preset)
+    except Exception as exc:  # noqa: BLE001 - one lane must not kill the summary
+        logger.error("vol_1h_derive failed: %s", exc)
+        derive_rc = 1
+        failures.append("vol_1h_derive")
+    phase_results.append(
+        {"label": "vol_1h_derive", "exit": derive_rc, "duration_s": round(time.monotonic() - _derive_start, 1)}
+    )
 
     # Phase 6: Postgres rebuild (conditional)
     if os.getenv("MDW_POSTGRES_DSN"):

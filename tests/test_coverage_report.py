@@ -14,12 +14,14 @@ import pyarrow.parquet as pq
 import pytest
 
 from livewire_scripts.coverage_report import (
+    NON_EQUITY_ASSET_CLASSES,
     CoverageResult,
     RecoveryOutcome,
     _resolve_target_date,
     _send_alert,
     auto_recover,
     compute_coverage,
+    compute_non_equity_coverage,
     format_missing_blocks,
     format_one_liner,
     main,
@@ -333,13 +335,50 @@ class TestAutoRecover:
         assert outcome.attempted == []
         assert not outcome.aborted
 
-    def test_safety_cap_aborts_without_subprocess(self):
+    def test_intraday_recovery_ignores_the_symbol_cap(self):
+        """Intraday recovery is date-shaped: it republishes the whole day's file.
+
+        It passes no symbols at all, so refusing to run because 101 symbols
+        were missing was measuring the wrong quantity — and the refusal was
+        self-perpetuating, since recovery only ran below both the alert ratio
+        and the cap.
+        """
         missing = [f"SYM{i}" for i in range(150)]
-        with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
-            outcome = auto_recover("5m", missing, safety_cap=100)
-        assert outcome.aborted is True
-        assert "safety_cap" in outcome.reason
-        assert mock_run.call_count == 0
+        with (
+            patch("livewire_scripts.coverage_report.subprocess.run") as mock_run,
+            patch(
+                "livewire_scripts.coverage_report.compute_coverage",
+                return_value={"5m": CoverageResult("5m", total=150, present=150, missing_symbols=[])},
+            ),
+        ):
+            outcome = auto_recover("5m", missing, safety_cap=100, target_date=date(2026, 4, 6))
+
+        assert outcome.aborted is False
+        assert mock_run.call_count == 1
+        cmd = mock_run.call_args_list[0][0][0]
+        assert "repair" in cmd
+        # Whole-file republish — no per-symbol argument.
+        assert "--tickers" not in cmd
+
+    def test_daily_recovery_batches_instead_of_dropping(self):
+        """Over-cap used to be dropped entirely and re-emailed every night."""
+        missing = [f"SYM{i}" for i in range(250)]
+        with (
+            patch("livewire_scripts.coverage_report.subprocess.run") as mock_run,
+            patch(
+                "livewire_scripts.coverage_report.compute_coverage",
+                return_value={"1d": CoverageResult("1d", total=250, present=250, missing_symbols=[])},
+            ),
+        ):
+            outcome = auto_recover("1d", missing, safety_cap=100, target_date=date(2026, 4, 6))
+
+        assert outcome.aborted is False
+        assert mock_run.call_count == 3  # 100 + 100 + 50
+        batched = []
+        for call in mock_run.call_args_list:
+            cmd = call[0][0]
+            batched.extend(cmd[cmd.index("--tickers") + 1 :])
+        assert sorted(batched) == sorted(missing)
 
     def test_full_recovery_path(self, seeded_bronze):
         # Pretend AAPL is missing at 5m. The mocked subprocess "fixes" it by
@@ -606,7 +645,7 @@ class TestMain:
         alert_calls = [c for c in mock_run.call_args_list if "livewire_ops.py" in str(c[0][0])]
         assert len(alert_calls) == 1  # email sent for partial recovery
 
-    def test_safety_cap_path_in_main(self, tmp_path, monkeypatch):
+    def test_large_intraday_outage_still_recovers_in_main(self, tmp_path, monkeypatch):
         root = tmp_path / "bronze"
         target = date(2026, 4, 6)
         # 200 symbols all stale at 5m (present in the 5m universe, over the cap)
@@ -628,8 +667,70 @@ class TestMain:
                     ["coverage_report.py", "--target-date", "2026-04-06"],
                 ):
                     main()
-        # No fetch subprocess (safety cap), but email IS sent
+        # A 200-symbol intraday outage used to land in the dead zone: bad
+        # enough to alarm, too bad to act. Recovery must now actually fire.
         fetch_calls = [c for c in mock_run.call_args_list if "livewire_ingest.py" in str(c[0][0])]
         alert_calls = [c for c in mock_run.call_args_list if "livewire_ops.py" in str(c[0][0])]
-        assert fetch_calls == []
+        assert fetch_calls != []
         assert len(alert_calls) == 1
+
+
+class TestIntradayDenominator:
+    """The denominator used to be self-defining, hiding whole classes of gap."""
+
+    def test_symbol_that_traded_but_has_no_intraday_file_counts_missing(self, tmp_path):
+        root = tmp_path / "bronze"
+        target = date(2026, 4, 6)
+        # GOTBARS has 5m; NOFILE traded that day but never got a 5m parquet.
+        _write_daily(root, "GOTBARS", [target])
+        _write_intraday(root, "GOTBARS", "5m", [target])
+        _write_daily(root, "NOFILE", [target])
+        _write_raw_symbols(root, target, ["GOTBARS", "NOFILE"])
+
+        results = compute_coverage(target, bronze_root=root)
+
+        # Globbing files on disk put NOFILE outside the 5m universe entirely,
+        # so it could never be counted missing and coverage read 100%.
+        assert "NOFILE" in results["5m"].missing_symbols
+        assert results["5m"].total == 2
+
+    def test_daily_keeps_the_no_trade_exemption(self, tmp_path):
+        """A symbol that simply did not trade is not a 1d gap."""
+        root = tmp_path / "bronze"
+        target = date(2026, 4, 6)
+        _write_daily(root, "TRADED", [target])
+        _write_daily(root, "QUIET", [date(2026, 3, 1)])
+        _write_raw_symbols(root, target, ["TRADED"])
+
+        results = compute_coverage(target, bronze_root=root)
+
+        assert results["1d"].missing_symbols == []
+
+
+class TestNonEquityCoverage:
+    """These asset classes were in no denominator at any timeframe."""
+
+    def _write_non_equity(self, root, asset_class, symbol, dates):
+        sym_dir = root / f"asset_class={asset_class}" / f"symbol={symbol}"
+        sym_dir.mkdir(parents=True, exist_ok=True)
+        pq.write_table(
+            pa.table({"trade_date": pa.array(dates, type=pa.date32())}),
+            sym_dir / "1d.parquet",
+        )
+
+    def test_stale_volatility_index_is_detected(self, tmp_path):
+        root = tmp_path / "bronze"
+        target = date(2026, 4, 6)
+        self._write_non_equity(root, "volatility", "VIX", [target])
+        self._write_non_equity(root, "volatility", "VVIX", [date(2026, 3, 1)])
+        self._write_non_equity(root, "rates", "DGS10", [target])
+
+        results = compute_non_equity_coverage(target, bronze_root=root)
+
+        assert results["volatility"].missing_symbols == ["VVIX"]
+        assert results["rates"].missing_symbols == []
+
+    def test_absent_asset_class_is_empty_not_an_error(self, tmp_path):
+        results = compute_non_equity_coverage(date(2026, 4, 6), bronze_root=tmp_path / "bronze")
+        for asset_class in NON_EQUITY_ASSET_CLASSES:
+            assert results[asset_class].total == 0

@@ -42,7 +42,18 @@ def _config(tmp_path: Path, *, node_bin: str = "/opt/homebrew/bin/node") -> Runn
 def _all_daily_done_markers() -> str:
     lines = [f"=== Done {asset_class} 2026-03-11T20:05:09Z (attempt 1/3) ===" for asset_class in ASSET_CLASSES]
     lines.append("=== Done cboe 2026-03-11T20:05:10Z ===")
+    lines.append("=== Done silver 2026-03-11T20:05:11Z ===")
     return "\n".join(lines) + "\n"
+
+
+def _healthy_run(config, *, daily_log_extra: str = "") -> None:
+    log_file = build_daily_log_file(config.log_dir, "2026-03-11")
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file.write_text(_all_daily_done_markers() + daily_log_extra, encoding="utf-8")
+    (config.log_dir / "quality_summary_2026-03-11.marker").write_text("ok\n")
+    (config.log_dir / "intraday_catchup_2026-03-11.log").write_text(
+        "=== Done 2026-03-11T05:02:29Z ===\n", encoding="utf-8"
+    )
 
 
 class TestHelpers:
@@ -74,15 +85,73 @@ class TestHelpers:
 class TestRunWatchdog:
     def test_returns_healthy_when_daily_log_completed(self, tmp_path):
         config = _config(tmp_path)
-        log_file = build_daily_log_file(config.log_dir, "2026-03-11")
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        log_file.write_text(_all_daily_done_markers(), encoding="utf-8")
-        (config.log_dir / "quality_summary_2026-03-11.marker").write_text("ok\n")
-        (config.log_dir / "intraday_catchup_2026-03-11.log").write_text(
-            "=== Done 2026-03-11T05:02:29Z ===\n", encoding="utf-8"
-        )
+        _healthy_run(config)
 
         assert run_watchdog(config, run_date="2026-03-11", env={}) == 0
+
+    def test_missing_silver_scope_is_not_healthy(self, tmp_path):
+        """Silver is the served artifact; a rebuild that never ran must alert."""
+        config = _config(tmp_path)
+        _healthy_run(config)
+        log_file = build_daily_log_file(config.log_dir, "2026-03-11")
+        log_file.write_text(
+            "\n".join(line for line in log_file.read_text(encoding="utf-8").splitlines() if "Done silver" not in line)
+            + "\n",
+            encoding="utf-8",
+        )
+
+        assert run_watchdog(config, run_date="2026-03-11", env={}) != 0
+
+    def test_skipped_scope_reports_degraded_not_missing(self, tmp_path):
+        """A 2FA-gated Gateway is degraded, not 'the sync never ran'."""
+        config = _config(tmp_path)
+        _healthy_run(config)
+        log_file = build_daily_log_file(config.log_dir, "2026-03-11")
+        kept = [line for line in log_file.read_text(encoding="utf-8").splitlines() if "Done fx" not in line]
+        kept.append("=== Skipped fx 2026-03-11T20:05:12Z (IB Gateway unreachable) ===")
+        log_file.write_text("\n".join(kept) + "\n", encoding="utf-8")
+
+        assert run_watchdog(config, run_date="2026-03-11", env={}) != 0
+        watchdog_log = (config.log_dir / "daily_update_watchdog_2026-03-11.log").read_text(encoding="utf-8")
+        assert "DEGRADED" in watchdog_log
+        assert "missing completion scopes" not in watchdog_log
+
+    def test_equity_lane_that_published_nothing_is_not_healthy(self, tmp_path):
+        """`=== Done equity ===` only proves the process finished."""
+        config = _config(tmp_path)
+        summary = (
+            'SUMMARY_JSON {"job":"daily_update","asset_class":"equity","source":"ib",'
+            '"target_date":"2026-03-11","updated":0,"no_trade":0,"partial":0,"errors":2500,'
+            '"bars_inserted":0,"validation_issues":0,"top_errors":[]}\n'
+        )
+        _healthy_run(config, daily_log_extra=summary)
+
+        assert run_watchdog(config, run_date="2026-03-11", env={}) != 0
+        watchdog_log = (config.log_dir / "daily_update_watchdog_2026-03-11.log").read_text(encoding="utf-8")
+        assert "published nothing" in watchdog_log
+
+    def test_healthy_equity_summary_stays_healthy(self, tmp_path):
+        config = _config(tmp_path)
+        summary = (
+            'SUMMARY_JSON {"job":"daily_update","asset_class":"equity","source":"massive",'
+            '"target_date":"2026-03-11","updated":2400,"no_trade":80,"partial":0,"errors":3,'
+            '"bars_inserted":2400,"validation_issues":0,"top_errors":[]}\n'
+        )
+        _healthy_run(config, daily_log_extra=summary)
+
+        assert run_watchdog(config, run_date="2026-03-11", env={}) == 0
+
+    def test_undelivered_alerts_are_surfaced(self, tmp_path):
+        """The alert channel dying silently is what hid a six-day outage."""
+        config = _config(tmp_path)
+        _healthy_run(config)
+        queued = config.log_dir / "alerts_undelivered"
+        queued.mkdir(parents=True, exist_ok=True)
+        (queued / "2026-03-10_daily_update_2026-03-10.txt").write_text("stuck\n", encoding="utf-8")
+
+        assert run_watchdog(config, run_date="2026-03-11", env={}) != 0
+        watchdog_log = (config.log_dir / "daily_update_watchdog_2026-03-11.log").read_text(encoding="utf-8")
+        assert "could not be delivered" in watchdog_log
 
     def test_skips_duplicate_alert_when_marker_exists(self, tmp_path):
         config = _config(tmp_path)

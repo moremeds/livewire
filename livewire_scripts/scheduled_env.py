@@ -35,7 +35,36 @@ def _load_env_file(path: Path) -> None:
         os.environ[key] = parsed[0] if parsed else ""
 
 
+def find_repo_env(repo_root: Path) -> Path | None:
+    """Return the nearest `.env` at or above *repo_root*, stopping at $HOME.
+
+    A git worktree has no `.env` of its own — it is gitignored, so it exists
+    only in the main checkout. When the launchd plists were pointed at
+    `.worktrees/<branch>/`, every credential resolved to nothing: ingest died
+    on MASSIVE_API_KEY and the failure alert died on MDW_ALERT_EMAIL_FROM, so
+    the outage was silent for six days. Walking up finds the main repo's
+    `.env` from any worktree or subdirectory.
+    """
+    home = Path.home().resolve()
+    try:
+        current = repo_root.resolve()
+    except OSError:
+        return None
+    for candidate in (current, *current.parents):
+        env_file = candidate / ".env"
+        if env_file.is_file():
+            return env_file
+        if candidate == home:
+            break
+    return None
+
+
 def load_scheduled_env(repo_root: Path) -> None:
     warehouse = warehouse_dir()
-    for env_file in (Path.home() / ".secrets", repo_root / ".env", warehouse / ".env"):
+    repo_env = find_repo_env(repo_root)
+    sources = [Path.home() / ".secrets"]
+    if repo_env is not None:
+        sources.append(repo_env)
+    sources.append(warehouse / ".env")
+    for env_file in sources:
         _load_env_file(env_file.expanduser())

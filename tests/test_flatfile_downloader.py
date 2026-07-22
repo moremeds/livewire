@@ -69,6 +69,35 @@ def test_download_dates_records_missing_day_and_continues(tmp_path):
     client.inspect_date.assert_not_called()
 
 
+def test_repair_mode_reinspects_a_date_marked_unavailable(tmp_path):
+    """`repair` is the operator explicitly retrying a date; honour that.
+
+    The durable NOT_FOUND is right for routine catch-up but made the blacklist
+    permanent: one transient 404 (a mid-publish race, an object briefly
+    replaced) blacklisted the trade date forever, and
+    `flatfile-ingest repair --dates <date>` skipped it too — leaving a hand
+    edit of the state file as the only recovery.
+    """
+    day = date(2026, 6, 5)
+    client = MagicMock()
+    client.inspect_date.return_value = _info(day, FlatfileObjectStatus.NOT_FOUND)
+    store = MagicMock()
+    store.has_raw_date.return_value = False
+    store.stage_gzip.return_value = {"rows": 1, "symbols": 1}
+    state = MassiveFlatfileState(tmp_path / "cursors")
+
+    download_dates(client, store, state, [day])
+    assert state.raw_unavailable(day)
+
+    # The object is now present; repair mode must ask again rather than skip.
+    client.reset_mock()
+    client.inspect_date.return_value = _info(day)
+    stats = download_dates(client, store, state, [day], replace=True)
+
+    client.inspect_date.assert_called_once()
+    assert stats.downloaded == 1
+
+
 @pytest.mark.parametrize(
     ("status", "message"),
     [
