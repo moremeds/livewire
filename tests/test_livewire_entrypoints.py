@@ -159,6 +159,15 @@ def test_store_dispatches_repair_legacy_basis(monkeypatch) -> None:
     assert calls == [("livewire_scripts.repair_legacy_basis", ["--audit-manifest", "a.json", "--output-dir", "out"])]
 
 
+def test_store_dispatches_resolve_yahoo_basis(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_store.importlib, "import_module", lambda name: _fake_module(calls, name, accepts_argv=True)
+    )
+    assert livewire_store.main(["resolve-yahoo-basis", "--tickers", "AMC", "--output", "m.json"]) == 7
+    assert calls == [("livewire_scripts.resolve_yahoo_basis", ["--tickers", "AMC", "--output", "m.json"])]
+
+
 def test_ingest_daily_massive_bypasses_ib_preflight(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(

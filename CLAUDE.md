@@ -188,6 +188,8 @@ python scripts/livewire_quality.py audit-legacy-basis --full --output <lake>/rep
 python scripts/livewire_quality.py triage-breaks --audit-manifest <.../audit.json> --output <lake>/repairs/triage/current.json --resume
 python scripts/livewire_store.py repair-legacy-basis --audit-manifest <.../audit.json> --output-dir <.../batch1> --priority-only --resume
 python scripts/livewire_store.py rollback-legacy-basis --output-dir <.../batch1>                 # Undo a repair batch from its backups
+python scripts/livewire_store.py resolve-yahoo-basis --failure-manifest <.../rev-dry.json> --output <lake>/repairs/unknown-basis/<stamp>/manifest.json   # dry-run: Yahoo true-raw reconstruct + self-gate the split-affected unknown-basis failures
+python scripts/livewire_store.py resolve-yahoo-basis --failure-manifest <.../rev-dry.json> --output <.../manifest.json> --apply --output-dir <.../batch1> --allow-rewrite --ib-verify --priority-order --resume   # apply: publish only IB-anchor-verified reconstructions (2FA-gated)
 python livewire_scripts/validate_silver_canary.py --tickers NVDA AAPL SPY --control SYMBOL       # Read-only factor/OHLCV/bronze-integrity canary
 python scripts/livewire_ingest.py historical --preset presets/futures-index.json --asset-class futures  # CME/CBOT index futures
 python scripts/livewire_ingest.py historical --preset presets/futures-energy.json --asset-class futures  # NYMEX energy futures
@@ -403,6 +405,36 @@ for L in $WRITERS; do launchctl load ~/Library/LaunchAgents/$L.plist; done   # r
 #    Production runs APEX_LIVEWIRE_PRICE_MODE=raw, so it serves BRONZE — a production
 #    smoke test proves nothing about the adjusted path. Use an adjusted-mode canary.
 ```
+
+#### Unknown-basis reconstruction — IB-anchor-verified (`resolve-yahoo-basis`)
+
+`scripts/livewire_store.py resolve-yahoo-basis` flips `unknown → raw` for the
+unknown-basis population so split-affected symbols can stage in Silver. It
+reconstructs true-raw from Yahoo (`raw = yahoo_adj × Π split`), reconciles Yahoo's
+splits against the action store, classifies each bronze row (relabel/rewrite/
+mismatch), and **fails closed** on split-mismatch or >5% row mismatch (ticker
+reuse / wrong entity). Dry-run by default. Reconciliation is **bounded to
+in-history splits** (`ex_date > first stored bronze date`): a split on/before the
+first row touches no stored row — both `reconstruct_raw_closes` and
+`build_factor_intervals` apply only `ex_date > bar_date` — so a Yahoo/store
+disagreement there is immaterial and must not block the symbol.
+
+`--apply` **requires `--ib-verify`** — no publish without IB confirmation. IB is a
+**gate, never a data source**: the reconstruction is compared to IB only on the
+**post-last-split window** (where IB is definitionally raw; IB's deep history is
+basis-ambiguous and must not be compared). A symbol publishes only when its recent
+window matches IB within tolerance. Every non-`published` verdict (`ib_mismatch`,
+`ib_insufficient_overlap`, `high_mismatch`, `split_mismatch`, `stage_fail`) leaves
+bronze **untouched** and lands in the review queue — fail-closed = no downgrade.
+IB unreachable **aborts** the run (never a withhold); `--resume` re-asks. Writes go
+through the same verbatim-backup + `rollback-legacy-basis` path as the other basis
+repairs.
+
+Rollout is batched and 2FA-gated: batch-1 = the split-affected unknown-basis
+failures from `rebuild-silver --full --dry-run --failure-output`, then a STOP GATE
+on the published-vs-review ratio before the ~12K tail. Full design + plan:
+`docs/superpowers/specs/2026-07-19-unknown-basis-ib-verified-reconstruction-design.md`
+and `docs/superpowers/plans/2026-07-19-unknown-basis-ib-verified-reconstruction.md`.
 
 Reliability foundation environment variables:
 - `MDW_TELEMETRY_PATH` (default `~/market-warehouse/logs/telemetry.jsonl`): telemetry JSONL append path; set to `none` to disable telemetry.
