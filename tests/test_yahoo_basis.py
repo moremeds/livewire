@@ -116,7 +116,7 @@ from clients.yahoo_basis import ib_anchor_verdict, last_split_ex_date  # noqa: E
 
 # Real frozen AMC raw closes across the 2023-08-24 1:10 reverse split.
 _CORRECTED = [
-    {"trade_date": date(2023, 8, 23), "close": 1.96},   # raw (pre-split, folded)
+    {"trade_date": date(2023, 8, 23), "close": 1.96},  # raw (pre-split, folded)
     {"trade_date": date(2023, 8, 24), "close": 14.37},  # ex-date
     {"trade_date": date(2023, 8, 25), "close": 12.43},  # post-split
     {"trade_date": date(2023, 8, 28), "close": 11.90},  # post-split

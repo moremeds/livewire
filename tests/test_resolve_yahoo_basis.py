@@ -152,8 +152,19 @@ def test_apply_relabel_only_flips_basis_without_touching_prices(tmp_path):
     output_dir = tmp_path / "apply"
     before = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").read_symbol_rows("AMC")
     resolve_yahoo_basis.run(
-        ["--tickers", "AMC", "--output", str(out), "--apply", "--output-dir", str(output_dir),
-         "--relabel-only", "--ib-verify", "--ib-min-overlap", "1"],
+        [
+            "--tickers",
+            "AMC",
+            "--output",
+            str(out),
+            "--apply",
+            "--output-dir",
+            str(output_dir),
+            "--relabel-only",
+            "--ib-verify",
+            "--ib-min-overlap",
+            "1",
+        ],
         data_lake_root=tmp_path,
         yahoo_factory=_FakeYahoo,
         ib_factory=_FakeIB,
@@ -217,8 +228,19 @@ def test_apply_rewrite_rewrites_full_ohlcv_to_raw_and_rolls_back(tmp_path):
     _seed_split(tmp_path, "AMC", "2023-08-24", 10, 1)
     out, output_dir = tmp_path / "m.json", tmp_path / "rewrite"
     resolve_yahoo_basis.run(
-        ["--tickers", "AMC", "--output", str(out), "--apply", "--output-dir", str(output_dir),
-         "--allow-rewrite", "--ib-verify", "--ib-min-overlap", "1"],
+        [
+            "--tickers",
+            "AMC",
+            "--output",
+            str(out),
+            "--apply",
+            "--output-dir",
+            str(output_dir),
+            "--allow-rewrite",
+            "--ib-verify",
+            "--ib-min-overlap",
+            "1",
+        ],
         data_lake_root=tmp_path,
         yahoo_factory=_FakeYahoo,
         ib_factory=_FakeIB,
@@ -245,10 +267,24 @@ def test_apply_never_writes_an_unresolvable_symbol(tmp_path):
     )
     out = tmp_path / "m.json"
     rc = resolve_yahoo_basis.run(
-        ["--tickers", "AMC", "--output", str(out), "--apply", "--output-dir", str(tmp_path / "x"),
-         "--allow-rewrite", "--ib-verify", "--ib-min-overlap", "1"],
-        data_lake_root=tmp_path, yahoo_factory=_FakeYahoo,
-        ib_factory=_FakeIB, ib_fetcher_factory=_fetcher(_AMC_IB_MATCH), as_of_date=AS_OF,
+        [
+            "--tickers",
+            "AMC",
+            "--output",
+            str(out),
+            "--apply",
+            "--output-dir",
+            str(tmp_path / "x"),
+            "--allow-rewrite",
+            "--ib-verify",
+            "--ib-min-overlap",
+            "1",
+        ],
+        data_lake_root=tmp_path,
+        yahoo_factory=_FakeYahoo,
+        ib_factory=_FakeIB,
+        ib_fetcher_factory=_fetcher(_AMC_IB_MATCH),
+        as_of_date=AS_OF,
     )
     assert rc == 0
     entry = next(s for s in json.loads(out.read_text())["symbols"] if s["symbol"] == "AMC")
@@ -274,25 +310,34 @@ def test_reads_symbols_file_and_main(tmp_path, monkeypatch):
 # 2026-07-18 (keys: "failures" / "error" / "data_lake_root" — NOT "failed" / "reason").
 def _failure_manifest(tmp_path, root=None):
     manifest = tmp_path / "fail.json"
-    manifest.write_text(json.dumps({
-        "as_of_date": "2026-07-18",
-        "data_lake_root": str(root if root is not None else tmp_path),
-        "schema_version": 1,
-        "failures": [
-            {"symbol": "AMC", "error": "unknown price_basis for split-affected row 2021-06-11",
-             "error_type": "ValueError"},
-            {"symbol": "KO", "error": "dividend currency does not match bronze currency",
-             "error_type": "ValueError"},
-        ],
-    }))
+    manifest.write_text(
+        json.dumps(
+            {
+                "as_of_date": "2026-07-18",
+                "data_lake_root": str(root if root is not None else tmp_path),
+                "schema_version": 1,
+                "failures": [
+                    {
+                        "symbol": "AMC",
+                        "error": "unknown price_basis for split-affected row 2021-06-11",
+                        "error_type": "ValueError",
+                    },
+                    {
+                        "symbol": "KO",
+                        "error": "dividend currency does not match bronze currency",
+                        "error_type": "ValueError",
+                    },
+                ],
+            }
+        )
+    )
     return manifest
 
 
 def test_failure_manifest_filters_to_split_affected_unknown(tmp_path):
     from livewire_scripts.resolve_yahoo_basis import _symbols, parse_args
 
-    args = parse_args(["--failure-manifest", str(_failure_manifest(tmp_path)),
-                       "--output", str(tmp_path / "o.json")])
+    args = parse_args(["--failure-manifest", str(_failure_manifest(tmp_path)), "--output", str(tmp_path / "o.json")])
     assert _symbols(args, root=tmp_path) == ["AMC"]  # KO's dividend reason is out of scope
 
 
@@ -301,9 +346,16 @@ def test_failure_manifest_with_no_matching_failures_errors_not_silently_empty(tm
     from livewire_scripts.resolve_yahoo_basis import _symbols, parse_args
 
     manifest = tmp_path / "f.json"
-    manifest.write_text(json.dumps({"data_lake_root": str(tmp_path), "failures": [
-        {"symbol": "KO", "error": "dividend currency does not match bronze currency"},
-    ]}))
+    manifest.write_text(
+        json.dumps(
+            {
+                "data_lake_root": str(tmp_path),
+                "failures": [
+                    {"symbol": "KO", "error": "dividend currency does not match bronze currency"},
+                ],
+            }
+        )
+    )
     args = parse_args(["--failure-manifest", str(manifest), "--output", str(tmp_path / "o.json")])
     with pytest.raises(ValueError, match="no 'unknown price_basis"):
         _symbols(args, root=tmp_path)
@@ -312,8 +364,14 @@ def test_failure_manifest_with_no_matching_failures_errors_not_silently_empty(tm
 def test_failure_manifest_from_another_data_lake_is_refused(tmp_path):
     from livewire_scripts.resolve_yahoo_basis import _symbols, parse_args
 
-    args = parse_args(["--failure-manifest", str(_failure_manifest(tmp_path, root=tmp_path / "elsewhere")),
-                       "--output", str(tmp_path / "o.json")])
+    args = parse_args(
+        [
+            "--failure-manifest",
+            str(_failure_manifest(tmp_path, root=tmp_path / "elsewhere")),
+            "--output",
+            str(tmp_path / "o.json"),
+        ]
+    )
     with pytest.raises(ValueError, match="active root"):
         _symbols(args, root=tmp_path)
 
@@ -324,7 +382,9 @@ def test_limit_caps_processed_symbols(tmp_path):
     out = tmp_path / "m.json"
     resolve_yahoo_basis.run(
         ["--tickers", "AMC", "BBW", "--limit", "1", "--output", str(out)],
-        data_lake_root=tmp_path, yahoo_factory=_FakeYahoo, as_of_date=AS_OF,
+        data_lake_root=tmp_path,
+        yahoo_factory=_FakeYahoo,
+        as_of_date=AS_OF,
     )
     assert len(json.loads(out.read_text())["symbols"]) == 1
 
@@ -334,15 +394,21 @@ def test_resume_skips_symbol_marked_done_in_cursor(tmp_path):
     output_dir = tmp_path / "batch"
     output_dir.mkdir()
     identity = {"data_lake_root": str(tmp_path.resolve())}
-    (output_dir / "cursor.json").write_text(json.dumps({"identity": identity, "completed": {"AMC": {"status": "done"}}}))
+    (output_dir / "cursor.json").write_text(
+        json.dumps({"identity": identity, "completed": {"AMC": {"status": "done"}}})
+    )
     calls = {"n": 0}
+
     class _CountingYahoo(_FakeYahoo):
         def get_daily(self, *a, **k):
             calls["n"] += 1
             return super().get_daily(*a, **k)
+
     resolve_yahoo_basis.run(
         ["--tickers", "AMC", "--output", str(tmp_path / "m.json"), "--output-dir", str(output_dir), "--resume"],
-        data_lake_root=tmp_path, yahoo_factory=_CountingYahoo, as_of_date=AS_OF,
+        data_lake_root=tmp_path,
+        yahoo_factory=_CountingYahoo,
+        as_of_date=AS_OF,
     )
     assert calls["n"] == 0  # AMC already done → never re-fetched
     assert json.loads((tmp_path / "m.json").read_text())["symbols"] == []
@@ -350,8 +416,10 @@ def test_resume_skips_symbol_marked_done_in_cursor(tmp_path):
 
 def test_priority_order_orders_by_preset(tmp_path, monkeypatch):
     from livewire_scripts import resolve_yahoo_basis as R
+
     monkeypatch.setattr(R, "_priority_rank", lambda d: {"BBW": 0, "AMC": 1})
     from livewire_scripts.resolve_yahoo_basis import _ordered_symbols, parse_args
+
     args = parse_args(["--tickers", "AMC", "BBW", "--priority-order", "--output", str(tmp_path / "o.json")])
     assert _ordered_symbols(args, ["AMC", "BBW"]) == ["BBW", "AMC"]
 
@@ -368,8 +436,19 @@ def test_relabel_only_defers_rewrite_symbol(tmp_path):
     _seed_split(tmp_path, "AMC", "2023-08-24", 10, 1)
     out = tmp_path / "m.json"
     resolve_yahoo_basis.run(
-        ["--tickers", "AMC", "--output", str(out), "--apply", "--output-dir", str(tmp_path / "a"),
-         "--relabel-only", "--ib-verify", "--ib-min-overlap", "1"],
+        [
+            "--tickers",
+            "AMC",
+            "--output",
+            str(out),
+            "--apply",
+            "--output-dir",
+            str(tmp_path / "a"),
+            "--relabel-only",
+            "--ib-verify",
+            "--ib-min-overlap",
+            "1",
+        ],
         data_lake_root=tmp_path,
         yahoo_factory=_FakeYahoo,
         ib_factory=_FakeIB,
@@ -386,8 +465,15 @@ def test_relabel_only_defers_rewrite_symbol(tmp_path):
 # --- IB anchor gate wired into apply (Task 3) ---
 
 # Real frozen AMC closes: pre-split row ADJUSTED (19.60), post-split rows at raw values.
-_AMC_MULTI = [("2023-08-23", 19.60), ("2023-08-24", 14.37), ("2023-08-25", 12.43),
-              ("2023-08-28", 11.90), ("2023-08-29", 11.50), ("2023-08-30", 11.20), ("2023-08-31", 11.00)]
+_AMC_MULTI = [
+    ("2023-08-23", 19.60),
+    ("2023-08-24", 14.37),
+    ("2023-08-25", 12.43),
+    ("2023-08-28", 11.90),
+    ("2023-08-29", 11.50),
+    ("2023-08-30", 11.20),
+    ("2023-08-31", 11.00),
+]
 # IB post-last-split window (definitionally raw there); matches the reconstruction.
 _AMC_IB_MATCH = [{"trade_date": date.fromisoformat(d), "close": c} for d, c in _AMC_MULTI if d > "2023-08-24"]
 
@@ -401,7 +487,7 @@ class _FakeIB:
 
 
 def _fetcher(rows):
-    return lambda client: (lambda symbol, start, end: [r for r in rows if start <= r["trade_date"] <= end])
+    return lambda client: lambda symbol, start, end: [r for r in rows if start <= r["trade_date"] <= end]
 
 
 def _multi_yahoo():
@@ -417,19 +503,43 @@ def test_apply_requires_ib_verify(tmp_path):
     _seed_bronze(tmp_path, "AMC", [("2023-08-23", 1.96)], source="legacy", price_basis="unknown")
     with pytest.raises(ValueError, match="ib-verify"):
         resolve_yahoo_basis.run(
-            ["--tickers", "AMC", "--output", str(tmp_path / "m.json"), "--apply",
-             "--output-dir", str(tmp_path / "a"), "--allow-rewrite"],
-            data_lake_root=tmp_path, yahoo_factory=_FakeYahoo, as_of_date=AS_OF,
+            [
+                "--tickers",
+                "AMC",
+                "--output",
+                str(tmp_path / "m.json"),
+                "--apply",
+                "--output-dir",
+                str(tmp_path / "a"),
+                "--allow-rewrite",
+            ],
+            data_lake_root=tmp_path,
+            yahoo_factory=_FakeYahoo,
+            as_of_date=AS_OF,
         )
 
 
 def test_ib_verified_symbol_is_written(tmp_path):
     _seed_amc_multi(tmp_path)
     rc = resolve_yahoo_basis.run(
-        ["--tickers", "AMC", "--output", str(tmp_path / "m.json"), "--apply",
-         "--output-dir", str(tmp_path / "a"), "--allow-rewrite", "--ib-verify", "--ib-min-overlap", "5"],
-        data_lake_root=tmp_path, yahoo_factory=_multi_yahoo,
-        ib_factory=_FakeIB, ib_fetcher_factory=_fetcher(_AMC_IB_MATCH), as_of_date=AS_OF,
+        [
+            "--tickers",
+            "AMC",
+            "--output",
+            str(tmp_path / "m.json"),
+            "--apply",
+            "--output-dir",
+            str(tmp_path / "a"),
+            "--allow-rewrite",
+            "--ib-verify",
+            "--ib-min-overlap",
+            "5",
+        ],
+        data_lake_root=tmp_path,
+        yahoo_factory=_multi_yahoo,
+        ib_factory=_FakeIB,
+        ib_fetcher_factory=_fetcher(_AMC_IB_MATCH),
+        as_of_date=AS_OF,
     )
     assert rc == 0
     assert _bronze_basis(tmp_path, "AMC") == {"raw"}  # published
@@ -440,10 +550,24 @@ def test_ib_mismatch_leaves_bronze_untouched(tmp_path):
     bad_ib = [{**r, "close": r["close"] * 0.5} for r in _AMC_IB_MATCH]  # wrong entity
     out = tmp_path / "m.json"
     rc = resolve_yahoo_basis.run(
-        ["--tickers", "AMC", "--output", str(out), "--apply",
-         "--output-dir", str(tmp_path / "a"), "--allow-rewrite", "--ib-verify", "--ib-min-overlap", "5"],
-        data_lake_root=tmp_path, yahoo_factory=_multi_yahoo,
-        ib_factory=_FakeIB, ib_fetcher_factory=_fetcher(bad_ib), as_of_date=AS_OF,
+        [
+            "--tickers",
+            "AMC",
+            "--output",
+            str(out),
+            "--apply",
+            "--output-dir",
+            str(tmp_path / "a"),
+            "--allow-rewrite",
+            "--ib-verify",
+            "--ib-min-overlap",
+            "5",
+        ],
+        data_lake_root=tmp_path,
+        yahoo_factory=_multi_yahoo,
+        ib_factory=_FakeIB,
+        ib_fetcher_factory=_fetcher(bad_ib),
+        as_of_date=AS_OF,
     )
     assert rc == 0
     assert _bronze_basis(tmp_path, "AMC") == {"unknown"}  # NOT written
@@ -460,6 +584,7 @@ def test_ib_connection_failure_aborts_without_checkpoint(tmp_path):
     class _DeadIB:
         def connect(self, **k):
             from clients.ib_client import IBConnectionError
+
             raise IBConnectionError("gateway down / 2FA")
 
         def disconnect(self):
@@ -467,10 +592,22 @@ def test_ib_connection_failure_aborts_without_checkpoint(tmp_path):
 
     output_dir = tmp_path / "a"
     rc = resolve_yahoo_basis.run(
-        ["--tickers", "AMC", "--output", str(tmp_path / "m.json"), "--apply",
-         "--output-dir", str(output_dir), "--allow-rewrite", "--ib-verify"],
-        data_lake_root=tmp_path, yahoo_factory=_multi_yahoo,
-        ib_factory=_DeadIB, ib_fetcher_factory=_fetcher(_AMC_IB_MATCH), as_of_date=AS_OF,
+        [
+            "--tickers",
+            "AMC",
+            "--output",
+            str(tmp_path / "m.json"),
+            "--apply",
+            "--output-dir",
+            str(output_dir),
+            "--allow-rewrite",
+            "--ib-verify",
+        ],
+        data_lake_root=tmp_path,
+        yahoo_factory=_multi_yahoo,
+        ib_factory=_DeadIB,
+        ib_fetcher_factory=_fetcher(_AMC_IB_MATCH),
+        as_of_date=AS_OF,
     )
     assert rc == 1  # aborted
     assert _bronze_basis(tmp_path, "AMC") == {"unknown"}  # untouched
@@ -484,14 +621,28 @@ def test_ib_session_lost_midrun_aborts(tmp_path):
     def _dead_fetch(client):
         def _f(symbol, start, end):
             from clients.ib_client import IBConnectionError
+
             raise IBConnectionError("session dropped mid-run")
+
         return _f
 
     rc = resolve_yahoo_basis.run(
-        ["--tickers", "AMC", "--output", str(tmp_path / "m.json"), "--apply",
-         "--output-dir", str(tmp_path / "a"), "--allow-rewrite", "--ib-verify"],
-        data_lake_root=tmp_path, yahoo_factory=_multi_yahoo,
-        ib_factory=_FakeIB, ib_fetcher_factory=_dead_fetch, as_of_date=AS_OF,
+        [
+            "--tickers",
+            "AMC",
+            "--output",
+            str(tmp_path / "m.json"),
+            "--apply",
+            "--output-dir",
+            str(tmp_path / "a"),
+            "--allow-rewrite",
+            "--ib-verify",
+        ],
+        data_lake_root=tmp_path,
+        yahoo_factory=_multi_yahoo,
+        ib_factory=_FakeIB,
+        ib_fetcher_factory=_dead_fetch,
+        as_of_date=AS_OF,
     )
     assert rc == 1
     assert _bronze_basis(tmp_path, "AMC") == {"unknown"}  # untouched
@@ -513,10 +664,22 @@ def test_unexpected_ib_exception_is_a_verdict_not_a_run_abort(tmp_path):
 
     out = tmp_path / "m.json"
     rc = resolve_yahoo_basis.run(
-        ["--tickers", "AMC", "--output", str(out), "--apply",
-         "--output-dir", str(tmp_path / "a"), "--allow-rewrite", "--ib-verify"],
-        data_lake_root=tmp_path, yahoo_factory=_multi_yahoo,
-        ib_factory=_FakeIB, ib_fetcher_factory=_unqualifiable, as_of_date=AS_OF,
+        [
+            "--tickers",
+            "AMC",
+            "--output",
+            str(out),
+            "--apply",
+            "--output-dir",
+            str(tmp_path / "a"),
+            "--allow-rewrite",
+            "--ib-verify",
+        ],
+        data_lake_root=tmp_path,
+        yahoo_factory=_multi_yahoo,
+        ib_factory=_FakeIB,
+        ib_fetcher_factory=_unqualifiable,
+        as_of_date=AS_OF,
     )
     assert rc == 0  # the sweep survives
     assert _bronze_basis(tmp_path, "AMC") == {"unknown"}  # untouched
@@ -538,10 +701,24 @@ def test_ib_fetch_is_scoped_to_the_post_split_window(tmp_path):
         return _f
 
     resolve_yahoo_basis.run(
-        ["--tickers", "AMC", "--output", str(tmp_path / "m.json"), "--apply",
-         "--output-dir", str(tmp_path / "a"), "--allow-rewrite", "--ib-verify", "--ib-min-overlap", "5"],
-        data_lake_root=tmp_path, yahoo_factory=_multi_yahoo,
-        ib_factory=_FakeIB, ib_fetcher_factory=_recording, as_of_date=AS_OF,
+        [
+            "--tickers",
+            "AMC",
+            "--output",
+            str(tmp_path / "m.json"),
+            "--apply",
+            "--output-dir",
+            str(tmp_path / "a"),
+            "--allow-rewrite",
+            "--ib-verify",
+            "--ib-min-overlap",
+            "5",
+        ],
+        data_lake_root=tmp_path,
+        yahoo_factory=_multi_yahoo,
+        ib_factory=_FakeIB,
+        ib_fetcher_factory=_recording,
+        as_of_date=AS_OF,
     )
     assert seen == [date(2023, 8, 25)]  # strictly after the 2023-08-24 split, not 2023-08-23
 
@@ -555,7 +732,9 @@ def test_row_yahoo_cannot_cover_before_a_split_fails_closed(tmp_path):
     out = tmp_path / "m.json"
     resolve_yahoo_basis.run(  # Yahoo still only serves the 2023 window
         ["--tickers", "AMC", "--output", str(out)],
-        data_lake_root=tmp_path, yahoo_factory=_multi_yahoo, as_of_date=AS_OF,
+        data_lake_root=tmp_path,
+        yahoo_factory=_multi_yahoo,
+        as_of_date=AS_OF,
     )
     entry = next(s for s in json.loads(out.read_text())["symbols"] if s["symbol"] == "AMC")
     assert entry["status"] == "unmatched_split_affected"
@@ -566,10 +745,26 @@ def test_row_yahoo_cannot_cover_before_a_split_fails_closed(tmp_path):
 def test_rerunning_a_batch_without_resume_refuses_to_clobber_backups(tmp_path):
     _seed_amc_multi(tmp_path)
     output_dir = tmp_path / "a"
-    argv = ["--tickers", "AMC", "--output", str(tmp_path / "m.json"), "--apply",
-            "--output-dir", str(output_dir), "--allow-rewrite", "--ib-verify", "--ib-min-overlap", "5"]
-    kwargs = dict(data_lake_root=tmp_path, yahoo_factory=_multi_yahoo,
-                  ib_factory=_FakeIB, ib_fetcher_factory=_fetcher(_AMC_IB_MATCH), as_of_date=AS_OF)
+    argv = [
+        "--tickers",
+        "AMC",
+        "--output",
+        str(tmp_path / "m.json"),
+        "--apply",
+        "--output-dir",
+        str(output_dir),
+        "--allow-rewrite",
+        "--ib-verify",
+        "--ib-min-overlap",
+        "5",
+    ]
+    kwargs = dict(
+        data_lake_root=tmp_path,
+        yahoo_factory=_multi_yahoo,
+        ib_factory=_FakeIB,
+        ib_fetcher_factory=_fetcher(_AMC_IB_MATCH),
+        as_of_date=AS_OF,
+    )
     assert resolve_yahoo_basis.run(argv, **kwargs) == 0
     original = (output_dir / "backup" / "AMC.1d.parquet").read_bytes()
     with pytest.raises(ValueError, match="pass --resume"):
@@ -583,10 +778,24 @@ def test_zero_min_overlap_cannot_certify_a_symbol_ib_returned_nothing_for(tmp_pa
     _seed_amc_multi(tmp_path)
     out = tmp_path / "m.json"
     resolve_yahoo_basis.run(
-        ["--tickers", "AMC", "--output", str(out), "--apply",
-         "--output-dir", str(tmp_path / "a"), "--allow-rewrite", "--ib-verify", "--ib-min-overlap", "0"],
-        data_lake_root=tmp_path, yahoo_factory=_multi_yahoo,
-        ib_factory=_FakeIB, ib_fetcher_factory=_fetcher([]), as_of_date=AS_OF,  # IB has nothing
+        [
+            "--tickers",
+            "AMC",
+            "--output",
+            str(out),
+            "--apply",
+            "--output-dir",
+            str(tmp_path / "a"),
+            "--allow-rewrite",
+            "--ib-verify",
+            "--ib-min-overlap",
+            "0",
+        ],
+        data_lake_root=tmp_path,
+        yahoo_factory=_multi_yahoo,
+        ib_factory=_FakeIB,
+        ib_fetcher_factory=_fetcher([]),
+        as_of_date=AS_OF,  # IB has nothing
     )
     entry = next(s for s in json.loads(out.read_text())["symbols"] if s["symbol"] == "AMC")
     assert entry["ib_verdict"] == "ib_insufficient_overlap" and entry["applied"] == "withheld_ib"
@@ -607,10 +816,24 @@ def test_ib_request_ends_at_the_window_not_at_as_of(tmp_path):
         return _f
 
     resolve_yahoo_basis.run(
-        ["--tickers", "AMC", "--output", str(tmp_path / "m.json"), "--apply",
-         "--output-dir", str(tmp_path / "a"), "--allow-rewrite", "--ib-verify", "--ib-min-overlap", "5"],
-        data_lake_root=tmp_path, yahoo_factory=_multi_yahoo,
-        ib_factory=_FakeIB, ib_fetcher_factory=_recording, as_of_date=AS_OF,
+        [
+            "--tickers",
+            "AMC",
+            "--output",
+            str(tmp_path / "m.json"),
+            "--apply",
+            "--output-dir",
+            str(tmp_path / "a"),
+            "--allow-rewrite",
+            "--ib-verify",
+            "--ib-min-overlap",
+            "5",
+        ],
+        data_lake_root=tmp_path,
+        yahoo_factory=_multi_yahoo,
+        ib_factory=_FakeIB,
+        ib_fetcher_factory=_recording,
+        as_of_date=AS_OF,
     )
     assert seen == [(date(2023, 8, 25), date(2023, 8, 31))]  # not (…, 2026-07-17)
 
@@ -628,13 +851,26 @@ def test_applied_symbol_is_resolved_exactly_once(tmp_path):
             return super().get_daily(symbol, start, end)
 
     resolve_yahoo_basis.run(
-        ["--tickers", "AMC", "--output", str(tmp_path / "m.json"), "--apply",
-         "--output-dir", str(tmp_path / "a"), "--allow-rewrite", "--ib-verify", "--ib-min-overlap", "5"],
+        [
+            "--tickers",
+            "AMC",
+            "--output",
+            str(tmp_path / "m.json"),
+            "--apply",
+            "--output-dir",
+            str(tmp_path / "a"),
+            "--allow-rewrite",
+            "--ib-verify",
+            "--ib-min-overlap",
+            "5",
+        ],
         data_lake_root=tmp_path,
         yahoo_factory=lambda: _CountingYahoo(
             bars=[YahooBar(date.fromisoformat(d), c, c) for d, c in _AMC_MULTI], splits=_AMC_SPLIT
         ),
-        ib_factory=_FakeIB, ib_fetcher_factory=_fetcher(_AMC_IB_MATCH), as_of_date=AS_OF,
+        ib_factory=_FakeIB,
+        ib_fetcher_factory=_fetcher(_AMC_IB_MATCH),
+        as_of_date=AS_OF,
     )
     assert _bronze_basis(tmp_path, "AMC") == {"raw"}  # it did publish
     assert calls == ["AMC"]  # exactly one resolve, not two
