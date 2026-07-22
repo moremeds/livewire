@@ -160,7 +160,10 @@ def _resolve(symbol: str, *, bronze: BronzeClient, store: CorporateActionStore, 
         return _Resolution({"symbol": symbol, "status": "yahoo_empty"}, None, [])
     actions = store.latest_active(symbol)
     split_ratios = _store_split_ratios(actions)
-    reconciliation = reconcile_splits(ysplits, split_ratios)
+    # Bound reconciliation to in-history splits: a split on/before the first stored row
+    # affects no stored row, so a Yahoo/store disagreement there is a false block.
+    first_bronze = min(_as_date(r["trade_date"]) for r in existing)
+    reconciliation = reconcile_splits(ysplits, split_ratios, min_date=first_bronze)
     yahoo_raw = reconstruct_raw_closes(ybars, ysplits)
     yahoo_adjusted = {bar.trade_date: bar.close for bar in ybars}
     classification = classify_existing_basis(existing, yahoo_raw, yahoo_adjusted)

@@ -52,13 +52,22 @@ def reconcile_splits(
     *,
     ratio_tol: float = 0.02,
     day_tol: int = 3,
+    min_date: date | None = None,
 ) -> SplitReconciliation:
     """Match Yahoo splits to store splits by near-equal ex-date AND near-equal ratio.
 
     ``store_splits`` are ``(ex_date, split_to/split_from)`` — the same price multiplier
     Yahoo reports as ``numerator/denominator``. A provider can stamp the same split a day
     apart, hence ``day_tol``.
+
+    ``min_date`` drops splits with ``ex_date <= min_date`` from BOTH sides before matching.
+    Pass the first stored bronze date: a split on/before it affects no stored row (both
+    ``reconstruct_raw_closes`` and ``build_factor_intervals`` apply only ``ex_date > bar_date``),
+    so a Yahoo/store disagreement there is immaterial and must not fail the symbol closed.
     """
+    if min_date is not None:
+        yahoo_splits = [s for s in yahoo_splits if s.ex_date > min_date]
+        store_splits = [(sx, sr) for sx, sr in store_splits if sx > min_date]
     used_store: set[int] = set()
     matched: list[date] = []
     yahoo_only: list[tuple[date, float]] = []

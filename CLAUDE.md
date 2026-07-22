@@ -413,7 +413,11 @@ unknown-basis population so split-affected symbols can stage in Silver. It
 reconstructs true-raw from Yahoo (`raw = yahoo_adj × Π split`), reconciles Yahoo's
 splits against the action store, classifies each bronze row (relabel/rewrite/
 mismatch), and **fails closed** on split-mismatch or >5% row mismatch (ticker
-reuse / wrong entity). Dry-run by default.
+reuse / wrong entity). Dry-run by default. Reconciliation is **bounded to
+in-history splits** (`ex_date > first stored bronze date`): a split on/before the
+first row touches no stored row — both `reconstruct_raw_closes` and
+`build_factor_intervals` apply only `ex_date > bar_date` — so a Yahoo/store
+disagreement there is immaterial and must not block the symbol.
 
 `--apply` **requires `--ib-verify`** — no publish without IB confirmation. IB is a
 **gate, never a data source**: the reconstruction is compared to IB only on the

@@ -34,7 +34,11 @@ It already does:
 - True-raw reconstruction `raw = yahoo_adj × Π(split multipliers for ex_date > bar_date)`
   (`reconstruct_raw_closes`); volume divides by the same product.
 - Reconcile Yahoo splits against our corporate-action store; **fail closed**
-  (`split_mismatch`) if they disagree (`reconcile_splits`).
+  (`split_mismatch`) if they disagree (`reconcile_splits`). Reconciliation is
+  bounded to in-history splits (`ex_date > first stored bronze date`): a split
+  on/before the first stored row folds into no stored row (both reconstruction
+  and Silver apply only `ex_date > bar_date`), so a disagreement there is
+  immaterial and does not fail the symbol.
 - Per-row classification relabel / rewrite / mismatch / unmatched
   (`classify_existing_basis`).
 - Ticker-reuse / wrong-entity guard: **fail closed** (`high_mismatch`) when

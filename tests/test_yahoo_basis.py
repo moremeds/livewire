@@ -71,6 +71,28 @@ def test_reconcile_clean_match_is_reconciled():
     assert reconcile_splits(yahoo, store).reconciled
 
 
+def test_reconcile_min_date_drops_prehistory_disagreements():
+    # A split on/before the first stored row affects no stored row (reconstruct_raw_closes
+    # and build_factor_intervals both apply only ex_date > bar_date), so a disagreement
+    # there is immaterial. min_date bounds the reconciliation to in-history splits.
+    yahoo = [YahooSplit(date(1997, 5, 28), 2.0, 1.0), YahooSplit(date(2023, 1, 3), 2.0, 1.0)]
+    store = [
+        (date(2003, 4, 4), 3.0),
+        (date(2023, 1, 3), 2.0),
+    ]  # prehistory split each side, Yahoo lacks store's, vice versa
+    unbounded = reconcile_splits(yahoo, store)
+    assert not unbounded.reconciled  # both prehistory splits show as divergences
+    bounded = reconcile_splits(yahoo, store, min_date=date(2010, 1, 1))
+    assert bounded.reconciled  # only the matching 2023 in-history split remains
+    assert bounded.matched == [date(2023, 1, 3)]
+
+
+def test_reconcile_min_date_keeps_in_history_disagreement():
+    yahoo = [YahooSplit(date(2015, 6, 1), 2.0, 1.0)]  # in-history split store lacks
+    store = []
+    assert not reconcile_splits(yahoo, store, min_date=date(2010, 1, 1)).reconciled
+
+
 # A 2:1 split on 1999-05-27: a 1998 row's raw close is 2× its split-adjusted close.
 _YRAW = {date(1998, 1, 2): 200.0, date(2020, 1, 2): 50.0}
 _YADJ = {date(1998, 1, 2): 100.0, date(2020, 1, 2): 50.0}  # no split after 2020 → raw == adjusted
