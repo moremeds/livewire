@@ -24,7 +24,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from clients.adjustment_engine import build_factor_intervals
-from clients.bronze_client import BronzeClient
+from clients.bronze_client import EQUITY_SOURCES, BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.ib_client import IBClient, IBConnectionError
 from clients.symbol_paths import encode_symbol
@@ -265,6 +265,14 @@ def _scale_row(row: dict, factor: float) -> dict:
     return scaled
 
 
+def _normalize_source(row: dict) -> dict:
+    """Coerce a stray non-canonical source to ``legacy``. A handful of unknown-basis
+    symbols carry one leftover ``source='yahoo'`` row from an earlier experiment;
+    BronzeClient rejects it on write, so a single such row would otherwise block the
+    whole symbol. These rows ARE the legacy population — relabel them accordingly."""
+    return row if row["source"] in EQUITY_SOURCES else {**row, "source": "legacy"}
+
+
 def _corrected_rows(existing: list[dict], yahoo_raw: dict, yahoo_adjusted: dict, rewrite_dates) -> list[dict]:
     """Full-OHLCV true-raw series. Rewrite dates are scaled adjusted->raw by that date's
     split fold (``yahoo_raw / yahoo_adjusted`` — pure split ratio, independent of the close
@@ -277,9 +285,9 @@ def _corrected_rows(existing: list[dict], yahoo_raw: dict, yahoo_adjusted: dict,
             adjusted = yahoo_adjusted.get(day)
             raw = yahoo_raw.get(day)
             factor = (raw / adjusted) if adjusted else 1.0
-            corrected.append(_scale_row(row, factor))
+            corrected.append(_normalize_source(_scale_row(row, factor)))
         else:
-            corrected.append({**row, "price_basis": "raw"})
+            corrected.append(_normalize_source({**row, "price_basis": "raw"}))
     return corrected
 
 

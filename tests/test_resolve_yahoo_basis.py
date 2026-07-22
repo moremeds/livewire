@@ -874,3 +874,35 @@ def test_applied_symbol_is_resolved_exactly_once(tmp_path):
     )
     assert _bronze_basis(tmp_path, "AMC") == {"raw"}  # it did publish
     assert calls == ["AMC"]  # exactly one resolve, not two
+
+
+def _row(day, close, source):
+    return {
+        "trade_date": day,
+        "open": close,
+        "high": close,
+        "low": close,
+        "close": close,
+        "adj_close": close,
+        "volume": 100,
+        "source": source,
+        "price_basis": "unknown",
+    }
+
+
+def test_corrected_rows_coerces_stray_yahoo_source_to_legacy():
+    # 8 batch-1 symbols carry one leftover source='yahoo' row that BronzeClient rejects
+    # on write; a single such row must not block the whole symbol. Both a relabel row
+    # and a rewrite row with the stray source get coerced to the valid 'legacy'.
+    from clients.bronze_client import EQUITY_SOURCES
+
+    existing = [_row("2023-08-23", 5.0, "yahoo"), _row("2023-08-24", 10.0, "legacy")]
+    yahoo_raw = {date(2023, 8, 23): 10.0, date(2023, 8, 24): 10.0}  # split ahead of 08-23 doubles it
+    yahoo_adjusted = {date(2023, 8, 23): 5.0, date(2023, 8, 24): 10.0}
+    corrected = resolve_yahoo_basis._corrected_rows(
+        existing, yahoo_raw, yahoo_adjusted, rewrite_dates={date(2023, 8, 23)}
+    )
+    assert {r["source"] for r in corrected} <= EQUITY_SOURCES
+    assert corrected[0]["source"] == "legacy"  # the stray 'yahoo' rewrite row
+    assert corrected[0]["close"] == 10.0  # still scaled adjusted->raw
+    assert all(r["price_basis"] == "raw" for r in corrected)
