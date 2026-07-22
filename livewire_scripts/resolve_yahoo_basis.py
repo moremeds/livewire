@@ -26,9 +26,11 @@ from pathlib import Path
 from clients.adjustment_engine import build_factor_intervals
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
-from clients.symbol_paths import encode_symbol
 from clients.ib_client import IBClient, IBConnectionError
+from clients.symbol_paths import encode_symbol
 from clients.yahoo_basis import (
+    AnchorVerdict,
+    anchor_window,
     classify_existing_basis,
     ib_anchor_verdict,
     last_split_ex_date,
@@ -90,16 +92,27 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
-def _symbols(args: argparse.Namespace) -> list[str]:
+def _symbols(args: argparse.Namespace, *, root: Path) -> list[str]:
     if args.tickers:
         return [t.upper() for t in args.tickers]
     if getattr(args, "failure_manifest", None):
+        # Schema is rebuild-silver --failure-output: {"failures": [{"symbol", "error", ...}],
+        # "data_lake_root": ...}. Verified against a real rev manifest — do not guess it.
         payload = json.loads(args.failure_manifest.read_text())
-        return [
+        recorded = payload.get("data_lake_root")
+        if not recorded:
+            raise ValueError("failure manifest records no data_lake_root; refusing to fail open")
+        if Path(recorded).resolve() != root.resolve():
+            raise ValueError(f"failure manifest is for {recorded}, active root is {root}")
+        symbols = [
             str(f["symbol"]).upper()
-            for f in payload.get("failed", [])
-            if _SPLIT_UNKNOWN_REASON in str(f.get("reason", ""))
+            for f in payload.get("failures", [])
+            if _SPLIT_UNKNOWN_REASON in str(f.get("error", ""))
         ]
+        if not symbols:
+            # A schema drift or an already-clean manifest must not read as "nothing to do".
+            raise ValueError(f"no {_SPLIT_UNKNOWN_REASON!r} failures in {args.failure_manifest}")
+        return symbols
     if args.symbols_file:
         payload = json.loads(args.symbols_file.read_text())
         raw = payload[args.symbols_key] if isinstance(payload, dict) else payload
@@ -146,7 +159,8 @@ def _resolve(symbol: str, *, bronze: BronzeClient, store: CorporateActionStore, 
     if not ybars:
         return _Resolution({"symbol": symbol, "status": "yahoo_empty"}, None, [])
     actions = store.latest_active(symbol)
-    reconciliation = reconcile_splits(ysplits, _store_split_ratios(actions))
+    split_ratios = _store_split_ratios(actions)
+    reconciliation = reconcile_splits(ysplits, split_ratios)
     yahoo_raw = reconstruct_raw_closes(ybars, ysplits)
     yahoo_adjusted = {bar.trade_date: bar.close for bar in ybars}
     classification = classify_existing_basis(existing, yahoo_raw, yahoo_adjusted)
@@ -167,6 +181,18 @@ def _resolve(symbol: str, *, bronze: BronzeClient, store: CorporateActionStore, 
     # and flagged (operator decision: never overwrite bronze on Yahoo's word alone). But
     # a LARGE mismatch fraction is not isolated noise — it is a different series behind the
     # ticker (reuse / wrong listing), so fail closed rather than publish a chimera.
+    # A row Yahoo has NO bar for carries no evidence at all, yet _corrected_rows would
+    # still stamp it price_basis='raw'. Where a split lies ahead of such a row that stamp
+    # is a claim we cannot support: Silver would then split-adjust a row that may already
+    # be adjusted. Rows after the last split are harmless (raw == adjusted there), so gate
+    # exactly the split-affected ones. Yahoo history that starts later than bronze — common
+    # for legacy/delisted tickers — lands here instead of publishing unverified deep rows.
+    last_ex = last_split_ex_date(split_ratios)
+    unverified = [d for d in classification.unmatched if last_ex is not None and d <= last_ex]
+    if unverified:
+        result["status"] = "unmatched_split_affected"
+        result["unverified_sample"] = [d.isoformat() for d in sorted(unverified)[:5]]
+        return _Resolution(result, None, actions)
     result["mismatch_fraction"] = round(len(classification.mismatch) / len(existing), 4)
     if result["mismatch_fraction"] > _MAX_MISMATCH_FRACTION:
         result["status"] = "high_mismatch"
@@ -199,18 +225,23 @@ def resolve_symbol(symbol: str, *, bronze: BronzeClient, store: CorporateActionS
 
 
 def _anchor_ok(
-    resolution: _Resolution, symbol: str, *, fetcher, as_of: date, tol: float, window_cap: int, min_overlap: int
-) -> tuple[bool, str]:
+    resolution: _Resolution, symbol: str, *, fetcher, tol: float, window_cap: int, min_overlap: int
+) -> AnchorVerdict:
     """Confirm the reconstructed true-raw series against IB on the post-last-split window.
     IB is a gate, never written into bronze."""
     corrected = resolution.corrected or []
     last_ex = last_split_ex_date(_store_split_ratios(resolution.actions))
-    start = min(_as_date(r["trade_date"]) for r in corrected)
-    ib_rows = fetcher(symbol, start, as_of)
-    verdict = ib_anchor_verdict(
+    # Fetch ONLY the comparison window — both ends. IBHistoryFetcher chunks the requested
+    # calendar range into roughly one request per year, so anchoring the request to the
+    # series start (or running it out to as_of for a symbol delisted in 2015) would spend
+    # a decade of IB requests on a 250-day comparison and hit pacing across the batch.
+    window = anchor_window(corrected, last_split_ex=last_ex, window_cap=window_cap)
+    if not window:  # bronze ends at/before the last split
+        return AnchorVerdict(False, "ib_insufficient_overlap", 0, None)
+    ib_rows = fetcher(symbol, _as_date(window[0]["trade_date"]), _as_date(window[-1]["trade_date"]))
+    return ib_anchor_verdict(
         corrected, ib_rows, last_split_ex=last_ex, tol=tol, min_overlap=min_overlap, window_cap=window_cap
     )
-    return verdict.verified, verdict.reason
 
 
 def _as_date(value) -> date:
@@ -298,34 +329,6 @@ def _backup_and_write(symbol: str, *, bronze: BronzeClient, output_dir: Path, ne
     return sidecar
 
 
-def apply_relabel_only(symbol: str, *, bronze: BronzeClient, output_dir: Path) -> dict:
-    """Flip every existing row's price_basis to 'raw' — no price/volume change at all.
-    Only valid for symbols the resolver classified as pure relabel (rewrite == 0)."""
-    rows = bronze.read_symbol_rows(symbol)
-    return _backup_and_write(
-        symbol,
-        bronze=bronze,
-        output_dir=output_dir,
-        new_rows=[{**row, "price_basis": "raw"} for row in rows],
-        mode="relabel",
-    )
-
-
-def apply_rewrite(
-    symbol: str, *, bronze: BronzeClient, store: CorporateActionStore, yahoo, as_of: date, output_dir: Path
-) -> dict:
-    """Rewrite adjusted deep rows to true raw (full OHLCV) and stamp price_basis='raw'.
-
-    Re-resolves the symbol so the bytes written are exactly the series that just passed
-    ``build_factor_intervals``; refuses any symbol that does not resolve cleanly."""
-    resolution = _resolve(symbol, bronze=bronze, store=store, yahoo=yahoo, as_of=as_of)
-    if resolution.result["status"] != "would_resolve" or resolution.corrected is None:
-        raise ValueError(f"refusing rewrite: {symbol} status={resolution.result['status']}")
-    return _backup_and_write(
-        symbol, bronze=bronze, output_dir=output_dir, new_rows=resolution.corrected, mode="rewrite"
-    )
-
-
 def run(
     argv: Sequence[str] | None = None,
     *,
@@ -354,6 +357,10 @@ def run(
             raise ValueError("--apply requires --ib-verify (no publish without IB confirmation)")
     cursor = {"identity": {"data_lake_root": str(root.resolve())}, "completed": {}}
     cursor_path = (args.output_dir / "cursor.json") if args.output_dir else None
+    if args.apply and not args.resume and cursor_path and cursor_path.is_file():
+        # Re-running a batch would re-back-up each symbol from its ALREADY-MUTATED parquet,
+        # overwriting the pristine backup and silently turning rollback into a no-op.
+        raise ValueError(f"cursor already exists in {args.output_dir}: pass --resume to continue it")
     if args.resume and cursor_path and cursor_path.is_file():
         loaded = json.loads(cursor_path.read_text())
         if loaded.get("identity") != cursor["identity"]:
@@ -366,7 +373,7 @@ def run(
     fetcher: Callable[[str, date, date], list[dict]] | None = None
     aborted = False
     try:
-        for symbol in _ordered_symbols(args, _symbols(args)):
+        for symbol in _ordered_symbols(args, _symbols(args, root=root)):
             if args.resume and cursor["completed"].get(symbol, {}).get("status") == "done":
                 continue
             if args.limit is not None and processed >= args.limit:
@@ -393,11 +400,10 @@ def run(
                             aborted = True
                             break
                     try:
-                        ok, reason = _anchor_ok(
+                        verdict = _anchor_ok(
                             resolution,
                             symbol,
                             fetcher=fetcher,
-                            as_of=as_of,
                             tol=args.ib_tolerance,
                             window_cap=args.ib_window_cap,
                             min_overlap=args.ib_min_overlap,
@@ -412,22 +418,42 @@ def run(
                         results.append(entry)
                         aborted = True
                         break
-                    entry["ib_verdict"] = reason
-                    if not ok:
-                        # Not confirmed → withheld to the review queue, bronze untouched.
+                    except Exception as exc:
+                        # Any other per-symbol IB failure is a VERDICT, never a run abort —
+                        # this population is full of delisted / reused tickers and one of
+                        # them must not kill the batch (and lose the whole manifest, which
+                        # is only written after the loop). Catching broadly is deliberate:
+                        # the fetcher runs ib_async directly, so its exception surface is
+                        # not enumerable from IBClient. Not checkpointed → --resume re-asks.
+                        verdict = AnchorVerdict(False, f"ib_error: {str(exc)[:120]}", 0, None)
+                    entry["ib_verdict"] = verdict.reason
+                    if not verdict.verified:
+                        # Not confirmed → withheld to the review queue, bronze untouched. The
+                        # queue is only triageable if it says WHY, so carry the numbers out.
                         entry["applied"] = "withheld_ib"
+                        entry["ib_overlap"] = verdict.overlap
+                        entry["ib_window_start"] = verdict.window_start.isoformat() if verdict.window_start else None
+                        if verdict.mismatches:
+                            entry["ib_mismatch_sample"] = [
+                                [d.isoformat(), round(c, 4), round(i, 4)] for d, c, i in verdict.mismatches[:5]
+                            ]
                         counts[entry["status"]] = counts.get(entry["status"], 0) + 1
                         results.append(entry)
                         continue
                 try:
-                    if args.allow_rewrite:
-                        apply_rewrite(
-                            symbol, bronze=bronze, store=store, yahoo=yahoo, as_of=as_of, output_dir=args.output_dir
+                    # Publish EXACTLY the rows the IB anchor just verified. Re-resolving here
+                    # would refetch Yahoo and reread bronze/actions, so a change between the
+                    # two calls would publish a candidate no anchor ever approved.
+                    if args.allow_rewrite or entry.get("rewrite", 0) == 0:
+                        rewritten = bool(entry.get("rewrite", 0))
+                        _backup_and_write(
+                            symbol,
+                            bronze=bronze,
+                            output_dir=args.output_dir,
+                            new_rows=resolution.corrected,
+                            mode="rewrite" if rewritten else "relabel",
                         )
-                        entry["applied"] = "rewritten" if entry.get("rewrite", 0) else "relabeled"
-                    elif entry.get("rewrite", 0) == 0:
-                        apply_relabel_only(symbol, bronze=bronze, output_dir=args.output_dir)
-                        entry["applied"] = "relabeled"
+                        entry["applied"] = "rewritten" if rewritten else "relabeled"
                     else:
                         entry["applied"] = "skipped_rewrite"  # --relabel-only defers value rewrites
                     if entry["applied"] in ("relabeled", "rewritten"):

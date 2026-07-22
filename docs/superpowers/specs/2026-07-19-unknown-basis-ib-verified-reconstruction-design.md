@@ -92,11 +92,21 @@ every deep bar is IB-confirmed.
   `repair_legacy_basis` path) — 10/10 ambiguous in practice; unreliable and
   over-engineered for a gate. Rejected.
 
-**Tolerance:** the anchor window compares close (and OHLC) within a small
-relative tolerance (default matches the existing `_close_match` penny/ratio
-tolerance in `clients/yahoo_basis.py`; a `--ib-tolerance` flag allows override).
+**Tolerance:** the anchor window compares **close only**, within a small relative
+tolerance (default matches the existing `_close_match` penny/ratio tolerance in
+`clients/yahoo_basis.py`; a `--ib-tolerance` flag allows override). Close-only is
+deliberate: `validate_adjusted_history` already treats IB open/high/low
+differences as diagnostic rather than failures, because provider filters and IB
+request shape legitimately move them — gating on OHLC would manufacture false
+rejections, which is itself the downgrade this design exists to avoid. The write
+stays safe without it because `_scale_row` multiplies every price field by the
+same positive factor, so it cannot introduce an OHLC inconsistency that bronze
+did not already have.
 The window length is the shorter of (bars since last split ex-date) and a bounded
-cap (default ~180 trading days) to keep the IB request cheap.
+cap (`--ib-window-cap`, default 250 ≈ one trading year). **The IB request is
+bounded to that same window**, not to the series start — a full-history request
+would chunk into roughly one IB call per year of history for a 250-day
+comparison and hit pacing limits on a batch of this size.
 
 **Mount point:** `livewire_scripts/adjusted_history_sources.IBHistoryFetcher`
 (`__call__(symbol, start, end) -> list[dict]`), already imported by
@@ -134,8 +144,8 @@ lands in the review queue:
 |---|---|---|
 | `published` | staged + IB-anchor-matched, written | rewritten/relabeled |
 | `ib_mismatch` | IB anchor disagrees with reconstruction | untouched |
-| `ib_no_data` | IB returned no bars (err 162/200) | untouched |
-| `ib_error` | IB transient error (timeout/pacing) — re-asked on `--resume` | untouched, not checkpointed |
+| `ib_insufficient_overlap` | fewer than `--ib-min-overlap` window dates came back from IB. This is the expected verdict for a delisted / reused ticker: ib_async's `qualifyContracts` returns empty rather than raising, so IB simply yields no bars | untouched |
+| `ib_error: …` | any other per-symbol exception out of the fetcher (caught broadly — it drives ib_async directly, so the surface is not enumerable) — re-asked on `--resume` | untouched, not checkpointed |
 | `high_mismatch` | >5% rows disagree with Yahoo (ticker reuse / wrong entity) | untouched |
 | `split_mismatch` | Yahoo splits do not reconcile with action store | untouched |
 | `yahoo_missing` / `yahoo_empty` / `yahoo_error` | no usable Yahoo data | untouched |
@@ -155,9 +165,15 @@ lands in the review queue:
   are not checkpointed done, so `--resume` re-asks (same rule as `triage-breaks`).
 - **Write safety:** verbatim backup + sha256 + write-ahead sidecar *before* any
   mutation; `rollback-legacy-basis --output-dir [--tickers …]` undoes a batch or
-  one symbol. Bronze writes take the per-path `symbol_lock`, so resolve/apply
-  interleaves safely with the nightly daily writers — **no writer freeze needed
-  for the apply phase**.
+  one symbol. Re-running a batch into an existing `--output-dir` without
+  `--resume` is **refused**, because re-backing-up an already-mutated parquet
+  would overwrite the pristine backup and turn rollback into a no-op.
+- **Do not overlap the apply phase with the nightly writers.** `symbol_lock`
+  makes each individual write atomic, but the resolver reads the series *before*
+  the lock and `replace_ticker_rows` replaces the whole snapshot, so a bar the
+  nightly job merges in between would be dropped by the replace. It is not
+  corruption (the next catch-up re-detects the gap) but it is avoidable: run
+  apply outside the 05:00/06:00 UTC windows.
 - **Writer freeze** applies only to the final `rebuild-silver --full` publish,
   per the existing rev-3 operator pattern (unload the three writers, publish,
   reload regardless of exit code).
@@ -177,8 +193,8 @@ an as-of date (per the no-synthetic-data rule).
 - No-split symbol → full-history anchor comparison.
 - `--resume` skips completed symbols; `--priority-order` orders correctly;
   `--presets-dir` missing errors.
-- IB unreachable → abort/resume, no false withhold; `ib_no_data` / `ib_error`
-  verdicts and their checkpoint behavior.
+- IB unreachable → abort/resume, no false withhold; `ib_insufficient_overlap` /
+  `ib_error` verdicts and their checkpoint behavior.
 - Idempotency: an already-`raw` symbol re-run is a no-op (relabel-all/rewrite-0).
 - Coverage ≥95% (repo gate).
 

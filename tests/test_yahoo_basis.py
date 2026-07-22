@@ -112,7 +112,7 @@ def test_classify_penny_stock_within_a_cent_is_relabel_not_mismatch():
 
 # --- IB anchor verdict (compare reconstruction to IB on the post-last-split window) ---
 
-from clients.yahoo_basis import AnchorVerdict, ib_anchor_verdict, last_split_ex_date  # noqa: E402
+from clients.yahoo_basis import ib_anchor_verdict, last_split_ex_date  # noqa: E402
 
 # Real frozen AMC raw closes across the 2023-08-24 1:10 reverse split.
 _CORRECTED = [

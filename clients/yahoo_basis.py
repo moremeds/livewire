@@ -164,6 +164,18 @@ def _as_day(value) -> date:
     return value if isinstance(value, date) else date.fromisoformat(str(value)[:10])
 
 
+def anchor_window(corrected_rows: list[dict], *, last_split_ex: date | None, window_cap: int = 250) -> list[dict]:
+    """The only rows IB may be compared against: those strictly after the last split
+    ex-date (the whole series when there is no split), capped to the most recent
+    ``window_cap``. Callers also use this to bound the IB *request* to the window —
+    fetching full history for a 250-day comparison would chunk into decades of
+    needless requests and hit IB pacing."""
+    return sorted(
+        (r for r in corrected_rows if last_split_ex is None or _as_day(r["trade_date"]) > last_split_ex),
+        key=lambda r: _as_day(r["trade_date"]),
+    )[-window_cap:]
+
+
 def ib_anchor_verdict(
     corrected_rows: list[dict],
     ib_rows: list[dict],
@@ -177,19 +189,18 @@ def ib_anchor_verdict(
     """Confirm the reconstruction against IB on the post-last-split window only.
 
     IB's basis is unreliable across split boundaries, so anything on or before the
-    last split ex-date is ignored. The window is the most recent ``window_cap`` rows
-    strictly after the last split (or the whole series when there is no split). The
-    verdict is verified only when at least ``min_overlap`` dates overlap IB AND every
-    overlapping close matches within tolerance.
+    last split ex-date is ignored. The verdict is verified only when at least
+    ``min_overlap`` dates overlap IB AND every overlapping close matches within
+    tolerance.
     """
-    window = sorted(
-        (r for r in corrected_rows if last_split_ex is None or _as_day(r["trade_date"]) > last_split_ex),
-        key=lambda r: _as_day(r["trade_date"]),
-    )[-window_cap:]
+    window = anchor_window(corrected_rows, last_split_ex=last_split_ex, window_cap=window_cap)
     window_start = _as_day(window[0]["trade_date"]) if window else None
     ib_by_day = {_as_day(r["trade_date"]): float(r["close"]) for r in ib_rows}
     overlap_days = [_as_day(r["trade_date"]) for r in window if _as_day(r["trade_date"]) in ib_by_day]
-    if len(overlap_days) < min_overlap:
+    # `not overlap_days` is not redundant with the count test: min_overlap=0 would make
+    # `0 < 0` false and certify a symbol IB returned nothing for. Zero overlap is never
+    # a verification, whatever the caller passes.
+    if not overlap_days or len(overlap_days) < min_overlap:
         return AnchorVerdict(False, "ib_insufficient_overlap", len(overlap_days), window_start)
     corrected_by_day = {_as_day(r["trade_date"]): float(r["close"]) for r in window}
     mismatches = [
