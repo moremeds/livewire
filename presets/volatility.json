@@ -1,7 +1,7 @@
 {
   "name": "volatility",
   "description": "CBOE Volatility Indices",
-  "tickers": ["VIX","VVIX","COR1M","SPX","RUT","COR3M","OVX","VXSLV","VXEEM","VXGDX","VIX3M","VXN","RVX","VXHYG","VXSMH"],
+  "tickers": ["VIX","VIX1D","VIX9D","VIX3M","VIX6M","VIX1Y","VIXMO","VVIX","SKEW","SPOTVOL","VIXEQ","VSTN","VSTF","GAMMA","LTV","COR1M","COR3M","SPX","RUT","VXN","RVX","VXD","OVX","GVZ","VXSLV","VXEEM","VXGDX","VXEFA","VXEWZ","VXFXI","VXHYG","VXSMH","VXTLT","VIXTLT","VXIEF","VXLQD","VXUNG","BITVX","VXAPL","VXAZN","VXGS","VXGOG","VXIBM"],
   "sector": "Volatility",
   "source": "CBOE Global Indices",
   "notes": "Daily sync uses CBOE API directly. IB can be used for historical backfill but lacks VXHYG/VXSMH."
