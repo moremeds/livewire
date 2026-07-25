@@ -41,6 +41,19 @@ class YahooBar:
 
 
 @dataclass(frozen=True)
+class YahooOHLCVBar:
+    """Full split-adjusted OHLCV bar. Yahoo adjusts open/high/low/close AND volume
+    for splits (not dividends); ``events.splits`` carries the ratios to reconstruct raw."""
+
+    trade_date: date
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+
+@dataclass(frozen=True)
 class YahooSplit:
     ex_date: date
     numerator: float
@@ -66,8 +79,7 @@ class YahooClient:
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": _USER_AGENT})
 
-    def get_daily(self, symbol: str, start: date, end: date) -> tuple[list[YahooBar], list[YahooSplit]]:
-        """Return (split-adjusted daily bars, splits) for ``symbol`` over ``[start, end]``."""
+    def _get(self, symbol: str, start: date, end: date) -> dict:
         params = {
             "period1": _epoch(start),
             "period2": _epoch(end) + 86_400,  # inclusive of `end`
@@ -83,7 +95,10 @@ class YahooClient:
             raise YahooNotFound(symbol.upper())
         if response.status_code != 200:
             raise YahooError(f"yahoo returned HTTP {response.status_code} for {symbol}")
-        payload = response.json()
+        return response.json()
+
+    @staticmethod
+    def _first_result(symbol: str, payload: dict) -> dict:
         chart = payload.get("chart") or {}
         if chart.get("error"):
             code = (chart["error"] or {}).get("code", "error")
@@ -93,7 +108,24 @@ class YahooClient:
         results = chart.get("result") or []
         if not results:
             raise YahooNotFound(symbol.upper())
-        result = results[0]
+        return results[0]
+
+    @staticmethod
+    def _parse_splits(result: dict) -> list[YahooSplit]:
+        splits = [
+            YahooSplit(
+                datetime.fromtimestamp(event["date"], tz=UTC).date(),
+                float(event["numerator"]),
+                float(event["denominator"]),
+            )
+            for event in ((result.get("events") or {}).get("splits") or {}).values()
+        ]
+        splits.sort(key=lambda split: split.ex_date)
+        return splits
+
+    def get_daily(self, symbol: str, start: date, end: date) -> tuple[list[YahooBar], list[YahooSplit]]:
+        """Return (split-adjusted daily bars, splits) for ``symbol`` over ``[start, end]``."""
+        result = self._first_result(symbol, self._get(symbol, start, end))
         timestamps = result.get("timestamp") or []
         indicators = result.get("indicators") or {}
         quote = (indicators.get("quote") or [{}])[0]
@@ -107,15 +139,33 @@ class YahooClient:
                 continue
             adj = adj_closes[index] if index < len(adj_closes) and adj_closes[index] is not None else close
             bars.append(YahooBar(datetime.fromtimestamp(ts, tz=UTC).date(), float(close), float(adj)))
-        splits: list[YahooSplit] = []
-        for event in ((result.get("events") or {}).get("splits") or {}).values():
-            splits.append(
-                YahooSplit(
-                    datetime.fromtimestamp(event["date"], tz=UTC).date(),
-                    float(event["numerator"]),
-                    float(event["denominator"]),
+        bars.sort(key=lambda bar: bar.trade_date)
+        return bars, self._parse_splits(result)
+
+    def get_daily_ohlcv(self, symbol: str, start: date, end: date) -> tuple[list[YahooOHLCVBar], list[YahooSplit]]:
+        """Return (split-adjusted OHLCV bars, splits) for ``symbol`` over ``[start, end]``.
+
+        Same request as :meth:`get_daily` but parses the full quote block. Bars missing
+        any OHLC field (Yahoo pads holidays/halts with null) are skipped, not fabricated.
+        """
+        payload = self._get(symbol, start, end)
+        result = self._first_result(symbol, payload)
+        timestamps = result.get("timestamp") or []
+        quote = ((result.get("indicators") or {}).get("quote") or [{}])[0]
+        opens, highs = quote.get("open") or [], quote.get("high") or []
+        lows, closes, volumes = quote.get("low") or [], quote.get("close") or [], quote.get("volume") or []
+        bars: list[YahooOHLCVBar] = []
+        for index, ts in enumerate(timestamps):
+            fields = [
+                series[index] if index < len(series) else None for series in (opens, highs, lows, closes, volumes)
+            ]
+            if any(value is None for value in fields):  # incomplete bar — skip, don't fabricate
+                continue
+            o, h, low_, c, v = fields
+            bars.append(
+                YahooOHLCVBar(
+                    datetime.fromtimestamp(ts, tz=UTC).date(), float(o), float(h), float(low_), float(c), int(v)
                 )
             )
         bars.sort(key=lambda bar: bar.trade_date)
-        splits.sort(key=lambda split: split.ex_date)
-        return bars, splits
+        return bars, self._parse_splits(result)

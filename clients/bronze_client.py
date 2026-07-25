@@ -33,7 +33,7 @@ _BASE_COLUMNS = (
 
 _EQUITY_COLUMNS = (*_BASE_COLUMNS, "source", "price_basis")
 
-EQUITY_SOURCES = frozenset({"ib", "massive", "nasdaq", "stooq", "legacy"})
+EQUITY_SOURCES = frozenset({"ib", "massive", "nasdaq", "stooq", "legacy", "yahoo"})
 PRICE_BASES = frozenset({"raw", "split_adjusted", "unknown"})
 
 _PARQUET_SCHEMA = pa.schema(
