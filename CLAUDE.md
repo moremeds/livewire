@@ -278,6 +278,43 @@ python scripts/livewire_ingest.py fx --tickers DXY EURUSD --timeframes 1d 1h
 `--days` bounds only Massive. Yahoo's chart API takes discrete `range=` values, so
 Yahoo-sourced series always fetch their full window regardless.
 
+### Immutable release artifacts — production does not run from the checkout
+
+`scripts/livewire_ops.py release` builds the merged `origin/main` commit into
+`<warehouse>/releases/<sha>/` (a `git archive` export plus its own
+`uv sync --frozen --no-dev` virtualenv, then `chmod -R a-w`) and atomically
+repoints `<warehouse>/current` at it. The scheduled jobs `cd` into `current`, so
+editing, branching, or breaking the working tree cannot change what runs tonight.
+
+```bash
+python scripts/livewire_ops.py release promote            # build+serve origin/main
+python scripts/livewire_ops.py release promote --dry-run  # decide without building
+python scripts/livewire_ops.py release list               # `*` marks what is served
+python scripts/livewire_ops.py release rollback           # serve the previous one
+```
+
+- **A `git worktree` export would not work.** It leaves a `.git` file pointing
+  back at the dev repo, so the artifact stays tethered to the checkout it is
+  supposed to be independent of. `git archive` has no such tether.
+- **`ci.yml` runs on push to main for this reason.** A squash merge creates a
+  commit no pull-request run ever covered; `promote` gates on a completed,
+  successful run for that exact SHA and otherwise keeps serving the previous
+  release. `--allow-unverified` bypasses the gate and is needed exactly once,
+  to bootstrap the first release from a SHA predating the push trigger.
+- **Flipping `current` mid-run is safe.** `os.getcwd()` is physical, so a job
+  that already `cd`-ed into `current` finishes against the release it started
+  on. `prune` never collects the release `current` points at.
+- **A release carries no `.env`** (gitignored, so `git archive` omits it).
+  Credentials must live in `~/market-warehouse/.env`, which
+  `livewire_scripts/scheduled_env.py` already loads. `promote` warns when that
+  file is absent — without it a scheduled job resolves every credential to
+  nothing, the same failure the worktree note below describes.
+- **The data lake is deliberately not isolated.** It is the single source of
+  truth and both dev and production write it; concurrency there is handled where
+  it always was, by the `fcntl.flock` serialization in `clients/parquet_io.py`.
+  Containerizing instead would split that into two lock domains that do not see
+  each other, and move IB's client source address off `127.0.0.1`.
+
 ### Scheduled-job invariants worth not re-breaking
 
 - **The plists must point at the main checkout, never a worktree.** `.env` is

@@ -3,6 +3,11 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  # A squash merge creates a commit no pull-request run ever covered, so main
+  # commits need their own run: `livewire_ops.py release promote` will only
+  # build an artifact from a SHA that has a completed, successful run here.
+  push:
+    branches: [main]
 
 jobs:
   ci:
@@ -24,10 +29,15 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
+      # Diff-based, so it only means anything on a pull request. On a push to
+      # main the diff is against main itself; the merged content was already
+      # scanned by that pull request's run.
       - name: Fetch base branch for diff
+        if: github.event_name == 'pull_request'
         run: git fetch origin ${{ github.event.pull_request.base.ref }}
 
       - name: Secrets scan
+        if: github.event_name == 'pull_request'
         run: bash tools/pre-commit-secrets-scan.sh --ci ${{ github.event.pull_request.base.ref }}
 
       - name: Ruff lint

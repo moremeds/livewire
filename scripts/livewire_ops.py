@@ -23,6 +23,7 @@ from livewire_scripts.scheduled_env import (  # noqa: F401  (re-export for backw
 COMMANDS = {
     "run-daily-job": "livewire_scripts.run_daily_update_job",
     "run-intraday-catchup-job": "livewire_scripts.run_intraday_catchup_job",
+    "release": "livewire_scripts.release",
 }
 
 
