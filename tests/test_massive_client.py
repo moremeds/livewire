@@ -590,3 +590,120 @@ def test_pagination_rejects_cross_origin_next_url():
     with _make_client() as client:
         with pytest.raises(MassiveAPIError, match="pagination URL"):
             client.get_splits("NVDA")
+
+
+# ---------------------------------------------------------------------------
+# FX intraday
+#
+# Fixture is REAL Massive C:EURUSD hourly bars for 2026-07-22, fetched and frozen
+# 2026-07-27. FX "volume" is the provider's tick count, not share volume.
+# ---------------------------------------------------------------------------
+
+_EURUSD_1H = [
+    {"v": 4655, "vw": 1.1404, "o": 1.14019, "c": 1.14035, "h": 1.1408, "l": 1.14, "t": 1784678400000, "n": 4655},
+    {"v": 4047, "vw": 1.1403, "o": 1.1403, "c": 1.1402, "h": 1.1407, "l": 1.1398, "t": 1784682000000, "n": 4047},
+    {"v": 6563, "vw": 1.1405, "o": 1.14033, "c": 1.14053, "h": 1.14101, "l": 1.1399, "t": 1784685600000, "n": 6563},
+]
+
+
+@responses.activate
+def test_get_fx_intraday_bars_addresses_the_pair_as_a_currency_ticker():
+    responses.add(
+        responses.GET,
+        _url("/v2/aggs/ticker/C:EURUSD/range/1/hour/2026-07-22/2026-07-24"),
+        json={"status": "OK", "results": _EURUSD_1H},
+    )
+    with _make_client() as client:
+        bars = client.get_fx_intraday_bars("eurusd", "1h", date(2026, 7, 22), date(2026, 7, 24))
+
+    assert len(bars) == 3
+    # FX trades around the clock, so the day's first bar stamps at 00:00 UTC.
+    assert bars[0].bar_timestamp == datetime(2026, 7, 22, 0, 0, tzinfo=UTC)
+    assert bars[2].bar_timestamp == datetime(2026, 7, 22, 2, 0, tzinfo=UTC)
+    assert bars[0].open == pytest.approx(1.14019)
+    assert bars[0].high == pytest.approx(1.1408)
+    assert bars[0].low == pytest.approx(1.14)
+    assert bars[0].close == pytest.approx(1.14035)
+    assert bars[0].volume == 4655
+    # The local symbol stays six-letter; only the wire form carries the C: prefix.
+    assert bars[0].ticker == "EURUSD"
+    assert bars[0].source == "massive"
+
+
+@pytest.mark.parametrize(
+    ("timeframe", "path"),
+    [("1m", "1/minute"), ("5m", "5/minute"), ("30m", "30/minute"), ("1h", "1/hour")],
+)
+@responses.activate
+def test_get_fx_intraday_bars_maps_every_timeframe(timeframe, path):
+    responses.add(
+        responses.GET,
+        _url(f"/v2/aggs/ticker/C:USDKRW/range/{path}/2026-07-22/2026-07-24"),
+        json={"status": "OK", "results": []},
+    )
+    with _make_client() as client:
+        assert client.get_fx_intraday_bars("USDKRW", timeframe, date(2026, 7, 22), date(2026, 7, 24)) == []
+
+
+def test_get_fx_intraday_bars_rejects_unknown_timeframe():
+    with _make_client() as client:
+        with pytest.raises(ValueError, match="unsupported timeframe"):
+            client.get_fx_intraday_bars("EURUSD", "15m", date(2026, 7, 22), date(2026, 7, 24))
+
+
+@responses.activate
+def test_below_entitlement_floor_raises_auth_error_not_empty_results():
+    """A 403 is an entitlement boundary. Collapsing it to [] would read as 'no history'."""
+    responses.add(
+        responses.GET,
+        _url("/v2/aggs/ticker/C:EURUSD/range/1/minute/2010-01-01/2010-01-05"),
+        json={"message": "not entitled"},
+        status=403,
+    )
+    with _make_client() as client:
+        with pytest.raises(MassiveAuthError):
+            client.get_fx_intraday_bars("EURUSD", "1m", date(2010, 1, 1), date(2010, 1, 5))
+
+
+def test_normalize_intraday_bar_rejects_a_non_integer_timestamp():
+    with pytest.raises(MassiveMalformedBarError, match="timestamp"):
+        MassiveClient.normalize_intraday_bar({**_EURUSD_1H[0], "t": "nope"}, ticker="EURUSD")
+
+
+def test_normalize_intraday_bar_rejects_an_inconsistent_bar():
+    with pytest.raises(MassiveMalformedBarError, match="high must be"):
+        MassiveClient.normalize_intraday_bar({**_EURUSD_1H[0], "h": 1.0}, ticker="EURUSD")
+
+
+@responses.activate
+def test_min_interval_paces_requests_because_the_plan_sends_no_retry_after():
+    for _ in range(3):
+        responses.add(
+            responses.GET,
+            _url("/v2/aggs/ticker/C:EURUSD/range/1/hour/2026-07-22/2026-07-24"),
+            json={"status": "OK", "results": []},
+        )
+    slept: list[float] = []
+    client = _make_client(min_interval_seconds=12.0)
+    with patch("clients.massive_client.time.sleep", side_effect=slept.append):
+        for _ in range(3):
+            client.get_fx_intraday_bars("EURUSD", "1h", date(2026, 7, 22), date(2026, 7, 24))
+
+    # First request goes immediately; each later one waits out the remaining interval.
+    assert len(slept) == 2
+    assert all(0 < wait <= 12.0 for wait in slept)
+
+
+@responses.activate
+def test_min_interval_defaults_to_no_throttling():
+    responses.add(
+        responses.GET,
+        _url("/v2/aggs/ticker/C:EURUSD/range/1/hour/2026-07-22/2026-07-24"),
+        json={"status": "OK", "results": []},
+    )
+    slept: list[float] = []
+    with patch("clients.massive_client.time.sleep", side_effect=slept.append):
+        with _make_client() as client:
+            client.get_fx_intraday_bars("EURUSD", "1h", date(2026, 7, 22), date(2026, 7, 24))
+
+    assert slept == []

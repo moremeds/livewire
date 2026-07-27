@@ -15,6 +15,7 @@ from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts import run_daily_update_job as daily_runner
 from livewire_scripts.run_daily_update_job import (
     ASSET_CLASSES,
+    FX_CATCHUP_DAYS,
     AlertRequest,
     RunnerConfig,
     _utc_now,
@@ -30,7 +31,9 @@ from livewire_scripts.run_daily_update_job import (
     log_has_completion_marker,
     main,
     node_binary_exists,
+    build_fx_command,
     run_cboe_volatility_sync,
+    run_fx_sync,
     run_daily_update_attempt,
     run_post_success_quality,
     run_with_retries,
@@ -683,6 +686,58 @@ class TestCboeVolatilitySync:
         assert "CBOE Volatility Sync" in log_text
         assert "=== Done cboe 2026-03-18T20:05:08Z ===" in log_text
 
+    def test_build_fx_command_bounds_the_nightly_window(self):
+        config = _config(Path("/tmp/test"))
+        command = build_fx_command(config)
+
+        assert command[0] == "/usr/bin/python3"
+        assert "livewire_ingest.py" in command[1]
+        assert command[2] == "fx"
+        # The nightly run catches up; the deep seed is a separate manual run without
+        # --days. Both merge, so accumulated intraday history survives either way.
+        assert command[3:] == ["--days", str(FX_CATCHUP_DAYS)]
+
+    def test_run_fx_sync_logs_its_completion_scope(self, tmp_path):
+        config = _config(tmp_path)
+        timestamps = iter(
+            [
+                datetime(2026, 3, 18, 20, 5, 7, tzinfo=UTC),
+                datetime(2026, 3, 18, 20, 5, 8, tzinfo=UTC),
+            ]
+        )
+
+        def _runner(command, stdout, stderr, text, env, check):
+            stdout.write("fx ok\n")
+            return SimpleNamespace(returncode=0)
+
+        rc = run_fx_sync(config, env={}, runner=_runner, now_fn=lambda: next(timestamps))
+
+        assert rc == 0
+        log_text = (config.log_dir / "daily_update_2026-03-18.log").read_text(encoding="utf-8")
+        assert "FX Sync" in log_text
+        # The watchdog requires this scope; without it a silent fx failure goes unnoticed.
+        assert "=== Done fx 2026-03-18T20:05:08Z ===" in log_text
+
+    def test_run_fx_sync_failure_is_reported(self, tmp_path):
+        config = _config(tmp_path)
+        timestamps = iter(
+            [
+                datetime(2026, 3, 18, 20, 5, 7, tzinfo=UTC),
+                datetime(2026, 3, 18, 20, 5, 8, tzinfo=UTC),
+            ]
+        )
+
+        def _runner(command, stdout, stderr, text, env, check):
+            stdout.write("fx failed\n")
+            return SimpleNamespace(returncode=1)
+
+        rc = run_fx_sync(config, env={}, runner=_runner, now_fn=lambda: next(timestamps))
+
+        assert rc == 1
+        log_text = (config.log_dir / "daily_update_2026-03-18.log").read_text(encoding="utf-8")
+        assert "FX Sync Failed" in log_text
+        assert "=== Done fx" not in log_text
+
     def test_run_cboe_volatility_sync_failure(self, tmp_path):
         config = _config(tmp_path)
         timestamps = iter(
@@ -747,6 +802,10 @@ class TestMain:
             calls.append("cboe")
             return 0
 
+        def fx(*args, **kwargs):
+            calls.append("fx")
+            return 0
+
         def silver(*args, **kwargs):
             calls.append("silver")
             return 0
@@ -756,11 +815,12 @@ class TestMain:
             patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", side_effect=actions),
             patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=daily),
             patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", side_effect=cboe),
+            patch("livewire_scripts.run_daily_update_job.run_fx_sync", side_effect=fx),
             patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", side_effect=silver),
         ):
             assert main(["--dry-run"]) == 0
 
-        assert calls == ["actions", *ASSET_CLASSES, "cboe", "silver"]
+        assert calls == ["actions", *ASSET_CLASSES, "cboe", "fx", "silver"]
 
     def test_failed_action_sync_prevents_silver_rebuild(self):
         config = _config(Path("/tmp/test"))
@@ -769,6 +829,7 @@ class TestMain:
             patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=2),
             patch("livewire_scripts.run_daily_update_job.run_with_retries", return_value=0),
             patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_fx_sync", return_value=0),
             patch("livewire_scripts.run_daily_update_job.run_silver_rebuild") as silver,
         ):
             assert main([]) == 2
@@ -785,6 +846,7 @@ class TestMain:
             patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
             patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=daily),
             patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_fx_sync", return_value=0),
             patch("livewire_scripts.run_daily_update_job.run_silver_rebuild") as silver,
         ):
             assert main([]) == 3
@@ -797,6 +859,7 @@ class TestMain:
             patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
             patch("livewire_scripts.run_daily_update_job.run_with_retries", return_value=0),
             patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_fx_sync", return_value=0),
             patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", return_value=4),
         ):
             assert main([]) == 4
@@ -805,6 +868,7 @@ class TestMain:
         config = _config(Path("/tmp/test"))
         ib_calls: list[list[str]] = []
         cboe_called = []
+        fx_called = []
 
         def _run_ib(cfg, args, env, completion_scope=None):
             ib_calls.append(args)
@@ -815,26 +879,37 @@ class TestMain:
             cboe_called.append(True)
             return 0
 
+        def _run_fx(cfg, env, **kwargs):
+            fx_called.append(True)
+            return 0
+
         with (
             patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
             patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
             patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=_run_ib),
             patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", side_effect=_run_cboe),
+            patch("livewire_scripts.run_daily_update_job.run_fx_sync", side_effect=_run_fx),
             patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", return_value=0),
         ):
             assert main(["--dry-run"]) == 0
 
-        # IB syncs equity, futures, cmdty and fx; volatility via CBOE
+        # IB syncs equity, futures and cmdty; volatility via CBOE, fx via Yahoo/Massive
         assert ib_calls == [["--dry-run", "--asset-class", ac] for ac in ASSET_CLASSES]
         assert cboe_called == [True]
-        assert "cmdty" in ASSET_CLASSES and "fx" in ASSET_CLASSES
+        assert fx_called == [True]
+        assert "cmdty" in ASSET_CLASSES
+        # fx left the IB loop: resolve_fx_pair() cannot express NDF pairs or DXY.
+        assert "fx" not in ASSET_CLASSES
 
     def test_main_explicit_asset_class_skips_cboe(self):
         config = _config(Path("/tmp/test"))
 
         with patch("livewire_scripts.run_daily_update_job.build_config", return_value=config):
             with patch("livewire_scripts.run_daily_update_job.run_with_retries", return_value=0) as run_mock:
-                with patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync") as cboe_mock:
+                with (
+                    patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync") as cboe_mock,
+                    patch("livewire_scripts.run_daily_update_job.run_fx_sync") as fx_mock,
+                ):
                     assert main(["--dry-run", "--asset-class", "equity"]) == 0
 
         run_mock.assert_called_once_with(
@@ -844,8 +919,9 @@ class TestMain:
             completion_scope="equity",
         )
         cboe_mock.assert_not_called()
+        fx_mock.assert_not_called()
 
-    def _main_with(self, *, lane_codes=None, action=0, cboe=0, gateway_down=()):
+    def _main_with(self, *, lane_codes=None, action=0, cboe=0, fx=0, gateway_down=()):
         """Run main() with each lane's exit code stubbed. Returns (rc, silver_mock)."""
         config = _config(Path("/tmp/test"))
         codes = dict(lane_codes or {})
@@ -861,6 +937,7 @@ class TestMain:
             patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=action),
             patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=_run),
             patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=cboe),
+            patch("livewire_scripts.run_daily_update_job.run_fx_sync", return_value=fx),
             patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", return_value=0) as silver,
             patch("livewire_scripts.run_daily_update_job.append_log"),
         ):
@@ -876,7 +953,7 @@ class TestMain:
         A stale FX contract or a failed futures lane used to skip the adjusted
         rebuild for the whole ~13K equity universe.
         """
-        rc, silver = self._main_with(lane_codes={"futures": 1, "fx": 1, "cmdty": 1})
+        rc, silver = self._main_with(lane_codes={"futures": 1, "cmdty": 1})
         assert rc == 1
         silver.assert_called_once()
 
@@ -898,7 +975,7 @@ class TestMain:
 
     def test_gateway_down_is_degraded_not_failed(self):
         """A 2FA-gated Gateway is an expected state, not a data failure."""
-        rc, silver = self._main_with(gateway_down=("futures", "cmdty", "fx"))
+        rc, silver = self._main_with(gateway_down=("futures", "cmdty"))
         assert rc == 0
         silver.assert_called_once()
 

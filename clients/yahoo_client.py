@@ -41,6 +41,24 @@ class YahooBar:
 
 
 @dataclass(frozen=True)
+class YahooOHLCV:
+    """A full OHLCV bar. ``timestamp`` is tz-aware UTC; daily callers take ``.date()``."""
+
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+
+# Yahoo serves each intraday interval over a different maximum window. These are the
+# widest `range=` values that return data, measured 2026-07-27 against DX-Y.NYB,
+# EURUSD=X and USDKRW=X. All are rolling: history is accumulated, not fetched once.
+YAHOO_INTRADAY_RANGE = {"1m": "7d", "5m": "60d", "30m": "60d", "1h": "730d"}
+
+
+@dataclass(frozen=True)
 class YahooSplit:
     ex_date: date
     numerator: float
@@ -66,15 +84,8 @@ class YahooClient:
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": _USER_AGENT})
 
-    def get_daily(self, symbol: str, start: date, end: date) -> tuple[list[YahooBar], list[YahooSplit]]:
-        """Return (split-adjusted daily bars, splits) for ``symbol`` over ``[start, end]``."""
-        params = {
-            "period1": _epoch(start),
-            "period2": _epoch(end) + 86_400,  # inclusive of `end`
-            "interval": "1d",
-            "events": "split",
-            "includeAdjustedClose": "true",
-        }
+    def _chart(self, symbol: str, params: dict) -> dict:
+        """Fetch one chart payload and return its `result` block."""
         try:
             response = self._session.get(f"{self._base_url}/{symbol.upper()}", params=params, timeout=self._timeout)
         except requests.RequestException as exc:
@@ -93,7 +104,73 @@ class YahooClient:
         results = chart.get("result") or []
         if not results:
             raise YahooNotFound(symbol.upper())
-        result = results[0]
+        return results[0]
+
+    @staticmethod
+    def _ohlcv(result: dict) -> list[YahooOHLCV]:
+        """Build OHLCV bars from a chart result, skipping Yahoo's null padding."""
+        quote = ((result.get("indicators") or {}).get("quote") or [{}])[0]
+        series = {field: quote.get(field) or [] for field in ("open", "high", "low", "close", "volume")}
+        bars: list[YahooOHLCV] = []
+        for index, ts in enumerate(result.get("timestamp") or []):
+            values = {}
+            for field, column in series.items():
+                values[field] = column[index] if index < len(column) else None
+            # Yahoo pads holidays, halts and pre-open minutes with nulls. A bar missing
+            # any price is skipped rather than back-filled — never fabricate a price.
+            if any(values[field] is None for field in ("open", "high", "low", "close")):
+                continue
+            bars.append(
+                YahooOHLCV(
+                    timestamp=datetime.fromtimestamp(ts, tz=UTC),
+                    open=float(values["open"]),
+                    high=float(values["high"]),
+                    low=float(values["low"]),
+                    close=float(values["close"]),
+                    # FX and index quotes carry no volume; Yahoo sends null.
+                    volume=int(values["volume"] or 0),
+                )
+            )
+        bars.sort(key=lambda bar: bar.timestamp)
+        return bars
+
+    def get_daily_ohlcv(self, symbol: str, start: date | None = None, end: date | None = None) -> list[YahooOHLCV]:
+        """Return full OHLCV daily bars for ``symbol``.
+
+        ``start=None`` requests the full available history. It uses ``period1=0`` rather
+        than ``range=max`` deliberately: ``range=max`` silently downsamples granularity
+        (DX-Y.NYB returned 168 rows for its 41-year span, versus 17,219 with period1=0).
+        """
+        params = {
+            "period1": _epoch(start) if start else 0,
+            "period2": (_epoch(end) + 86_400) if end else int(datetime.now(tz=UTC).timestamp()),
+            "interval": "1d",
+        }
+        return self._ohlcv(self._chart(symbol, params))
+
+    def get_intraday(self, symbol: str, interval: str) -> list[YahooOHLCV]:
+        """Return intraday OHLCV bars for ``symbol`` over Yahoo's widest window.
+
+        Intraday **must** use ``range=``. Passing ``period1``/``period2`` with an intraday
+        interval makes Yahoo reject the request with "Unprocessable Entity".
+        """
+        if interval not in YAHOO_INTRADAY_RANGE:
+            raise ValueError(f"unsupported interval: {interval!r}. Must be one of {sorted(YAHOO_INTRADAY_RANGE)}")
+        params = {"range": YAHOO_INTRADAY_RANGE[interval], "interval": interval}
+        return self._ohlcv(self._chart(symbol, params))
+
+    def get_daily(self, symbol: str, start: date, end: date) -> tuple[list[YahooBar], list[YahooSplit]]:
+        """Return (split-adjusted daily bars, splits) for ``symbol`` over ``[start, end]``."""
+        result = self._chart(
+            symbol,
+            {
+                "period1": _epoch(start),
+                "period2": _epoch(end) + 86_400,  # inclusive of `end`
+                "interval": "1d",
+                "events": "split",
+                "includeAdjustedClose": "true",
+            },
+        )
         timestamps = result.get("timestamp") or []
         indicators = result.get("indicators") or {}
         quote = (indicators.get("quote") or [{}])[0]

@@ -210,12 +210,13 @@ market-data lanes, and rebuilds Silver when **its own inputs** succeeded.
 
 `rebuild-silver` reads equity bronze and the corporate-action store — both
 Massive-backed. It never reads IB. So the Silver gate depends on exactly those
-two lanes, **not** on futures/cmdty/fx (IB daily) or CBOE. Gating on every lane
+two lanes, **not** on futures/cmdty (IB daily), CBOE, or fx. Gating on every lane
 meant one stale FX contract blocked the adjusted rebuild for the whole ~13K
 equity universe.
 
-IB legitimately owns futures/cmdty/fx daily and volatility intraday
-(VIX/SPX/NDX/RUT/VXN/RVX). The rule is that IB *failure* must not cascade:
+IB legitimately owns futures/cmdty daily and volatility intraday
+(VIX/SPX/NDX/RUT/VXN/RVX). It no longer owns fx — see "FX and DXY" below. The
+rule is that IB *failure* must not cascade:
 
 - An unreachable Gateway exits `GATEWAY_DOWN_EXIT_CODE` (86, distinct from 1
   and argparse's 2). The lane is **skipped, not retried** — 2FA and IBKR
@@ -226,6 +227,56 @@ IB legitimately owns futures/cmdty/fx daily and volatility intraday
   both meant a total IB outage classified every ticker `no_trade`, held
   `errors` at 0, and `resolve_exit_code` reported success for a run that
   ingested nothing.
+
+### FX and DXY — Yahoo owns the asset class, IB does not
+
+`scripts/livewire_ingest.py fx` is the only writer of `asset_class=fx`. It is not an
+IB lane and never was viable as one: `resolve_fx_pair()` accepts only the 36 hardcoded
+`SUPPORTED_IB_FX_PAIRS`, which contains **no NDF currency** and cannot express a
+non-six-letter symbol like `DXY`. `fx` was therefore removed from `ASSET_CLASSES`, and
+`run_fx_sync` runs it beside the CBOE lane. `resolve_fx_pair()` itself is untouched —
+`make_contract()` still uses it for anyone explicitly asking for an IB fx contract.
+
+Source per (symbol, timeframe) — never mixed within one file:
+
+| | Daily | 1m / 5m / 30m | 1h |
+|---|---|---|---|
+| Currency pairs | Yahoo `<PAIR>=X` | **Massive** `C:<PAIR>` | **Yahoo** |
+| `DXY` | Yahoo `DX-Y.NYB` | Yahoo | Yahoo |
+
+Measured 2026-07-27 — re-measure before trusting, the entitlement floors roll:
+
+- **DXY exists only on Yahoo.** IB's `IND DX @NYBOT` returns error 162 (no
+  permission); Massive returns 0 rows for `I:DXY`/`C:DXY`/`I:USDX`. Yahoo
+  `DX-Y.NYB` daily reaches **1971-01-04**. Yahoo returns 17,219 timestamps but only
+  **14,108** carry prices — the rest are null holiday padding and are skipped, never
+  back-filled. 14,108 over 55.6 years is 253.9/year, i.e. the trading calendar.
+- **Massive REST FX floor is 2 years rolling** (2024-07-24), identical for daily and
+  for 1m/5m/30m/1h. Below it, requests 403 — an entitlement boundary, never a
+  "no history" signal.
+- **1h is Yahoo's even for pairs.** Yahoo's 1h reached 2023-10-09 (EURUSD), *past*
+  Massive's floor, in one unthrottled request. Don't "unify" 1h onto Massive.
+- **Massive REST allows 5 requests/minute** and sends no `Retry-After`, so reactive
+  backoff (1s/2s/4s) cannot clear the window. The lane paces preemptively via
+  `MassiveClient(min_interval_seconds=...)`. Nightly ≈12 min; the full 760-day seed
+  ≈2 h, dominated by 1m.
+- **Massive's S3 `global_forex/` prefix lists back to 2010 but GETs 403.** The
+  flat-file entitlement covers `us_stocks_sip` only. Probe permission boundaries with
+  GET, never with LIST — the listing alone promises 16 years that cannot be fetched.
+
+Both intraday providers serve rolling windows, so history is **accumulated**:
+`merge_ticker_rows` dedups on `bar_timestamp`, and the floor bounds only the initial
+seed. Never replace an intraday fx file — a replace throws away everything that has
+already rolled out of the provider's window.
+
+```bash
+python scripts/livewire_ingest.py fx                       # seed maximum depth (~2h)
+python scripts/livewire_ingest.py fx --days 7              # nightly catch-up
+python scripts/livewire_ingest.py fx --tickers DXY EURUSD --timeframes 1d 1h
+```
+
+`--days` bounds only Massive. Yahoo's chart API takes discrete `range=` values, so
+Yahoo-sourced series always fetch their full window regardless.
 
 ### Scheduled-job invariants worth not re-breaking
 
@@ -549,7 +600,7 @@ launchctl load ~/Library/LaunchAgents/com.livewire.daily-update.plist
 launchctl load ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
 launchctl load ~/Library/LaunchAgents/com.livewire.intraday-catchup.plist
 ```
-`scripts/livewire_ops.py run-daily-job` loads `~/.secrets`, repo `.env`, and `~/market-warehouse/.env` before invoking the retrying scheduled runner. The runner automatically syncs equities, futures, cmdty, and fx via IB, then all volatility indices via CBOE's public API in a single invocation; pass `--asset-class <name>` to run only one IB asset class (skips CBOE volatility sync). After a successful run it also spawns coverage + weekly quality reports and sends the nightly digest email.
+`scripts/livewire_ops.py run-daily-job` loads `~/.secrets`, repo `.env`, and `~/market-warehouse/.env` before invoking the retrying scheduled runner. The runner automatically syncs equities, futures, and cmdty via IB, then all volatility indices via CBOE's public API and DXY/FX via Yahoo+Massive, in a single invocation; pass `--asset-class <name>` to run only one IB asset class (skips both the CBOE volatility and fx syncs). After a successful run it also spawns coverage + weekly quality reports and sends the nightly digest email.
 
 A second scheduled job, `com.livewire.intraday-catchup`, runs at 05:00 UTC daily (= 01:00 ET EDT / 00:00 ET EST) and invokes `scripts/livewire_ops.py run-intraday-catchup-job`. This calls the existing `daily-backfill` orchestrator so equity daily + intraday parquet (1m/5m/30m/1h), FRED Treasury rates, CBOE volatility daily, and IB volatility intraday (30m and 5m, with 1h derived locally from 30m) all refresh. Equity intraday requires `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY`; missing credentials fail the orchestrator before any phases run, and there is no REST or IB equity-intraday fallback. The wrapper is single-attempt because `daily-backfill` owns its phase execution and activity-based stall detection; on terminal failure the wrapper sends one alert through the same Nodemailer pipeline as the daily-update wrapper, tagged `--job-name intraday_catchup`. Logs land at `~/market-warehouse/logs/intraday_catchup_YYYY-MM-DD.log` (UTC date). The default 7-day `MDW_DAILY_BACKFILL_INTRADAY_DAYS` lookback absorbs a single missed run; widen via `~/market-warehouse/.env` if you need more headroom. 05:00 UTC is well after Massive's empirical whole-market SIP minute-aggregate publish (file for trade-date D appears shortly after midnight ET on D+1) and gives a 1h15m buffer after IBC's `AutoRestartTime=11:45` ET nightly restart (= 03:45 UTC), which requires 2FA approval before port 4001 is available.
 

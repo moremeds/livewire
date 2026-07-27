@@ -42,6 +42,7 @@ def _config(tmp_path: Path, *, node_bin: str = "/opt/homebrew/bin/node") -> Runn
 def _all_daily_done_markers() -> str:
     lines = [f"=== Done {asset_class} 2026-03-11T20:05:09Z (attempt 1/3) ===" for asset_class in ASSET_CLASSES]
     lines.append("=== Done cboe 2026-03-11T20:05:10Z ===")
+    lines.append("=== Done fx 2026-03-11T20:05:10Z ===")
     lines.append("=== Done silver 2026-03-11T20:05:11Z ===")
     return "\n".join(lines) + "\n"
 
