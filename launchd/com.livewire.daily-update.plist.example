@@ -9,8 +9,11 @@
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <!-- Replace /path/to/repo with your actual repo path -->
-        <string>cd /path/to/repo &amp;&amp; /Users/chenxi/market-warehouse/.venv/bin/python scripts/livewire_ops.py run-daily-job</string>
+        <!-- Replace /path/to/warehouse with your actual warehouse path. This runs the
+             immutable release `current` points at, NOT the dev checkout, and uses that
+             release's own frozen venv — so editing or breaking the working tree cannot
+             change what runs tonight. See `livewire_ops.py release`. -->
+        <string>cd /path/to/warehouse/current &amp;&amp; .venv/bin/python scripts/livewire_ops.py run-daily-job</string>
     </array>
 
     <key>StartCalendarInterval</key>

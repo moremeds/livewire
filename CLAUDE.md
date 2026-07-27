@@ -317,11 +317,14 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
 
 ### Scheduled-job invariants worth not re-breaking
 
-- **The plists must point at the main checkout, never a worktree.** `.env` is
-  gitignored, so a worktree has none; pointing launchd at
-  `.worktrees/<branch>/` resolved every credential to nothing and killed both
-  ingestion and the failure alert that would have reported it. `.env` is now
-  resolved by walking up to `$HOME`, but the plists should still name the repo.
+- **The three job plists point at `<warehouse>/current`, never at a checkout.**
+  They used to `cd` into the repo and run whatever was on disk at that moment —
+  branch, uncommitted edits and all. Only `release-promote` still reads the
+  repo, because building the artifact is its job. The older trap this replaced:
+  pointing launchd at `.worktrees/<branch>/`, which has no `.env` (gitignored)
+  and so resolved every credential to nothing, killing both ingestion and the
+  failure alert that would have reported it. A release has no `.env` either —
+  which is why credentials must live in `~/market-warehouse/.env`.
 - **Alerts that fail to send are persisted** to `<log_dir>/alerts_undelivered/`
   and counted by the watchdog. A WARNING in the log the job just broke is not
   an alert.
@@ -629,13 +632,18 @@ python scripts/livewire_ingest.py daily --asset-class futures             # Dail
 
 **Scheduling with launchd** (macOS):
 ```bash
-# Copy examples, replace /path/to/repo with your actual repo path
-sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.daily-update.plist.example > ~/Library/LaunchAgents/com.livewire.daily-update.plist
-sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.daily-update-watchdog.plist.example > ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
-sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.intraday-catchup.plist.example > ~/Library/LaunchAgents/com.livewire.intraday-catchup.plist
-launchctl load ~/Library/LaunchAgents/com.livewire.daily-update.plist
-launchctl load ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
-launchctl load ~/Library/LaunchAgents/com.livewire.intraday-catchup.plist
+# The three jobs run the immutable release, so they take the WAREHOUSE path.
+# The promoter is the one job that reads the repo — it is what builds the release.
+WAREHOUSE=~/market-warehouse
+for L in daily-update daily-update-watchdog intraday-catchup; do
+  sed "s|/path/to/warehouse|$WAREHOUSE|g" "launchd/com.livewire.$L.plist.example" \
+    > ~/Library/LaunchAgents/com.livewire.$L.plist
+done
+sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.release-promote.plist.example \
+  > ~/Library/LaunchAgents/com.livewire.release-promote.plist
+for L in daily-update daily-update-watchdog intraday-catchup release-promote; do
+  launchctl load ~/Library/LaunchAgents/com.livewire.$L.plist
+done
 ```
 `scripts/livewire_ops.py run-daily-job` loads `~/.secrets`, repo `.env`, and `~/market-warehouse/.env` before invoking the retrying scheduled runner. The runner automatically syncs equities, futures, and cmdty via IB, then all volatility indices via CBOE's public API and DXY/FX via Yahoo+Massive, in a single invocation; pass `--asset-class <name>` to run only one IB asset class (skips both the CBOE volatility and fx syncs). After a successful run it also spawns coverage + weekly quality reports and sends the nightly digest email.
 
