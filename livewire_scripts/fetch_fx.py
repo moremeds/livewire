@@ -31,8 +31,8 @@ if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
 
 from clients.bronze_client import BronzeClient
 from clients.intraday_bronze_client import IntradayBronzeClient
-from clients.massive_client import MassiveAuthError, MassiveClient
-from clients.yahoo_client import YahooClient, YahooNotFound
+from clients.massive_client import MassiveAPIError, MassiveAuthError, MassiveClient
+from clients.yahoo_client import YahooClient, YahooError, YahooNotFound
 from livewire_scripts.paths import warehouse_dir
 
 ASSET_CLASS = "fx"
@@ -159,6 +159,10 @@ def sync_daily(
                 console.print(f"  [yellow]{symbol}: not found on Yahoo ({yahoo_symbol(symbol)})[/yellow]")
                 failures += 1
                 continue
+            except YahooError as exc:
+                console.print(f"  [red]{symbol}: {exc}[/red]")
+                failures += 1
+                continue
             if not bars:
                 console.print(f"  [yellow]{symbol}: no daily bars returned[/yellow]")
                 continue
@@ -199,6 +203,16 @@ def sync_intraday(
                     bars = fetch_massive_intraday(massive, symbol, timeframe, start, today)
             except YahooNotFound:
                 console.print(f"  [yellow]{symbol}: not found on Yahoo[/yellow]")
+                failures += 1
+                continue
+            except (YahooError, MassiveAPIError) as exc:
+                # One provider hiccup must not cost every symbol after it. A single
+                # transient `HTTP 422 for USDCNY=X` aborted the whole lane on
+                # 2026-07-27: every symbol queued behind it went unfetched, and the
+                # run exited before the remaining timeframes ran at all. Both
+                # sources serve rolling windows that the next run merges from, so a
+                # skipped symbol costs one night, not its history.
+                console.print(f"  [red]{symbol}: {timeframe} failed: {exc}[/red]")
                 failures += 1
                 continue
             if not bars:

@@ -11,8 +11,8 @@ from datetime import UTC, date, datetime
 import pyarrow.parquet as pq
 import pytest
 
-from clients.massive_client import MassiveAuthError, MassiveIntradayBar
-from clients.yahoo_client import YahooNotFound, YahooOHLCV
+from clients.massive_client import MassiveAuthError, MassiveIntradayBar, MassiveServerError
+from clients.yahoo_client import YahooError, YahooNotFound, YahooOHLCV
 from livewire_scripts import fetch_fx
 
 # Real DX-Y.NYB daily OHLCV (an index: Yahoo really does report volume 0).
@@ -46,22 +46,28 @@ _EURUSD_BARS = [
 
 
 class _StubYahoo:
-    def __init__(self, *, daily=None, intraday=None, missing=()):
+    def __init__(self, *, daily=None, intraday=None, missing=(), errors=None):
         self._daily = _DXY_BARS if daily is None else daily
         self._intraday = _DXY_BARS if intraday is None else intraday
         self._missing = set(missing)
+        #: Yahoo symbol -> exception, for the transient failures the lane must survive.
+        self._errors = dict(errors or {})
         self.daily_calls: list[tuple[str, date | None]] = []
         self.intraday_calls: list[tuple[str, str]] = []
 
-    def get_daily_ohlcv(self, symbol, start=None, end=None):
+    def _guard(self, symbol):
         if symbol in self._missing:
             raise YahooNotFound(symbol)
+        if symbol in self._errors:
+            raise self._errors[symbol]
+
+    def get_daily_ohlcv(self, symbol, start=None, end=None):
+        self._guard(symbol)
         self.daily_calls.append((symbol, start))
         return self._daily
 
     def get_intraday(self, symbol, interval):
-        if symbol in self._missing:
-            raise YahooNotFound(symbol)
+        self._guard(symbol)
         self.intraday_calls.append((symbol, interval))
         return self._intraday
 
@@ -69,13 +75,16 @@ class _StubYahoo:
 class _StubMassive:
     """Records every chunk asked for, and 403s anything starting before ``floor``."""
 
-    def __init__(self, floor: date | None = None, bars=None):
+    def __init__(self, floor: date | None = None, bars=None, errors=None):
         self._floor = floor
         self._bars = _EURUSD_BARS if bars is None else bars
+        self._errors = dict(errors or {})
         self.calls: list[tuple[str, str, date, date]] = []
 
     def get_fx_intraday_bars(self, pair, timeframe, start, end):
         self.calls.append((pair, timeframe, start, end))
+        if pair in self._errors:
+            raise self._errors[pair]
         if self._floor is not None and start < self._floor:
             raise MassiveAuthError("not entitled", status_code=403)
         return self._bars
@@ -285,6 +294,54 @@ def test_intraday_symbol_missing_from_yahoo_is_counted(tmp_path):
     failures = fetch_fx.sync_intraday(["DXY"], ["1h"], tmp_path, yahoo, None, days=7)
 
     assert failures == 1
+
+
+# ---------------------------------------------------------------------------
+# a provider hiccup on one symbol must not cost every symbol behind it
+#
+# Regression for 2026-07-27, where a single transient `HTTP 422 for USDCNY=X`
+# propagated out of sync_intraday: the symbols queued behind it were never
+# fetched, and the run exited before the remaining timeframes ran at all.
+# ---------------------------------------------------------------------------
+
+
+def test_a_transient_yahoo_error_does_not_abort_the_remaining_intraday_symbols(tmp_path):
+    yahoo = _StubYahoo(errors={"USDCNY=X": YahooError("yahoo returned HTTP 422 for USDCNY=X")})
+
+    failures = fetch_fx.sync_intraday(["USDCNY", "DXY"], ["1h"], tmp_path, yahoo, None, days=7)
+
+    assert failures == 1
+    assert (tmp_path / "symbol=DXY" / "1h.parquet").exists()
+
+
+def test_a_transient_yahoo_error_does_not_abort_the_remaining_timeframes(tmp_path):
+    # 1h is Yahoo's and fails; 5m is Massive's and must still be reached. The
+    # incident lost every timeframe after the one that raised.
+    yahoo = _StubYahoo(errors={"USDCNY=X": YahooError("yahoo returned HTTP 422 for USDCNY=X")})
+
+    failures = fetch_fx.sync_intraday(["USDCNY"], ["1h", "5m"], tmp_path, yahoo, _StubMassive(), days=7)
+
+    assert failures == 1
+    assert not (tmp_path / "symbol=USDCNY" / "1h.parquet").exists()
+    assert (tmp_path / "symbol=USDCNY" / "5m.parquet").exists()
+
+
+def test_a_massive_failure_does_not_abort_the_remaining_intraday_symbols(tmp_path):
+    massive = _StubMassive(errors={"USDJPY": MassiveServerError("upstream 503", status_code=503)})
+
+    failures = fetch_fx.sync_intraday(["USDJPY", "EURUSD"], ["5m"], tmp_path, _StubYahoo(), massive, days=7)
+
+    assert failures == 1
+    assert (tmp_path / "symbol=EURUSD" / "5m.parquet").exists()
+
+
+def test_a_transient_yahoo_error_does_not_abort_the_remaining_daily_symbols(tmp_path):
+    yahoo = _StubYahoo(errors={"USDCNY=X": YahooError("yahoo returned HTTP 500 for USDCNY=X")})
+
+    failures = fetch_fx.sync_daily(["USDCNY", "DXY"], tmp_path, yahoo, days=None)
+
+    assert failures == 1
+    assert (tmp_path / "symbol=DXY" / "1d.parquet").exists()
 
 
 # ---------------------------------------------------------------------------
