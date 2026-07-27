@@ -2,6 +2,28 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Warehouse freshness backfill (2026-07-19)
+
+Dependency graph: `F1 -> F2 -> F3 -> F4 -> F5 -> F6`
+
+- [ ] **F1** (`depends_on: []`): Confirm no active warehouse writers, verify
+  provider credentials through the main checkout, and capture the pre-backfill
+  Bronze/raw/Silver cutoffs.
+- [ ] **F2** (`depends_on: [F1]`): Identify a full-history-safe recovery path
+  for corrupt `equity/NULG/1m.parquet`; preserve the current artifact before
+  any replacement and reject any repair that would publish only a short tail.
+- [ ] **F3** (`depends_on: [F2]`): Run the credentialed Massive equity-intraday
+  catch-up through the canonical orchestrator and require completion through
+  `2026-07-17` for `1m`, `5m`, `30m`, and `1h`.
+- [ ] **F4** (`depends_on: [F3]`): Run the credentialed daily job to reconcile
+  corporate actions and catch up equity, futures, commodity, FX, and CBOE
+  volatility daily lanes through their expected `2026-07-17` cutoff.
+- [ ] **F5** (`depends_on: [F4]`): Catch up FRED rates and any remaining
+  non-equity intraday lane not owned successfully by the preceding jobs.
+- [ ] **F6** (`depends_on: [F5]`): Verify raw and Bronze freshness, validate the
+  published Silver revision and full carried-symbol coverage, and report any
+  provider no-trade or irrecoverable exceptions without hiding them.
+
 ## Silver full-universe residual resolution (2026-07-16)
 
 Dependency graph: `R1 -> R2 -> R3 -> R4 -> R5 -> R6 -> R7 -> R8`

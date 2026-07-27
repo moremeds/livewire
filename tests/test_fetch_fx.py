@@ -17,9 +17,25 @@ from livewire_scripts import fetch_fx
 
 # Real DX-Y.NYB daily OHLCV (an index: Yahoo really does report volume 0).
 _DXY_BARS = [
-    YahooOHLCV(datetime(2025, 7, 9, 13, 30, tzinfo=UTC), 97.55000305175781, 97.75, 97.45999908447266, 97.47000122070312, 0),
-    YahooOHLCV(datetime(2025, 7, 10, 13, 30, tzinfo=UTC), 97.44000244140625, 97.91999816894531, 97.2699966430664, 97.6500015258789, 0),
-    YahooOHLCV(datetime(2025, 7, 11, 13, 30, tzinfo=UTC), 97.56999969482422, 97.95999908447266, 97.55999755859375, 97.8499984741211, 0),
+    YahooOHLCV(
+        datetime(2025, 7, 9, 13, 30, tzinfo=UTC), 97.55000305175781, 97.75, 97.45999908447266, 97.47000122070312, 0
+    ),
+    YahooOHLCV(
+        datetime(2025, 7, 10, 13, 30, tzinfo=UTC),
+        97.44000244140625,
+        97.91999816894531,
+        97.2699966430664,
+        97.6500015258789,
+        0,
+    ),
+    YahooOHLCV(
+        datetime(2025, 7, 11, 13, 30, tzinfo=UTC),
+        97.56999969482422,
+        97.95999908447266,
+        97.55999755859375,
+        97.8499984741211,
+        0,
+    ),
 ]
 
 # Real Massive C:EURUSD hourly bars.

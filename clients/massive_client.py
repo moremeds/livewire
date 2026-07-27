@@ -234,7 +234,9 @@ class MassiveClient:
         if timeframe not in MASSIVE_INTRADAY_PATH:
             raise ValueError(f"unsupported timeframe: {timeframe!r}. Must be one of {sorted(MASSIVE_INTRADAY_PATH)}")
         ticker = f"C:{pair.upper()}"
-        endpoint = f"/v2/aggs/ticker/{ticker}/range/{MASSIVE_INTRADAY_PATH[timeframe]}/{start.isoformat()}/{end.isoformat()}"
+        endpoint = (
+            f"/v2/aggs/ticker/{ticker}/range/{MASSIVE_INTRADAY_PATH[timeframe]}/{start.isoformat()}/{end.isoformat()}"
+        )
         rows = self._get_paginated(endpoint, {"adjusted": "false", "sort": "asc", "limit": 50000})
         return [self.normalize_intraday_bar(row, ticker=pair.upper()) for row in rows]
 
