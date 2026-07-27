@@ -278,13 +278,53 @@ python scripts/livewire_ingest.py fx --tickers DXY EURUSD --timeframes 1d 1h
 `--days` bounds only Massive. Yahoo's chart API takes discrete `range=` values, so
 Yahoo-sourced series always fetch their full window regardless.
 
+### Immutable release artifacts — production does not run from the checkout
+
+`scripts/livewire_ops.py release` builds the merged `origin/main` commit into
+`<warehouse>/releases/<sha>/` (a `git archive` export plus its own
+`uv sync --frozen --no-dev` virtualenv, then `chmod -R a-w`) and atomically
+repoints `<warehouse>/current` at it. The scheduled jobs `cd` into `current`, so
+editing, branching, or breaking the working tree cannot change what runs tonight.
+
+```bash
+python scripts/livewire_ops.py release promote            # build+serve origin/main
+python scripts/livewire_ops.py release promote --dry-run  # decide without building
+python scripts/livewire_ops.py release list               # `*` marks what is served
+python scripts/livewire_ops.py release rollback           # serve the previous one
+```
+
+- **A `git worktree` export would not work.** It leaves a `.git` file pointing
+  back at the dev repo, so the artifact stays tethered to the checkout it is
+  supposed to be independent of. `git archive` has no such tether.
+- **`ci.yml` runs on push to main for this reason.** A squash merge creates a
+  commit no pull-request run ever covered; `promote` gates on a completed,
+  successful run for that exact SHA and otherwise keeps serving the previous
+  release. `--allow-unverified` bypasses the gate and is needed exactly once,
+  to bootstrap the first release from a SHA predating the push trigger.
+- **Flipping `current` mid-run is safe.** `os.getcwd()` is physical, so a job
+  that already `cd`-ed into `current` finishes against the release it started
+  on. `prune` never collects the release `current` points at.
+- **A release carries no `.env`** (gitignored, so `git archive` omits it).
+  Credentials must live in `~/market-warehouse/.env`, which
+  `livewire_scripts/scheduled_env.py` already loads. `promote` warns when that
+  file is absent — without it a scheduled job resolves every credential to
+  nothing, the same failure the worktree note below describes.
+- **The data lake is deliberately not isolated.** It is the single source of
+  truth and both dev and production write it; concurrency there is handled where
+  it always was, by the `fcntl.flock` serialization in `clients/parquet_io.py`.
+  Containerizing instead would split that into two lock domains that do not see
+  each other, and move IB's client source address off `127.0.0.1`.
+
 ### Scheduled-job invariants worth not re-breaking
 
-- **The plists must point at the main checkout, never a worktree.** `.env` is
-  gitignored, so a worktree has none; pointing launchd at
-  `.worktrees/<branch>/` resolved every credential to nothing and killed both
-  ingestion and the failure alert that would have reported it. `.env` is now
-  resolved by walking up to `$HOME`, but the plists should still name the repo.
+- **The three job plists point at `<warehouse>/current`, never at a checkout.**
+  They used to `cd` into the repo and run whatever was on disk at that moment —
+  branch, uncommitted edits and all. Only `release-promote` still reads the
+  repo, because building the artifact is its job. The older trap this replaced:
+  pointing launchd at `.worktrees/<branch>/`, which has no `.env` (gitignored)
+  and so resolved every credential to nothing, killing both ingestion and the
+  failure alert that would have reported it. A release has no `.env` either —
+  which is why credentials must live in `~/market-warehouse/.env`.
 - **Alerts that fail to send are persisted** to `<log_dir>/alerts_undelivered/`
   and counted by the watchdog. A WARNING in the log the job just broke is not
   an alert.
@@ -592,13 +632,18 @@ python scripts/livewire_ingest.py daily --asset-class futures             # Dail
 
 **Scheduling with launchd** (macOS):
 ```bash
-# Copy examples, replace /path/to/repo with your actual repo path
-sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.daily-update.plist.example > ~/Library/LaunchAgents/com.livewire.daily-update.plist
-sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.daily-update-watchdog.plist.example > ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
-sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.intraday-catchup.plist.example > ~/Library/LaunchAgents/com.livewire.intraday-catchup.plist
-launchctl load ~/Library/LaunchAgents/com.livewire.daily-update.plist
-launchctl load ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
-launchctl load ~/Library/LaunchAgents/com.livewire.intraday-catchup.plist
+# The three jobs run the immutable release, so they take the WAREHOUSE path.
+# The promoter is the one job that reads the repo — it is what builds the release.
+WAREHOUSE=~/market-warehouse
+for L in daily-update daily-update-watchdog intraday-catchup; do
+  sed "s|/path/to/warehouse|$WAREHOUSE|g" "launchd/com.livewire.$L.plist.example" \
+    > ~/Library/LaunchAgents/com.livewire.$L.plist
+done
+sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.release-promote.plist.example \
+  > ~/Library/LaunchAgents/com.livewire.release-promote.plist
+for L in daily-update daily-update-watchdog intraday-catchup release-promote; do
+  launchctl load ~/Library/LaunchAgents/com.livewire.$L.plist
+done
 ```
 `scripts/livewire_ops.py run-daily-job` loads `~/.secrets`, repo `.env`, and `~/market-warehouse/.env` before invoking the retrying scheduled runner. The runner automatically syncs equities, futures, and cmdty via IB, then all volatility indices via CBOE's public API and DXY/FX via Yahoo+Massive, in a single invocation; pass `--asset-class <name>` to run only one IB asset class (skips both the CBOE volatility and fx syncs). After a successful run it also spawns coverage + weekly quality reports and sends the nightly digest email.
 

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.livewire.release-promote</string>
+
+    <!--
+      Builds an immutable release from origin/main and repoints
+      <warehouse>/current at it, so the scheduled jobs stop running out of the
+      dev checkout. Only promotes a SHA whose ci.yml run on main is green; a red
+      or still-running main leaves the previous release serving.
+
+      This runs FROM THE DEV CHECKOUT on purpose — it is the one job that must
+      read the repo, because it is the thing that produces the artifact.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <!-- Replace /path/to/repo with your actual repo path -->
+        <string>cd /path/to/repo &amp;&amp; /Users/chenxi/market-warehouse/.venv/bin/python scripts/livewire_ops.py release promote</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <!-- Target: 04:30 UTC daily, 30 min before intraday-catchup (05:00 UTC) -->
+        <!-- and 90 min before daily-update (06:00 UTC). -->
+        <!-- Mac TZ = Asia/Hong_Kong (UTC+8): 04:30 UTC = 12:30 HKT. -->
+        <!-- launchd has no TimeZone key, so these are Mac-local wall-clock. -->
+        <key>Hour</key>
+        <integer>12</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/com.livewire.release-promote.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/com.livewire.release-promote.stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

@@ -373,5 +373,9 @@ class TestLaunchdTemplate:
         assert "<integer>13</integer>" in text
         assert "<key>Minute</key>" in text
         assert "<integer>0</integer>" in text
-        # Same /path/to/repo substitution sentinel as the daily-update example.
-        assert "/path/to/repo" in text
+        # Same substitution sentinel as the daily-update example — and it names the
+        # WAREHOUSE, not a repo: the job runs the immutable release `current` points
+        # at, using that release's own venv, never the dev checkout.
+        assert "/path/to/warehouse/current" in text
+        assert ".venv/bin/python scripts/livewire_ops.py run-intraday-catchup-job" in text
+        assert "/path/to/repo" not in text

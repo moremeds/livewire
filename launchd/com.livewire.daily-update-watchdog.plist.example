@@ -9,8 +9,9 @@
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <!-- Replace /path/to/repo with your actual repo path -->
-        <string>cd /path/to/repo &amp;&amp; /Users/chenxi/market-warehouse/.venv/bin/python scripts/livewire_quality.py watchdog</string>
+        <!-- Replace /path/to/warehouse with your actual warehouse path. Runs the
+             immutable release `current` points at, not the dev checkout. -->
+        <string>cd /path/to/warehouse/current &amp;&amp; .venv/bin/python scripts/livewire_quality.py watchdog</string>
     </array>
 
     <key>StartCalendarInterval</key>
