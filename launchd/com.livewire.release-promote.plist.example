@@ -18,8 +18,10 @@
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <!-- Replace /path/to/repo with your actual repo path -->
-        <string>cd /path/to/repo &amp;&amp; /Users/chenxi/market-warehouse/.venv/bin/python scripts/livewire_ops.py release promote</string>
+        <!-- Replace /path/to/repo with your actual repo path. The interpreter is the
+             repo's own venv, named relatively: an absolute path here would hardcode a
+             username that need not exist on the machine running the job. -->
+        <string>cd /path/to/repo &amp;&amp; .venv/bin/python scripts/livewire_ops.py release promote</string>
     </array>
 
     <key>StartCalendarInterval</key>
