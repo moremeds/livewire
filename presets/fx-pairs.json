@@ -1,6 +1,28 @@
 {
   "name": "fx-pairs",
-  "description": "FX pairs fetched from IB as Forex MIDPOINT daily bars.",
+  "description": "DXY plus G10 and common NDF currency pairs. Daily from Yahoo (deep history); intraday from Massive for pairs and Yahoo for DXY. See docs/superpowers/specs/2026-07-27-yahoo-massive-fx-dxy-ingest-design.md",
   "asset_class": "fx",
-  "tickers": ["USDEUR"]
+  "tickers": [
+    "DXY",
+    "EURUSD",
+    "USDJPY",
+    "GBPUSD",
+    "USDCHF",
+    "USDCAD",
+    "AUDUSD",
+    "NZDUSD",
+    "USDSEK",
+    "USDNOK",
+    "USDKRW",
+    "USDTWD",
+    "USDINR",
+    "USDBRL",
+    "USDCLP",
+    "USDCOP",
+    "USDPHP",
+    "USDIDR",
+    "USDCNY",
+    "USDRUB",
+    "USDPEN"
+  ]
 }

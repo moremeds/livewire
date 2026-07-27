@@ -36,7 +36,10 @@ WATCHDOG_ALERT_FAILED_EXIT_CODE = 2
 # Silver is the served artifact. It was absent from the required set, so a
 # rebuild that never ran — or ran and failed — passed the watchdog silently
 # while Apex kept serving the previous revision.
-REQUIRED_DAILY_SCOPES = set(ASSET_CLASSES) | {"cboe", "silver"}
+# fx is named explicitly rather than inherited from ASSET_CLASSES: it left the IB loop
+# when Yahoo/Massive took over the asset class, but it still logs `=== Done fx ===` and
+# a silent failure there must still raise the watchdog.
+REQUIRED_DAILY_SCOPES = set(ASSET_CLASSES) | {"cboe", "fx", "silver"}
 
 
 def stale_equity_summary(log_file: Path) -> str | None:

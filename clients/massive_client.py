@@ -100,6 +100,25 @@ class MassiveDailyBar:
 
 
 @dataclass(frozen=True)
+class MassiveIntradayBar:
+    """Normalized Massive intraday bar. ``bar_timestamp`` is tz-aware UTC."""
+
+    bar_timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+    ticker: str
+    source: str = "massive"
+
+
+# Livewire timeframe -> Massive aggregate path segment. All four are entitled over the
+# same window; the FX floor measured 2026-07-27 was 2024-07-24 (2 years, rolling).
+MASSIVE_INTRADAY_PATH = {"1m": "1/minute", "5m": "5/minute", "30m": "30/minute", "1h": "1/hour"}
+
+
+@dataclass(frozen=True)
 class MassiveSplit:
     provider_event_id: str
     ticker: str
@@ -140,6 +159,7 @@ class MassiveClient:
         max_retries: int = _DEFAULT_MAX_RETRIES,
         backoff_factor: float = _DEFAULT_BACKOFF_FACTOR,
         telemetry: Any = None,
+        min_interval_seconds: float = 0.0,
     ):
         self._token = token or os.environ.get("MASSIVE_API_KEY")
         if not self._token:
@@ -151,6 +171,11 @@ class MassiveClient:
         self._timeout = timeout
         self._max_retries = max_retries
         self._backoff_factor = backoff_factor
+        # Proactive spacing between requests. The plan's REST limit is enforced per
+        # minute and the server sends no Retry-After header, so reactive backoff
+        # (1s, 2s, 4s) cannot recover from it — pacing has to be preemptive.
+        self._min_interval_seconds = min_interval_seconds
+        self._last_request_at: float | None = None
         self._telemetry = telemetry
         self._session = requests.Session()
         self._session.headers.update(
@@ -192,6 +217,28 @@ class MassiveClient:
             for row in self._extract_results(payload)
         ]
         return [self.normalize_daily_bar(row, ticker=ticker.upper()) for row in rows]
+
+    def get_fx_intraday_bars(
+        self,
+        pair: str,
+        timeframe: str,
+        start: date,
+        end: date,
+    ) -> list[MassiveIntradayBar]:
+        """Return intraday bars for a six-letter FX pair (e.g. ``EURUSD``).
+
+        Massive addresses FX as ``C:<PAIR>``. Requests older than the rolling entitlement
+        floor raise ``MassiveAuthError`` (HTTP 403) — that is an entitlement boundary, not
+        a missing-data signal, and callers must not read it as "the pair has no history".
+        """
+        if timeframe not in MASSIVE_INTRADAY_PATH:
+            raise ValueError(f"unsupported timeframe: {timeframe!r}. Must be one of {sorted(MASSIVE_INTRADAY_PATH)}")
+        ticker = f"C:{pair.upper()}"
+        endpoint = (
+            f"/v2/aggs/ticker/{ticker}/range/{MASSIVE_INTRADAY_PATH[timeframe]}/{start.isoformat()}/{end.isoformat()}"
+        )
+        rows = self._get_paginated(endpoint, {"adjusted": "false", "sort": "asc", "limit": 50000})
+        return [self.normalize_intraday_bar(row, ticker=pair.upper()) for row in rows]
 
     def get_grouped_daily(
         self,
@@ -265,6 +312,7 @@ class MassiveClient:
         last_exc: Exception | None = None
 
         for attempt in range(max(self._max_retries, -1) + 1):
+            self._throttle()
             started = time.monotonic()
             try:
                 resp = self._session.get(url, params=params, timeout=self._timeout)
@@ -314,6 +362,16 @@ class MassiveClient:
         if status >= 500:
             return MassiveServerError(msg, status_code=status, response_body=body)
         return MassiveAPIError(msg, status_code=status, response_body=body)
+
+    def _throttle(self) -> None:
+        """Sleep so consecutive requests are at least ``min_interval_seconds`` apart."""
+        if self._min_interval_seconds <= 0:
+            return
+        if self._last_request_at is not None:
+            wait = self._min_interval_seconds - (time.monotonic() - self._last_request_at)
+            if wait > 0:
+                time.sleep(wait)
+        self._last_request_at = time.monotonic()
 
     def _sleep_backoff(self, attempt: int, resp: requests.Response | None = None) -> None:
         retry_after = None if resp is None else resp.headers.get("Retry-After")
@@ -371,20 +429,7 @@ class MassiveClient:
             raise MassiveMalformedBarError("bar timestamp t must be an integer")
         trade_date = massive_timestamp_to_trade_date(datetime.fromtimestamp(raw_ts / 1000, UTC))
 
-        open_px = MassiveClient._finite_float(payload, "o")
-        high_px = MassiveClient._finite_float(payload, "h")
-        low_px = MassiveClient._finite_float(payload, "l")
-        close_px = MassiveClient._finite_float(payload, "c")
-        raw_volume = MassiveClient._finite_float(payload, "v")
-
-        if open_px <= 0 or close_px <= 0:
-            raise MassiveMalformedBarError("open and close must be positive")
-        if high_px < low_px or high_px < open_px or high_px < close_px:
-            raise MassiveMalformedBarError("high must be >= low, open, and close")
-        if low_px > open_px or low_px > close_px:
-            raise MassiveMalformedBarError("low must be <= open and close")
-        if raw_volume < 0:
-            raise MassiveMalformedBarError("volume must be non-negative")
+        open_px, high_px, low_px, close_px, raw_volume = MassiveClient._validated_ohlcv(payload)
 
         volume = int(round(raw_volume))
         metadata = {
@@ -500,6 +545,42 @@ class MassiveClient:
     def _payload_hash(payload: dict) -> str:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
         return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _validated_ohlcv(payload: dict) -> tuple[float, float, float, float, float]:
+        """Return (o, h, l, c, raw_volume), rejecting any bar that cannot be stored safely."""
+        open_px = MassiveClient._finite_float(payload, "o")
+        high_px = MassiveClient._finite_float(payload, "h")
+        low_px = MassiveClient._finite_float(payload, "l")
+        close_px = MassiveClient._finite_float(payload, "c")
+        raw_volume = MassiveClient._finite_float(payload, "v")
+
+        if open_px <= 0 or close_px <= 0:
+            raise MassiveMalformedBarError("open and close must be positive")
+        if high_px < low_px or high_px < open_px or high_px < close_px:
+            raise MassiveMalformedBarError("high must be >= low, open, and close")
+        if low_px > open_px or low_px > close_px:
+            raise MassiveMalformedBarError("low must be <= open and close")
+        if raw_volume < 0:
+            raise MassiveMalformedBarError("volume must be non-negative")
+
+        return open_px, high_px, low_px, close_px, raw_volume
+
+    @staticmethod
+    def normalize_intraday_bar(payload: dict, ticker: str) -> MassiveIntradayBar:
+        raw_ts = payload.get("t")
+        if not isinstance(raw_ts, int):
+            raise MassiveMalformedBarError("bar timestamp t must be an integer")
+        open_px, high_px, low_px, close_px, raw_volume = MassiveClient._validated_ohlcv(payload)
+        return MassiveIntradayBar(
+            bar_timestamp=datetime.fromtimestamp(raw_ts / 1000, UTC),
+            open=open_px,
+            high=high_px,
+            low=low_px,
+            close=close_px,
+            volume=int(round(raw_volume)),
+            ticker=ticker.upper(),
+        )
 
     @staticmethod
     def _finite_float(payload: dict, key: str) -> float:

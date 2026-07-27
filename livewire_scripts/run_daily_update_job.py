@@ -25,10 +25,20 @@ OPS_SCRIPT = REPO_ROOT / "scripts" / "livewire_ops.py"
 QUALITY_SCRIPT = REPO_ROOT / "scripts" / "livewire_quality.py"
 STORE_SCRIPT = REPO_ROOT / "scripts" / "livewire_store.py"
 
-# Volatility is synced via CBOE directly (run_cboe_volatility_sync); these are
-# the IB-backed asset classes the daily job iterates. cmdty/fx use IB MIDPOINT
-# contracts and had no owning lane before, so they went stale.
-ASSET_CLASSES = ["equity", "futures", "cmdty", "fx"]
+# Volatility is synced via CBOE directly (run_cboe_volatility_sync) and fx via
+# Yahoo/Massive (run_fx_sync); these are the IB-backed asset classes the daily job
+# iterates. cmdty uses IB MIDPOINT contracts and had no owning lane before, so it
+# went stale.
+#
+# fx left this list when Yahoo took over the asset class: `resolve_fx_pair()` accepts
+# only the 36 hardcoded `SUPPORTED_IB_FX_PAIRS`, which contains no NDF currency and
+# cannot express a non-six-letter symbol like DXY, so an IB-driven fx lane could never
+# cover the universe the preset now declares.
+ASSET_CLASSES = ["equity", "futures", "cmdty"]
+
+#: Nightly fx catch-up window. Wide enough to absorb a missed run without re-seeding
+#: the full rolling history every night.
+FX_CATCHUP_DAYS = 7
 
 
 @dataclass(frozen=True)
@@ -574,6 +584,34 @@ def _run_scheduled_lane(
     return result.returncode
 
 
+def build_fx_command(config: RunnerConfig) -> list[str]:
+    """Build the nightly fx catch-up command.
+
+    ``--days`` keeps the nightly run to a short window; the deep seed is a separate
+    manual run with the flag omitted. Both merge, so the accumulated intraday history
+    is preserved either way.
+    """
+    return [config.python_bin, str(INGEST_SCRIPT), "fx", "--days", str(FX_CATCHUP_DAYS)]
+
+
+def run_fx_sync(
+    config: RunnerConfig,
+    env: dict[str, str] | None = None,
+    runner: callable = subprocess.run,
+    now_fn: callable = _utc_now,
+) -> int:
+    """Sync DXY and FX pairs via Yahoo (daily) and Massive (pair intraday)."""
+    return _run_scheduled_lane(
+        config,
+        build_fx_command(config),
+        "FX Sync",
+        "fx",
+        env=env,
+        runner=runner,
+        now_fn=now_fn,
+    )
+
+
 def run_corporate_action_sync(
     config: RunnerConfig,
     *,
@@ -643,12 +681,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Sync all volatility indices via CBOE API (authoritative source)
     cboe_code = run_cboe_volatility_sync(config, env=env)
 
+    # DXY + FX pairs via Yahoo/Massive. Neither reads IB, so this lane is unaffected
+    # by a 2FA-gated or down Gateway.
+    fx_code = run_fx_sync(config, env=env)
+
     # A Gateway outage is a degraded run, not a failed one. It must not mark
     # the job failed and must not gate anything that does not read IB.
     degraded = sorted(name for name, code in lane_codes.items() if code == GATEWAY_DOWN_EXIT_CODE)
     failed = {name: code for name, code in lane_codes.items() if code not in (0, GATEWAY_DOWN_EXIT_CODE)}
 
-    final_code = action_code or cboe_code or next(iter(failed.values()), 0)
+    final_code = action_code or cboe_code or fx_code or next(iter(failed.values()), 0)
 
     # Silver reads equity bronze and the corporate-action store — nothing
     # else. Gating it on every lane meant one stale FX contract or a 2FA-gated
