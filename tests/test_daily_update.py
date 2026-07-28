@@ -112,9 +112,20 @@ class TestGetNyseHolidays:
         holidays = get_nyse_holidays(2025)
         assert date(2025, 6, 19) in holidays
 
-    def test_juneteenth_not_before_2021(self):
-        holidays = get_nyse_holidays(2020)
-        assert date(2020, 6, 19) not in holidays
+    def test_juneteenth_not_before_2022(self):
+        assert date(2020, 6, 19) not in get_nyse_holidays(2020)
+        # 2021 is the trap: Juneteenth became a FEDERAL holiday that year, but the
+        # law was signed 2021-06-17 and the exchanges stayed open for the 06-18
+        # observance. Treating it as closed hid ~3,900 symbols' missing bars from
+        # every gap check, because the day did not exist to be missing.
+        assert date(2021, 6, 18) not in get_nyse_holidays(2021)
+        assert is_trading_day(date(2021, 6, 18))
+
+    def test_juneteenth_from_2022_uses_the_observed_date(self):
+        # 2022-06-19 fell on a Sunday; the NYSE closed Monday the 20th.
+        assert date(2022, 6, 20) in get_nyse_holidays(2022)
+        assert not is_trading_day(date(2022, 6, 20))
+        assert is_trading_day(date(2022, 6, 17))
 
     def test_contains_independence_day(self):
         holidays = get_nyse_holidays(2025)
