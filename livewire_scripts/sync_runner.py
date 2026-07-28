@@ -26,6 +26,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from clients.network_preflight import EGRESS_DOWN_EXIT_CODE, unreachable_providers
 from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, parse_last_summary_json
 
 logger = logging.getLogger("livewire.sync_runner")
@@ -219,7 +220,22 @@ def run_sync(
     target_date = config.target_date or trading_day_fn()
     equity_tickers = ticker_union(config.equity_presets)
 
-    def _phase(label: str, command: list[str], **kwargs) -> int:
+    # One probe per provider, before any phase runs. A phase whose provider is
+    # unreachable is skipped in milliseconds instead of burning its full
+    # MDW_SYNC_PHASE_TIMEOUT_SECONDS budget against a dead network.
+    egress_down = unreachable_providers(("massive_rest", "massive_flatfile", "cboe", "fred"))
+    for provider, host in sorted(egress_down.items()):
+        logger.error("egress unreachable: %s (%s) — its phases will be skipped", provider, host)
+
+    def _phase(label: str, command: list[str], *, requires: str | None = None, **kwargs) -> int:
+        if requires is not None and requires in egress_down:
+            logger.warning(
+                "=== Skipped %s (egress unreachable: %s) ===",
+                label,
+                egress_down[requires],
+            )
+            phase_results.append({"label": label, "exit": EGRESS_DOWN_EXIT_CODE, "duration_s": 0.0})
+            return EGRESS_DOWN_EXIT_CODE
         start = time.monotonic()
         rc = run_phase(label, command, config.log_dir, runner=runner, **kwargs)
         phase_results.append({"label": label, "exit": rc, "duration_s": round(time.monotonic() - start, 1)})
@@ -256,21 +272,23 @@ def run_sync(
             "--force",
         ],
         allow_completed_summary=True,
+        requires="massive_rest",
     )
-    if rc != 0:
+    if rc not in (0, EGRESS_DOWN_EXIT_CODE):
         failures.append("equity_daily")
 
     # Phase 2: FRED Treasury rates
-    rc = _phase("daily_backfill_fred_rates", [py, ingest, "fred-rates"])
-    if rc != 0:
+    rc = _phase("daily_backfill_fred_rates", [py, ingest, "fred-rates"], requires="fred")
+    if rc not in (0, EGRESS_DOWN_EXIT_CODE):
         failures.append("fred_rates")
 
     # Phase 3: CBOE volatility daily
     rc = _phase(
         "daily_backfill_volatility_cboe",
         [py, ingest, "cboe-vol", "--preset", config.vol_daily_preset],
+        requires="cboe",
     )
-    if rc != 0:
+    if rc not in (0, EGRESS_DOWN_EXIT_CODE):
         failures.append("cboe_volatility")
 
     # Phase 3b: Full-universe equity daily via Massive day_aggs flat files.
@@ -289,8 +307,9 @@ def run_sync(
             "--workers",
             str(int(os.getenv("MDW_FLATFILE_DAILY_WORKERS", "4"))),
         ],
+        requires="massive_flatfile",
     )
-    if rc != 0:
+    if rc not in (0, EGRESS_DOWN_EXIT_CODE):
         failures.append("equity_day_aggs")
 
     # Phase 4: Full-market equity intraday via Massive flat files
@@ -306,8 +325,9 @@ def run_sync(
             "--workers",
             str(int(os.getenv("MDW_FLATFILE_WORKERS", "4"))),
         ],
+        requires="massive_flatfile",
     )
-    if rc != 0:
+    if rc not in (0, EGRESS_DOWN_EXIT_CODE):
         failures.append("intraday_equity_flatfiles")
 
     # Phase 5: Volatility intraday via IB
@@ -388,7 +408,8 @@ def run_sync(
                 "job": "daily_backfill",
                 "target_date": str(target_date),
                 "phases": phase_results,
-                "failed": [p["label"] for p in phase_results if p["exit"] != 0],
+                "failed": [p["label"] for p in phase_results if p["exit"] not in (0, EGRESS_DOWN_EXIT_CODE)],
+                "skipped": [p["label"] for p in phase_results if p["exit"] == EGRESS_DOWN_EXIT_CODE],
             },
             separators=(",", ":"),
         )

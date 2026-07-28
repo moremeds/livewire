@@ -325,6 +325,22 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
   and so resolved every credential to nothing, killing both ingestion and the
   failure alert that would have reported it. A release has no `.env` either —
   which is why credentials must live in `~/market-warehouse/.env`.
+- **A dead network skips its lanes, it does not stall them.** Every provider
+  client has a per-*request* timeout, which is the wrong granularity: a lane
+  looping over thousands of tickers pays it thousands of times. On 2026-07-24
+  outbound egress was unavailable for about a day and four `daily-backfill`
+  phases each burned the full `MDW_SYNC_PHASE_TIMEOUT_SECONDS` — 24 hours of a
+  wedged run. The IB phases in that same run finished in seconds, because they
+  dial `127.0.0.1`. `clients/network_preflight.py` now TCP-probes each provider
+  host once before any phase, and a phase whose host is unreachable is skipped
+  with `EGRESS_DOWN_EXIT_CODE` (87, distinct from 86/124). Skips land in
+  `SUMMARY_JSON["skipped"]`, not `["failed"]` — degraded, not a data failure.
+  Bypass with `LIVEWIRE_SKIP_NETWORK_PREFLIGHT=1`.
+- **The scheduled jobs do not use the local proxy.** `HTTP(S)_PROXY` is set in
+  interactive shells but not in `~/market-warehouse/.env`, and the plists set
+  only `PATH` — so a lane run by hand and the same lane run by launchd take
+  different egress paths. A provider that works when you test it may still fail
+  at 05:00 UTC.
 - **Alerts that fail to send are persisted** to `<log_dir>/alerts_undelivered/`
   and counted by the watchdog. A WARNING in the log the job just broke is not
   an alert.
