@@ -54,8 +54,12 @@ def get_nyse_holidays(year: int) -> set[date]:
     memorial = may31 - timedelta(days=(may31.weekday()) % 7)
     holidays.add(memorial)
 
-    # Juneteenth — observed since 2022
-    if year >= 2021:
+    # Juneteenth — a FEDERAL holiday from 2021, but a MARKET holiday only from 2022.
+    # The law was signed 2021-06-17, too late for the exchanges to close for the
+    # 2021-06-18 observance: NYSE and Nasdaq traded that Friday, and it was a
+    # quadruple-witching session (SPY 118.7M shares, the week's highest volume).
+    # The NYSE first closed for Juneteenth on 2022-06-20.
+    if year >= 2022:
         holidays.add(_observed(date(year, 6, 19)))
 
     # Independence Day
