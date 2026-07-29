@@ -124,9 +124,7 @@ def _quality_jobs_section(run_date: str, log_dir: Path) -> list[str]:
         # Deliberately not "(not found)": a run with no failures is a pass, and
         # a missing log is already reported by every other section.
         return ["Quality jobs: all green"]
-    return [f"Quality jobs: {len(seen)} FAILED"] + [
-        f"  {label}: {reason}" for label, reason in sorted(seen.items())
-    ]
+    return [f"Quality jobs: {len(seen)} FAILED"] + [f"  {label}: {reason}" for label, reason in sorted(seen.items())]
 
 
 def _coverage_section(run_date: str, log_dir: Path) -> list[str]:
