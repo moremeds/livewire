@@ -127,6 +127,33 @@ def build_venv(dest: Path) -> None:
     )
 
 
+def build_node_modules(dest: Path) -> None:
+    """Install the Node alert dependencies into the release.
+
+    `git archive` exports only tracked files and `node_modules/` is gitignored,
+    so every release built since the artifact cutover shipped without
+    nodemailer. The failure alert is the one message a broken nightly run
+    depends on, and it could not send:
+
+        Cannot find package 'nodemailer' imported from
+          <release>/livewire_node/send_daily_update_failure_email.mjs
+
+    Must run before `freeze`, which makes the tree read-only.
+
+    This fails the promote rather than warning: `npm ci` needs the network, so
+    a registry outage now blocks promotion where it previously succeeded
+    silently. That is the correct trade — a release that cannot alert is
+    precisely the failure this guards against, and `promote` keeps serving the
+    previous release when it refuses to build.
+    """
+    if not (dest / "package.json").exists():
+        return
+    _run(["npm", "ci", "--omit=dev"], cwd=dest)
+    # A release whose alert path cannot import is never promoted — the same
+    # rule `build_venv` already applies to the Python tree.
+    _run(["node", "--input-type=module", "-e", "import('nodemailer')"], cwd=dest)
+
+
 def freeze(dest: Path) -> None:
     """Make the release tree read-only, so an accidental write cannot land."""
     _run(["chmod", "-R", "a-w", dest])
@@ -221,6 +248,7 @@ def promote(
             _discard(staging)
         export_tree(target_sha, staging)
         build_venv(staging)
+        build_node_modules(staging)
         freeze(staging)
         # Only a fully built release ever appears under its bare SHA.
         staging.rename(dest)

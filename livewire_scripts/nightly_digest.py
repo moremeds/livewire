@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -101,6 +102,31 @@ def _silver_section(run_date: str, log_dir: Path) -> list[str]:
     return lines
 
 
+#: `_spawn_post_success_quality` writes exactly this on a failure. Matching the
+#: existing line means no parallel marker format to keep in sync — three weeks of
+#: real logs are already in this shape.
+_QUALITY_WARNING_RE = re.compile(r"^WARNING: (?P<label>.+?) failed: (?P<reason>.+)$", re.MULTILINE)
+
+
+def _quality_jobs_section(run_date: str, log_dir: Path) -> list[str]:
+    """Report post-success quality jobs that failed.
+
+    `_spawn_post_success_quality` swallows these into a WARNING by design — they
+    must never flip a successful daily run to failure. But nothing counted them,
+    so `coverage` timed out at its 600s budget every single night from
+    2026-07-07 to at least 07-27 and the digest never mentioned it. Three weeks
+    with no coverage data and no signal that coverage was the thing broken.
+    """
+    text = _read_text(log_dir / f"daily_update_{run_date}.log") or ""
+    # Dedup by label: one job failing on all three retry passes is one problem.
+    seen = {m["label"]: m["reason"].strip() for m in _QUALITY_WARNING_RE.finditer(text)}
+    if not seen:
+        # Deliberately not "(not found)": a run with no failures is a pass, and
+        # a missing log is already reported by every other section.
+        return ["Quality jobs: all green"]
+    return [f"Quality jobs: {len(seen)} FAILED"] + [f"  {label}: {reason}" for label, reason in sorted(seen.items())]
+
+
 def _coverage_section(run_date: str, log_dir: Path) -> list[str]:
     text = _read_text(log_dir / f"coverage_{run_date}.log")
     lines = ["Coverage:"]
@@ -129,6 +155,7 @@ def build_digest(run_date: date, log_dir: Path, data_lake: Path) -> str:
         _outcomes_section(run, log_dir),
         _phases_section(run, log_dir),
         _silver_section(run, log_dir),
+        _quality_jobs_section(run, log_dir),
         _coverage_section(run, log_dir),
         _disk_section(data_lake),
     ]

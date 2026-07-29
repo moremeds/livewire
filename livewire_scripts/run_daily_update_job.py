@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from pathlib import Path
 
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts.paths import warehouse_dir as resolve_warehouse_dir
+from livewire_scripts.sync_runner import TIMEOUT_EXIT_CODE
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -172,21 +174,98 @@ def node_binary_exists(node_bin: str) -> bool:
     return shutil.which(node_bin) is not None
 
 
+@dataclass(frozen=True)
+class JobDeadline:
+    """A monotonic wall-clock budget for the WHOLE scheduled job.
+
+    `main()` runs seven lanes sequentially: corporate-actions, equity, futures,
+    cmdty, CBOE, FX, Silver. A per-lane budget of N hours therefore permits a
+    7N-hour job, which is how the 2026-07-28 run reached 19.44h while every
+    individual lane still looked bounded.
+
+    Measured whole-job wall clock across 2026-07-01..28: healthy runs peak at
+    3.27h (07-25; 07-26 3.22h, 07-27 2.94h); anomalies ran 4.96h, 8.10h,
+    10.32h, 19.44h. The job starts 06:00 UTC and the watchdog checks at 10:30
+    UTC, so the budget must sit in the narrow band (3.27h, 4.5h). 4h gives
+    ~22% headroom over the worst healthy run — tight, and the honest number.
+
+    A 4h budget would have killed the 07-22 run at 4.96h. Whether that run was
+    healthy-but-slow or an early instance of the same wedge is unknown. If
+    ~5h runs turn out to be normal, raise MDW_DAILY_JOB_DEADLINE_SECONDS and
+    move the watchdog with it rather than silently killing real work.
+    """
+
+    total_seconds: float
+    started_at: float
+    clock: callable = time.monotonic
+
+    @classmethod
+    def start(cls, total_seconds: float | None = None, clock: callable = time.monotonic) -> JobDeadline:
+        budget = (
+            float(os.getenv("MDW_DAILY_JOB_DEADLINE_SECONDS", str(4 * 60 * 60)))
+            if total_seconds is None
+            else float(total_seconds)
+        )
+        return cls(total_seconds=budget, started_at=clock(), clock=clock)
+
+    def remaining(self) -> float:
+        return self.total_seconds - (self.clock() - self.started_at)
+
+
+def _run_in_own_process_group(command, *, stdout, env, timeout):
+    """Run `command` in its own session and kill the whole group on timeout.
+
+    `subprocess.run(timeout=...)` calls `process.kill()`, which signals only
+    the direct child. A lane that fans out (`corporate-actions --workers 4`)
+    would leave every worker orphaned — still running, still holding the
+    per-parquet `fcntl.flock`, still wedged — and launchd would start the next
+    instance into lock contention with processes it believes it killed.
+
+    Killing the group is safe: bronze publication is temp -> validate ->
+    os.replace(), so a killed writer leaves a temp file rather than a torn
+    parquet, and the kernel releases every flock when the fds close.
+    """
+    with subprocess.Popen(
+        list(command),
+        stdout=stdout,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+        start_new_session=True,
+    ) as proc:
+        try:
+            proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.communicate()
+            raise
+        return subprocess.CompletedProcess(list(command), proc.returncode)
+
+
 def run_daily_update_attempt(
     command: Sequence[str],
     log_file: Path,
     env: dict[str, str] | None = None,
-    runner: callable = subprocess.run,
+    runner: callable = _run_in_own_process_group,
+    timeout: float | None = None,
+    deadline: JobDeadline | None = None,
 ) -> subprocess.CompletedProcess:
+    budget = timeout if timeout is not None else (deadline.remaining() if deadline is not None else None)
+    if budget is not None and budget <= 0:
+        # A non-positive timeout is a crash, not a skip. The job is already over
+        # its total budget; do not start another lane.
+        append_log(log_file, "=== Deadline exhausted before this lane started ===")
+        return subprocess.CompletedProcess(list(command), TIMEOUT_EXIT_CODE)
     with log_file.open("a", encoding="utf-8") as handle:
-        return runner(
-            list(command),
-            stdout=handle,
-            stderr=subprocess.STDOUT,
-            text=True,
-            env=env,
-            check=False,
-        )
+        try:
+            return runner(list(command), stdout=handle, env=env, timeout=budget)
+        except subprocess.TimeoutExpired:
+            # `budget` may be None when no deadline was threaded through; do not
+            # format it unconditionally or the handler itself raises TypeError
+            # and the timeout escapes as an unhandled exception.
+            spent = "no budget" if budget is None else f"{budget:.0f}s"
+            append_log(log_file, f"=== Timed out after {spent} (process group killed) ===")
+            return subprocess.CompletedProcess(list(command), TIMEOUT_EXIT_CODE)
 
 
 def send_failure_alert(
@@ -324,14 +403,53 @@ def _completion_scope_from_args(args: Sequence[str]) -> str:
         return "daily"
 
 
+def _page_failure(
+    config: RunnerConfig,
+    log_file: Path,
+    exit_code: int,
+    *,
+    attempts: int | None,
+    env: dict[str, str] | None = None,
+    runner: callable = subprocess.run,
+) -> None:
+    """Send the failure alert and persist it if the send itself fails.
+
+    Factored out of `run_with_retries` so `_run_scheduled_lane` can page too —
+    it had no alert path at all, which is why the 2026-07-28 corporate-action
+    wedge produced no alert from this job.
+    """
+    alert_request = AlertRequest(
+        run_date=log_file.stem.removeprefix("daily_update_"),
+        log_file=log_file,
+        attempts=attempts,
+        exit_code=exit_code,
+        error_summary=extract_error_summary(log_file),
+        repo_root=REPO_ROOT,
+    )
+    alert_result = send_failure_alert(config, alert_request, log_file, env=env, runner=runner)
+    if alert_result is None:
+        return
+
+    alert_output = (alert_result.stdout or "").strip()
+    if alert_result.returncode == 0:
+        append_log(log_file, f"Failure alert sent successfully. {alert_output}".strip())
+    else:
+        append_log(
+            log_file,
+            (f"WARNING: failure alert returned non-zero exit code {alert_result.returncode}. {alert_output}").strip(),
+        )
+        record_undelivered_alert(config, alert_request, alert_output, log_file)
+
+
 def run_with_retries(
     config: RunnerConfig,
     daily_update_args: Sequence[str],
     env: dict[str, str] | None = None,
     sleep_fn: callable = time.sleep,
-    runner: callable = subprocess.run,
+    runner: callable = _run_in_own_process_group,
     now_fn: callable = _utc_now,
     completion_scope: str | None = None,
+    deadline: JobDeadline | None = None,
 ) -> int:
     started_at = now_fn()
     log_file = build_log_file(config.log_dir, started_at)
@@ -356,7 +474,7 @@ def run_with_retries(
             log_file,
             f"=== Attempt {attempt}/{config.max_attempts} {now_fn():%Y-%m-%dT%H:%M:%SZ} ===",
         )
-        result = run_daily_update_attempt(command, log_file, env=env, runner=runner)
+        result = run_daily_update_attempt(command, log_file, env=env, runner=runner, deadline=deadline)
         final_exit_code = result.returncode
 
         if result.returncode == GATEWAY_DOWN_EXIT_CODE:
@@ -369,6 +487,19 @@ def run_with_retries(
                 f"=== Skipped {done_scope} {now_fn():%Y-%m-%dT%H:%M:%SZ} (IB Gateway unreachable) ===",
             )
             return GATEWAY_DOWN_EXIT_CODE
+
+        if result.returncode == TIMEOUT_EXIT_CODE:
+            # `break`, NOT `return`: the only send_failure_alert call sits after
+            # this loop, so an early return would make the timeout the one
+            # failure mode that never pages — in the mechanism whose whole
+            # purpose is to page. A wedge is also not transient; retrying just
+            # spends the rest of the total deadline for nothing.
+            append_log(
+                log_file,
+                f"=== Timed out {done_scope} {now_fn():%Y-%m-%dT%H:%M:%SZ} (no retry) ===",
+            )
+            final_exit_code = TIMEOUT_EXIT_CODE
+            break
 
         if result.returncode == 0:
             append_log(
@@ -398,34 +529,7 @@ def run_with_retries(
         (f"=== Failed {now_fn():%Y-%m-%dT%H:%M:%SZ} after {config.max_attempts} attempt(s) ==="),
     )
 
-    alert_request = AlertRequest(
-        run_date=log_file.stem.removeprefix("daily_update_"),
-        log_file=log_file,
-        attempts=config.max_attempts,
-        exit_code=final_exit_code,
-        error_summary=extract_error_summary(log_file),
-        repo_root=REPO_ROOT,
-    )
-    alert_result = send_failure_alert(
-        config,
-        alert_request,
-        log_file,
-        env=env,
-        runner=runner,
-    )
-    if alert_result is None:
-        return final_exit_code
-
-    alert_output = (alert_result.stdout or "").strip()
-    if alert_result.returncode == 0:
-        append_log(log_file, f"Failure alert sent successfully. {alert_output}".strip())
-    else:
-        append_log(
-            log_file,
-            (f"WARNING: failure alert returned non-zero exit code {alert_result.returncode}. {alert_output}").strip(),
-        )
-        record_undelivered_alert(config, alert_request, alert_output, log_file)
-
+    _page_failure(config, log_file, final_exit_code, attempts=config.max_attempts, env=env, runner=runner)
     return final_exit_code
 
 
@@ -529,34 +633,26 @@ def record_undelivered_alert(
 def run_cboe_volatility_sync(
     config: RunnerConfig,
     env: dict[str, str] | None = None,
-    runner: callable = subprocess.run,
+    runner: callable = _run_in_own_process_group,
     now_fn: callable = _utc_now,
+    deadline: JobDeadline | None = None,
 ) -> int:
-    """Sync all CBOE volatility indices directly from CBOE API."""
-    started_at = now_fn()
-    log_file = build_log_file(config.log_dir, started_at)
-    command = build_cboe_volatility_command(config)
+    """Sync all CBOE volatility indices directly from CBOE API.
 
-    append_log(
-        log_file,
-        f"=== CBOE Volatility Sync {started_at:%Y-%m-%dT%H:%M:%SZ} ===",
+    This used to carry its own copy of the lane body, which emitted byte-for-byte
+    the same log lines as `_run_scheduled_lane` but silently missed every
+    improvement made there — including the failure alert and the job deadline.
+    """
+    return _run_scheduled_lane(
+        config,
+        build_cboe_volatility_command(config),
+        "CBOE Volatility Sync",
+        "cboe",
+        env=env,
+        runner=runner,
+        now_fn=now_fn,
+        deadline=deadline,
     )
-    append_log(log_file, f"Command: {' '.join(command)}")
-
-    result = run_daily_update_attempt(command, log_file, env=env, runner=runner)
-
-    if result.returncode == 0:
-        append_log(
-            log_file,
-            f"=== Done cboe {now_fn():%Y-%m-%dT%H:%M:%SZ} ===",
-        )
-    else:
-        append_log(
-            log_file,
-            f"=== CBOE Volatility Sync Failed {now_fn():%Y-%m-%dT%H:%M:%SZ} (exit_code={result.returncode}) ===",
-        )
-
-    return result.returncode
 
 
 def _run_scheduled_lane(
@@ -568,19 +664,27 @@ def _run_scheduled_lane(
     env: dict[str, str] | None,
     runner: callable,
     now_fn: callable,
+    deadline: JobDeadline | None = None,
 ) -> int:
     started_at = now_fn()
     log_file = build_log_file(config.log_dir, started_at)
     append_log(log_file, f"=== {label} {started_at:%Y-%m-%dT%H:%M:%SZ} ===")
     append_log(log_file, f"Command: {' '.join(command)}")
-    result = run_daily_update_attempt(command, log_file, env=env, runner=runner)
+    result = run_daily_update_attempt(command, log_file, env=env, runner=runner, deadline=deadline)
     if result.returncode == 0:
         append_log(log_file, f"=== Done {done_scope} {now_fn():%Y-%m-%dT%H:%M:%SZ} ===")
-    else:
-        append_log(
-            log_file,
-            f"=== {label} Failed {now_fn():%Y-%m-%dT%H:%M:%SZ} (exit_code={result.returncode}) ===",
-        )
+        return result.returncode
+
+    append_log(
+        log_file,
+        f"=== {label} Failed {now_fn():%Y-%m-%dT%H:%M:%SZ} (exit_code={result.returncode}) ===",
+    )
+    # This function had no alert path at all, so a corporate-actions, CBOE, FX
+    # or Silver failure was visible only in a log nobody reads — which is
+    # exactly what happened to the 2026-07-28 corporate-action wedge. A down
+    # Gateway stays silent: degraded is not failed.
+    if result.returncode != GATEWAY_DOWN_EXIT_CODE:
+        _page_failure(config, log_file, result.returncode, attempts=None, env=env, runner=runner)
     return result.returncode
 
 
@@ -597,8 +701,9 @@ def build_fx_command(config: RunnerConfig) -> list[str]:
 def run_fx_sync(
     config: RunnerConfig,
     env: dict[str, str] | None = None,
-    runner: callable = subprocess.run,
+    runner: callable = _run_in_own_process_group,
     now_fn: callable = _utc_now,
+    deadline: JobDeadline | None = None,
 ) -> int:
     """Sync DXY and FX pairs via Yahoo (daily) and Massive (pair intraday)."""
     return _run_scheduled_lane(
@@ -617,8 +722,9 @@ def run_corporate_action_sync(
     *,
     dry_run: bool,
     env: dict[str, str] | None = None,
-    runner: callable = subprocess.run,
+    runner: callable = _run_in_own_process_group,
     now_fn: callable = _utc_now,
+    deadline: JobDeadline | None = None,
 ) -> int:
     now = now_fn()
     command = build_corporate_action_command(
@@ -642,8 +748,9 @@ def run_silver_rebuild(
     *,
     dry_run: bool,
     env: dict[str, str] | None = None,
-    runner: callable = subprocess.run,
+    runner: callable = _run_in_own_process_group,
     now_fn: callable = _utc_now,
+    deadline: JobDeadline | None = None,
 ) -> int:
     return _run_scheduled_lane(
         config,
@@ -660,13 +767,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = build_config()
     args = list(argv or sys.argv[1:])
     env = os.environ.copy()
+    # ONE budget for the whole job. Seven lanes run sequentially below, so a
+    # per-lane budget of N hours would permit a 7N-hour job.
+    deadline = JobDeadline.start()
 
     # If --asset-class is explicitly specified, run just that one.
     if "--asset-class" in args:
-        return run_with_retries(config, args, env=env, completion_scope=_completion_scope_from_args(args))
+        return run_with_retries(
+            config, args, env=env, completion_scope=_completion_scope_from_args(args), deadline=deadline
+        )
 
     dry_run = "--dry-run" in args
-    action_code = run_corporate_action_sync(config, dry_run=dry_run, env=env)
+    action_code = run_corporate_action_sync(config, dry_run=dry_run, env=env, deadline=deadline)
 
     # Otherwise, run all asset classes sequentially.
     lane_codes: dict[str, int] = {}
@@ -676,14 +788,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             args + ["--asset-class", asset_class],
             env=env,
             completion_scope=asset_class,
+            deadline=deadline,
         )
 
     # Sync all volatility indices via CBOE API (authoritative source)
-    cboe_code = run_cboe_volatility_sync(config, env=env)
+    cboe_code = run_cboe_volatility_sync(config, env=env, deadline=deadline)
 
     # DXY + FX pairs via Yahoo/Massive. Neither reads IB, so this lane is unaffected
     # by a 2FA-gated or down Gateway.
-    fx_code = run_fx_sync(config, env=env)
+    fx_code = run_fx_sync(config, env=env, deadline=deadline)
 
     # A Gateway outage is a degraded run, not a failed one. It must not mark
     # the job failed and must not gate anything that does not read IB.
@@ -697,7 +810,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Gateway blocked the adjusted rebuild for the whole equity universe.
     silver_inputs_ok = action_code == 0 and lane_codes.get("equity", 0) == 0
     if silver_inputs_ok:
-        silver_code = run_silver_rebuild(config, dry_run=dry_run, env=env)
+        silver_code = run_silver_rebuild(config, dry_run=dry_run, env=env, deadline=deadline)
         if silver_code != 0:
             final_code = final_code or silver_code
     else:

@@ -244,3 +244,71 @@ def test_digest_silver_section_tolerates_a_missing_rebuild(tmp_path):
     body = build_digest(date(2026, 7, 2), log_dir, tmp_path)
 
     assert "Silver rebuild:\n  (not found)" in body
+
+
+def _write_quality_warnings(log_dir: Path, run: str, lines: list[str]) -> None:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    body = "=== Done equity 2026-07-27T02:00:00Z ===\n" + "\n".join(lines) + "\n"
+    (log_dir / f"daily_update_{run}.log").write_text(body, encoding="utf-8")
+
+
+def test_the_digest_reports_a_failed_quality_job(tmp_path):
+    """coverage timed out at its 600s budget every night from 2026-07-07 to at
+    least 07-27. `_spawn_post_success_quality` swallows these into a WARNING on
+    purpose — they must never flip a successful run to failure — but nothing
+    counted them, so nobody found out for three weeks."""
+    log_dir = tmp_path / "logs"
+    _write_quality_warnings(
+        log_dir,
+        "2026-07-27",
+        ["WARNING: coverage report failed: Command '[...]' timed out after 600 seconds"],
+    )
+
+    out = build_digest(date(2026, 7, 27), log_dir, tmp_path)
+
+    assert "Quality jobs: 1 FAILED" in out
+    assert "coverage report" in out
+    assert "timed out after 600 seconds" in out
+
+
+def test_the_digest_says_so_when_every_quality_job_passed(tmp_path):
+    log_dir = tmp_path / "logs"
+    _write_quality_warnings(log_dir, "2026-07-27", [])
+
+    assert "Quality jobs: all green" in build_digest(date(2026, 7, 27), log_dir, tmp_path)
+
+
+def test_one_job_failing_on_every_pass_is_reported_once(tmp_path):
+    log_dir = tmp_path / "logs"
+    _write_quality_warnings(log_dir, "2026-07-27", ["WARNING: coverage report failed: boom"] * 3)
+
+    out = build_digest(date(2026, 7, 27), log_dir, tmp_path)
+
+    assert "Quality jobs: 1 FAILED" in out
+    assert out.count("coverage report") == 1
+
+
+def test_several_failed_quality_jobs_are_all_reported(tmp_path):
+    log_dir = tmp_path / "logs"
+    _write_quality_warnings(
+        log_dir,
+        "2026-07-27",
+        [
+            "WARNING: coverage report failed: timed out after 600 seconds",
+            "WARNING: nightly digest failed: exit_code=1",
+        ],
+    )
+
+    out = build_digest(date(2026, 7, 27), log_dir, tmp_path)
+
+    assert "Quality jobs: 2 FAILED" in out
+    assert "nightly digest" in out
+
+
+def test_an_unrelated_warning_is_not_a_quality_job(tmp_path):
+    """The alert-delivery WARNING uses the same 'WARNING: ... ' prefix but is
+    not a post-success quality job."""
+    log_dir = tmp_path / "logs"
+    _write_quality_warnings(log_dir, "2026-07-27", ["WARNING: some other thing happened"])
+
+    assert "Quality jobs: all green" in build_digest(date(2026, 7, 27), log_dir, tmp_path)

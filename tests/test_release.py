@@ -179,6 +179,44 @@ def test_build_venv_fails_when_uv_produces_no_interpreter(tmp_path, monkeypatch)
         release.build_venv(dest)
 
 
+def test_build_node_modules_installs_the_alert_dependencies(tmp_path, monkeypatch):
+    """`git archive` exports only tracked files and node_modules/ is gitignored,
+    so every release since the artifact cutover shipped without nodemailer and
+    the failure alert could not send."""
+    dest = tmp_path / "rel"
+    dest.mkdir()
+    (dest / "package.json").write_text('{"dependencies": {"nodemailer": "8.0.2"}}')
+    calls = []
+    monkeypatch.setattr(release, "_run", lambda cmd, cwd=None, check=True: calls.append(list(map(str, cmd))))
+
+    release.build_node_modules(dest)
+
+    assert calls[0] == ["npm", "ci", "--omit=dev"]
+    assert "nodemailer" in calls[1][-1]
+
+
+def test_build_node_modules_is_a_noop_without_package_json(tmp_path, monkeypatch):
+    dest = tmp_path / "rel"
+    dest.mkdir()
+    calls = []
+    monkeypatch.setattr(release, "_run", lambda cmd, cwd=None, check=True: calls.append(cmd))
+
+    release.build_node_modules(dest)
+
+    assert calls == []
+
+
+def test_node_modules_are_installed_before_the_tree_is_frozen():
+    """`freeze` chmods the tree a-w; npm cannot write after that.
+
+    The promote path's local is `staging`, not `dest` — match the call site.
+    """
+    import inspect
+
+    source = inspect.getsource(release)
+    assert source.index("build_node_modules(staging)") < source.index("freeze(staging)")
+
+
 def test_freeze_strips_write_permission(tmp_path, monkeypatch):
     seen = {}
     monkeypatch.setattr(release, "_run", lambda cmd, cwd=None, check=True: seen.update(argv=list(map(str, cmd))))
