@@ -296,6 +296,20 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
 - **A `git worktree` export would not work.** It leaves a `.git` file pointing
   back at the dev repo, so the artifact stays tethered to the checkout it is
   supposed to be independent of. `git archive` has no such tether.
+- ⚠️ **`promote` exports `origin/main` but RUNS the checkout's own builder.**
+  The two come from different commits. A fix to `release.py` itself does not
+  take effect until the checkout you run `promote` from contains it — exporting
+  the fixed SHA is not enough. Measured 2026-07-29: promoting from a feature
+  branch produced a release whose *source* had `build_node_modules` but whose
+  *build* never ran it, so `node_modules/` was silently absent again.
+  **`git checkout main && git pull` before promoting anything that changes the
+  promoter.**
+- ⚠️ **Never `rm -rf` the release `current` points at.** `promote` short-circuits
+  on `current already at <sha> — nothing to promote`, checking the symlink and
+  not the directory, so deleting the target leaves `current` **dangling** and
+  `promote` refuses to rebuild it. Recover with `release rollback` (restores a
+  real target), then `promote`. Jobs already running are unaffected —
+  `os.getcwd()` is physical — but any new job would fail.
 - **`ci.yml` runs on push to main for this reason.** A squash merge creates a
   commit no pull-request run ever covered; `promote` gates on a completed,
   successful run for that exact SHA and otherwise keeps serving the previous
@@ -767,7 +781,9 @@ in each selected whole-market file; ticker and preset filters are unsupported.
 `scripts/livewire_ingest.py flatfile-ingest-daily` widens the daily ingest
 universe from the ~2.5K preset-driven `daily` command to the full SIP universe
 (~20K tickers) by reading Massive's `day_aggs_v1` whole-market daily flat files
-back to 2003. Same operational model as `flatfile-ingest` (discover / backfill
+back to the provider's rolling GET floor (**2021-07-28** as of 2026-07-29 — see
+the warning below; the LIST-advertised 2003 start is not fetchable). Same
+operational model as `flatfile-ingest` (discover / backfill
 / catch-up / repair, durable cursor under `~/market-warehouse/cursors/`,
 capacity guard on full backfill), but writes per-ticker `1d.parquet` bronze
 via `BronzeClient` — no intraday derivation. Raw partitions live under
@@ -784,10 +800,30 @@ python scripts/livewire_ingest.py flatfile-ingest-daily catch-up --days 14
 python scripts/livewire_ingest.py flatfile-ingest-daily repair --dates 2026-06-11
 ```
 
-Requires `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY`. The full backfill
-(~22 years × 12K–20K tickers × 1 row/day) is large but bronze-only writes; no
-IB calls. Both `flatfile-ingest` and `flatfile-ingest-daily` can run
-side-by-side — they use separate raw paths and separate cursors.
+Requires `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY`. Both
+`flatfile-ingest` and `flatfile-ingest-daily` can run side-by-side — they use
+separate raw paths and separate cursors.
+
+⚠️ **The flat-file GET floor is a rolling 5 years. LIST lies.** Measured
+2026-07-29 with one GET per calendar year against both prefixes, then a binary
+search: **2021-07-27 → 403, 2021-07-28 → OK**, i.e. exactly 1827 days = 5.00
+years before the probe date, identical for `day_aggs` and `minute_aggs`. Every
+year 2003–2021 returns `403 Forbidden`. The LIST-derived `discovery.earliest`
+of `2003-09-10` (5755 days) is the same trap already documented for
+`global_forex/` — *probe permission boundaries with GET, never with LIST*.
+An earlier version of this file claimed day_aggs reaches "back to 2003"; it
+does not, and never did.
+
+Two consequences:
+
+- **`backfill` is not a deep-history tool.** It re-fetches inside the rolling
+  window only. As of 2026-07-29 the warehouse already holds the entire entitled
+  range (`raw_completed` starts 2021-06-11, *earlier* than the current floor,
+  because those files were fetched when the window reached further back).
+- **Never delete raw partitions to reclaim space.** Anything older than the
+  current floor cannot be re-downloaded, ever — the same standing as the triage
+  verdict store. Re-measure before trusting any of this; the floor rolls forward
+  one day per day. Result: `logs/probes/2026-07-29-flatfile-get-floor.json`.
 
 ### Coverage tracking + auto-recovery
 
