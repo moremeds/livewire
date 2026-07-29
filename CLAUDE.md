@@ -328,6 +328,21 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
 - **Alerts that fail to send are persisted** to `<log_dir>/alerts_undelivered/`
   and counted by the watchdog. A WARNING in the log the job just broke is not
   an alert.
+- **Every lane pages, and the timeout pages too.** `send_failure_alert` sits at
+  the *end* of `run_with_retries` and is reachable only by falling out of the
+  retry loop — an early `return` for a new failure mode silently skips it, so
+  the timeout branch `break`s. `_run_scheduled_lane` had **no alert path at
+  all**, which is why the 2026-07-28 corporate-action wedge produced no alert
+  from this job; corporate-actions, CBOE, FX and Silver all run through it.
+  `run_cboe_volatility_sync` also carried a byte-identical private copy of the
+  lane body, so it silently missed every fix made to the shared one — it now
+  calls `_run_scheduled_lane` like the rest. A down Gateway stays silent:
+  degraded is not failed.
+- **A release carries no `node_modules`.** `git archive` exports only tracked
+  files and `node_modules/` is gitignored, so releases shipped without
+  `nodemailer` and every alert path was dead. `release promote` now runs
+  `npm ci --omit=dev` between `build_venv` and `freeze` (it must precede the
+  `chmod -R a-w`) and import-checks the result.
 - **The watchdog requires the `silver` scope** and reads the equity
   `SUMMARY_JSON`: `=== Done equity ===` with `updated=0` is not healthy.
 - **coverage/weekly/digest run once, after Silver.** They used to fire inside
@@ -553,6 +568,16 @@ Massive S3 flat-file environment variables:
 - `MDW_SYNC_PHASE_TIMEOUT_SECONDS` (default `21600`, 6h): hard per-phase budget
   in `daily-backfill`. There was no timeout on this path at all, so a wedged IB
   call blocked its phase forever and launchd would not start another instance.
+- `MDW_DAILY_JOB_DEADLINE_SECONDS` (default `14400`, 4h): **total** wall-clock
+  budget for one `run-daily-job` run, shared across every lane. It is
+  deliberately a total, not per-lane: `main()` runs seven lanes sequentially
+  (corporate-actions, equity, futures, cmdty, CBOE, FX, Silver), so a per-lane
+  budget of N hours would permit a 7N-hour job. Measured whole-job wall clock
+  over 2026-07-01..28: healthy runs peak at **3.27h**, the watchdog checks at
+  **+4.5h**, so the budget must sit in that narrow band. A lane that exhausts
+  the budget is killed **by process group** (`subprocess.run`'s own timeout
+  signals only the direct child, orphaning `--workers` pools that keep holding
+  `fcntl.flock`), is never retried, and **pages**.
 
 Postgres analytical publish environment variables:
 - `MDW_POSTGRES_DSN`: Postgres DSN for `scripts/livewire_store.py rebuild-postgres` and `scripts/livewire_store.py smoke-postgres`.

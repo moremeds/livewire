@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -303,7 +304,7 @@ class TestSubprocessPaths:
     def test_run_daily_update_attempt(self, tmp_path):
         log_file = tmp_path / "daily.log"
 
-        def _runner(command, stdout, stderr, text, env, check):
+        def _runner(command, stdout=None, env=None, timeout=None, **_):
             assert command[-1] == "--dry-run"
             stdout.write("hello from sync\n")
             return SimpleNamespace(returncode=0)
@@ -451,7 +452,7 @@ class TestEndOfDayQualityReport:
         config.alert_script.parent.mkdir(parents=True, exist_ok=True)
         config.alert_script.write_text("print('x')\n", encoding="utf-8")
 
-        def _runner(command, stdout, stderr, text, env, check):
+        def _runner(command, stdout=None, env=None, timeout=None, **_):
             assert command[0] == "/usr/bin/python3"
             assert command[2] == "send-alert"
             assert "--error-summary" in command
@@ -482,7 +483,7 @@ class TestRunWithRetries:
             ]
         )
 
-        def _runner(command, stdout, stderr, text, env, check):
+        def _runner(command, stdout=None, env=None, timeout=None, **_):
             stdout.write("sync ok\n")
             return SimpleNamespace(returncode=0, stdout="")
 
@@ -518,7 +519,7 @@ class TestRunWithRetries:
             ]
         )
 
-        def _runner(command, stdout, stderr, text, env, check):
+        def _runner(command, stdout=None, env=None, timeout=None, **_):
             stdout.write("attempt output\n")
             return next(results)
 
@@ -560,7 +561,7 @@ class TestRunWithRetries:
             ]
         )
 
-        def _runner(command, stdout=None, stderr=None, text=None, env=None, check=None):
+        def _runner(command, stdout=None, env=None, timeout=None, **_):
             if hasattr(stdout, "write"):
                 stdout.write("sync failed\n")
             return next(results)
@@ -596,7 +597,7 @@ class TestRunWithRetries:
             ]
         )
 
-        def _runner(command, stdout=None, stderr=None, text=None, env=None, check=None):
+        def _runner(command, stdout=None, env=None, timeout=None, **_):
             stdout.write("sync failed\n")
             return SimpleNamespace(returncode=6, stdout="")
 
@@ -630,7 +631,7 @@ class TestRunWithRetries:
             ]
         )
 
-        def _runner(command, stdout=None, stderr=None, text=None, env=None, check=None):
+        def _runner(command, stdout=None, env=None, timeout=None, **_):
             if hasattr(stdout, "write"):
                 stdout.write("sync failed\n")
             return next(results)
@@ -670,7 +671,7 @@ class TestCboeVolatilitySync:
             ]
         )
 
-        def _runner(command, stdout, stderr, text, env, check):
+        def _runner(command, stdout=None, env=None, timeout=None, **_):
             stdout.write("CBOE fetch ok\n")
             return SimpleNamespace(returncode=0)
 
@@ -706,7 +707,7 @@ class TestCboeVolatilitySync:
             ]
         )
 
-        def _runner(command, stdout, stderr, text, env, check):
+        def _runner(command, stdout=None, env=None, timeout=None, **_):
             stdout.write("fx ok\n")
             return SimpleNamespace(returncode=0)
 
@@ -727,7 +728,7 @@ class TestCboeVolatilitySync:
             ]
         )
 
-        def _runner(command, stdout, stderr, text, env, check):
+        def _runner(command, stdout=None, env=None, timeout=None, **_):
             stdout.write("fx failed\n")
             return SimpleNamespace(returncode=1)
 
@@ -747,7 +748,7 @@ class TestCboeVolatilitySync:
             ]
         )
 
-        def _runner(command, stdout, stderr, text, env, check):
+        def _runner(command, stdout=None, env=None, timeout=None, **_):
             stdout.write("CBOE fetch failed\n")
             return SimpleNamespace(returncode=1)
 
@@ -768,7 +769,7 @@ class TestSilverScheduledLanes:
         config = _config(tmp_path)
         calls = []
 
-        def runner(command, stdout, stderr, text, env, check):
+        def runner(command, stdout=None, env=None, timeout=None, **_):
             calls.append(command)
             return SimpleNamespace(returncode=0)
 
@@ -794,7 +795,7 @@ class TestMain:
             calls.append("actions")
             return 0
 
-        def daily(cfg, args, env, completion_scope=None):
+        def daily(cfg, args, env, completion_scope=None, **kwargs):
             calls.append(completion_scope)
             return 0
 
@@ -838,7 +839,7 @@ class TestMain:
     def test_failed_ingestion_prevents_silver_rebuild(self):
         config = _config(Path("/tmp/test"))
 
-        def daily(cfg, args, env, completion_scope=None):
+        def daily(cfg, args, env, completion_scope=None, **kwargs):
             return 3 if completion_scope == "equity" else 0
 
         with (
@@ -870,7 +871,7 @@ class TestMain:
         cboe_called = []
         fx_called = []
 
-        def _run_ib(cfg, args, env, completion_scope=None):
+        def _run_ib(cfg, args, env, completion_scope=None, **kwargs):
             ib_calls.append(args)
             assert completion_scope == args[args.index("--asset-class") + 1]
             return 0
@@ -912,12 +913,13 @@ class TestMain:
                 ):
                     assert main(["--dry-run", "--asset-class", "equity"]) == 0
 
-        run_mock.assert_called_once_with(
-            config,
-            ["--dry-run", "--asset-class", "equity"],
-            env=os.environ.copy(),
-            completion_scope="equity",
-        )
+        assert run_mock.call_count == 1
+        call = run_mock.call_args
+        assert call.args == (config, ["--dry-run", "--asset-class", "equity"])
+        assert call.kwargs["env"] == os.environ.copy()
+        assert call.kwargs["completion_scope"] == "equity"
+        # One budget for the whole job, threaded into every lane.
+        assert call.kwargs["deadline"].total_seconds == 4 * 60 * 60
         cboe_mock.assert_not_called()
         fx_mock.assert_not_called()
 
@@ -926,7 +928,7 @@ class TestMain:
         config = _config(Path("/tmp/test"))
         codes = dict(lane_codes or {})
 
-        def _run(cfg, args, env, completion_scope=None):
+        def _run(cfg, args, env, completion_scope=None, **kwargs):
             name = args[args.index("--asset-class") + 1]
             if name in gateway_down:
                 return GATEWAY_DOWN_EXIT_CODE
@@ -990,3 +992,135 @@ class TestMain:
         assert rc == 0
         silver.assert_called_once()
         assert no_real_quality_spawn.call_count == 1
+
+
+class TestJobDeadline:
+    """One budget for the WHOLE job.
+
+    `main()` runs seven lanes sequentially (corporate-actions, equity, futures,
+    cmdty, CBOE, FX, Silver), so a per-lane budget of N hours permits a 7N-hour
+    job. Measured whole-job wall clock over 2026-07-01..28: healthy runs peak at
+    3.27h (07-25), anomalies reached 19.44h (07-28). The watchdog checks at
+    +4.5h (06:00 -> 10:30 UTC), so the budget must sit in (3.27h, 4.5h).
+    """
+
+    def test_the_default_clears_the_worst_healthy_run_and_beats_the_watchdog(self, monkeypatch):
+        monkeypatch.delenv("MDW_DAILY_JOB_DEADLINE_SECONDS", raising=False)
+        deadline = daily_runner.JobDeadline.start()
+        assert 3.27 * 3600 < deadline.total_seconds < 4.5 * 3600
+
+    def test_remaining_shrinks_as_the_job_runs(self):
+        clock = iter([1000.0, 4600.0])
+        deadline = daily_runner.JobDeadline.start(total_seconds=7200, clock=lambda: next(clock))
+        assert deadline.remaining() == 7200 - 3600
+
+    def test_the_budget_is_tunable(self, monkeypatch):
+        monkeypatch.setenv("MDW_DAILY_JOB_DEADLINE_SECONDS", "600")
+        assert daily_runner.JobDeadline.start().total_seconds == 600
+
+
+class TestAttemptTimeout:
+    def test_a_hung_attempt_is_killed_and_reported_as_timeout(self, tmp_path):
+        log_file = tmp_path / "job.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+
+        def hang(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="daily", timeout=kwargs["timeout"])
+
+        result = run_daily_update_attempt(["x"], log_file, runner=hang, timeout=10)
+
+        assert result.returncode == daily_runner.TIMEOUT_EXIT_CODE
+        assert "process group killed" in log_file.read_text(encoding="utf-8")
+
+    def test_a_lane_started_past_the_deadline_never_runs(self, tmp_path):
+        """Handing subprocess a zero or negative timeout is a crash, not a skip."""
+        log_file = tmp_path / "job.log"
+        called = []
+        deadline = daily_runner.JobDeadline.start(total_seconds=0, clock=lambda: 0.0)
+
+        result = run_daily_update_attempt(
+            ["x"], log_file, runner=lambda cmd, **kw: called.append(cmd), deadline=deadline
+        )
+
+        assert result.returncode == daily_runner.TIMEOUT_EXIT_CODE
+        assert called == []
+
+    def test_a_healthy_attempt_spends_the_remaining_deadline(self, tmp_path):
+        log_file = tmp_path / "job.log"
+        seen = {}
+
+        def runner(cmd, **kwargs):
+            seen.update(kwargs)
+            return SimpleNamespace(returncode=0, stdout="")
+
+        clock = iter([0.0, 600.0])
+        deadline = daily_runner.JobDeadline.start(total_seconds=7200, clock=lambda: next(clock))
+        result = run_daily_update_attempt(["x"], log_file, runner=runner, deadline=deadline)
+
+        assert result.returncode == 0
+        assert seen["timeout"] == 7200 - 600
+
+
+class TestTimeoutPages:
+    """send_failure_alert sits at the END of run_with_retries and is reachable
+    only by falling out of the retry loop. An early `return` would make the
+    timeout the one failure mode that never pages."""
+
+    def test_a_timeout_pages_exactly_once_and_is_not_retried(self, tmp_path):
+        config = _config(tmp_path)
+        attempts = []
+
+        def hang(cmd, **kwargs):
+            attempts.append(1)
+            raise subprocess.TimeoutExpired(cmd="daily", timeout=kwargs.get("timeout") or 1)
+
+        sent = []
+        with patch.object(
+            daily_runner,
+            "send_failure_alert",
+            side_effect=lambda *a, **k: sent.append(1) or SimpleNamespace(returncode=0, stdout=""),
+        ):
+            rc = run_with_retries(config, ["--asset-class", "equity"], runner=hang, sleep_fn=lambda _: None)
+
+        assert rc == daily_runner.TIMEOUT_EXIT_CODE
+        assert len(attempts) == 1, "a wedge is not transient; retrying spends the deadline for nothing"
+        assert sent == [1], "the timeout must page"
+
+
+class TestScheduledLanePages:
+    """corporate-actions / CBOE / FX / Silver run through _run_scheduled_lane,
+    which had no alert path at all — which is why the 2026-07-28 corporate-action
+    wedge produced no alert from this job."""
+
+    def _lane(self, tmp_path, returncode, sent):
+        config = _config(tmp_path)
+        with patch.object(
+            daily_runner,
+            "send_failure_alert",
+            side_effect=lambda *a, **k: sent.append(1) or SimpleNamespace(returncode=0, stdout=""),
+        ):
+            return daily_runner._run_scheduled_lane(
+                config,
+                ["x"],
+                "Corporate Action Sync",
+                "corporate-actions",
+                env=None,
+                runner=lambda cmd, **kw: SimpleNamespace(returncode=returncode, stdout=""),
+                now_fn=_utc_now,
+            )
+
+    def test_a_failing_lane_pages(self, tmp_path):
+        sent = []
+        assert self._lane(tmp_path, 1, sent) == 1
+        assert sent == [1]
+
+    def test_a_successful_lane_does_not_page(self, tmp_path):
+        sent = []
+        assert self._lane(tmp_path, 0, sent) == 0
+        assert sent == []
+
+    def test_a_gateway_down_lane_does_not_page(self, tmp_path):
+        """Degraded is not failed — an unreachable Gateway must stay silent."""
+        sent = []
+        assert self._lane(tmp_path, GATEWAY_DOWN_EXIT_CODE, sent) == GATEWAY_DOWN_EXIT_CODE
+        assert sent == []
