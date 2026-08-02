@@ -562,7 +562,12 @@ def run_post_success_quality(
     warning the digest is supposed to carry could never appear.
     """
     # Coverage may launch a recovery subprocess, so give it a longer budget.
-    _spawn_post_success_quality(runner, log_file, ["coverage"], "coverage report", timeout=600)
+    # 600s was not a budget, it was a guillotine: the footer pass is ~150-300s
+    # per timeframe across five timeframes, so coverage timed out every night
+    # from 2026-07-07 and the weekly report has been an empty stub since.
+    # `FOOTER_READ_WORKERS` takes 5.3x off that; this absorbs what threads
+    # cannot — a cold glob measured at 281s for a single timeframe.
+    _spawn_post_success_quality(runner, log_file, ["coverage"], "coverage report", timeout=1800)
     # weekly self-skips on non-Sunday.
     _spawn_post_success_quality(runner, log_file, ["weekly"], "weekly quality report")
     run_date = log_file.stem.removeprefix("daily_update_")
