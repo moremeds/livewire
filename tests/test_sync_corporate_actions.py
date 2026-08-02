@@ -11,13 +11,13 @@ from livewire_scripts import sync_corporate_actions
 
 
 class _Client:
-    def __init__(self, *, fail: str | None = None):
-        self.fail = fail
+    def __init__(self, *, fail=None):
+        self.fail = {fail} if isinstance(fail, str) else set(fail or ())
         self.calls: list[tuple[str, str]] = []
 
     def get_splits(self, ticker):
         self.calls.append(("splits", ticker))
-        if ticker == self.fail:
+        if ticker in self.fail:
             raise RuntimeError("provider failed")
         return [SimpleNamespace(provider_event_id=f"{ticker}-split")]
 
@@ -170,6 +170,35 @@ def test_provider_failure_counts_symbol_and_continues(tmp_path, capsys):
     assert [call[0] for call in store.calls] == ["MSFT"]
     summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert summary["failed"] == 1
+
+
+def test_one_flaky_symbol_in_a_large_run_does_not_fail_the_run(tmp_path, capsys):
+    """`run_daily_update_job` gates the Silver rebuild on this exit code.
+
+    2026-08-02: `TGNA: Response ended prematurely` — 1 symbol of 14,577, 0.007% —
+    exited 1 and Silver was skipped for the whole ~13K equity universe. That
+    symbol just keeps the actions already in the store.
+    """
+    tickers = [f"T{i}" for i in range(200)]
+    client = _Client(fail="T7")
+
+    rc = sync_corporate_actions.run(["--tickers", *tickers], client=client, store=_Store(), data_lake_root=tmp_path)
+
+    out = capsys.readouterr()
+    assert rc == 0
+    assert json.loads(out.out.strip().splitlines()[-1])["failed"] == 1
+    # Never silent: exit 0 must still say a symbol was dropped.
+    assert "1/200 symbols failed" in out.err
+
+
+def test_a_systemic_failure_rate_still_fails_the_run(tmp_path):
+    """Above the rate, the run is systemic and must block Silver."""
+    tickers = [f"T{i}" for i in range(100)]
+    client = _Client(fail={f"T{i}" for i in range(20)})
+
+    assert (
+        sync_corporate_actions.run(["--tickers", *tickers], client=client, store=_Store(), data_lake_root=tmp_path) == 1
+    )
 
 
 def test_empty_discovered_scope_is_rejected(tmp_path):
