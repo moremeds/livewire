@@ -293,9 +293,7 @@ def build_coverage(
                 # No files behind this view yet; leave it out rather than abort.
                 counts[view_name] = 0
                 continue
-            counted = con.execute(
-                "SELECT count(*) FROM coverage WHERE view_name = ?", [view_name]
-            ).fetchone()
+            counted = con.execute("SELECT count(*) FROM coverage WHERE view_name = ?", [view_name]).fetchone()
             counts[view_name] = int(counted[0]) if counted else 0
         if not any(counts.values()):
             raise RuntimeError(f"coverage build produced no rows for any of {[s[0] for s in sources]}")
