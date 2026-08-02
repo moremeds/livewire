@@ -152,9 +152,7 @@ def _cmd_lag(args: argparse.Namespace) -> int:
                     "silver_lagging_bronze": [
                         {"symbol": s, "bronze_last": str(b), "silver_last": str(v)} for s, b, v in lagging
                     ],
-                    "absent_from_silver": [
-                        {"symbol": s, "rows": n, "bronze_last": str(d)} for s, n, d in absent
-                    ],
+                    "absent_from_silver": [{"symbol": s, "rows": n, "bronze_last": str(d)} for s, n, d in absent],
                 },
                 indent=2,
             )

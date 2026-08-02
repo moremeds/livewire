@@ -159,9 +159,7 @@ def test_symbol_files_skips_absent_symbols(lake: Path, silver: Path) -> None:
 
 def test_symbol_files_can_fail_closed(lake: Path, silver: Path) -> None:
     with pytest.raises(FileNotFoundError):
-        symbol_files(
-            "bronze_equity_1d", ["NOT_A_SYMBOL"], lake_root=lake, silver_root=silver, missing_ok=False
-        )
+        symbol_files("bronze_equity_1d", ["NOT_A_SYMBOL"], lake_root=lake, silver_root=silver, missing_ok=False)
 
 
 def test_read_symbols_returns_only_named_symbols_with_real_values(lake: Path, silver: Path) -> None:
@@ -258,9 +256,7 @@ def test_build_coverage_fails_when_every_source_is_empty(tmp_path: Path) -> None
         build_coverage(tmp_path / "out.duckdb", lake_root=empty_lake, silver_root=empty_silver)
 
 
-def test_build_coverage_tolerates_individually_absent_asset_classes(
-    tmp_path: Path, lake: Path, silver: Path
-) -> None:
+def test_build_coverage_tolerates_individually_absent_asset_classes(tmp_path: Path, lake: Path, silver: Path) -> None:
     """cmdty/fx are legitimately absent on a fresh lake and must not abort the build."""
     counts = build_coverage(tmp_path / "analytics.duckdb", lake_root=lake, silver_root=silver)
     assert counts["bronze_cmdty_1d"] == 0

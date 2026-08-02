@@ -115,9 +115,7 @@ def test_bars_accepts_an_extra_predicate(wired: Path, capsys: pytest.CaptureFixt
     assert "2026-07-30" not in out
 
 
-def test_sql_binds_only_the_views_the_query_names(
-    wired: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_sql_binds_only_the_views_the_query_names(wired: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["sql", "SELECT count(*) AS n FROM bronze_equity_1d"]) == 0
     captured = capsys.readouterr()
     assert "binding views: bronze_equity_1d" in captured.err

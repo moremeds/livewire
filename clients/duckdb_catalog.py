@@ -107,9 +107,7 @@ def view_specs(
     ]
     specs.append(ViewSpec("corporate_actions", str(bronze / "asset_class=corporate_action"), "events.parquet"))
     specs.append(ViewSpec("silver_equity_1d", str(silver / "asset_class=equity"), "1d.parquet"))
-    specs.append(
-        ViewSpec("silver_factors", str(silver / "adjustments" / "asset_class=equity"), "factors.parquet")
-    )
+    specs.append(ViewSpec("silver_factors", str(silver / "adjustments" / "asset_class=equity"), "factors.parquet"))
     return specs
 
 
@@ -228,8 +226,7 @@ def read_symbols(
 # parquet_metadata() over the equity 1d glob measured 471s against 118s for
 # this plain aggregate.
 COVERAGE_SOURCES: tuple[tuple[str, str], ...] = tuple(
-    [(f"bronze_{asset}_1d", "trade_date") for asset in _DAILY_ASSET_CLASSES]
-    + [("silver_equity_1d", "trade_date")]
+    [(f"bronze_{asset}_1d", "trade_date") for asset in _DAILY_ASSET_CLASSES] + [("silver_equity_1d", "trade_date")]
 )
 
 _COVERAGE_DDL = """
