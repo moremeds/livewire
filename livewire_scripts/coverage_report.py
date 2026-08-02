@@ -17,9 +17,12 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from functools import partial
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -47,6 +50,18 @@ _OPS_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ops.py"
 TIMEFRAMES: tuple[str, ...] = ("1d", "1m", "1h", "5m", "30m")
 DEFAULT_THRESHOLD = float(os.getenv("MDW_COVERAGE_ALERT_THRESHOLD", "0.95"))
 DEFAULT_SAFETY_CAP = 100
+
+# Threads for the per-file footer pass. Measured 2026-08-02 over the 13,270
+# equity `1d` files, filesystem cache warm: 1 -> 154.0s, 8 -> 34.9s,
+# 16 -> 29.2s, 32 -> 25.2s. 16 takes 5.3x off the wall clock; past that the
+# curve flattens and only the file-descriptor pressure keeps growing.
+#
+# This is why coverage had to be parallel at all: five timeframes at ~150-300s
+# each does not fit the 600s budget `_spawn_post_success_quality` gives it, and
+# hasn't since the universe reached ~20K symbols. It timed out every night from
+# 2026-07-07, so coverage logs stop at 2026-06-17 and every weekly report since
+# has been an empty "No coverage logs found" stub.
+FOOTER_READ_WORKERS = 16
 
 
 def _resolved_data_lake() -> Path:
@@ -181,11 +196,19 @@ def compute_coverage(
         universe = on_disk if (tf == "1d" or not traded_today) else set(traded_today)
 
         column_name = "trade_date" if tf == "1d" else "bar_timestamp"
-        latest_by_symbol = {
-            _symbol_from_parquet_path(path): latest
-            for path in parquet_paths
-            if (latest := _latest_date_in_parquet(path, column_name)) is not None
-        }
+        # Threaded: the pass is one small footer read per file, so it is bound by
+        # I/O rather than the GIL — pyarrow releases it for the read and the parse.
+        started = time.monotonic()
+        with ThreadPoolExecutor(max_workers=FOOTER_READ_WORKERS) as pool:
+            latest_dates = pool.map(partial(_latest_date_in_parquet, column_name=column_name), parquet_paths)
+            latest_by_symbol = {
+                _symbol_from_parquet_path(path): latest
+                for path, latest in zip(parquet_paths, latest_dates, strict=True)
+                if latest is not None
+            }
+        # Logged so the next time this outgrows its budget it is measurable rather
+        # than a bare timeout. It outgrew the old one silently for four weeks.
+        log.info("%s: read %d footers in %.1fs", tf, len(parquet_paths), time.monotonic() - started)
         present_symbols = {
             symbol
             for symbol in universe

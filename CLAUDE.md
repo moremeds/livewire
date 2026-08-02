@@ -380,6 +380,24 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
   Exit 0 with failures still prints a WARNING naming the count.
 - **The watchdog requires the `silver` scope** and reads the equity
   `SUMMARY_JSON`: `=== Done equity ===` with `updated=0` is not healthy.
+- ⚠️ **Coverage's cost is per-file, and it outgrew its budget silently.**
+  `compute_coverage` opens one parquet footer per symbol per timeframe. Measured
+  2026-08-02: `1d` alone is 13,270 files at 11.8 ms each = **154s single-threaded**,
+  and there are five timeframes. Against the 600s budget in
+  `_spawn_post_success_quality` it timed out **every night from 2026-07-07** —
+  coverage logs stop at 2026-06-17, so `weekly` (a pure parser over those logs)
+  has produced nothing but 83-byte `No coverage logs found` stubs ever since.
+  Nothing was wrong with the data; the detector was blind.
+  `FOOTER_READ_WORKERS=16` takes 5.3x off it (154.0s → 29.2s; 32 threads only
+  reaches 25.2s, so the curve is flat past 16), and the budget is now 1800s to
+  absorb what threads cannot — a **cold glob measured at 281s for one
+  timeframe**, against 0.6s warm for the next. Cold is the normal morning state,
+  the same asymmetry the DuckDB catalog is built around.
+- **A swallowed WARNING is how this hid for four weeks.** `_spawn_post_success_quality`
+  must never flip a successful run to failure — that part is right — but nothing
+  counted the warnings. `nightly_digest._quality_jobs_section` now reports them;
+  keep it, it is the only thing standing between a dead detector and another
+  month of silence.
 - **coverage/weekly/digest run once, after Silver.** They used to fire inside
   each asset class's success branch — four digests a night, all before Silver,
   so `_silver_section` parsed a log that could not yet contain Silver's
