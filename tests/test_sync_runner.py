@@ -474,8 +474,7 @@ class TestRunSync:
         )
         assert "vol_1h_derive" in summary["failed"]
 
-    def test_postgres_rebuild_when_dsn_set(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("MDW_POSTGRES_DSN", "postgresql://test/db")
+    def test_duckdb_coverage_refresh_runs(self, tmp_path):
         config = _make_config(tmp_path)
         commands: list[list[str]] = []
 
@@ -486,15 +485,14 @@ class TestRunSync:
         with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
             run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
         joined = [" ".join(c) for c in commands]
-        assert any("rebuild-postgres" in c and "equity" in c for c in joined)
-        assert any("rebuild-postgres" in c and "volatility" in c for c in joined)
+        assert any("duckdb build" in c for c in joined)
 
-    def test_postgres_failure_returns_nonzero(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("MDW_POSTGRES_DSN", "postgresql://test/db")
+    def test_duckdb_coverage_failure_returns_nonzero(self, tmp_path):
+        """Freshness reporting going stale must fail the run, not pass quietly."""
         config = _make_config(tmp_path)
 
         def selective_runner(command, **kwargs):
-            if "rebuild-postgres" in command:
+            if "duckdb" in command:
                 return CompletedProcess(args=command, returncode=1)
             return CompletedProcess(args=command, returncode=0)
 
@@ -502,22 +500,7 @@ class TestRunSync:
             rc = run_sync(config, runner=selective_runner, trading_day_fn=lambda: "2026-05-28")
         assert rc == 1
 
-    def test_postgres_skipped_when_dsn_unset(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
-        config = _make_config(tmp_path)
-        commands: list[list[str]] = []
-
-        def capture(command, **kwargs):
-            commands.append(command)
-            return CompletedProcess(args=command, returncode=0)
-
-        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
-            run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
-        joined = [" ".join(c) for c in commands]
-        assert not any("rebuild-postgres" in c for c in joined)
-
-    def test_expected_phase_count(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
+    def test_expected_phase_count(self, tmp_path):
         config = _make_config(tmp_path)
         commands: list[list[str]] = []
 
@@ -528,14 +511,13 @@ class TestRunSync:
         with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
             run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
         # 1 equity daily + 1 FRED + 1 CBOE + 1 day_aggs + 1 full-market equity
-        # intraday + 2 vol intraday (30m, 5m)
-        assert len(commands) == 7
+        # intraday + 2 vol intraday (30m, 5m) + 1 DuckDB coverage refresh
+        assert len(commands) == 8
 
 
 class TestMain:
     def test_default_args(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
-        monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
         monkeypatch.delenv("MDW_DAILY_BACKFILL_TARGET_DATE", raising=False)
 
         with patch("livewire_scripts.sync_runner.run_sync", return_value=0) as mock:
@@ -546,7 +528,6 @@ class TestMain:
 
     def test_all_overrides(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
-        monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
 
         with patch("livewire_scripts.sync_runner.run_sync", return_value=0) as mock:
             main(
@@ -563,7 +544,6 @@ class TestMain:
 
     def test_no_overrides(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
-        monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
         monkeypatch.delenv("MDW_DAILY_BACKFILL_TARGET_DATE", raising=False)
 
         with patch("livewire_scripts.sync_runner.run_sync", return_value=0) as mock:

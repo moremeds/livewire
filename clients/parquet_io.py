@@ -22,7 +22,7 @@ import pyarrow.parquet as pq
 # Compression codec for all bronze parquet writes. zstd level 3 is ~28% smaller
 # than snappy on OHLCV bars (measured on real equity 1m/5m/30m/1h files) at
 # effectively the same write CPU. It is lossless and transparent to every reader
-# (pyarrow / pandas / DuckDB / Postgres decompress automatically), so the on-disk
+# (pyarrow / pandas / DuckDB decompress automatically), so the on-disk
 # filename and format are unchanged. On the HDD-backed lake, fewer bytes means a
 # lighter cold read pass on every subsequent merge-and-rewrite.
 PARQUET_COMPRESSION = "zstd"

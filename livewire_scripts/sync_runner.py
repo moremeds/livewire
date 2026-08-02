@@ -3,7 +3,7 @@
 
 Replaces tools/run_daily_backfill.sh with a testable Python module.
 Runs Massive equity daily + intraday, FRED rates, CBOE volatility,
-IB vol intraday, and optional Postgres rebuild.
+IB vol intraday, and the DuckDB coverage refresh.
 """
 
 from __future__ import annotations
@@ -336,7 +336,7 @@ def run_sync(
 
     # Phase 5b: Derive 1h from 30m locally.
     # Wrapped because this ran outside the phase harness: any OSError or
-    # ArrowInvalid propagated out of run_sync, so Postgres never ran AND the
+    # ArrowInvalid propagated out of run_sync, so later phases never ran AND the
     # SUMMARY_JSON line below was never printed — leaving the wrapper to scrape
     # the last log line and the nightly digest with no phase table at all.
     #
@@ -356,29 +356,11 @@ def run_sync(
         {"label": "vol_1h_derive", "exit": derive_rc, "duration_s": round(time.monotonic() - _derive_start, 1)}
     )
 
-    # Phase 6: Postgres rebuild (conditional)
-    if os.getenv("MDW_POSTGRES_DSN"):
-        for suffix, ac_args in [
-            (
-                "equity",
-                [
-                    "--asset-class",
-                    "equity",
-                    "--timeframe",
-                    "all",
-                    "--include-reliability",
-                ],
-            ),
-            ("volatility", ["--asset-class", "volatility", "--timeframe", "1d"]),
-        ]:
-            rc = _phase(
-                f"daily_backfill_postgres_{suffix}",
-                [py, store, "rebuild-postgres", *ac_args],
-            )
-            if rc != 0:
-                failures.append(f"postgres_{suffix}")
-    else:
-        logger.info("Postgres rebuild skipped — MDW_POSTGRES_DSN not set")
+    # Phase 6: DuckDB coverage refresh. Runs last so it observes every lane's
+    # writes, including Silver. Without it the coverage table answers freshness
+    # questions about yesterday.
+    if _phase("daily_backfill_duckdb_coverage", [py, store, "duckdb", "build"]) != 0:
+        failures.append("duckdb_coverage")
 
     # Machine-readable per-phase summary for the nightly digest / watchdog.
     print(

@@ -397,18 +397,6 @@ class TestDispatchCheck:
 
 
 class TestDispatchPublish:
-    def test_postgres(self, monkeypatch):
-        dispatched = []
-
-        def capture(mod, argv, display):
-            dispatched.append(mod)
-            return 0
-
-        monkeypatch.setattr("scripts.livewire._dispatch_module", capture)
-        _dispatch_publish(["postgres"])
-
-        assert dispatched == ["livewire_scripts.rebuild_postgres_from_parquet"]
-
     def test_r2(self, monkeypatch):
         dispatched = []
 
@@ -420,18 +408,6 @@ class TestDispatchPublish:
         _dispatch_publish(["r2"])
 
         assert dispatched == ["livewire_scripts.sync_to_r2"]
-
-    def test_postgres_smoke(self, monkeypatch):
-        dispatched = []
-
-        def capture(mod, argv, display):
-            dispatched.append(mod)
-            return 0
-
-        monkeypatch.setattr("scripts.livewire._dispatch_module", capture)
-        _dispatch_publish(["postgres", "--smoke"])
-
-        assert dispatched == ["livewire_scripts.smoke_postgres_analytical"]
 
     def test_migrate(self, monkeypatch):
         dispatched = []

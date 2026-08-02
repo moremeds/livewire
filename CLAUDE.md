@@ -1,6 +1,6 @@
 # Livewire
 
-Livewire is a local-first market data warehouse for quantitative research. Parquet data lake as system of record, optional Postgres for replayable analytical publishing, and ClickHouse for production benchmarking. Rebranded 2026-05-17 from "market-data-warehouse"; the repo dir is now `livewire/`, the on-disk data tree remains at `~/market-warehouse/` (descriptive, not project-named).
+Livewire is a local-first market data warehouse for quantitative research. Parquet data lake as system of record, DuckDB as the analytical query layer over it, and ClickHouse for production benchmarking. Rebranded 2026-05-17 from "market-data-warehouse"; the repo dir is now `livewire/`, the on-disk data tree remains at `~/market-warehouse/` (descriptive, not project-named).
 
 ## Project Layout
 
@@ -8,7 +8,7 @@ Two directory trees: this **git repo** and the **data warehouse** at `~/market-w
 
 ```
 livewire/                           # Git repo
-├── clients/                        # ~30 client modules (bronze/IB/Massive/Postgres/FRED/quality/telemetry/…)
+├── clients/                        # ~30 client modules (bronze/IB/Massive/DuckDB/FRED/quality/telemetry/…)
 │   └── __init__.py                 # Authoritative export list — check it rather than this tree
 ├── presets/
 │   ├── volatility.json             # CBOE Volatility Indices (VIX, VVIX, etc.)
@@ -23,7 +23,7 @@ livewire/                           # Git repo
 │   ├── livewire_ingest.py          # Ingest subcommands: daily, historical, robust, CBOE, intraday, universe
 │   ├── livewire_quality.py         # Quality subcommands: health, coverage, report, weekly, watchdog
 │   ├── livewire_ops.py             # Ops subcommands: scheduled job, alerts
-│   └── livewire_store.py           # Storage subcommands: Postgres rebuild, smoke checks, R2 sync, parquet migration
+│   └── livewire_store.py           # Storage subcommands: DuckDB catalog, Silver rebuild, R2 sync, parquet migration
 ├── livewire_scripts/               # Importable implementations behind the script entrypoints
 ├── livewire_node/                  # Nodemailer alert helpers (failure + nightly digest)
 ├── launchd/                        # macOS launchd templates
@@ -60,7 +60,7 @@ livewire/                           # Git repo
 
 - **Parquet** is the system of record
 - **Data lake tiers**: bronze (normalized Parquet) -> silver (cleaned) -> gold (derived)
-- **Postgres** is an optional analytical publish target rebuilt from bronze parquet and reliability JSONL; ingestion does not write Postgres
+- **DuckDB** is the analytical query layer: views over the parquet lake plus a small coverage table. It copies no bar data and is never a second system of record
 - **ClickHouse** is optional, for production-style benchmarking and concurrency testing
 - **Python env**: dev/test runs go through `uv` (`uv sync --dev`, `uv run pytest` — matches CI). The launchd runtime venv lives at `~/market-warehouse/.venv/`; the `source …/bin/activate` + `python …` invocations in the operator examples below run against it
 
@@ -72,7 +72,7 @@ See the [Sift CLAUDE.md](~/dev/apps/util/sift/CLAUDE.md) for module layout, buil
 
 ## Analytical Targets
 
-Postgres publishes replayable `md.*` analytical tables from canonical bronze parquet. ClickHouse mirrors the same daily schema with MergeTree engines partitioned by `toYYYYMM(trade_date)` when production-style benchmarking is needed.
+DuckDB addresses the lake in place — see "DuckDB analytical catalog" below. ClickHouse mirrors the daily schema with MergeTree engines partitioned by `toYYYYMM(trade_date)` when production-style benchmarking is needed.
 
 ## IB Gateway / IBC
 
@@ -593,10 +593,8 @@ Massive S3 flat-file environment variables:
   signals only the direct child, orphaning `--workers` pools that keep holding
   `fcntl.flock`), is never retried, and **pages**.
 
-Postgres analytical publish environment variables:
-- `MDW_POSTGRES_DSN`: Postgres DSN for `scripts/livewire_store.py rebuild-postgres` and `scripts/livewire_store.py smoke-postgres`.
-- `MDW_POSTGRES_SCHEMA` (default `md`): target analytical schema.
-- `MDW_TEST_POSTGRES_DSN`: disposable database DSN for live-gated Postgres integration tests. Tests skip cleanly when unset.
+DuckDB analytical catalog environment variables:
+- `MDW_DUCKDB_PATH` (default `~/market-warehouse/analytics.duckdb`): catalog database holding the coverage table. Views need no database at all.
 
 Current fetch behavior:
 - Normal mode atomically replaces the per-ticker bronze snapshot
@@ -628,11 +626,11 @@ python scripts/livewire.py backfill --full       # Same as backfill-all
 python scripts/livewire.py sync --full           # Same as daily-backfill
 ```
 
-`backfill-all` (`livewire_scripts/backfill_runner.py`) is the default warehouse build. It runs equity daily seed/backfill for `sp500`, `ndx100`, and `r2k`; the older-history daily phase remains IB-backed through `--source auto`. It then syncs FRED Treasury rates and runs one maximum-entitled-history, full-market Massive flat-file equity-intraday build in parallel with the CBOE/IB volatility lane. If `MDW_POSTGRES_DSN` is set, it finishes by rebuilding Postgres analytical tables.
+`backfill-all` (`livewire_scripts/backfill_runner.py`) is the default warehouse build. It runs equity daily seed/backfill for `sp500`, `ndx100`, and `r2k`; the older-history daily phase remains IB-backed through `--source auto`. It then syncs FRED Treasury rates and runs one maximum-entitled-history, full-market Massive flat-file equity-intraday build in parallel with the CBOE/IB volatility lane. It finishes by refreshing the DuckDB coverage table.
 
-`daily-backfill` (`livewire_scripts/sync_runner.py`) is the routine catch-up runner. It uses Massive for recent equity daily gaps and one whole-market flat-file catch-up over the default 7 calendar days (`MDW_DAILY_BACKFILL_INTRADAY_DAYS`). It also runs the full-universe `flatfile-ingest-daily catch-up` day_aggs lane (`MDW_DAILY_BACKFILL_DAY_AGGS_DAYS`, default 7) before the intraday flatfile phase — this lane owns the ~20K SIP daily universe and heals symbols that have intraday but no `1d`. Side lanes stay on their existing sources: FRED rates, CBOE daily volatility, IB volatility intraday, and optional Postgres rebuild. At the end it prints one `SUMMARY_JSON` line (per-phase label/exit/duration + failed list) that the intraday-catchup wrapper and nightly digest consume.
+`daily-backfill` (`livewire_scripts/sync_runner.py`) is the routine catch-up runner. It uses Massive for recent equity daily gaps and one whole-market flat-file catch-up over the default 7 calendar days (`MDW_DAILY_BACKFILL_INTRADAY_DAYS`). It also runs the full-universe `flatfile-ingest-daily catch-up` day_aggs lane (`MDW_DAILY_BACKFILL_DAY_AGGS_DAYS`, default 7) before the intraday flatfile phase — this lane owns the ~20K SIP daily universe and heals symbols that have intraday but no `1d`. Side lanes stay on their existing sources: FRED rates, CBOE daily volatility, and IB volatility intraday. The DuckDB coverage refresh runs last, after every writer. At the end it prints one `SUMMARY_JSON` line (per-phase label/exit/duration + failed list) that the intraday-catchup wrapper and nightly digest consume.
 
-Output: per-ticker bronze Parquet at `data-lake/bronze/asset_class=equity/symbol=<ticker>/{1d,1m,5m,30m,1h}.parquet` and volatility/index bronze Parquet under `data-lake/bronze/asset_class=volatility/symbol=<ticker>/`. Postgres is rebuilt only when `MDW_POSTGRES_DSN` is configured.
+Output: per-ticker bronze Parquet at `data-lake/bronze/asset_class=equity/symbol=<ticker>/{1d,1m,5m,30m,1h}.parquet` and volatility/index bronze Parquet under `data-lake/bronze/asset_class=volatility/symbol=<ticker>/`.
 
 ### Futures preset format
 
@@ -864,22 +862,63 @@ python scripts/livewire_quality.py health --intraday --timeframe 5m --symbol AAP
 python scripts/livewire_quality.py health --intraday --timeframe 5m --symbol AAPL --since 2026-04-01  # Repair window
 ```
 
-### Rebuilding Postgres
+### DuckDB analytical catalog
+
+DuckDB addresses the parquet lake with SQL. It copies no bar data: the only
+durable artifact is a coverage table of per-symbol file statistics (~536 KB for
+26,382 symbol-rows across seven views).
 
 ```bash
 source ~/market-warehouse/.venv/bin/activate
-export MDW_POSTGRES_DSN="postgresql://USER:YOUR_PASSWORD@localhost:5432/livewire"
-export MDW_POSTGRES_SCHEMA="md"
-
-python scripts/livewire_store.py smoke-postgres --ensure-schema
-python scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe 1d
-python scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe all
-python scripts/livewire_store.py rebuild-postgres --asset-class volatility
-python scripts/livewire_store.py rebuild-postgres --asset-class futures
-python scripts/livewire_store.py rebuild-postgres --include-reliability
+python scripts/livewire_store.py duckdb views          # what the catalog exposes
+python scripts/livewire_store.py duckdb build          # rebuild + publish the coverage table
+python scripts/livewire_store.py duckdb freshness      # per-view staleness buckets
+python scripts/livewire_store.py duckdb lag            # silver trailing or missing vs bronze
+python scripts/livewire_store.py duckdb stale --days 30
+python scripts/livewire_store.py duckdb bars --symbols NVDA HON      # direct-path read
+python scripts/livewire_store.py duckdb sql "SELECT ... FROM bronze_equity_1d"
 ```
 
-Postgres is a replayable publish target, not canonical storage. Rollback means dropping or truncating the target schema and rerunning rebuilds from bronze parquet plus `telemetry.jsonl` / `quality_audit.jsonl`. Futures and intraday rebuilds are conditional on corresponding bronze parquet existing.
+⚠️ **Glob enumeration is the dominant cost of the whole lake, and it dwarfs
+reading data.** Measured 2026-08-02 against 13,270 equity 1d files / 19.75M rows:
+
+| Operation | Time |
+|---|---|
+| Open one known parquet file | 0.04s |
+| `CREATE VIEW` over the equity `1h` glob | **221.04s** |
+| Whole-universe `count(*)`, filesystem cache warm | 0.86s |
+| The same query after the cache was evicted | **283.84s** |
+| `parquet_metadata()` over equity 1d (the "footer-only shortcut") | 471s |
+
+Three rules follow, and breaking any of them makes the catalog unusable:
+
+- **Views are registered on demand, never eagerly.** `CREATE VIEW` binds the
+  schema, and binding enumerates the glob — so registering all 13 views costs 13
+  full enumerations before a single query runs. `connect()` registers nothing by
+  default; `duckdb sql` registers only the views its query text names.
+- **Symbol-scoped reads bypass views entirely.** `read_symbols()` /
+  `duckdb bars` construct `symbol=<TICKER>/<tf>.parquet` paths directly. A
+  two-symbol query took 0.53s that way against >5 min through the glob.
+- **The coverage table is durable because the cache is not.** The nightly job
+  writes 23.57 GB of intraday, which is exactly what evicted the cache between
+  the 0.86s and 283.84s readings. Cold is the normal morning state, so freshness
+  questions get a table rather than being re-derived from 13,270 footers.
+
+Coverage is **daily-only**. A pass over the intraday tier would enumerate and
+scan 23.57 GB, and intraday cannot be materialised at all — equity `1m` alone is
+23.57 GB against ~20 GiB of free disk.
+
+`build` publishes by writing a staging database and `os.replace()`-ing it into
+place. This is required, not stylistic: DuckDB is single-writer, so an in-place
+rebuild fails outright whenever a reader is connected. Concurrent `read_only`
+readers are fine — four simultaneous readers measured 0.00s each.
+
+**Postgres was removed** (2026-08-02). It had been dead in production for
+months: `MDW_POSTGRES_DSN` was unset in `~/market-warehouse/.env`, so both
+orchestrators skipped the lane every night and 14 days of nightly logs contain
+no `postgres` line at all. `tests/test_duckdb_containment.py` now holds the
+line that got DuckDB retired in 2026-05 — DuckDB may be imported only by the
+catalog modules, and no command may materialise bars out of bronze.
 
 ## Testing
 
@@ -897,7 +936,7 @@ uv run pytest tests/ -v -W error::RuntimeWarning                               #
 
 1. Add tests in `tests/test_<module>.py`
 2. Mock all external I/O (IB connections via `MagicMock`, file paths via `patch`)
-3. Use temp parquet roots or disposable Postgres DSNs for storage tests
+3. Use temp parquet roots for storage tests
 4. Mark DB tests with `@pytest.mark.integration`
 5. Run coverage and confirm the 95% gate passes before committing
 6. Run `-W error::RuntimeWarning` at least once before committing when script tests mock async runners such as `ib.ib.run(...)`
@@ -922,7 +961,7 @@ Catches: AWS keys, API key/secret/password assignments, private key headers, Git
 
 - IB BarData provides native float/int types — no string parsing needed
 - `symbol_id` is now a stable 53-bit hash from `blake2b(symbol)` for new symbols
-- Live ingestion writes bronze parquet directly; Postgres is rebuilt from bronze when SQL access is needed
+- Live ingestion writes bronze parquet directly; DuckDB reads that parquet in place when SQL access is needed
 - Empty IB head timestamps now fall back to the earliest supported IB historical date instead of skipping the symbol
 - Bronze Parquet uses per-ticker Hive-partitioned layout: `data-lake/bronze/asset_class=equity/symbol=AAPL/1d.parquet` (futures: `asset_class=futures/symbol=ES_202506/1d.parquet`)
 - Bronze publication is atomic at the file level: write temp parquet, validate it, then `os.replace()` into place

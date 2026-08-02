@@ -5,7 +5,7 @@ Commands:
     sync        Daily catch-up: make all asset classes current
     backfill    Deep historical fill to maximum provider depth
     check       Quality, health, and coverage reporting
-    publish     Push bronze data to Postgres or R2
+    publish     Push bronze data to R2
 """
 
 from __future__ import annotations
@@ -44,7 +44,6 @@ CHECK_MODULES = {
 }
 
 PUBLISH_MODULES = {
-    "postgres": "livewire_scripts.rebuild_postgres_from_parquet",
     "r2": "livewire_scripts.sync_to_r2",
 }
 
@@ -101,7 +100,7 @@ def _dispatch_sync(argv: list[str]) -> int:
     parser.add_argument(
         "--full",
         action="store_true",
-        help="Run daily-backfill orchestrator (Massive equity + FRED + CBOE + IB vol + Postgres)",
+        help="Run daily-backfill orchestrator (Massive equity + FRED + CBOE + IB vol)",
     )
     parser.add_argument(
         "--asset-class",
@@ -257,14 +256,9 @@ def _dispatch_check(argv: list[str]) -> int:
 
 
 def _dispatch_publish(argv: list[str]) -> int:
-    """Push bronze data to Postgres or R2."""
+    """Push bronze data to R2."""
     parser = argparse.ArgumentParser(prog="livewire publish")
-    parser.add_argument("target", choices=["postgres", "r2"], nargs="?", default=None)
-    parser.add_argument(
-        "--smoke",
-        action="store_true",
-        help="Run smoke test instead of full rebuild (postgres only)",
-    )
+    parser.add_argument("target", choices=["r2"], nargs="?", default=None)
     parser.add_argument("--migrate", action="store_true", help="Run parquet schema migration")
     args, rest = parser.parse_known_args(argv)
 
@@ -276,16 +270,7 @@ def _dispatch_publish(argv: list[str]) -> int:
         )
 
     if args.target is None:
-        parser.error("target is required (postgres or r2) unless --migrate is set")
-
-    if args.target == "postgres":
-        if args.smoke:
-            return _dispatch_module(
-                "livewire_scripts.smoke_postgres_analytical",
-                rest,
-                "livewire publish postgres --smoke",
-            )
-        return _dispatch_module(PUBLISH_MODULES["postgres"], rest, "livewire publish postgres")
+        parser.error("target is required (r2) unless --migrate is set")
 
     return _dispatch_module(PUBLISH_MODULES["r2"], rest, "livewire publish r2")
 

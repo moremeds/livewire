@@ -601,8 +601,7 @@ class TestRunBackfill:
             kill_fn=lambda p: None,
         )
 
-    def test_full_run_completes(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
+    def test_full_run_completes(self, tmp_path):
         config = _make_config(tmp_path)
         config.log_dir.mkdir(parents=True, exist_ok=True)
         config.cursor_dir.mkdir(parents=True, exist_ok=True)
@@ -633,8 +632,7 @@ class TestRunBackfill:
         assert any("fred-rates" in c for c in joined)
         assert any("cboe-vol" in c for c in joined)
 
-    def test_postgres_rebuild_when_configured(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("MDW_POSTGRES_DSN", "postgresql://test/db")
+    def test_duckdb_coverage_refresh_runs(self, tmp_path):
         config = _make_config(tmp_path)
         config.log_dir.mkdir(parents=True, exist_ok=True)
         config.cursor_dir.mkdir(parents=True, exist_ok=True)
@@ -661,8 +659,7 @@ class TestRunBackfill:
         assert rc == 0
 
         run_cmds = [" ".join(c) for kind, c in commands if kind == "run"]
-        assert any("rebuild-postgres" in c and "equity" in c for c in run_cmds)
-        assert any("rebuild-postgres" in c and "volatility" in c for c in run_cmds)
+        assert any("duckdb build" in c for c in run_cmds)
 
     def _prepopulate_cursors(self, config):
         config.log_dir.mkdir(parents=True, exist_ok=True)
@@ -682,7 +679,6 @@ class TestRunBackfill:
             )
 
     def test_fred_failure_logged(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
         config = _make_config(tmp_path)
         self._prepopulate_cursors(config)
 
@@ -698,7 +694,6 @@ class TestRunBackfill:
         assert rc == 0
 
     def test_cboe_failure_logged(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
         config = _make_config(tmp_path)
         self._prepopulate_cursors(config)
 
@@ -714,7 +709,6 @@ class TestRunBackfill:
         assert rc == 0
 
     def test_parallel_lane_failure(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
         config = _make_config(tmp_path)
         self._prepopulate_cursors(config)
 
@@ -724,18 +718,18 @@ class TestRunBackfill:
                 rc = run_backfill(config, **inject)
         assert rc == 1
 
-    def test_postgres_failure_logged(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("MDW_POSTGRES_DSN", "postgresql://test/db")
+    def test_duckdb_coverage_failure_is_logged_not_fatal(self, tmp_path):
+        """A stale coverage table must not discard a completed warehouse build."""
         config = _make_config(tmp_path)
         self._prepopulate_cursors(config)
 
-        def fail_postgres(command, **kwargs):
-            if "rebuild-postgres" in command:
+        def fail_coverage(command, **kwargs):
+            if "duckdb" in command:
                 return CompletedProcess(args=command, returncode=1)
             return CompletedProcess(args=command, returncode=0)
 
         _, inject = self._inject(tmp_path)
-        inject["runner"] = fail_postgres
+        inject["runner"] = fail_coverage
         with patch("livewire_scripts.backfill_runner._derive_vol_1h", return_value=0):
             rc = run_backfill(config, **inject)
         assert rc == 0
@@ -744,7 +738,6 @@ class TestRunBackfill:
 class TestMain:
     def test_default(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
-        monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
 
         with patch("livewire_scripts.backfill_runner.run_backfill", return_value=0) as mock:
             rc = main([])
@@ -752,7 +745,6 @@ class TestMain:
 
     def test_overrides(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
-        monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
 
         with patch("livewire_scripts.backfill_runner.run_backfill", return_value=0) as mock:
             main(["--stall-timeout", "120", "--poll-interval", "5"])
@@ -762,7 +754,6 @@ class TestMain:
 
     def test_no_overrides(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
-        monkeypatch.delenv("MDW_POSTGRES_DSN", raising=False)
 
         with patch("livewire_scripts.backfill_runner.run_backfill", return_value=0) as mock:
             main([])
