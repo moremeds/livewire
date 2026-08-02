@@ -1,11 +1,18 @@
 {
   "name": "futures-active",
-  "description": "Active COMEX/NYMEX metals + energy futures — GC (front GCN6 + second GCQ6), CL (CLQ6), BZ Brent (BZU6). Contract-month codes verified against live IB 2026-07-04.",
+  "description": "Active COMEX/NYMEX metals + energy futures. Every contract month below was verified against live IB on 2026-08-02: qualified, and returning daily TRADES bars through the 2026-07-31 session. Each root now carries its front month plus the forward strip, so one expiry rolling off no longer empties the preset — of the 202607/202608/202609 set this replaces, 3 of 4 contracts had expired by 2026-08-02, which is why the nightly futures lane reported updated=1 no_trade=3.",
   "asset_class": "futures",
   "contracts": [
-    {"root": "GC", "exchange": "COMEX", "expiry": "202607"},
     {"root": "GC", "exchange": "COMEX", "expiry": "202608"},
-    {"root": "CL", "exchange": "NYMEX", "expiry": "202608"},
-    {"root": "BZ", "exchange": "NYMEX", "expiry": "202609"}
+    {"root": "GC", "exchange": "COMEX", "expiry": "202610"},
+    {"root": "GC", "exchange": "COMEX", "expiry": "202612"},
+    {"root": "GC", "exchange": "COMEX", "expiry": "202702"},
+    {"root": "CL", "exchange": "NYMEX", "expiry": "202609"},
+    {"root": "CL", "exchange": "NYMEX", "expiry": "202610"},
+    {"root": "CL", "exchange": "NYMEX", "expiry": "202611"},
+    {"root": "CL", "exchange": "NYMEX", "expiry": "202612"},
+    {"root": "BZ", "exchange": "NYMEX", "expiry": "202610"},
+    {"root": "BZ", "exchange": "NYMEX", "expiry": "202611"},
+    {"root": "BZ", "exchange": "NYMEX", "expiry": "202612"}
   ]
 }

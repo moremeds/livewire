@@ -500,47 +500,37 @@ class TestResolveTargetDate:
     def test_explicit_override_wins(self):
         assert _resolve_target_date(force=False, override=date(2026, 4, 6)) == date(2026, 4, 6)
 
-    def test_default_uses_utc_today(self):
-        from livewire_scripts import coverage_report
+    def test_measures_the_completed_session_not_the_one_still_to_open(self):
+        """The 06:00 UTC job runs at 02:00 ET, hours before that day's open.
 
-        class FrozenDateTime:
-            @classmethod
-            def now(cls, tz=None):
-                if tz is UTC:
-                    return datetime(2026, 4, 6, 1, 0, tzinfo=UTC)
-                return datetime(2026, 4, 5, 18, 0)
+        Resolving to `datetime.now(UTC).date()` targeted a session that had not
+        traded, so every symbol read as missing: `coverage_2026-06-17.log` holds
+        `1d=0/20396 (0.00%)` across all four timeframes. That 0% then fired
+        universe-wide auto-recovery, which is what exhausted the 600s budget
+        every night and left no coverage log written after 2026-06-17.
+        """
+        # 02:00 ET on Tue 2026-04-07 → _et_today walks back to Mon 2026-04-06.
+        with patch("livewire_scripts.coverage_report._et_today", return_value=date(2026, 4, 6)):
+            assert _resolve_target_date(False, None) == date(2026, 4, 6)
 
-        class FrozenLocalDate(date):
-            @classmethod
-            def today(cls):
-                return cls(2026, 4, 5)
+    def test_saturday_scheduled_run_still_measures_friday(self):
+        """Coverage used to skip the entire weekend.
 
-        with patch.object(coverage_report, "datetime", FrozenDateTime):
-            with patch.object(coverage_report, "date", FrozenLocalDate):
-                with patch.object(coverage_report, "is_trading_day", return_value=True):
-                    assert _resolve_target_date(False, None) == date(2026, 4, 6)
-
-    def test_trading_day_today(self):
-        with patch("livewire_scripts.coverage_report.datetime") as mock_datetime:
-            mock_datetime.now.return_value = datetime(2026, 4, 6, 12, 0, tzinfo=UTC)  # Monday
-            with patch("livewire_scripts.coverage_report.is_trading_day", return_value=True):
-                assert _resolve_target_date(False, None) == date(2026, 4, 6)
+        At 06:00 UTC Saturday the old UTC-today was Saturday — not a trading day,
+        so it returned None without --force. That is why the 2026-08-01 run
+        produced no coverage log and no warning: it silently did nothing.
+        """
+        with patch("livewire_scripts.coverage_report._et_today", return_value=date(2026, 7, 31)):
+            assert _resolve_target_date(False, None) == date(2026, 7, 31)
 
     def test_non_trading_day_without_force(self):
-        with patch("livewire_scripts.coverage_report.datetime") as mock_datetime:
-            mock_datetime.now.return_value = datetime(2026, 4, 5, 12, 0, tzinfo=UTC)  # Sunday
-            with patch("livewire_scripts.coverage_report.is_trading_day", return_value=False):
-                assert _resolve_target_date(False, None) is None
+        with patch("livewire_scripts.coverage_report._et_today", return_value=date(2026, 4, 5)):  # Sunday
+            assert _resolve_target_date(False, None) is None
 
     def test_non_trading_day_with_force_falls_back(self):
-        with patch("livewire_scripts.coverage_report.datetime") as mock_datetime:
-            mock_datetime.now.return_value = datetime(2026, 4, 5, 12, 0, tzinfo=UTC)
-            with patch("livewire_scripts.coverage_report.is_trading_day", return_value=False):
-                with patch(
-                    "livewire_scripts.coverage_report.previous_trading_day",
-                    return_value=date(2026, 4, 3),
-                ):
-                    assert _resolve_target_date(True, None) == date(2026, 4, 3)
+        # Real calendar: 2026-04-03 is Good Friday, so Thursday is the fallback.
+        with patch("livewire_scripts.coverage_report._et_today", return_value=date(2026, 4, 5)):
+            assert _resolve_target_date(True, None) == date(2026, 4, 2)
 
 
 # ── main() ───────────────────────────────────────────────────────────────────

@@ -13,6 +13,20 @@ from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.massive_client import MassiveDividend, MassiveSplit
 from livewire_scripts import rebuild_silver
+from livewire_scripts.daily_outcomes import parse_all_summary_json
+
+
+def _summary_from(capsys) -> dict:
+    """Parse the run summary exactly the way the nightly digest does.
+
+    Going through the real parser is the point. It skips every line without
+    SUMMARY_PREFIX, so a bare-JSON summary fails loudly here instead of
+    silently vanishing from the digest's Silver section, which is what
+    happened in production up to 2026-08-01.
+    """
+    summaries = parse_all_summary_json(capsys.readouterr().out)
+    assert summaries, "rebuild-silver emitted no SUMMARY_JSON line the digest can parse"
+    return summaries[-1]
 
 
 def _bronze(root, symbol, closes=(100.0, 100.0, 50.0)):
@@ -111,6 +125,30 @@ def test_continuity_allowlist_exempts_an_evidenced_date(tmp_path):
     assert [str(r["trade_date"]) for r in kept] == ["2002-12-30", "2003-01-02", "2003-01-03"]
 
 
+def test_summary_line_is_visible_to_the_nightly_digest(tmp_path, capsys):
+    """The digest's Silver section is the ONLY alert for window regressions.
+
+    The rebuild still exits 0 when it withholds symbols, so nothing else
+    surfaces them. This summary printed as bare JSON, which
+    `parse_all_summary_json` skips, so the section rendered "(not found)" on
+    nights the rebuild had in fact succeeded — rev-19 withheld 41 symbols and
+    the 2026-08-01 digest reported no Silver rebuild at all.
+    """
+    from livewire_scripts import nightly_digest
+
+    _bronze(tmp_path, "NVDA")
+    _split(tmp_path)
+    assert rebuild_silver.run(["--tickers", "NVDA"], data_lake_root=tmp_path, silver_root=tmp_path / "silver") == 0
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "daily_update_2026-07-02.log").write_text(capsys.readouterr().out, encoding="utf-8")
+
+    section = "\n".join(nightly_digest._silver_section("2026-07-02", log_dir))
+    assert "(not found)" not in section
+    assert "revision=1" in section
+
+
 def test_targeted_rebuild_publishes_daily_factors_and_manifest(tmp_path, capsys):
     _bronze(tmp_path, "NVDA")
     _split(tmp_path)
@@ -118,7 +156,7 @@ def test_targeted_rebuild_publishes_daily_factors_and_manifest(tmp_path, capsys)
 
     assert rebuild_silver.run(["--tickers", "NVDA"], data_lake_root=tmp_path, silver_root=silver) == 0
 
-    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    summary = _summary_from(capsys)
     assert summary["rebuilt"] == 1
     assert summary["action_count"] == 1
     assert summary["earliest_affected_date"] == "2026-01-01"
@@ -166,7 +204,7 @@ def test_targeted_rebuild_excludes_announced_future_dividend(tmp_path, capsys):
     assert daily.column("price_adjustment_factor").to_pylist() == [1.0, 1.0, 1.0]
     factors = pq.ParquetFile(silver / "adjustments/asset_class=equity/symbol=MSFT/factors.parquet").read()
     assert factors.column("price_adjustment_factor").to_pylist() == [1.0]
-    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    summary = _summary_from(capsys)
     assert summary["as_of_date"] == "2026-01-03"
     assert summary["action_count"] == 1
     assert summary["effective_action_count"] == 0
@@ -215,7 +253,7 @@ def test_full_rebuild_discovers_all_equity_bronze_symbols(tmp_path, capsys):
 
     assert rebuild_silver.run(["--full"], data_lake_root=tmp_path, silver_root=tmp_path / "silver") == 0
 
-    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    summary = _summary_from(capsys)
     assert summary["rebuilt"] == 2
     assert (tmp_path / "silver/asset_class=equity/symbol=AAPL/1d.parquet").exists()
 
@@ -230,7 +268,7 @@ def test_unchanged_second_run_is_manifest_noop(tmp_path, capsys):
 
     assert rebuild_silver.run(["--tickers", "NVDA"], data_lake_root=tmp_path, silver_root=silver) == 0
 
-    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    summary = _summary_from(capsys)
     assert summary["rebuilt"] == 0
     assert summary["unchanged"] == 1
     assert summary["revision"] == 1
@@ -264,7 +302,7 @@ def test_one_symbol_failure_still_publishes_healthy_symbols(tmp_path, capsys):
     # publishes the healthy symbol and reports the failure without failing.
     assert rebuild_silver.run(["--tickers", "NVDA", "BAD"], data_lake_root=tmp_path, silver_root=silver) == 0
 
-    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    summary = _summary_from(capsys)
     assert summary["failed"] == 1
     assert summary["rebuilt"] == 1
     assert (silver / "revisions/current.json").exists()
@@ -280,7 +318,7 @@ def test_total_staging_failure_fails_the_run_and_publishes_nothing(tmp_path, cap
     # Zero successful symbols with an error is a systemic failure.
     assert rebuild_silver.run(["--tickers", "BAD"], data_lake_root=tmp_path, silver_root=silver) == 1
 
-    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    summary = _summary_from(capsys)
     assert summary["failed"] == 1
     assert summary["rebuilt"] == 0
     assert not (silver / "revisions/current.json").exists()
@@ -382,7 +420,7 @@ def test_dry_run_reports_changes_without_creating_silver_root(tmp_path, capsys):
         == 0
     )
 
-    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    summary = _summary_from(capsys)
     assert summary["rebuilt"] == 1
     assert summary["revision"] == 1
     assert not silver.exists()
@@ -871,7 +909,7 @@ def test_full_rebuild_remanifests_orphaned_silver_files(tmp_path, capsys):
 
     # A full rebuild must re-manifest the orphan by reference (no rewrite) and advance rev.
     assert rebuild_silver.run(["--full"], data_lake_root=tmp_path, silver_root=silver) == 0
-    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    summary = _summary_from(capsys)
     assert summary["orphans_remanifested"] == 1
     assert summary["rebuilt"] == 0  # BBB carried by reference, AAA unchanged
     remanifested = json.loads(current_path.read_text())
