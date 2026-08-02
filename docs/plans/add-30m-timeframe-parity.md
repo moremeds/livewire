@@ -1,6 +1,17 @@
 # Fix: 30m timeframe missing from weekly report and Postgres rebuild
 
-**Item:** M4 · Severity: medium · Status: proposed
+**Item:** M4 · Severity: medium · Status: **partially obsolete (2026-08-02)**
+
+> ⚠️ **Step 2 (the Postgres half) is dead work.** The Postgres layer was removed
+> on 2026-08-02 — `clients/postgres_schema.py`, `clients/postgres_client.py`, and
+> `livewire_scripts/rebuild_postgres_from_parquet.py` no longer exist, so all five
+> edits it prescribes have no target. DuckDB replaced it and needs no per-timeframe
+> table work at all: `bronze_equity_30m` is already a registered view over the same
+> parquet (`clients/duckdb_catalog.py`), so 30m analytical access exists today.
+>
+> **Step 1 (the weekly report) is still valid and still unfixed** —
+> `weekly_quality_summary.py` continues to omit 30m from its coverage trend and
+> persistent-gap detection. That is now the whole of this item.
 
 ## Problem
 
@@ -13,9 +24,11 @@ downstream consumers never got it:
    "1h", "5m")`; `_HEADER_RE` (`:40-47`) and `_MISSING_RE` (`:49-50`) have no `30m`
    group. The weekly markdown silently omits a whole timeframe's coverage trend and
    persistent-gap detection.
-2. `livewire_scripts/rebuild_postgres_from_parquet.py:34-38` — `--timeframe`
+2. ~~`livewire_scripts/rebuild_postgres_from_parquet.py:34-38` — `--timeframe`
    choices `["1d","1m","1h","5m","all"]`; `_rebuild_equity_timeframes` has no 30m
-   dispatch. Postgres can never publish 30m bars.
+   dispatch. Postgres can never publish 30m bars.~~ **Obsolete** — file removed
+   2026-08-02; DuckDB exposes `bronze_equity_30m` as a view with no table to
+   maintain.
 
 ## Fix
 

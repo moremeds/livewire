@@ -62,7 +62,7 @@ No blockers or highs remain — PR #60 closed the entire blocker+high tier. Open
 | M5 `harden-r2-sync-error-handling` | med | per-file try/except, return `(uploaded, failed)`, kill dead-code exit (~16 test call-sites) |
 | M6 `add-jsonl-retention` | med | net-new `jsonl_retention.py` + `prune-jsonl` cmd + dated sync_runner logs |
 | M2 `fix-gap-aware-registry-bounds` | med | subtract `n_no_bounds`; all-unbounded escape hatch (`backfill_runner.py:206-218`) |
-| M4 `add-30m-timeframe-parity` | med | **Postgres half only** (weekly done): `equities_30m` table + DDL + 3 whitelists |
+| M4 `add-30m-timeframe-parity` | med | **Weekly-report half only.** The Postgres half is obsolete — layer removed 2026-08-02; DuckDB serves 30m as a view, no table to add. Remaining: `weekly_quality_summary.py` omits 30m from its coverage trend + persistent-gap detection |
 | M3 `scope-intraday-coverage-recovery` | med | **owner call** — PR #60 documented day-scope as by-design; only the `--tickers` scoped-publish optimization + test remain. May already be "closed enough" |
 | L1 `enable-ib-connect-retry` | low-med | ~4-line typed transient retry (approved 2026-07-05, never done) |
 | I3 `dedupe-cli-dispatch` | low | extract 5 `_dispatch_module` copies → `cli_dispatch.py` |

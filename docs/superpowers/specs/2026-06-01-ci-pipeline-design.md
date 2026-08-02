@@ -23,7 +23,9 @@ Single job, Ubuntu latest, Python 3.13. Steps run sequentially — each step is 
 6. **Ruff lint** — `uv run ruff check .`
 7. **Ruff format** — `uv run ruff format --check .`
 8. **Pyright** — `uv run pyright clients/ livewire_scripts/`
-9. **Pytest** — `uv run pytest tests/ -m "not integration and not postgres_live" --cov --cov-fail-under=100 -W error::RuntimeWarning`
+9. **Pytest** — `uv run pytest tests/ -m "not integration" --cov --cov-fail-under=95 -W error::RuntimeWarning`
+   (was `... and not postgres_live` with `--cov-fail-under=100`; the marker was dropped when the
+   Postgres layer was removed 2026-08-02, and the gate is 95 in `pyproject.toml`)
 
 ### Why sequential, not parallel jobs
 

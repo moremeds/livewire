@@ -3,7 +3,8 @@
 > **STATUS 2026-07-22 → see [CONSOLIDATED-STATUS-2026-07-22.md](CONSOLIDATED-STATUS-2026-07-22.md).**
 > PR #60 closed the entire blocker+high tier. **DONE (rows 1–8: B1, B2, H1, H2, H5,
 > H3+I2, H4, M1)** — those 8 plan files can be deleted. **Still open:** rows 9–17
-> (all medium/low): M2, M3, M4 (Postgres half only), M5, M6, L1, I3, L2, I6.
+> (all medium/low): M2, M3, M4 (**weekly-report half only** — the Postgres half
+> died with the Postgres layer on 2026-08-02), M5, M6, L1, I3, L2, I6.
 
 One plan per item. Severity from the audit; suggested order groups by theme and
 respects the dependencies noted inside each plan.
