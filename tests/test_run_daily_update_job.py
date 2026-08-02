@@ -557,7 +557,6 @@ class TestRunWithRetries:
             [
                 SimpleNamespace(returncode=4, stdout=""),
                 SimpleNamespace(returncode=4, stdout=""),
-                SimpleNamespace(returncode=0, stdout="alert sent"),
             ]
         )
 
@@ -570,7 +569,13 @@ class TestRunWithRetries:
         config.alert_script.write_text("console.log('send');\n", encoding="utf-8")
         sleep_calls: list[int] = []
 
-        with patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=True):
+        # The alert has its own runner — see TestTheLaneRunnerNeverRunsTheAlert.
+        with (
+            patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=True),
+            patch.object(
+                daily_runner.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="alert sent")
+            ),
+        ):
             rc = run_with_retries(
                 config,
                 [],
@@ -624,22 +629,21 @@ class TestRunWithRetries:
                 datetime(2026, 3, 11, 20, 5, 10, tzinfo=UTC),
             ]
         )
-        results = iter(
-            [
-                SimpleNamespace(returncode=3, stdout=""),
-                SimpleNamespace(returncode=2, stdout="smtp down"),
-            ]
-        )
 
         def _runner(command, stdout=None, env=None, timeout=None, **_):
             if hasattr(stdout, "write"):
                 stdout.write("sync failed\n")
-            return next(results)
+            return SimpleNamespace(returncode=3, stdout="")
 
         config.alert_script.parent.mkdir(parents=True, exist_ok=True)
         config.alert_script.write_text("console.log('send');\n", encoding="utf-8")
 
-        with patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=True):
+        with (
+            patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=True),
+            patch.object(
+                daily_runner.subprocess, "run", return_value=SimpleNamespace(returncode=2, stdout="smtp down")
+            ),
+        ):
             rc = run_with_retries(
                 config,
                 [],
@@ -1124,3 +1128,78 @@ class TestScheduledLanePages:
         sent = []
         assert self._lane(tmp_path, GATEWAY_DOWN_EXIT_CODE, sent) == GATEWAY_DOWN_EXIT_CODE
         assert sent == []
+
+
+class TestTheLaneRunnerNeverRunsTheAlert:
+    """The lane runner and the alert runner are not interchangeable.
+
+    2026-08-02: `_run_in_own_process_group` was threaded into the alert path.
+    It is keyword-only on `stdout/env/timeout`, so `send_failure_alert`'s
+    `stderr=`/`text=`/`check=` raised `TypeError` out of `main()`. One failed
+    symbol out of 14,577 in corporate-actions took down the whole nightly job —
+    equity, futures, cmdty, CBOE, FX and Silver never ran, and no alert was
+    sent. Only the watchdog noticed, four hours later.
+
+    Every other test in this file passes a fake runner that swallows `**kwargs`,
+    which is exactly why nothing caught it. These two use the real signature.
+    """
+
+    @staticmethod
+    def _strict_lane_runner(calls, returncode):
+        def runner(command, *, stdout, env, timeout):  # the REAL signature — no **kwargs
+            calls.append(command)
+            return CompletedProcess(list(command), returncode)
+
+        return runner
+
+    def test_a_failing_lane_pages_without_touching_the_lane_runner(self, tmp_path):
+        config = _config(tmp_path)
+        config.alert_script.parent.mkdir(parents=True, exist_ok=True)
+        config.alert_script.write_text("x\n", encoding="utf-8")
+        lane_calls = []
+
+        with (
+            patch.object(daily_runner, "node_binary_exists", return_value=True),
+            patch.object(
+                daily_runner.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="sent")
+            ) as alert_run,
+        ):
+            rc = daily_runner._run_scheduled_lane(
+                config,
+                ["lane-cmd"],
+                "Corporate Action Sync",
+                "corporate-actions",
+                env=None,
+                runner=self._strict_lane_runner(lane_calls, 1),
+                now_fn=_utc_now,
+            )
+
+        assert rc == 1
+        assert len(lane_calls) == 1, "the lane runner runs the lane, never the alert"
+        assert alert_run.call_count == 1, "the alert goes through subprocess.run"
+        assert "Failure alert sent successfully" in daily_runner.build_log_file(config.log_dir, _utc_now()).read_text(
+            encoding="utf-8"
+        )
+
+    def test_the_retry_path_pages_without_touching_the_lane_runner(self, tmp_path):
+        config = _config(tmp_path)
+        config.alert_script.parent.mkdir(parents=True, exist_ok=True)
+        config.alert_script.write_text("x\n", encoding="utf-8")
+        lane_calls = []
+
+        with (
+            patch.object(daily_runner, "node_binary_exists", return_value=True),
+            patch.object(
+                daily_runner.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="sent")
+            ) as alert_run,
+        ):
+            rc = run_with_retries(
+                config,
+                ["--asset-class", "equity"],
+                runner=self._strict_lane_runner(lane_calls, 1),
+                sleep_fn=lambda _: None,
+            )
+
+        assert rc == 1
+        assert len(lane_calls) == config.max_attempts
+        assert alert_run.call_count == 1

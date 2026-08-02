@@ -17,7 +17,7 @@ Use this file for:
 - This project is **Livewire** (rebranded 2026-05-17 from "market-data-warehouse"). The git repo directory is `~/projects/livewire/`. The on-disk data tree intentionally stays at `~/market-warehouse/` — that path is descriptive of the role, not the project name, so it was not renamed. Functional identifiers (`MDW_*` env vars, `mdw.*` logger names, `md.*` analytical schema) are unchanged.
 - Canonical storage is bronze Parquet.
 - Raw market/vendor data should land as Parquet first; databases are derived/replayable publish or query targets unless a future project explicitly says otherwise.
-- Postgres is an optional replayable analytical publish target rebuilt from bronze parquet and reliability JSONL; it is not canonical storage and live ingestion scripts do not write to it.
+- DuckDB is the analytical query layer over the parquet lake: views bound on demand, plus one durable coverage table of per-symbol file statistics. It copies no bar data and is never a second system of record. Postgres was removed 2026-08-02 after months dead in production (`MDW_POSTGRES_DSN` unset, so both orchestrators skipped the lane every night).
 - Live equity data is stored per ticker at `~/market-warehouse/data-lake/bronze/asset_class=equity/symbol=<ticker>/1d.parquet`.
 - Equity daily Bronze has row-level `source` and `price_basis` provenance. Canonical basis is raw; legacy schema migration writes `legacy/unknown`. IB `TRADES` history is classified per applicable split boundary and only incoming IB rows are normalized; ambiguous applicable events block publication before mutation.
 - Split-basis audit manifests are cryptographically tied to both source files and a resolved data-lake root. Apply/rollback reject stale hashes or a different active root. Full legacy migration persists an atomic resumable cursor.
@@ -30,8 +30,8 @@ Use this file for:
 - Delisted symbols that should no longer participate in future syncs or backfills are archived outside the canonical sync path under `~/market-warehouse/data-lake/bronze-delisted/asset_class=equity/symbol=<ticker>/1d.parquet`.
 - `scripts/livewire_ingest.py daily` is parquet-first and does not write to analytical databases.
 - `scripts/livewire_ingest.py daily` supports `--target-date YYYY-MM-DD` for fixed-date catch-up runs and only publishes bars with `latest < trade_date <= target`.
-- `scripts/livewire_store.py rebuild-postgres` rebuilds Postgres analytical tables under `MDW_POSTGRES_SCHEMA` (default `md`) from bronze parquet and can import telemetry / quality JSONL artifacts.
-- `scripts/livewire_store.py smoke-postgres --ensure-schema` verifies Postgres connectivity, creates the schema when requested, and prints table counts.
+- `scripts/livewire_store.py duckdb build` rebuilds and publishes the coverage table (staging file + `os.replace()`, because DuckDB is single-writer). `duckdb freshness|lag|stale|bars|sql|views` read it. Both nightly orchestrators run `duckdb build` last, after every writer.
+- Glob enumeration dominates every cost in the lake: `CREATE VIEW` binds the schema and binding enumerates the glob (221s for equity `1h`). So views are registered on demand, never eagerly, and symbol-scoped reads construct `symbol=<TICKER>/<tf>.parquet` paths directly instead of going through a view.
 - Scheduled daily syncs now run through `scripts/livewire_ops.py run-daily-job`, which retries failures before sending Nodemailer-based terminal alerts.
 - A separate `scripts/livewire_quality.py watchdog` watchdog is available to alert when the scheduled daily sync never starts or never writes a completion marker.
 - Failure alerts can now generate a human-readable Markdown incident report and include a Cerebras-generated summary plus proposed remediation in the email body when the AI config is available.
@@ -53,7 +53,7 @@ Use this file for:
 - `scripts/livewire_ingest.py flatfile-ingest` is the only equity-intraday path. It discovers the actual entitled range, stages bucketed raw daily Parquet, publishes every provider ticker to `1m`, and derives `5m`, `30m`, and `1h`. `intraday-backfill` is IB-only for non-equity.
 - Equity-intraday orchestrators require Massive S3 credentials and fail before any phases when they are missing; there is no REST or IB equity-intraday fallback.
 - A full flat-file backfill is capacity-gated before download using the discovered compressed object size, `MDW_FLATFILE_STORAGE_MULTIPLIER`, and `MDW_FLATFILE_MIN_FREE_GB`.
-- Equity `1m` is included in Postgres analytical rebuilds (`equities_1m`) and daily/weekly coverage surfaces alongside `1d`, `1h`, and `5m`.
+- Equity `1m` surfaces in daily/weekly coverage alongside `1d`, `1h`, and `5m`. The DuckDB coverage table is **daily-only** on purpose: a pass over the intraday tier would enumerate and scan 23.57 GB, and equity `1m` alone exceeds the free disk.
 - Intraday for non-equity asset classes remains IB-backed; `--source massive` is equity-only.
 - Telemetry events (IB farm states, connection lifecycle) land in `~/market-warehouse/logs/telemetry.jsonl`. Schema is source-tagged JSONL with `{ts, source, event, ...}`.
 - Quality flags (range_shortfall, interior_gaps, fetch_tainted, row_count_anomaly) are emitted to three independent paths: sidecar `<parquet>.meta.json`, central `quality_audit.jsonl`, and Nodemailer email via `--mode flag-alert`.
@@ -65,9 +65,9 @@ Use this file for:
   - Nasdaq historical quote API with `assetclass=etf`
   - Stooq U.S. daily CSV
 - `IBClient.connect()` already retries successive `clientId` values after IB error `326`.
-- `PostgresClient.replace_equities_from_parquet()` recreates the selected analytical tables from scratch on rebuild so repeat Postgres rebuilds are replayable from bronze.
-- Roadmap naming decision: **Sub-F is Silver** and owns the reproducible cleaned/adjusted layer derived from canonical bronze. **Sub-G is Gold** and owns factors, analytics, and strategy-ready derived tables. Sub-B Postgres remains the replayable SQL publish target and should not be described as silver by itself.
-- **IB Gateway + IBC run on the Mac mini, not this MacBook** (as of 2026-07-04). Earlier machine-local IBC stories (`/opt/ibc/` trading-stack install, `~/ibc/` secure service via `livewire_ops.py ibc-install`) no longer apply to this machine — livewire connects remotely via `MDW_IB_HOST`/`MDW_IB_PORT` and never manages the Gateway.
+- `clients/duckdb_catalog.build_coverage()` rebuilds the coverage table from scratch every run, so it is replayable from the lake and carries no incremental state.
+- Roadmap naming decision: **Sub-F is Silver** and owns the reproducible cleaned/adjusted layer derived from canonical bronze. **Sub-G is Gold** and owns factors, analytics, and strategy-ready derived tables. DuckDB is the SQL query surface over both and should not be described as a tier of its own.
+- **IB Gateway + IBC run on the Mac mini — which is the host these sessions run ON.** Connect to `127.0.0.1:4001`, never the LAN IP: the mini's LAN address is TCP-open so `nc -z` succeeds against it, but `TrustedTwsApiClientIPs` is empty, so an API connection there silently times out after ~4 minutes with no error. A "hanging" IB run is almost always this. Livewire never installs, configures, or restarts the Gateway; earlier `/opt/ibc/` and `~/ibc/` install stories no longer apply.
 - `symbol_id` for new symbols is a stable 53-bit `blake2b(symbol)`-derived value.
 - The native macOS client has been extracted to the standalone **Sift** app at `~/dev/apps/util/sift/`.
 - The repo-local quant backtesting skill lives at `.codex/skills/quant-backtest/` and should be used for future backtesting or systematic strategy tasks in this repo.

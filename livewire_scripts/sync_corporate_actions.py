@@ -21,6 +21,9 @@ from clients.symbol_paths import canonical_symbol, decode_symbol
 from livewire_scripts.corporate_action_cursor import build_identity, default_cursor_path, open_cursor
 from livewire_scripts.paths import data_lake_dir
 
+# Share of attempted symbols that may fail before the run counts as systemic.
+FAILURE_RATE_TOLERANCE = 0.05
+
 
 @dataclass(frozen=True)
 class _FetchResult:
@@ -261,7 +264,28 @@ def run(
         "resumed": resumed,
     }
     print(json.dumps(summary, sort_keys=True))
-    return 1 if counters["failed"] else 0
+
+    # Rate, not a binary. `run_daily_update_job.main()` gates the Silver rebuild on
+    # this lane (`silver_inputs_ok = action_code == 0`), so `1 if failed` meant a
+    # single flaky provider response blocked the adjusted rebuild for the whole
+    # ~13K equity universe. 2026-08-02: `TGNA: Response ended prematurely` — one
+    # symbol of 14,577, 0.007% — and Silver was skipped. That symbol simply keeps
+    # the actions already in the store, which stays perfectly usable.
+    #
+    # `daily_outcomes.resolve_exit_code` is the same idea for the equity lane but
+    # does not fit here: its absolute `max(50, …)` floor is calibrated for a 13K
+    # universe and would pass a targeted 2-ticker run that failed one of them.
+    # The rate alone keeps small runs strict and large ones proportionate.
+    failed = int(counters["failed"])
+    if failed:
+        print(
+            f"WARNING: {failed}/{attempted} symbols failed; the cursor was not marked "
+            "complete, so the next run re-asks them.",
+            file=sys.stderr,
+        )
+    if failed and (attempted == failed or failed > FAILURE_RATE_TOLERANCE * attempted):
+        return 1
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

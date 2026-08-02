@@ -342,6 +342,18 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
 - **Alerts that fail to send are persisted** to `<log_dir>/alerts_undelivered/`
   and counted by the watchdog. A WARNING in the log the job just broke is not
   an alert.
+- ⚠️ **The lane runner must never run the alert.** `_run_in_own_process_group`
+  is keyword-only on `stdout/env/timeout` and returns a `CompletedProcess` with
+  **no stdout** (a lane streams into the log file). Threading it into
+  `_page_failure` made every page raise `TypeError` *out of `main()`* — so on
+  2026-08-02 one failed symbol out of 14,577 in corporate-actions killed the
+  whole nightly job, and equity, futures, cmdty, CBOE, FX and Silver never ran.
+  No alert was sent either; only the watchdog noticed, 4.5h later. `_page_failure`
+  therefore takes **no runner parameter**, and `send_failure_alert` defaults to
+  `subprocess.run` *late* so the seam stays patchable. The reason 95% coverage
+  missed this: every fake runner in the tests swallows `**kwargs` and every test
+  reaching the alert patches `send_failure_alert` itself, so the real pairing was
+  never executed. `TestTheLaneRunnerNeverRunsTheAlert` uses the real signature.
 - **Every lane pages, and the timeout pages too.** `send_failure_alert` sits at
   the *end* of `run_with_retries` and is reachable only by falling out of the
   retry loop — an early `return` for a new failure mode silently skips it, so
@@ -357,6 +369,15 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
   `nodemailer` and every alert path was dead. `release promote` now runs
   `npm ci --omit=dev` between `build_venv` and `freeze` (it must precede the
   `chmod -R a-w`) and import-checks the result.
+- **corporate-actions fails on a rate, not on one symbol.** `main()` gates the
+  Silver rebuild on `action_code == 0`, and the lane returned `1 if failed` — so
+  one flaky provider response blocked the adjusted rebuild for the whole ~13K
+  equity universe (2026-08-02, `TGNA: Response ended prematurely`, 1 of 14,577).
+  A symbol that fails simply keeps the actions already in the store. The rule is
+  the rate alone (`FAILURE_RATE_TOLERANCE`, 5%) with no absolute floor, so a
+  targeted 2-ticker run that loses one still fails; `resolve_exit_code`'s
+  `max(50, …)` floor is calibrated for the equity universe and does not fit here.
+  Exit 0 with failures still prints a WARNING naming the count.
 - **The watchdog requires the `silver` scope** and reads the equity
   `SUMMARY_JSON`: `=== Done equity ===` with `updated=0` is not healthy.
 - **coverage/weekly/digest run once, after Silver.** They used to fire inside

@@ -273,8 +273,14 @@ def send_failure_alert(
     request: AlertRequest,
     log_file: Path,
     env: dict[str, str] | None = None,
-    runner: callable = subprocess.run,
+    runner: callable | None = None,
 ) -> subprocess.CompletedProcess | None:
+    """Send the failure email.
+
+    `runner` defaults to `subprocess.run` **late**, not as a default argument —
+    a default captured at import time cannot be patched, and the alert is the
+    one path production has no other way to observe.
+    """
     if not node_binary_exists(config.node_bin):
         append_log(
             log_file,
@@ -291,7 +297,7 @@ def send_failure_alert(
 
     alert_command = build_alert_command(config, request)
     append_log(log_file, f"Triggering failure alert via: {' '.join(alert_command)}")
-    return runner(
+    return (runner or subprocess.run)(
         alert_command,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -410,13 +416,22 @@ def _page_failure(
     *,
     attempts: int | None,
     env: dict[str, str] | None = None,
-    runner: callable = subprocess.run,
 ) -> None:
     """Send the failure alert and persist it if the send itself fails.
 
     Factored out of `run_with_retries` so `_run_scheduled_lane` can page too —
     it had no alert path at all, which is why the 2026-07-28 corporate-action
     wedge produced no alert from this job.
+
+    It takes **no runner parameter on purpose.** Both callers hold the lane
+    runner `_run_in_own_process_group`, and threading it in here is what made
+    every page raise `TypeError` and kill the whole job instead of alerting
+    (2026-08-02: corporate-actions failed 1 symbol of 14,577 and the six
+    remaining lanes, Silver included, never ran). The two runners are not
+    interchangeable: the lane runner is keyword-only on `stdout/env/timeout`
+    and returns a `CompletedProcess` with **no stdout**, because a lane streams
+    into the log file. The alert needs its output captured, both to log the
+    send and to hand `record_undelivered_alert` something to persist.
     """
     alert_request = AlertRequest(
         run_date=log_file.stem.removeprefix("daily_update_"),
@@ -426,7 +441,7 @@ def _page_failure(
         error_summary=extract_error_summary(log_file),
         repo_root=REPO_ROOT,
     )
-    alert_result = send_failure_alert(config, alert_request, log_file, env=env, runner=runner)
+    alert_result = send_failure_alert(config, alert_request, log_file, env=env)
     if alert_result is None:
         return
 
@@ -529,7 +544,7 @@ def run_with_retries(
         (f"=== Failed {now_fn():%Y-%m-%dT%H:%M:%SZ} after {config.max_attempts} attempt(s) ==="),
     )
 
-    _page_failure(config, log_file, final_exit_code, attempts=config.max_attempts, env=env, runner=runner)
+    _page_failure(config, log_file, final_exit_code, attempts=config.max_attempts, env=env)
     return final_exit_code
 
 
@@ -684,7 +699,7 @@ def _run_scheduled_lane(
     # exactly what happened to the 2026-07-28 corporate-action wedge. A down
     # Gateway stays silent: degraded is not failed.
     if result.returncode != GATEWAY_DOWN_EXIT_CODE:
-        _page_failure(config, log_file, result.returncode, attempts=None, env=env, runner=runner)
+        _page_failure(config, log_file, result.returncode, attempts=None, env=env)
     return result.returncode
 
 
