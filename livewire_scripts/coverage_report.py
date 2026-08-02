@@ -31,7 +31,7 @@ from rich.console import Console
 
 from clients.intraday_bronze_client import INTRADAY_PARQUET_FILENAME
 from clients.symbol_paths import decode_symbol
-from livewire_scripts.daily_update import is_trading_day, previous_trading_day
+from livewire_scripts.daily_update import _et_today, is_trading_day, previous_trading_day
 from livewire_scripts.paths import data_lake_dir, log_dir
 
 log = logging.getLogger(__name__)
@@ -424,13 +424,28 @@ def _send_alert(
 
 
 def _resolve_target_date(force: bool, override: date | None) -> date | None:
+    """Resolve the session to measure: the most recently *completed* one.
+
+    This used to be `datetime.now(UTC).date()`. The scheduled job runs at 06:00
+    UTC — 02:00 ET — so on a weekday that resolved to a session that had not yet
+    opened, and every symbol read as missing. `coverage_2026-06-17.log` is the
+    artifact: `1d=0/20396 (0.00%)` on every timeframe. A 0% reading then fired
+    auto-recovery across the whole universe, which is why `coverage report`
+    exhausted its 600s budget night after night and no coverage log has been
+    written since 2026-06-17 — leaving the digest's Coverage line permanently
+    "(not found)".
+
+    `daily_update._et_today` already encodes exactly this ET-close boundary for
+    the ingest lane. Coverage measures what that lane ingested, so it must
+    resolve to the same session rather than keep a second, wrong calendar.
+    """
     if override is not None:
         return override
-    today = datetime.now(UTC).date()
-    if is_trading_day(today):
-        return today
+    target = _et_today()
+    if is_trading_day(target):
+        return target
     if force:
-        return previous_trading_day(today)
+        return previous_trading_day(target)
     return None
 
 

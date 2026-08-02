@@ -127,8 +127,24 @@ def _quality_jobs_section(run_date: str, log_dir: Path) -> list[str]:
     return [f"Quality jobs: {len(seen)} FAILED"] + [f"  {label}: {reason}" for label, reason in sorted(seen.items())]
 
 
+def _target_session(run_date: str, log_dir: Path) -> str:
+    """The trading session this run ingested — what coverage names its log after.
+
+    Coverage keys its log on the session it measured, but the job runs at 02:00 ET
+    the morning after, so run_date is one trading day later. Looking up
+    `coverage_{run_date}.log` therefore always missed. The daily-update
+    SUMMARY_JSON already carries the session, so read it rather than give the
+    digest a second copy of the trading calendar to drift out of sync.
+    """
+    text = _read_text(log_dir / f"daily_update_{run_date}.log") or ""
+    for summary in parse_all_summary_json(text):
+        if summary.get("job") == "daily_update" and summary.get("target_date"):
+            return str(summary["target_date"])
+    return run_date
+
+
 def _coverage_section(run_date: str, log_dir: Path) -> list[str]:
-    text = _read_text(log_dir / f"coverage_{run_date}.log")
+    text = _read_text(log_dir / f"coverage_{_target_session(run_date, log_dir)}.log")
     lines = ["Coverage:"]
     if not text or not text.strip():
         lines.append("  (not found)")

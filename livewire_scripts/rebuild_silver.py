@@ -23,7 +23,7 @@ from clients.seed_boundary import classify_seed_boundary
 from clients.silver_client import PublishedArtifact, SilverClient
 from clients.silver_revision import AffectedSymbol, ManifestArtifact, SilverRevision, SilverRevisionPublisher
 from clients.silver_window import resolve_window
-from livewire_scripts.daily_outcomes import resolve_exit_code
+from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, resolve_exit_code
 from livewire_scripts.paths import data_lake_dir
 
 TIMEFRAMES = ("1d", "1m", "5m", "30m", "1h")
@@ -317,7 +317,17 @@ def _matches_existing(client: SilverClient, staged: StagedSymbol) -> bool:
 
 
 def _summary(**values) -> None:
-    print(json.dumps(values, sort_keys=True))
+    """Emit the machine-readable run summary on the shared SUMMARY_JSON contract.
+
+    This line used to print as bare JSON. `parse_all_summary_json` skips every
+    line without the prefix, so `nightly_digest._silver_section` never found it
+    and rendered "(not found)" on nights the rebuild had in fact succeeded —
+    taking the `window_regressions` warning with it. That warning is the ONLY
+    alert for a symbol whose window shrank (the run still exits 0), so the
+    missing prefix silently disabled it: rev-19 withheld 41 symbols and the
+    2026-08-01 digest reported no Silver rebuild at all.
+    """
+    print(SUMMARY_PREFIX + json.dumps(values, sort_keys=True))
 
 
 def _sha256(path: Path) -> str | None:

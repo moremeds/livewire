@@ -84,6 +84,24 @@ def test_build_digest_renders_failed_phases(tmp_path):
     assert "failed: daily_backfill_fred_rates" in out
 
 
+def test_coverage_is_read_from_the_session_the_run_ingested(tmp_path):
+    """Coverage names its log after the session it measured, not the run date.
+
+    The job runs at 02:00 ET the morning AFTER that session, so run_date is one
+    trading day later and `coverage_{run_date}.log` never existed. Production
+    shape: the 2026-08-01 run ingested the 2026-07-31 session.
+    """
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    _write_daily_log(log_dir, "2026-08-01", [_daily_summary(target_date="2026-07-31")])
+    (log_dir / "coverage_2026-07-31.log").write_text("2026-07-31 coverage: 1d=13100/13141 (99.69%)\n", encoding="utf-8")
+
+    out = build_digest(date(2026, 8, 1), log_dir, tmp_path)
+
+    assert "2026-07-31 coverage: 1d=13100/13141 (99.69%)" in out
+    assert "Coverage:\n  (not found)" not in out
+
+
 def test_build_digest_missing_inputs_render_not_found(tmp_path):
     out = build_digest(date(2026, 7, 2), tmp_path / "empty_logs", tmp_path)
     assert isinstance(out, str)
