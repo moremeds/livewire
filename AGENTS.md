@@ -64,7 +64,7 @@ Current live shape:
 
 ## Operational Facts
 
-- **IB Gateway + IBC run on the Mac mini, not this MacBook** — livewire is a remote consumer and never installs/restarts the Gateway. Connect via `MDW_IB_HOST`/`MDW_IB_PORT` env vars or `--host`/`--port` flags (code default `127.0.0.1:4001`; point at the mini for real runs). Gateway pinned to **10.45**; 2FA approved manually in IBKR Mobile. Do not write order workflows or auto-restart the Gateway on failure.
+- **IB Gateway + IBC run on the Mac mini — which is the host these sessions run ON.** livewire consumes that infrastructure and never installs/restarts the Gateway. ⚠️ **Connect to `127.0.0.1:4001`, never the LAN IP.** The mini's LAN address is TCP-open, so `nc -z` against it succeeds — but `TrustedTwsApiClientIPs` is empty, so an API connection there silently times out after ~4 minutes with no error. A "hanging" IB run is almost always this. The code default `127.0.0.1:4001` is already correct; do not override it. `MDW_IB_HOST`/`MDW_IB_PORT` and `--host`/`--port` exist but need no change locally. Gateway pinned to **10.45**; 2FA approved manually in IBKR Mobile. Do not write order workflows or auto-restart the Gateway on failure.
 - `IBClient.connect()` already retries successive `clientId` values after IB error `326`.
 - `scripts/livewire_ingest.py daily` is the scheduled parquet-first daily sync and supports `--target-date YYYY-MM-DD` for fixed-date catch-up runs without publishing later bars.
 - `scripts/livewire_ingest.py cboe-vol` fetches all CBOE volatility indices directly from CBOE's public API. This is the authoritative daily sync source for VIX, VVIX, VXHYG, VXSMH, and all other volatility indices in `presets/volatility.json`; for `VIX` and `SPX`, it appends newer official daily-price CSV backup rows when the chart JSON lags.
@@ -92,7 +92,7 @@ Current live shape:
 
 Common traps — check these before investigating further:
 
-- **IB Gateway availability**: the Gateway runs on the Mac mini — check `nc -z "${MDW_IB_HOST:?set MDW_IB_HOST to the Mac mini host}" "${MDW_IB_PORT:-4001}"` before assuming IB is reachable; do not attempt restarts from this machine.
+- **IB Gateway availability**: the Gateway runs on the mini, which is this host — check `nc -z 127.0.0.1 "${MDW_IB_PORT:-4001}"` before assuming IB is up. **A `nc -z` against the LAN IP also succeeds and is a trap**: the port is open but the API connection silently times out. Do not attempt restarts — failures usually mean 2FA, IBKR maintenance, or session conflict, not something livewire should recover.
 - **Cold lake reads are minutes, not seconds**: the nightly job writes 23.57 GB of intraday, which evicts the filesystem metadata cache. The same whole-universe query measured 0.86s warm and 283.84s cold, so cold is the normal morning state. Ask freshness/coverage questions through the `duckdb` coverage table (milliseconds, touches no parquet) rather than re-deriving them from 13,270 footers.
 - **Empty IB head timestamps**: IB returns empty head timestamps for some symbols. The fallback to `IB_EARLIEST_DATE` is intentional — do not treat it as an error.
 - **IB error 326 (client ID in use)**: Handled by auto-retry in `IBClient.connect()`. Do not manually reassign client IDs.
