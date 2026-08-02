@@ -11,7 +11,7 @@ Livewire is a market data warehouse designed for storing and analyzing historica
 ### Core Stack
 
 * **Parquet data lake** → canonical storage
-* **Postgres (optional)** → replayable analytical publish target for SQL queries
+* **DuckDB** → SQL query layer over the lake (views + a coverage table; copies no bars)
 * **ClickHouse (optional)** → large-scale aggregation & concurrency
 
 ### Current Capabilities
@@ -32,7 +32,7 @@ Livewire is a market data warehouse designed for storing and analyzing historica
 * Per-ticker **bronze Parquet snapshots**
 * **Atomic writes + validation**
 * **Fallback recovery pipeline** for missing data
-* Optional **Postgres analytical rebuilds** from Parquet and reliability JSONL
+* **DuckDB coverage + freshness reporting** answering in milliseconds
 
 > **In one sentence:**
 > Livewire — a local-first, production-ready market data warehouse for serious quantitative workflows.
@@ -64,10 +64,10 @@ Raw → Bronze → Silver → Gold
 ### Storage Strategy
 
 * **System of record**: Parquet (`data-lake/`)
-* **Analytical publish target (optional)**: Postgres
+* **Analytical query layer**: DuckDB (in place, over the Parquet)
 * **Warehouse (optional)**: ClickHouse
 
-Live ingestion writes bronze Parquet only. Postgres is the replayable analytical target and can be dropped or rebuilt from bronze Parquet plus reliability JSONL artifacts.
+Live ingestion writes bronze Parquet only. DuckDB reads that Parquet in place; its one durable artifact is a coverage table of per-symbol file statistics, rebuildable at any time.
 
 Daily and intraday bronze mutations are serialized per exact Parquet path with
 blocking advisory locks. Persistent `*.parquet.lock` sidecars coordinate writers;
@@ -181,8 +181,6 @@ python scripts/livewire.py check --weekly               # Weekly summary
 python scripts/livewire.py check --universe             # Universe screener
 
 # Publish to external targets
-python scripts/livewire.py publish postgres             # Rebuild Postgres
-python scripts/livewire.py publish postgres --smoke     # Smoke test only
 python scripts/livewire.py publish r2                   # Sync to R2
 python scripts/livewire.py publish --migrate            # Parquet schema migration
 ```
@@ -200,7 +198,7 @@ For granular control, use the five operator scripts directly:
 | `scripts/livewire_ingest.py` | Data ingestion | Historical seeds, daily updates, robust IB runs, CBOE volatility, intraday backfill, S3 flat files |
 | `scripts/livewire_quality.py` | Quality and health reporting | Bronze health checks, HTML warehouse report, coverage reports, daily rollup, weekly summary, watchdog alerts |
 | `scripts/livewire_ops.py` | Operations | Scheduled daily job, alert sending |
-| `scripts/livewire_store.py` | Storage maintenance | Postgres rebuilds, Postgres smoke checks, R2 sync, parquet filename migration |
+| `scripts/livewire_store.py` | Storage maintenance | DuckDB catalog, Silver rebuild, R2 sync, parquet filename migration |
 | `scripts/setup_market_warehouse.sh` | One-time bootstrap | Create `~/market-warehouse/`, venv, directories, optional ClickHouse helpers |
 
 Use `--help` at the top level or after a subcommand:
@@ -219,7 +217,7 @@ livewire_ingest.py   daily | historical | robust | cboe-vol | fred-rates |
                      universe-sync | backfill-all | daily-backfill
 livewire_quality.py  health | coverage | report | weekly | watchdog | warehouse
 livewire_ops.py      run-daily-job | run-intraday-catchup-job | send-alert
-livewire_store.py    rebuild-postgres | rebuild-silver | smoke-postgres | sync-r2 | migrate-parquet
+livewire_store.py    duckdb | rebuild-silver | sync-r2 | migrate-parquet
 ```
 
 ---
@@ -466,7 +464,7 @@ python scripts/livewire_ingest.py robust --preset presets/sp500.json --mode back
 
 ### Default Warehouse Backfill
 
-The full warehouse build runs all presets through daily seed, older-history backfill, intraday backfill, CBOE volatility, FRED rates, and optional Postgres rebuild:
+The full warehouse build runs all presets through daily seed, older-history backfill, intraday backfill, CBOE volatility, FRED rates, and the DuckDB coverage refresh:
 
 ```bash
 # Python orchestrator (recommended)
@@ -480,7 +478,7 @@ Features:
 - FRED Treasury yield rates
 - Maximum-entitled-history full-market Massive equity intraday (`1m`, `5m`, `30m`, `1h`) in parallel with the volatility/index lane
 - CBOE daily volatility sync followed by IB-backed VIX/SPX/NDX/RUT/VXN/RVX intraday (`30m` bars, 1h derived locally)
-- Optional Postgres analytical rebuild when `MDW_POSTGRES_DSN` is set
+- DuckDB coverage refresh, after every writer has finished
 - Activity-based stall detection and retry-until-done logic
 
 For long runs, use `tmux`:
@@ -702,32 +700,37 @@ python scripts/livewire_quality.py watchdog
 
 ---
 
-### Rebuild Postgres
+### DuckDB analytical catalog
 
-Postgres is optional and replayable. It is not the ingestion source of truth.
+DuckDB queries the Parquet lake in place. Parquet stays the system of record —
+the catalog copies no bar data.
 
 ```bash
-export MDW_POSTGRES_DSN="postgresql://USER:YOUR_PASSWORD@localhost:5432/livewire"
-export MDW_POSTGRES_SCHEMA="md"
-
-# Smoke check
-python scripts/livewire_store.py smoke-postgres --ensure-schema
-
-# Rebuild equity daily
-python scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe 1d
-
-# Rebuild all equity timeframes (missing optional intraday data is skipped)
-python scripts/livewire_store.py rebuild-postgres --asset-class equity --timeframe all
-
-# Rebuild futures and volatility
-python scripts/livewire_store.py rebuild-postgres --asset-class futures
-python scripts/livewire_store.py rebuild-postgres --asset-class volatility
-
-# Import reliability telemetry and quality flags
-python scripts/livewire_store.py rebuild-postgres --include-reliability
+python scripts/livewire_store.py duckdb views       # what the catalog exposes
+python scripts/livewire_store.py duckdb build       # rebuild + publish the coverage table
+python scripts/livewire_store.py duckdb freshness   # per-view staleness buckets
+python scripts/livewire_store.py duckdb lag         # silver trailing or missing vs bronze
+python scripts/livewire_store.py duckdb stale --days 30
+python scripts/livewire_store.py duckdb bars --symbols NVDA HON
+python scripts/livewire_store.py duckdb sql "SELECT count(*) FROM bronze_equity_1d"
 ```
 
-Rollback: `DROP SCHEMA IF EXISTS md CASCADE;` then rerun rebuilds from bronze parquet.
+Two things to know before using it:
+
+* **Name your symbols when you can.** `duckdb bars` builds
+  `symbol=<TICKER>/<tf>.parquet` paths directly and returns in well under a
+  second. The same query routed through a glob view has to enumerate every file
+  behind that view first — 221s to bind the equity `1h` glob, measured
+  2026-08-02.
+* **`duckdb build` is the only thing that writes.** It publishes by replacing
+  the database file, because DuckDB is single-writer and an in-place rebuild
+  fails whenever a reader is connected. Concurrent read-only readers are fine.
+
+Coverage is daily-only; intraday stays view-only because equity `1m` alone is
+23.57 GB against ~20 GiB of free disk.
+
+Rollback: delete `~/market-warehouse/analytics.duckdb` and rerun
+`duckdb build`. Nothing canonical lives there.
 
 ---
 
@@ -771,13 +774,11 @@ python scripts/livewire_store.py migrate-parquet
 | `MDW_ALERT_RATE_LIMIT_SECONDS` | `300` | De-dup window for identical alerts |
 | `MDW_LOG_LEVEL` | `INFO` | Logger root level |
 
-### Postgres
+### DuckDB
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MDW_POSTGRES_DSN` | — | Postgres DSN for analytical rebuilds |
-| `MDW_POSTGRES_SCHEMA` | `md` | Target analytical schema |
-| `MDW_TEST_POSTGRES_DSN` | — | Disposable DSN for integration tests |
+| `MDW_DUCKDB_PATH` | `~/market-warehouse/analytics.duckdb` | Catalog holding the coverage table; views need no database |
 
 ### Orchestrators
 

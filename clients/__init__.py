@@ -12,7 +12,6 @@ from clients.intraday_bronze_client import (
 )
 from clients.massive_client import MassiveClient, MassiveDividend, MassiveSMAValue, MassiveSplit
 from clients.massive_flatfile_client import MassiveFlatfileClient
-from clients.postgres_client import PostgresClient
 from clients.tag_registry import TagRegistry
 from clients.timeframe_aggregator import VALID_ROLLUPS, aggregate_bars
 
@@ -26,7 +25,6 @@ __all__ = [
     "MassiveSplit",
     "MassiveFlatfileClient",
     "IBClient",
-    "PostgresClient",
     "IntradayBronzeClient",
     "INTRADAY_TIMEFRAMES",
     "INTRADAY_PARQUET_FILENAME",

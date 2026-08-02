@@ -4,11 +4,11 @@ version = "0.3.0"
 requires-python = ">=3.13"
 dependencies = [
     "boto3>=1.42",
+    "duckdb>=1.5",
     "httpx>=0.28",
     "ib-async>=2.1",
     "lxml[cssselect]>=6.1",
     "prefect>=3.7.4",
-    "psycopg[binary]>=3.3",
     "pyarrow>=23.0",
     "requests>=2.33",
     "rich>=14.0",
@@ -29,7 +29,6 @@ testpaths = ["tests"]
 addopts = "--strict-markers -v"
 markers = [
     "integration: marks tests that use real filesystem or service-backed integrations (deselect with '-m \"not integration\"')",
-    "postgres_live: marks tests that require MDW_TEST_POSTGRES_DSN and a disposable Postgres database",
 ]
 
 [tool.coverage.run]

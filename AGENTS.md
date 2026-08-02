@@ -20,7 +20,7 @@ This repo is **Livewire**, a local-first market data warehouse optimized for sin
 Current live shape:
 - Canonical storage is per-ticker bronze Parquet under `~/market-warehouse/data-lake/bronze/asset_class=equity/symbol=<ticker>/1d.parquet`
 - Delisted symbols that should no longer participate in future syncs or backfills are archived under `~/market-warehouse/data-lake/bronze-delisted/asset_class=equity/symbol=<ticker>/1d.parquet`
-- Postgres is the replayable analytical publish target when SQL access is needed; it is not the live write path
+- DuckDB is the analytical query layer: views over the parquet lake plus a small coverage table of per-symbol file statistics. It copies no bar data and is never a second system of record
 - Interactive Brokers is the primary source for ingestion
 - Daily syncs can recover unresolved target-day gaps for the current U.S. equity universe with a narrow external fallback chain
 - The native macOS client has been extracted to the standalone **Sift** app at `~/dev/apps/util/sift/`
@@ -64,7 +64,7 @@ Current live shape:
 
 ## Operational Facts
 
-- **IB Gateway + IBC run on the Mac mini, not this MacBook** — livewire is a remote consumer and never installs/restarts the Gateway. Connect via `MDW_IB_HOST`/`MDW_IB_PORT` env vars or `--host`/`--port` flags (code default `127.0.0.1:4001`; point at the mini for real runs). Gateway pinned to **10.45**; 2FA approved manually in IBKR Mobile. Do not write order workflows or auto-restart the Gateway on failure.
+- **IB Gateway + IBC run on the Mac mini — which is the host these sessions run ON.** livewire consumes that infrastructure and never installs/restarts the Gateway. ⚠️ **Connect to `127.0.0.1:4001`, never the LAN IP.** The mini's LAN address is TCP-open, so `nc -z` against it succeeds — but `TrustedTwsApiClientIPs` is empty, so an API connection there silently times out after ~4 minutes with no error. A "hanging" IB run is almost always this. The code default `127.0.0.1:4001` is already correct; do not override it. `MDW_IB_HOST`/`MDW_IB_PORT` and `--host`/`--port` exist but need no change locally. Gateway pinned to **10.45**; 2FA approved manually in IBKR Mobile. Do not write order workflows or auto-restart the Gateway on failure.
 - `IBClient.connect()` already retries successive `clientId` values after IB error `326`.
 - `scripts/livewire_ingest.py daily` is the scheduled parquet-first daily sync and supports `--target-date YYYY-MM-DD` for fixed-date catch-up runs without publishing later bars.
 - `scripts/livewire_ingest.py cboe-vol` fetches all CBOE volatility indices directly from CBOE's public API. This is the authoritative daily sync source for VIX, VVIX, VXHYG, VXSMH, and all other volatility indices in `presets/volatility.json`; for `VIX` and `SPX`, it appends newer official daily-price CSV backup rows when the chart JSON lags.
@@ -74,7 +74,8 @@ Current live shape:
 - `scripts/livewire_quality.py report --view summary --since 24h --email` is the daily quality rollup. The end-of-day path in `scripts/livewire_ops.py run-daily-job` invokes it after successful market-data syncs.
 - Reliability telemetry and quality audit events are source-tagged JSONL. Valid source values are the closed set `ib`, `uw`, and `massive`.
 - Quality flags are emitted independently to the parquet sidecar, central audit JSONL, and Nodemailer alert path; one failed emit path should not block the others.
-- `scripts/livewire_store.py rebuild-postgres` rebuilds Postgres analytical tables from bronze parquet and reliability JSONL artifacts.
+- `scripts/livewire_store.py duckdb` is the analytical surface: `build` (rebuild + publish the coverage table), `freshness`, `lag`, `stale`, `bars`, `sql`, `views`. The nightly orchestrators run `duckdb build` last, after every writer.
+- **Name your symbols when you can.** `duckdb bars` / `read_symbols()` construct `symbol=<TICKER>/<tf>.parquet` paths directly and return in well under a second; the same query through a glob view must enumerate every file behind it first (221s to bind the equity `1h` glob, measured 2026-08-02). Views are registered on demand for the same reason — `connect()` registers none by default.
 - `scripts/livewire_ingest.py flatfile-ingest` is the only equity-intraday path. Modes are `discover`, `backfill`, `catch-up`, and `repair`; every mode operates on every symbol present in the selected whole-market files. `intraday-backfill` remains IB-only for non-equity.
 - Equity-intraday orchestrators require `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY` and fail before other phases when they are absent. There is no equity-intraday REST or IB fallback.
 - `flatfile-ingest backfill` discovers the provider-entitled range and enforces projected-storage plus free-space-reserve checks before downloading.
@@ -91,8 +92,8 @@ Current live shape:
 
 Common traps — check these before investigating further:
 
-- **IB Gateway availability**: the Gateway runs on the Mac mini — check `nc -z "${MDW_IB_HOST:?set MDW_IB_HOST to the Mac mini host}" "${MDW_IB_PORT:-4001}"` before assuming IB is reachable; do not attempt restarts from this machine.
-- **Analytical publish targets**: Live ingestion writes bronze parquet only. Rebuild Postgres explicitly when SQL access needs refreshed analytical tables.
+- **IB Gateway availability**: the Gateway runs on the mini, which is this host — check `nc -z 127.0.0.1 "${MDW_IB_PORT:-4001}"` before assuming IB is up. **A `nc -z` against the LAN IP also succeeds and is a trap**: the port is open but the API connection silently times out. Do not attempt restarts — failures usually mean 2FA, IBKR maintenance, or session conflict, not something livewire should recover.
+- **Cold lake reads are minutes, not seconds**: the nightly job writes 23.57 GB of intraday, which evicts the filesystem metadata cache. The same whole-universe query measured 0.86s warm and 283.84s cold, so cold is the normal morning state. Ask freshness/coverage questions through the `duckdb` coverage table (milliseconds, touches no parquet) rather than re-deriving them from 13,270 footers.
 - **Empty IB head timestamps**: IB returns empty head timestamps for some symbols. The fallback to `IB_EARLIEST_DATE` is intentional — do not treat it as an error.
 - **IB error 326 (client ID in use)**: Handled by auto-retry in `IBClient.connect()`. Do not manually reassign client IDs.
 - **Weekend/holiday runs**: IB returns no data on non-trading days. These are harmless no-ops — do not debug "no data returned" on weekends or holidays.

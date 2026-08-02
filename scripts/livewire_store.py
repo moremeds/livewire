@@ -14,8 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 COMMANDS = {
-    "rebuild-postgres": "livewire_scripts.rebuild_postgres_from_parquet",
-    "smoke-postgres": "livewire_scripts.smoke_postgres_analytical",
+    "duckdb": "livewire_scripts.duckdb_catalog_cli",
     "sync-r2": "livewire_scripts.sync_to_r2",
     "migrate-parquet": "livewire_scripts.migrate_parquet_filename",
     "migrate-price-basis": "livewire_scripts.migrate_equity_price_basis",

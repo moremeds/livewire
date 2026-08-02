@@ -2,7 +2,7 @@
 """Full warehouse backfill runner — replaces tools/run_backfill_all.sh.
 
 Runs equity daily seed + backfill, FRED rates, equity intraday via Massive,
-CBOE volatility daily, IB volatility intraday, and optional Postgres rebuild.
+CBOE volatility daily, IB volatility intraday, and the DuckDB coverage refresh.
 Includes activity-based stall detection and retry-until-done logic.
 """
 
@@ -672,33 +672,20 @@ def run_backfill(
         )
         return 1
 
-    # Phase 9: Postgres rebuild
-    if os.getenv("MDW_POSTGRES_DSN"):
-        logger.info("── PHASE 9: Postgres analytical rebuild ──")
-        config.log_dir.mkdir(parents=True, exist_ok=True)
-        for ac, tf_arg in [("equity", "all"), ("volatility", "1d")]:
-            log_f = config.log_dir / f"backfill_postgres_{ac}.log"
-            with log_f.open("a", encoding="utf-8") as fh:
-                pg_result = runner(
-                    [
-                        py,
-                        store,
-                        "rebuild-postgres",
-                        "--asset-class",
-                        ac,
-                        "--timeframe",
-                        tf_arg,
-                    ]
-                    + (["--include-reliability"] if ac == "equity" else []),
-                    stdout=fh,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    check=False,
-                )
-            if pg_result.returncode != 0:
-                logger.warning("Postgres %s rebuild exited %d", ac, pg_result.returncode)
-    else:
-        logger.info("Postgres rebuild skipped — MDW_POSTGRES_DSN not set")
+    # Phase 9: DuckDB coverage refresh, after every lane has written.
+    logger.info("── PHASE 9: DuckDB coverage refresh ──")
+    config.log_dir.mkdir(parents=True, exist_ok=True)
+    coverage_log = config.log_dir / "backfill_duckdb_coverage.log"
+    with coverage_log.open("a", encoding="utf-8") as fh:
+        coverage_result = runner(
+            [py, store, "duckdb", "build"],
+            stdout=fh,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+    if coverage_result.returncode != 0:
+        logger.warning("DuckDB coverage refresh exited %d", coverage_result.returncode)
 
     logger.info("=" * 60)
     logger.info("ALL DONE")

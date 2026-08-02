@@ -16,6 +16,11 @@ def data_lake_dir() -> Path:
     return Path(os.environ.get("MDW_DATA_LAKE", warehouse_dir() / "data-lake")).expanduser()
 
 
+def silver_dir() -> Path:
+    """Return the Silver publish root."""
+    return Path(os.environ.get("MDW_SILVER_DIR", data_lake_dir() / "silver")).expanduser()
+
+
 def log_dir() -> Path:
     """Return the operational log directory."""
     return Path(os.environ.get("MDW_LOG_DIR", warehouse_dir() / "logs")).expanduser()

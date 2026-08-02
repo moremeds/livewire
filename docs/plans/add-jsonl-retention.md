@@ -26,9 +26,11 @@ Retention as a small maintenance subcommand, not inline writer complexity:
    Stream-read the file, write rows with `ts >= cutoff` to a temp file, `os.replace`
    into place (same atomic pattern as `clients/parquet_io.py`). Archive the
    pruned-out rows: gzip them to `<name>.<YYYY-MM-DD>.gz` beside the file before
-   replacing — decision: **yes, archive** (cheap, preserves replayability for
-   Postgres `--include-reliability` rebuilds which read these files; silent data
-   deletion conflicts with the "replayable publish" design). Lines that don't parse
+   replacing — decision: **yes, archive** (cheap; silent deletion of telemetry and
+   quality-flag history is not recoverable). Note 2026-08-02: the original rationale
+   cited replayability for Postgres `--include-reliability` rebuilds, which no longer
+   exist. The decision stands on the remaining ground — these JSONL files are the only
+   record of their events. Lines that don't parse
    as JSON or lack a parseable `ts` are KEPT in the live file (never dropped —
    possible writer-bug evidence). Empty/missing file = no-op.
 2. Expose as a `scripts/livewire_quality.py` subcommand by adding
