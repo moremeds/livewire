@@ -400,3 +400,40 @@ def test_currency_mismatch_blocks_dividend():
 def test_invalid_event_values_are_rejected(action, message):
     with pytest.raises(ValueError, match=message):
         build_factor_intervals(_bars(), [action], date.max)
+
+
+def test_conflicting_active_splits_on_one_ex_date_fail_closed():
+    """Two active splits on one ex-date used to multiply, silently.
+
+    `latest_active()` dedupes on the provider-scoped `provider_event_id`, so one
+    logical event recorded under two ids survives twice. Measured 2026-08-02
+    across 16 symbols: COEP 200x, BTX 50x, FTLF 10x, and LIME/TTSH where an exact
+    inverse pair (`300:1` and `1:300`) collapsed to 1.0 — the split never applied.
+
+    They are not two events, and nothing in the store says which is right, so the
+    symbol is quarantined rather than published wrong.
+    """
+    bars = _bars((400.0, 100.0, 100.0), start=date(2020, 1, 1))
+    actions = [
+        _action("split-a", date(2020, 1, 2), action_type="split", split_from=1, split_to=4),
+        _action("split-b", date(2020, 1, 2), action_type="split", split_from=100, split_to=1),
+    ]
+
+    with pytest.raises(ValueError, match="conflicting active splits on 2020-01-02"):
+        build_factor_intervals(bars, actions, date(2020, 1, 3))
+
+
+def test_one_split_restated_at_another_scale_is_collapsed_not_doubled():
+    """PGC carries `10:11` and `100:110`; CZFS `1:1.01` and `100:101`.
+
+    Equal ratios are the same event written twice, so it applies once. The
+    per-bar loop multiplies every entry it is given, so the duplicate has to be
+    dropped — checking the ratio alone would still double-adjust.
+    """
+    bars = _bars((110.0, 100.0, 100.0), start=date(2020, 1, 1))
+    single = [_action("split-a", date(2020, 1, 2), action_type="split", split_from=10, split_to=11)]
+    restated = single + [_action("split-b", date(2020, 1, 2), action_type="split", split_from=100, split_to=110)]
+
+    assert build_factor_intervals(bars, restated, date(2020, 1, 3)) == build_factor_intervals(
+        bars, single, date(2020, 1, 3)
+    )

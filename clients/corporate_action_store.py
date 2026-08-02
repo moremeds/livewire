@@ -19,6 +19,11 @@ from clients.symbol_paths import canonical_symbol, encode_symbol
 ActionStatus = Literal["active", "corrected", "cancelled"]
 ProviderEvent = MassiveSplit | MassiveDividend
 
+# The only provider `reconcile()` speaks for. Rows from any other provider —
+# `apply_repairs(provider="yahoo", …)` — are outside what a Massive response
+# can say anything about, so a full reconcile must not cancel them.
+RECONCILE_PROVIDER = "massive"
+
 
 @dataclass(frozen=True)
 class CorporateAction:
@@ -159,9 +164,15 @@ class CorporateActionStore:
                     revised += 1
 
             if full_reconcile:
+                # Scoped to RECONCILE_PROVIDER, because `events` only ever came from
+                # that provider. Sweeping every active row meant the Sunday
+                # `--full-reconcile` cancelled the yahoo splits `apply_repairs` had
+                # just added, every week: 507 of 1,014 were cancelled across
+                # 2026-07-19 (418) and 2026-07-26 (89). Absence from a Massive
+                # response says nothing about an event Massive was never asked for.
                 incoming = set(event_ids)
                 for event_id, previous in list(latest.items()):
-                    if event_id in incoming or previous.status != "active":
+                    if event_id in incoming or previous.status != "active" or previous.provider != RECONCILE_PROVIDER:
                         continue
                     cancelled_row = replace(
                         previous,
@@ -307,8 +318,8 @@ class CorporateActionStore:
     ) -> CorporateAction:
         is_split = isinstance(event, MassiveSplit)
         return CorporateAction(
-            action_id=cls._action_id("massive", event.provider_event_id, revision, event.payload_hash),
-            provider="massive",
+            action_id=cls._action_id(RECONCILE_PROVIDER, event.provider_event_id, revision, event.payload_hash),
+            provider=RECONCILE_PROVIDER,
             provider_event_id=event.provider_event_id,
             event_revision=revision,
             supersedes_action_id=supersedes,

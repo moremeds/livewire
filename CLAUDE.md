@@ -440,6 +440,45 @@ bronze intraday bars onto them and hard-fails on any uncovered bar, and bronze
 intraday extends before a trimmed window. Never narrow factors to match the daily
 file.
 
+#### Two active splits on one ex-date
+
+`latest_active()` dedupes on the **provider-scoped** `provider_event_id`, so one
+logical event recorded under two ids survives twice — and `build_factor_intervals`
+multiplied every active action, both into `splits_by_date` and in the per-bar
+loop. The store has always assumed one active split per ex-date
+(`corporate_action_store.py`, `# ponytail: one active split per ex-date is
+assumed`); nothing enforced it.
+
+Measured 2026-08-02: 18 such ex-dates across 16 symbols. They are not two events
+— they are one event disagreeing with itself: exact inverses (LIME `300:1` and
+`1:300`, TTSH `3000:1` and `1:3000`), ratios that migrated between dates across
+revisions (TSM 2007 and 2009 swapped), or the same ratio restated at another
+scale (PGC `10:11` and `100:110`, CZFS `1:1.01` and `100:101`).
+
+- **Equal ratios collapse.** One event written twice applies once. Dropping the
+  duplicate from `action_factors` is the half that matters — checking the ratio
+  without removing the entry still double-adjusts in the per-bar loop.
+- **Unequal ratios fail closed**, quarantining the symbol. Nothing in the store
+  says which is right, so publishing either one would be a guess.
+
+⚠️ **Count duplicate records, not affected symbols.** Only **5** of the 16 have
+their duplicate ex-date *inside* stored bronze (FTLF, LADR, MDRR, OUT, SLG); for
+the rest it is prehistory and touches no stored row, exactly as
+`first_trade_date < action.ex_date` already required. All 5 were independently
+absent from Silver, so the production impact at discovery was **zero** — the bug
+was latent, not active. Reading blast radius off the action store alone
+overstates it every time.
+
+#### Cancellation inference is provider-scoped
+
+`reconcile(..., full_reconcile=True)` infers a cancellation from an event's
+*absence* in the provider response. `reconcile()` only ever speaks for
+`RECONCILE_PROVIDER` (Massive) — `_from_provider` hardcodes it — but the sweep
+used to cancel **every** active row regardless of provider. So the Sunday
+`--full-reconcile` undid the yahoo splits `apply_repairs` had added, every week:
+507 of 1,014 cancelled across 2026-07-19 (418) and 2026-07-26 (89). Absence from
+a Massive response says nothing about an event Massive was never asked for.
+
 #### Break triage — keeping real market moves
 
 Not every discontinuity is corruption. `scripts/livewire_quality.py triage-breaks`

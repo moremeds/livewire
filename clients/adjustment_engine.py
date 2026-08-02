@@ -63,6 +63,7 @@ def build_factor_intervals(
     )
     factors_by_action: dict[str, tuple[Decimal, Decimal]] = {}
     splits_by_date: dict[date, Decimal] = {}
+    superseded: set[str] = set()
 
     for action in active_actions:
         if action.action_type != "split":
@@ -73,7 +74,31 @@ def build_factor_intervals(
             raise ValueError("split ratio must be positive")
         price_factor = split_from / split_to
         volume_factor = split_to / split_from
-        splits_by_date[action.ex_date] = splits_by_date.get(action.ex_date, ONE) * price_factor
+        # Two active splits on one ex-date used to MULTIPLY, here and in the
+        # per-bar loop below. `latest_active()` dedupes on the provider-scoped
+        # `provider_event_id`, so one logical event recorded under two ids
+        # survives twice and the symbol silently publishes wrong prices —
+        # measured 2026-08-02 across 16 symbols: COEP 200x, BTX 50x, FTLF 10x,
+        # LIME and TTSH collapsing to 1.0 (the split never applied at all).
+        #
+        # These are not two events. They are the same event disagreeing with
+        # itself: exact inverses (LIME `300:1` vs `1:300`), or ratios that
+        # migrated between dates across revisions (TSM 2007 and 2009 swapped).
+        # Nothing in the store says which is right, so this fails closed and
+        # quarantines the symbol rather than guessing — the same rule the basis
+        # machinery already applies to an ambiguous split boundary.
+        previous = splits_by_date.get(action.ex_date)
+        if previous is not None:
+            if previous != price_factor:
+                raise ValueError(
+                    f"conflicting active splits on {action.ex_date}: "
+                    f"price factor {previous} vs {price_factor} ({action.action_id})"
+                )
+            # Same ratio restated at a different scale — PGC `10:11` and
+            # `100:110`, CZFS `1:1.01` and `100:101`. One event, so keep one.
+            superseded.add(action.action_id)
+            continue
+        splits_by_date[action.ex_date] = price_factor
         factors_by_action[action.action_id] = (price_factor, volume_factor)
 
     for action in active_actions:
@@ -97,7 +122,14 @@ def build_factor_intervals(
             raise ValueError("cash dividend must be less than positive previous close")
         factors_by_action[action.action_id] = ((reference_close - cash) / reference_close, ONE)
 
-    action_factors = [(action, *factors_by_action[action.action_id]) for action in active_actions]
+    # Dropping the superseded split here is the half that actually matters: the
+    # per-bar loop below multiplies every entry, so leaving a duplicate in would
+    # double-adjust even when both records agree.
+    action_factors = [
+        (action, *factors_by_action[action.action_id])
+        for action in active_actions
+        if action.action_id not in superseded
+    ]
 
     factors_by_date: list[tuple[date, Decimal, Decimal]] = []
     for row, bar_date in zip(ordered_bars, dates, strict=True):

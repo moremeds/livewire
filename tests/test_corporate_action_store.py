@@ -276,3 +276,30 @@ def test_apply_repairs_reinserting_active_split_is_noop(tmp_path):
     second = store.apply_repairs("NVDA", add_splits=add, cancel_ex_dates=[], fetched_at=_FIXED_AT)
     assert second.added == 0  # already active → not re-added
     assert len(store.latest_active("NVDA")) == 1
+
+
+def test_full_reconcile_leaves_another_provider_alone(tmp_path):
+    """A Massive response says nothing about an event Massive was never asked for.
+
+    The sweep used to cancel every active row whose id was absent from `events`,
+    regardless of provider — so the Sunday `--full-reconcile` undid the yahoo
+    splits `apply_repairs` had just added, every week. 507 of 1,014 yahoo splits
+    were cancelled that way across 2026-07-19 (418) and 2026-07-26 (89).
+    """
+    store = CorporateActionStore(tmp_path)
+    store.reconcile("NVDA", [_split()], FETCHED_AT)
+    store.apply_repairs(
+        "NVDA",
+        add_splits=[SplitAddition(date(2007, 9, 11), split_from=1.0, split_to=1.5)],
+        cancel_ex_dates=[],
+        fetched_at=_FIXED_AT,
+    )
+
+    result = store.reconcile("NVDA", [], FETCHED_AT, full_reconcile=True)
+
+    # The Massive row disappeared from the response and is cancelled; the yahoo
+    # row was never in scope and survives.
+    assert result.cancelled == 1
+    survivors = store.latest_active("NVDA")
+    assert [row.provider for row in survivors] == ["yahoo"]
+    assert survivors[0].ex_date == date(2007, 9, 11)
