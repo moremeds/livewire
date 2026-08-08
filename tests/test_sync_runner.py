@@ -389,6 +389,42 @@ class TestRunSync:
         intraday_idx = next(i for i, c in enumerate(labels) if "flatfile-ingest catch-up" in c)
         assert day_aggs_idx < intraday_idx
 
+    def test_a_dead_provider_skips_its_phases_instead_of_burning_the_budget(self, tmp_path, monkeypatch, capsys):
+        """2026-07-24: egress was down and four phases each burned 6h. Never again."""
+        from livewire_scripts.daily_outcomes import parse_last_summary_json
+
+        monkeypatch.delenv("LIVEWIRE_SKIP_NETWORK_PREFLIGHT", raising=False)
+        monkeypatch.setattr(
+            "clients.network_preflight._reachable",
+            lambda host, timeout: host != "files.massive.com",
+        )
+        config = _make_config(tmp_path)
+        commands: list[list[str]] = []
+
+        def capture(command, **kwargs):
+            commands.append(command)
+            return CompletedProcess(args=command, returncode=0)
+
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+            rc = run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
+
+        joined = [" ".join(c) for c in commands]
+        # Both flat-file lanes dial files.massive.com — neither ran.
+        assert not any("flatfile-ingest" in c for c in joined)
+        # Everything on a reachable host still did.
+        assert any("cboe-vol" in c for c in joined)
+        assert any("fred-rates" in c for c in joined)
+        assert any("--source massive" in c for c in joined)
+
+        summary = parse_last_summary_json(capsys.readouterr().out)
+        assert sorted(summary["skipped"]) == [
+            "daily_backfill_equity_day_aggs",
+            "daily_backfill_intraday_equity_flatfiles",
+        ]
+        # A skip is degraded, not failed: it must not page as a data failure.
+        assert summary["failed"] == []
+        assert rc == 0
+
     def test_emits_summary_json_with_phases(self, tmp_path, capsys):
         from livewire_scripts.daily_outcomes import parse_last_summary_json
 

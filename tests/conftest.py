@@ -27,6 +27,18 @@ def _isolate_reliability_artifact_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
 
 
+@pytest.fixture(autouse=True)
+def _no_egress_probe(monkeypatch):
+    """Never open a real socket from a unit test.
+
+    The egress preflight runs at the top of `run_sync`, so without this every
+    sync-runner test would TCP-connect to four provider hosts. Tests that care
+    about preflight behavior patch `_reachable` directly, which this does not
+    interfere with.
+    """
+    monkeypatch.setenv("LIVEWIRE_SKIP_NETWORK_PREFLIGHT", "1")
+
+
 @pytest.fixture()
 def tmp_bronze(tmp_path):
     """Create a temporary bronze parquet root."""
