@@ -331,7 +331,7 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
 
 ### Scheduled-job invariants worth not re-breaking
 
-- **The three job plists point at `<warehouse>/current`, never at a checkout.**
+- **The four warehouse job plists point at `<warehouse>/current`, never at a checkout.**
   They used to `cd` into the repo and run whatever was on disk at that moment —
   branch, uncommitted edits and all. Only `release-promote` still reads the
   repo, because building the artifact is its job. The older trap this replaced:
@@ -406,6 +406,82 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
   `1m.parquet` aborted the entire whole-market publish every night from
   2026-07-14; the file is now moved to `<lake>/quarantine/<stamp>/` and the
   symbol reported for targeted backfill while the rest of the market publishes.
+- ⚠️ **A preflight belongs to the phase that needs it, not to the orchestrator.**
+  `daily-backfill` and `backfill-all` sat in `IB_COMMANDS`, and `main()`
+  preflights before dispatching — so a down Gateway exited 86 ten seconds in and
+  none of the nine phases ran, including the Massive `equity_day_aggs` lane that
+  owns the ~20K SIP daily universe. Measured 2026-08-08 and 2026-08-09; Friday
+  2026-08-07 is absent from bronze warehouse-wide (equity 0/13311, futures 0/14,
+  rates 0/4 — only CBOE and FX, the two non-IB lanes of the *other* job, have it).
+  This is the same invariant as "IB is not a single point of failure", which was
+  implemented in `run_daily_update_job` and never checked against `sync_runner`.
+  **It is not a weekend pattern** — 3 of 16 logged days, and the previous weekend
+  ran fine. Phase 5 still shells out to `intraday-backfill`, which preflights
+  itself, so no check was removed.
+- **A phase exiting 86 is degraded, not failed.** `SUMMARY_JSON` carries a
+  `degraded` list disjoint from `failed`, and eligibility is **membership of the
+  IB phase set, not the exit code** — 86 is livewire's own preflight code and a
+  Massive/FRED/CBOE/DuckDB phase returning it for an unrelated reason must still
+  fail the run. `_phases_section` renders it as `DEGRADED (IB down)`: a field
+  nobody renders changes nothing, and the orchestrator returning 0 while the
+  nightly email reads `FAILED (exit 86)` is the same exit-code-versus-summary
+  disagreement this runner was already fixed for once.
+- **The equity lane falls back to Massive on a down Gateway.** Silver reads
+  equity bronze and the corporate-action store, both Massive-backed, but the
+  equity lane runs on IB — so `silver_inputs_ok` gated the rebuild for the whole
+  universe on a dependency Silver does not have. Futures and cmdty get no
+  fallback: Massive does not carry them, and a fallback there would manufacture
+  a success out of missing data. If both providers are down the lane leaves
+  `degraded` for `failed` and the job pages, which is correct.
+- ⚠️ **Any alert value beginning with `--` was unsendable.** `parseArgs` had no
+  `--key=value` form and rejected a value starting with `--`. The error summary
+  is log-derived text; on 2026-08-08 it began with `--- Runbook: ...` and the
+  page was never sent — the watchdog caught it 5.5h later. All five Python call
+  sites now emit the single-token form; the two-token form still parses.
+- ⚠️ **Coverage has its own job because every budget guessed for it expired.**
+  600s (from 2026-07-07), then 1800s (5 of 6 nights after PR #78). Both numbers
+  came from warm-cache measurements; a cold full pass measured **2858s** on
+  2026-08-09. The lake is on an external exFAT volume and the nightly 23.57 GB
+  of intraday writes evict the cache, so **cold is the normal state** and thread
+  count does not help. `com.livewire.coverage` runs at **11:00 UTC** with no
+  timeout — chosen against the daily job's 4h *deadline* (06:00 + 4h = 10:00
+  UTC), not its 3.27h healthy peak, because a slow-but-legal run still
+  publishing would give a mixed-time snapshot. `livewire_quality.py` loads the
+  scheduled env for `coverage` too; launchd starts it cold and without it the
+  job resolves every credential to nothing.
+- **The footer pass caches `(mtime, size) → latest` per file.** An unchanged
+  pair cannot mean a later max date. Size is in the key because exFAT stores
+  mtime at 2-second granularity and bronze publishes by `os.replace()`, so a
+  republish can land inside the bucket. The post-recovery re-check is
+  deliberately **uncached** for that same reason. The lookup is read-only and
+  the caller rebuilds the cache single-threaded from returned tuples — 16
+  threads writing a shared dict would rest correctness on GIL atomicity.
+- **The digest reads the newest `coverage_*.log`, not an exact filename**, and
+  warns when it is more than 3 days old. Decoupling the schedules removes the
+  ordering bug but buys back a new silence: a coverage job that stopped firing
+  would leave the newest log frozen and the digest printing a green line forever.
+- ⚠️ **The nightly disk line measured the wrong volume.** `data-lake` is a
+  symlink to `/Volumes/DATA_LAKE`, so `shutil.disk_usage` reported 6.6 TiB free
+  every night while the internal volume holding `releases/`, `logs/`, `cursors/`
+  and the venv sat at 93% / 14.7 GiB — below the 25 GiB reserve, unreported.
+  livewire's own footprint there is only ~2.5 GB, so this is a monitoring gap
+  rather than livewire filling the disk; each `release promote` still takes
+  another 422 MB. `_disk_section` now reports both, deduplicated on the
+  `(total, used, free)` triple read field by field, so a single-filesystem
+  deployment still prints one plain `Disk:` line.
+- **`housekeeping` prunes logs (60d), releases (keep 3) and superseded evicted
+  silver revisions (keep 2).** `raw/` and `repairs/` are protected **by name**,
+  never by an age rule: raw below the rolling GET floor cannot be refetched, and
+  repairs holds the triage verdict store plus every rollback backup. The 26 GB
+  of 2026-07-15 cutover `.parquet.bak` files are out of scope by design. Dry run
+  is the default and `release.prune` previews in it too — the review is
+  worthless if the 422 MB-per-item category is invisible until `--apply`.
+- ⚠️ **The AppleDouble sweep is `--appledouble`, opt-in, and must never go in the
+  nightly job.** Finding `._*` means `rglob` over the whole 13 TiB exFAT volume —
+  the operation measured at 281s cold for a *single* timeframe glob. Under a
+  nightly budget the failure is worse than surviving sidecars: planning finishes
+  before anything is deleted, so a traversal that blows the budget deletes
+  **nothing**, logs and evicted revisions included, while reporting one warning.
 
 Silver artifacts are published beneath `MDW_SILVER_DIR` (default
 `data-lake/silver`). Daily files preserve Apex-required OHLCV names and add
@@ -747,20 +823,20 @@ python scripts/livewire_ingest.py daily --asset-class futures             # Dail
 
 **Scheduling with launchd** (macOS):
 ```bash
-# The three jobs run the immutable release, so they take the WAREHOUSE path.
+# The four warehouse jobs run the immutable release, so they take the WAREHOUSE path.
 # The promoter is the one job that reads the repo — it is what builds the release.
 WAREHOUSE=~/market-warehouse
-for L in daily-update daily-update-watchdog intraday-catchup; do
+for L in daily-update daily-update-watchdog intraday-catchup coverage; do
   sed "s|/path/to/warehouse|$WAREHOUSE|g" "launchd/com.livewire.$L.plist.example" \
     > ~/Library/LaunchAgents/com.livewire.$L.plist
 done
 sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.release-promote.plist.example \
   > ~/Library/LaunchAgents/com.livewire.release-promote.plist
-for L in daily-update daily-update-watchdog intraday-catchup release-promote; do
+for L in daily-update daily-update-watchdog intraday-catchup coverage release-promote; do
   launchctl load ~/Library/LaunchAgents/com.livewire.$L.plist
 done
 ```
-`scripts/livewire_ops.py run-daily-job` loads `~/.secrets`, repo `.env`, and `~/market-warehouse/.env` before invoking the retrying scheduled runner. The runner automatically syncs equities, futures, and cmdty via IB, then all volatility indices via CBOE's public API and DXY/FX via Yahoo+Massive, in a single invocation; pass `--asset-class <name>` to run only one IB asset class (skips both the CBOE volatility and fx syncs). After a successful run it also spawns coverage + weekly quality reports and sends the nightly digest email.
+`scripts/livewire_ops.py run-daily-job` loads `~/.secrets`, repo `.env`, and `~/market-warehouse/.env` before invoking the retrying scheduled runner. The runner automatically syncs equities, futures, and cmdty via IB, then all volatility indices via CBOE's public API and DXY/FX via Yahoo+Massive, in a single invocation; pass `--asset-class <name>` to run only one IB asset class (skips both the CBOE volatility and fx syncs). After a successful run it also spawns the weekly quality report, sends the nightly digest email, and runs the housekeeping retention sweep last. Coverage is **not** here — it has its own job, `com.livewire.coverage` at 11:00 UTC.
 
 A second scheduled job, `com.livewire.intraday-catchup`, runs at 05:00 UTC daily (= 01:00 ET EDT / 00:00 ET EST) and invokes `scripts/livewire_ops.py run-intraday-catchup-job`. This calls the existing `daily-backfill` orchestrator so equity daily + intraday parquet (1m/5m/30m/1h), FRED Treasury rates, CBOE volatility daily, and IB volatility intraday (30m and 5m, with 1h derived locally from 30m) all refresh. Equity intraday requires `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY`; missing credentials fail the orchestrator before any phases run, and there is no REST or IB equity-intraday fallback. The wrapper is single-attempt because `daily-backfill` owns its phase execution and activity-based stall detection; on terminal failure the wrapper sends one alert through the same Nodemailer pipeline as the daily-update wrapper, tagged `--job-name intraday_catchup`. Logs land at `~/market-warehouse/logs/intraday_catchup_YYYY-MM-DD.log` (UTC date). The default 7-day `MDW_DAILY_BACKFILL_INTRADAY_DAYS` lookback absorbs a single missed run; widen via `~/market-warehouse/.env` if you need more headroom. 05:00 UTC is well after Massive's empirical whole-market SIP minute-aggregate publish (file for trade-date D appears shortly after midnight ET on D+1) and gives a 1h15m buffer after IBC's `AutoRestartTime=11:45` ET nightly restart (= 03:45 UTC), which requires 2FA approval before port 4001 is available.
 
@@ -903,7 +979,7 @@ Two consequences:
 
 ### Coverage tracking + auto-recovery
 
-`scripts/livewire_quality.py coverage` runs after each successful daily job (spawned by `run-daily-job`). For each tracked timeframe (`1d`, `1m`, `1h`, `5m`, `30m`) it counts how many symbols in the **active bronze universe for that timeframe** have bars current as-of the target trading day, using parquet footer statistics (not a full column read). A symbol counts as present if it is current OR absent from the day's raw traded set (no-trade is not missing). It writes a one-line summary to `~/market-warehouse/logs/coverage_YYYY-MM-DD.log`, and — when coverage drops below `MDW_COVERAGE_ALERT_THRESHOLD` (default `0.95`) — triggers a targeted backfill subprocess and re-checks.
+`scripts/livewire_quality.py coverage` runs as its own launchd job, `com.livewire.coverage` at 11:00 UTC — **not** spawned by `run-daily-job`, which gave it a guessed budget that expired every night. For each tracked timeframe (`1d`, `1m`, `1h`, `5m`, `30m`) it counts how many symbols in the **active bronze universe for that timeframe** have bars current as-of the target trading day, using parquet footer statistics (not a full column read). A symbol counts as present if it is current OR absent from the day's raw traded set (no-trade is not missing). It writes a one-line summary to `~/market-warehouse/logs/coverage_YYYY-MM-DD.log`, and — when coverage drops below `MDW_COVERAGE_ALERT_THRESHOLD` (default `0.95`) — triggers a targeted backfill subprocess and re-checks.
 
 ```bash
 python scripts/livewire_quality.py coverage                                # Today's coverage + auto-recovery

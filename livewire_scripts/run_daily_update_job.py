@@ -342,14 +342,17 @@ def extract_error_summary(log_file: Path) -> str:
     return "Daily update failed with no error summary captured in the log."
 
 
-def _spawn_post_success_quality(runner, log_file, args, label, timeout=120):
-    """Run a post-success quality subcommand; a failure logs a warning only.
+def _spawn_post_success_quality(runner, log_file, args, label, timeout=120, script=None):
+    """Run a post-success subcommand; a failure logs a warning only.
 
     These jobs must never flip a successful daily run to failure.
+
+    `script` exists so the housekeeping sweep can reuse this rather than get a
+    second copy of the try/except + WARNING shape that would drift from this one.
     """
     try:
         result = runner(
-            [sys.executable, str(QUALITY_SCRIPT), *args],
+            [sys.executable, str(script or QUALITY_SCRIPT), *args],
             timeout=timeout,
             check=False,
             capture_output=True,
@@ -589,6 +592,20 @@ def run_post_success_quality(
         log_file,
         ["digest", "--run-date", run_date, "--email"],
         "nightly digest",
+    )
+
+    # Retention sweep, last — the digest must already have been sent. It can
+    # only warn: a sweep that deleted nothing is never worth failing a
+    # successful ingest run for, and the warning is already counted —
+    # `_quality_jobs_section` matches this exact shape, which is the only
+    # reason the four-week coverage outage was eventually visible.
+    _spawn_post_success_quality(
+        runner,
+        log_file,
+        ["housekeeping", "--apply"],
+        "housekeeping",
+        timeout=600,
+        script=OPS_SCRIPT,
     )
 
 

@@ -1378,3 +1378,42 @@ class TestTheCoverageLaunchdTemplate:
         assert "TimeOut" not in text
         # RunAtLoad would fire a full cold pass every time anyone reloads it.
         assert "RunAtLoad" not in text
+
+
+class TestHousekeepingRunsAfterTheDigest:
+    def test_the_nightly_job_runs_a_housekeeping_sweep(self, tmp_path):
+        commands: list[list[str]] = []
+
+        def fake_runner(command, **kwargs):
+            commands.append(list(command))
+            return CompletedProcess(command, 0, stdout="", stderr="")
+
+        run_post_success_quality(
+            _config(tmp_path),
+            tmp_path / "daily_update_2026-08-08.log",
+            runner=fake_runner,
+        )
+
+        sweeps = [c for c in commands if "housekeeping" in c]
+        assert len(sweeps) == 1
+        assert sweeps[0][1].endswith("livewire_ops.py"), "housekeeping is an ops command"
+        assert "--apply" in sweeps[0]
+        # It runs last: the digest must already have been sent.
+        assert commands.index(sweeps[0]) == len(commands) - 1
+
+    def test_a_failed_sweep_only_warns(self, tmp_path):
+        """A sweep that deleted nothing is never worth failing a good ingest run.
+
+        The warning shape is load-bearing: `_quality_jobs_section` counts
+        exactly this, and it is the only reason the four-week coverage outage
+        was eventually visible at all.
+        """
+        log_file = tmp_path / "daily_update_2026-08-08.log"
+
+        def fake_runner(command, **kwargs):
+            failed = "housekeeping" in command
+            return CompletedProcess(command, 1 if failed else 0, stdout="", stderr="")
+
+        run_post_success_quality(_config(tmp_path), log_file, runner=fake_runner)
+
+        assert "WARNING: housekeeping failed" in log_file.read_text(encoding="utf-8")
