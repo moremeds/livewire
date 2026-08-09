@@ -154,8 +154,9 @@ def build_alert_command(config: RunnerConfig, request: AlertRequest) -> list[str
         request.run_date,
         "--log-file",
         str(request.log_file),
-        "--error-summary",
-        request.error_summary,
+        # One token. The two-token form breaks whenever the summary begins with
+        # "--", which is how the 2026-08-08 page was lost.
+        f"--error-summary={request.error_summary}",
         "--repo-root",
         str(request.repo_root),
         "--job-name",
@@ -341,14 +342,17 @@ def extract_error_summary(log_file: Path) -> str:
     return "Daily update failed with no error summary captured in the log."
 
 
-def _spawn_post_success_quality(runner, log_file, args, label, timeout=120):
-    """Run a post-success quality subcommand; a failure logs a warning only.
+def _spawn_post_success_quality(runner, log_file, args, label, timeout=120, script=None):
+    """Run a post-success subcommand; a failure logs a warning only.
 
     These jobs must never flip a successful daily run to failure.
+
+    `script` exists so the housekeeping sweep can reuse this rather than get a
+    second copy of the try/except + WARNING shape that would drift from this one.
     """
     try:
         result = runner(
-            [sys.executable, str(QUALITY_SCRIPT), *args],
+            [sys.executable, str(script or QUALITY_SCRIPT), *args],
             timeout=timeout,
             check=False,
             capture_output=True,
@@ -553,7 +557,7 @@ def run_post_success_quality(
     log_file: Path,
     runner: callable = subprocess.run,
 ) -> None:
-    """Run coverage, weekly, and the nightly digest exactly once, last.
+    """Run weekly and the nightly digest exactly once, last.
 
     These used to fire inside each asset class's success branch — up to four
     coverage runs and four digest emails a night, all of them before the
@@ -561,13 +565,10 @@ def run_post_success_quality(
     SUMMARY_JSON, which had not been written yet, so the window_regressions
     warning the digest is supposed to carry could never appear.
     """
-    # Coverage may launch a recovery subprocess, so give it a longer budget.
-    # 600s was not a budget, it was a guillotine: the footer pass is ~150-300s
-    # per timeframe across five timeframes, so coverage timed out every night
-    # from 2026-07-07 and the weekly report has been an empty stub since.
-    # `FOOTER_READ_WORKERS` takes 5.3x off that; this absorbs what threads
-    # cannot — a cold glob measured at 281s for a single timeframe.
-    _spawn_post_success_quality(runner, log_file, ["coverage"], "coverage report", timeout=1800)
+    # Coverage runs as com.livewire.coverage, not here. It was given 600s, then
+    # 1800s; a cold full pass measured 2858s on 2026-08-09. The bug was putting
+    # a guessed budget around work whose runtime is dominated by cold I/O on an
+    # external volume — so it now has its own job and no budget at all.
     # weekly self-skips on non-Sunday.
     _spawn_post_success_quality(runner, log_file, ["weekly"], "weekly quality report")
     run_date = log_file.stem.removeprefix("daily_update_")
@@ -591,6 +592,20 @@ def run_post_success_quality(
         log_file,
         ["digest", "--run-date", run_date, "--email"],
         "nightly digest",
+    )
+
+    # Retention sweep, last — the digest must already have been sent. It can
+    # only warn: a sweep that deleted nothing is never worth failing a
+    # successful ingest run for, and the warning is already counted —
+    # `_quality_jobs_section` matches this exact shape, which is the only
+    # reason the four-week coverage outage was eventually visible.
+    _spawn_post_success_quality(
+        runner,
+        log_file,
+        ["housekeeping", "--apply"],
+        "housekeeping",
+        timeout=600,
+        script=OPS_SCRIPT,
     )
 
 
@@ -783,6 +798,31 @@ def run_silver_rebuild(
     )
 
 
+def _without_flag(args: Sequence[str], flag: str) -> list[str]:
+    """Drop every `flag value` / `flag=value` occurrence.
+
+    Appending `--source massive` to args that already carry `--source ib` is
+    not enough: argparse honours the LAST occurrence, but
+    `_requires_ib_preflight` reads the FIRST (`_arg_value`,
+    `scripts/livewire_ingest.py:75`). The preflight would still gate on `ib`,
+    exit 86 again, and the fallback would silently defeat itself — the retry
+    would look like it ran while nothing changed.
+    """
+    kept: list[str] = []
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
+            continue
+        if arg == flag:
+            skip = True
+            continue
+        if arg.startswith(f"{flag}="):
+            continue
+        kept.append(arg)
+    return kept
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     config = build_config()
     args = list(argv or sys.argv[1:])
@@ -811,6 +851,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             deadline=deadline,
         )
 
+    # Massive owns equity daily whenever IB cannot answer. Silver reads equity
+    # bronze and the corporate-action store and nothing else, both Massive-backed
+    # — so without this a Gateway outage silently gated the adjusted rebuild for
+    # the whole ~13K universe, the same cascade the lane split was meant to end.
+    #
+    # `_requires_ib_preflight` exempts `daily --source massive`, so the retry
+    # cannot hit the preflight again. Futures and cmdty deliberately get no
+    # fallback: Massive does not carry those asset classes, and a fallback there
+    # would manufacture a success out of missing data.
+    ib_lanes = set(ASSET_CLASSES)
+    if lane_codes.get("equity") == GATEWAY_DOWN_EXIT_CODE:
+        lane_codes["equity"] = run_with_retries(
+            config,
+            _without_flag(args, "--source") + ["--asset-class", "equity", "--source", "massive"],
+            env=env,
+            completion_scope="equity",
+            deadline=deadline,
+        )
+        # Equity stops being an IB lane the moment Massive answers for it, so
+        # an 86 from the FALLBACK is not a Gateway outage and must not degrade.
+        # Otherwise both providers failing would leave `failed` empty, exit 0,
+        # and skip Silver while reporting success. Same rule as sync_runner:
+        # degrade eligibility is membership of the IB set, not the exit code.
+        ib_lanes.discard("equity")
+
     # Sync all volatility indices via CBOE API (authoritative source)
     cboe_code = run_cboe_volatility_sync(config, env=env, deadline=deadline)
 
@@ -820,8 +885,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # A Gateway outage is a degraded run, not a failed one. It must not mark
     # the job failed and must not gate anything that does not read IB.
-    degraded = sorted(name for name, code in lane_codes.items() if code == GATEWAY_DOWN_EXIT_CODE)
-    failed = {name: code for name, code in lane_codes.items() if code not in (0, GATEWAY_DOWN_EXIT_CODE)}
+    def _is_degraded(name: str, code: int) -> bool:
+        return code == GATEWAY_DOWN_EXIT_CODE and name in ib_lanes
+
+    degraded = sorted(name for name, code in lane_codes.items() if _is_degraded(name, code))
+    failed = {name: code for name, code in lane_codes.items() if code != 0 and not _is_degraded(name, code)}
 
     final_code = action_code or cboe_code or fx_code or next(iter(failed.values()), 0)
 

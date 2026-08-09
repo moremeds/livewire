@@ -33,6 +33,9 @@ _DATA_LAKE: Path | None = None
 _FAILURE_EMAIL_SCRIPT = _PROJECT_ROOT / "livewire_node" / "send_daily_update_failure_email.mjs"
 _MIN_FREE_GB = float(os.getenv("MDW_FLATFILE_MIN_FREE_GB", "25"))
 _GIB = 1024**3
+#: Coverage is daily and the digest reads yesterday's by design, so 3 absorbs
+#: one missed run without absorbing a job that has stopped firing entirely.
+_COVERAGE_STALE_DAYS = 3
 
 
 def _read_text(path: Path) -> str | None:
@@ -67,9 +70,21 @@ def _phases_section(run_date: str, log_dir: Path) -> list[str]:
     if summary is None or summary.get("job") != "daily_backfill":
         lines.append("  (not found)")
         return lines
+    degraded = set(summary.get("degraded", []))
     for p in summary.get("phases", []):
-        status = "ok" if p.get("exit") == 0 else f"FAILED (exit {p.get('exit')})"
-        lines.append(f"  {p.get('label', '?'):<44} {status:<18} {p.get('duration_s', '?')}s")
+        label = p.get("label", "?")
+        if p.get("exit") == 0:
+            status = "ok"
+        elif label in degraded:
+            # A Gateway outage is not a failure. Naming it "DEGRADED" rather
+            # than "FAILED (exit 86)" is the whole point of the new field —
+            # a page-shaped word for a non-page trains the reader to ignore it.
+            status = "DEGRADED (IB down)"
+        else:
+            status = f"FAILED (exit {p.get('exit')})"
+        lines.append(f"  {label:<44} {status:<18} {p.get('duration_s', '?')}s")
+    if summary.get("degraded"):
+        lines.append(f"  degraded: {', '.join(summary['degraded'])}")
     if summary.get("failed"):
         lines.append(f"  failed: {', '.join(summary['failed'])}")
     return lines
@@ -127,40 +142,100 @@ def _quality_jobs_section(run_date: str, log_dir: Path) -> list[str]:
     return [f"Quality jobs: {len(seen)} FAILED"] + [f"  {label}: {reason}" for label, reason in sorted(seen.items())]
 
 
-def _target_session(run_date: str, log_dir: Path) -> str:
-    """The trading session this run ingested — what coverage names its log after.
-
-    Coverage keys its log on the session it measured, but the job runs at 02:00 ET
-    the morning after, so run_date is one trading day later. Looking up
-    `coverage_{run_date}.log` therefore always missed. The daily-update
-    SUMMARY_JSON already carries the session, so read it rather than give the
-    digest a second copy of the trading calendar to drift out of sync.
-    """
-    text = _read_text(log_dir / f"daily_update_{run_date}.log") or ""
-    for summary in parse_all_summary_json(text):
-        if summary.get("job") == "daily_update" and summary.get("target_date"):
-            return str(summary["target_date"])
-    return run_date
-
-
 def _coverage_section(run_date: str, log_dir: Path) -> list[str]:
-    text = _read_text(log_dir / f"coverage_{_target_session(run_date, log_dir)}.log")
+    """Report the newest coverage measurement, whatever day it measured.
+
+    Coverage runs as its own launchd job now, so its log will rarely carry the
+    run date. Matching on an exact filename would report "(not found)" every
+    night — indistinguishable from the detector being dead, which is exactly
+    how the real outage hid for four weeks. The measured date is in the line
+    itself, so a lag is visible rather than silent.
+    """
     lines = ["Coverage:"]
-    if not text or not text.strip():
-        lines.append("  (not found)")
+    logs = sorted(log_dir.glob("coverage_*.log"))
+    for path in reversed(logs):
+        text = _read_text(path)
+        if not text:
+            continue
+        # First NON-BLANK line, not first line. A partially-flushed write whose
+        # first line is empty would otherwise print a bare "  " and return —
+        # a blank line that reads as "coverage ran fine" while saying nothing,
+        # and it would mask the older log that does carry a measurement.
+        measurement = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        if not measurement:
+            continue
+        lines.append("  " + measurement)
+        # Decoupling the schedules removes the ordering bug but opens a new
+        # silence: if com.livewire.coverage stops firing, the newest log simply
+        # stops advancing and the digest keeps printing a green line forever —
+        # the same dead-detector shape, one level up. Age is the only thing that
+        # distinguishes "measured yesterday" from "has not run since July".
+        measured = path.stem.removeprefix("coverage_")
+        try:
+            age = (date.fromisoformat(run_date) - date.fromisoformat(measured)).days
+        except ValueError:
+            return lines
+        if age > _COVERAGE_STALE_DAYS:
+            lines.append(f"  ⚠ newest coverage log is {age} days old — has the coverage job run?")
         return lines
-    lines.append("  " + text.splitlines()[0].strip())
+    lines.append("  (not found)")
     return lines
 
 
-def _disk_section(data_lake: Path) -> list[str]:
-    usage = shutil.disk_usage(data_lake)
-    free_gib = usage.free / _GIB
-    pct_used = 100.0 * (usage.used / usage.total)
-    line = f"Disk: {free_gib:.1f} GiB free ({pct_used:.0f}% used)"
-    if free_gib < 2 * _MIN_FREE_GB:
-        line += f"  ⚠ raw retention deferred — free space under {2 * _MIN_FREE_GB:.0f} GiB"
-    return [line]
+def _disk_section(data_lake: Path, warehouse: Path | None = None) -> list[str]:
+    """Report every distinct volume the warehouse depends on.
+
+    `data-lake` is a symlink to an external volume, so measuring it alone read
+    "6752.4 GiB free" every night while the internal volume holding releases,
+    logs, cursors and the venv sat below its own reserve, unreported. One
+    symlink silently swapped the monitored object.
+
+    Deduplicated on the usage triple, not on st_dev: when both paths live on
+    one filesystem — any deployment without the external drive — disk_usage
+    returns identical numbers and this prints a single line. Read field by
+    field rather than `tuple(usage)` so any object exposing total/used/free
+    works, which is what the existing tripwire test patches in.
+
+    # ponytail: two genuinely distinct volumes with byte-identical
+    # total/used/free would collapse to one line. Cosmetic, astronomically
+    # unlikely, and it keeps the dedup to data this function already has.
+    """
+    paths = [("lake", data_lake)]
+    if warehouse is not None:
+        paths.append(("warehouse", warehouse))
+
+    volumes: list[tuple[str, tuple[int, int, int]]] = []
+    seen: set[tuple[int, int, int]] = set()
+    for label, path in paths:
+        try:
+            usage = shutil.disk_usage(path)
+        except OSError:
+            continue
+        # A filesystem reporting total=0 tells us nothing, and dividing by it
+        # would raise out of _disk_section — killing the WHOLE digest, which
+        # this module's docstring promises never happens on a missing input.
+        if not usage.total:
+            continue
+        key = (usage.total, usage.used, usage.free)
+        if key in seen:
+            continue
+        seen.add(key)
+        volumes.append((label, key))
+
+    if not volumes:
+        return ["Disk: (unavailable)"]
+
+    # Label only once there is something to distinguish. A single-filesystem
+    # deployment keeps reading plain "Disk:", which is also what it means.
+    lines: list[str] = []
+    for label, (total, used, free) in volumes:
+        free_gib = free / _GIB
+        suffix = "" if len(volumes) == 1 else f" [{label}]"
+        line = f"Disk{suffix}: {free_gib:.1f} GiB free ({100.0 * used / total:.0f}% used)"
+        if free_gib < 2 * _MIN_FREE_GB:
+            line += f"  ⚠ raw retention deferred — free space under {2 * _MIN_FREE_GB:.0f} GiB"
+        lines.append(line)
+    return lines
 
 
 def build_digest(run_date: date, log_dir: Path, data_lake: Path) -> str:
@@ -173,7 +248,7 @@ def build_digest(run_date: date, log_dir: Path, data_lake: Path) -> str:
         _silver_section(run, log_dir),
         _quality_jobs_section(run, log_dir),
         _coverage_section(run, log_dir),
-        _disk_section(data_lake),
+        _disk_section(data_lake, log_dir.parent),
     ]
     return "\n\n".join("\n".join(section) for section in sections) + "\n"
 

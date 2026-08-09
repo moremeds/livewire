@@ -276,6 +276,19 @@ def test_prune_never_drops_the_release_being_served(warehouse):
     assert (warehouse / "releases" / "served").exists()
 
 
+def test_prune_dry_run_names_what_would_go_without_removing_it(warehouse):
+    """The housekeeping review is worthless if the largest category is invisible.
+
+    Releases are 422 MB each — by far the biggest thing the sweep deletes — so
+    an operator reading a dry run has to see them before committing to --apply.
+    """
+    for index, sha in enumerate(["old", "mid", "new"]):
+        make_release(warehouse, sha, 1_000.0 + index)
+
+    assert release.prune(keep=2, dry_run=True) == ["old"]
+    assert (warehouse / "releases" / "old").exists(), "dry run must not delete"
+
+
 def test_prune_is_a_noop_without_a_releases_directory(tmp_path, monkeypatch):
     monkeypatch.setenv("MDW_RELEASES_DIR", str(tmp_path / "absent"))
     monkeypatch.setenv("MDW_CURRENT_LINK", str(tmp_path / "current"))
@@ -493,3 +506,18 @@ def test_main_reports_a_release_error_as_exit_one(warehouse, caplog):
     with caplog.at_level("ERROR"):
         assert release.main(["rollback"]) == 1
     assert "no other release" in caplog.text
+
+
+def test_prune_does_not_report_a_release_it_failed_to_remove(warehouse, monkeypatch):
+    """_discard uses rmtree(ignore_errors=True), so a failed delete is silent.
+
+    Returning the name anyway would have housekeeping log "pruned release X"
+    over a directory still sitting on disk.
+    """
+    for index, sha in enumerate(["stuck", "mid", "new"]):
+        make_release(warehouse, sha, 1_000.0 + index)
+
+    monkeypatch.setattr(release, "_discard", lambda path: None)  # simulate a silent failure
+
+    assert release.prune(keep=2) == []
+    assert (warehouse / "releases" / "stuck").exists()

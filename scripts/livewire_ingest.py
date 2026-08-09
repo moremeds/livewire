@@ -30,14 +30,18 @@ COMMANDS = {
 
 # Commands that talk to IB Gateway. cboe-vol uses CBOE's public API; fx uses
 # Yahoo (daily, DXY intraday) and Massive (pair intraday).
+#
+# The orchestrators are deliberately absent. `daily-backfill` and `backfill-all`
+# each run nine phases of which two use IB, and `main()` runs the preflight
+# before dispatching — so a down Gateway killed seven Massive/FRED/CBOE phases
+# that have no IB dependency at all. Phase 5 invokes `intraday-backfill`, which
+# is still listed here and does its own preflight, so nothing is unchecked.
 IB_COMMANDS = {
     "daily",
     "historical",
     "robust",
     "intraday-backfill",
     "universe",
-    "backfill-all",
-    "daily-backfill",
 }
 
 

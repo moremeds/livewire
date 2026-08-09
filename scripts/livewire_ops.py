@@ -24,6 +24,7 @@ COMMANDS = {
     "run-daily-job": "livewire_scripts.run_daily_update_job",
     "run-intraday-catchup-job": "livewire_scripts.run_intraday_catchup_job",
     "release": "livewire_scripts.release",
+    "housekeeping": "livewire_scripts.housekeeping",
 }
 
 

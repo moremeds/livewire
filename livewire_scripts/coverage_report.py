@@ -156,9 +156,93 @@ def _latest_date_in_parquet(path: Path, column_name: str) -> date | None:
     return max(dates)
 
 
+def _load_footer_cache(cache_path: Path | None) -> dict:
+    """Return the persisted footer cache, or an empty one.
+
+    A corrupt or unreadable cache is not an error: the worst case is one slow
+    run, and failing the freshness detector because its optimisation file is
+    malformed would be trading a real signal for a cosmetic one.
+    """
+    if cache_path is None:
+        return {}
+    try:
+        return json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_footer_cache(cache_path: Path | None, cache: dict) -> None:
+    if cache_path is None:
+        return
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        # PID in the temp name: the launchd job and an operator running coverage
+        # by hand would otherwise write the same tmp path, and the loser's
+        # os.replace fails ENOENT after the winner moved it away — a spurious
+        # warning for a benign race.
+        tmp = cache_path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(cache, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, cache_path)
+    except OSError as exc:  # pragma: no cover - logged but tolerated
+        log.warning("could not persist the footer cache: %s", exc)
+
+
+def _latest_date_with_cache(
+    path: Path, column_name: str, cache: dict
+) -> tuple[date | None, bool, tuple[float, int] | None]:
+    """Return (latest_date, cache_hit, (mtime, size)). Reads `cache`; never writes it.
+
+    A parquet whose mtime and size have not moved since the last run cannot
+    have gained a later max date, so opening its footer is pure cost. On the
+    external exFAT volume that cost is the entire runtime — 2858s cold on
+    2026-08-09 against an 1800s budget, versus 29.2s warm for the same 1d pass.
+
+    `size` is in the key on purpose: bronze publishes by `os.replace()` and
+    exFAT stores mtime at 2-second granularity, so a republish landing inside
+    that bucket leaves the timestamp unchanged. Any real republish that adds or
+    removes a row also changes the size, and both come from the one `stat()`
+    this makes anyway.
+
+    `(mtime, size)` is not content identity — a republish inside the 2-second
+    bucket that happens to compress to the identical byte length would serve a
+    stale entry. That is accepted rather than hashed: hashing 13,270+ files
+    costs far more than the footer reads this exists to avoid, and the failure
+    is loud rather than silent. A stale entry can only hold an EARLIER date,
+    and `present_symbols` requires `latest >= target_date`, so the symbol reads
+    as MISSING and triggers recovery. It over-reports gaps; it cannot hide one.
+
+    Read-only on purpose. This runs on 16 threads, and having each worker write
+    into a shared dict would rest the whole cache's correctness on an argument
+    about `dict.__setitem__` atomicity under the GIL — an argument that stops
+    holding the day anyone runs this on a free-threaded build. `pool.map`
+    preserves input order, so the caller reassembles the new cache
+    single-threaded from the returned tuples and the question never arises.
+    """
+    key = str(path)
+    try:
+        stat = path.stat()
+    except OSError:
+        return None, False, None
+    stamp = (stat.st_mtime, stat.st_size)
+    entry = cache.get(key)
+    if isinstance(entry, dict) and (entry.get("mtime"), entry.get("size")) == stamp:
+        stored = entry.get("latest")
+        try:
+            return (date.fromisoformat(stored) if stored else None), True, stamp
+        except (TypeError, ValueError):
+            # A malformed entry is a cache miss, never an exception. This runs
+            # inside pool.map, so raising here kills the whole coverage run —
+            # and `_load_footer_cache` only guards against malformed JSON, not
+            # malformed contents. The detector must not die of its own
+            # optimisation file; the cost of a bad entry is one footer read.
+            log.warning("ignoring malformed footer-cache entry for %s", key)
+    return _latest_date_in_parquet(path, column_name), False, stamp
+
+
 def compute_coverage(
     target_date: date,
     bronze_root: Path | None = None,
+    cache_path: Path | None = None,
 ) -> dict[str, CoverageResult]:
     """Return per-timeframe coverage as-of *target_date*.
 
@@ -169,6 +253,8 @@ def compute_coverage(
     """
     bronze_root = bronze_root or _resolved_data_lake() / "bronze"
     results: dict[str, CoverageResult] = {}
+    cache = _load_footer_cache(cache_path)
+    fresh: dict = {}
 
     # The provider's exact target-day traded set, used only to exclude
     # instruments that did not trade from the "missing" count.
@@ -199,16 +285,36 @@ def compute_coverage(
         # Threaded: the pass is one small footer read per file, so it is bound by
         # I/O rather than the GIL — pyarrow releases it for the read and the parse.
         started = time.monotonic()
+        worker = partial(_latest_date_with_cache, column_name=column_name, cache=cache)
         with ThreadPoolExecutor(max_workers=FOOTER_READ_WORKERS) as pool:
-            latest_dates = pool.map(partial(_latest_date_in_parquet, column_name=column_name), parquet_paths)
-            latest_by_symbol = {
-                _symbol_from_parquet_path(path): latest
-                for path, latest in zip(parquet_paths, latest_dates, strict=True)
-                if latest is not None
-            }
+            rows = list(pool.map(worker, parquet_paths))
+        hits = sum(1 for _, cached, _ in rows if cached)
+        # Rebuilt, not mutated: `fresh` ends up holding exactly the files that
+        # exist right now, so a symbol archived to bronze-delisted/ drops out
+        # instead of accumulating in the cache forever.
+        for path, (latest, _, stamp) in zip(parquet_paths, rows, strict=True):
+            if stamp is not None:
+                fresh[str(path)] = {
+                    "mtime": stamp[0],
+                    "size": stamp[1],
+                    "latest": latest.isoformat() if latest else None,
+                }
+        latest_by_symbol = {
+            _symbol_from_parquet_path(path): latest
+            for path, (latest, _, _) in zip(parquet_paths, rows, strict=True)
+            if latest is not None
+        }
         # Logged so the next time this outgrows its budget it is measurable rather
-        # than a bare timeout. It outgrew the old one silently for four weeks.
-        log.info("%s: read %d footers in %.1fs", tf, len(parquet_paths), time.monotonic() - started)
+        # than a bare timeout. It outgrew the old one silently for four weeks, and
+        # then outgrew the replacement too.
+        log.info(
+            "%s: %d files, %d cached, %d read, %.1fs",
+            tf,
+            len(parquet_paths),
+            hits,
+            len(parquet_paths) - hits,
+            time.monotonic() - started,
+        )
         present_symbols = {
             symbol
             for symbol in universe
@@ -223,6 +329,7 @@ def compute_coverage(
             missing_symbols=missing,
         )
 
+    _save_footer_cache(cache_path, fresh)
     return results
 
 
@@ -402,6 +509,13 @@ def auto_recover(
             check=False,
         )
 
+    # Deliberately uncached. Recovery just republished parquet and this
+    # re-measures within the same run, and exFAT stores mtime at 2-second
+    # granularity — a rewrite finishing inside that window leaves the stat
+    # unchanged, so a cached re-check would report the gap recovery just
+    # closed. Across the 24h between scheduled runs the granularity is
+    # irrelevant; within one run it is exactly the failure mode. This reads
+    # only the symbols recovery touched, so skipping the cache costs nothing.
     rechecked = compute_coverage(effective_target, bronze_root=bronze_root)[timeframe]
     still_missing = [s for s in missing_symbols if s in rechecked.missing_symbols]
     recovered = len(missing_symbols) - len(still_missing)
@@ -436,8 +550,9 @@ def _send_alert(
         target_date.isoformat(),
         "--log-file",
         str(log_path),
-        "--error-summary",
-        error_summary,
+        # One token. The two-token form breaks whenever the summary begins with
+        # "--", which is how the 2026-08-08 page was lost.
+        f"--error-summary={error_summary}",
         "--repo-root",
         str(_REPO_ROOT),
         "--job-name",
@@ -503,7 +618,9 @@ def main() -> None:
         return
 
     console.print(f"\n[bold]Coverage Report[/bold]  target_date={target}")
-    results = compute_coverage(target)
+    # Cached across runs: an unchanged (mtime, size) cannot mean a later max
+    # date, and the cold footer walk is what this job's runtime actually is.
+    results = compute_coverage(target, cache_path=_resolved_log_dir() / "coverage_footer_cache.json")
     line = format_one_liner(target, results)
     console.print(line)
     blocks = format_missing_blocks(results)

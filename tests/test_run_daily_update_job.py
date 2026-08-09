@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 from datetime import UTC, datetime
@@ -369,7 +370,7 @@ class TestEndOfDayQualityReport:
         assert "--run-date" in digest_cmd
         assert not any("report" in c and "summary" in c for c in quality_calls)
 
-    def test_coverage_and_weekly_spawned(self, tmp_path):
+    def test_weekly_spawned(self, tmp_path):
         config = _config(tmp_path)
         calls = []
 
@@ -379,20 +380,23 @@ class TestEndOfDayQualityReport:
 
         self._run(config, fake_runner)
         quality_calls = [c for c in calls if any("livewire_quality.py" in str(x) for x in c)]
-        assert any("coverage" in c for c in quality_calls)
         assert any("weekly" in c for c in quality_calls)
 
-    def test_coverage_spawn_failure_is_logged_not_raised(self, tmp_path):
+    def test_weekly_spawn_failure_is_logged_not_raised(self, tmp_path):
+        """A post-success job must never flip a successful ingest run to failure.
+
+        The WARNING is not cosmetic: `nightly_digest._quality_jobs_section`
+        counts exactly this shape, and it is the only reason the four-week
+        coverage outage was eventually visible at all.
+        """
         config = _config(tmp_path)
 
         def fake_runner(cmd, **kwargs):
-            # Match the quality subcommand arg, not the worktree path (which
-            # itself contains the word "coverage").
-            is_coverage = any("livewire_quality.py" in str(x) for x in cmd) and "coverage" in cmd
-            return CompletedProcess(args=cmd, returncode=3 if is_coverage else 0, stdout=b"", stderr=b"")
+            is_weekly = any("livewire_quality.py" in str(x) for x in cmd) and "weekly" in cmd
+            return CompletedProcess(args=cmd, returncode=3 if is_weekly else 0, stdout=b"", stderr=b"")
 
         log_file = self._run(config, fake_runner)
-        assert "WARNING: coverage report failed" in log_file.read_text(encoding="utf-8")
+        assert "WARNING: weekly quality report failed" in log_file.read_text(encoding="utf-8")
 
     def test_digest_failure_is_logged_not_raised(self, tmp_path):
         config = _config(tmp_path)
@@ -455,7 +459,7 @@ class TestEndOfDayQualityReport:
         def _runner(command, stdout=None, env=None, timeout=None, **_):
             assert command[0] == "/usr/bin/python3"
             assert command[2] == "send-alert"
-            assert "--error-summary" in command
+            assert any(a.startswith("--error-summary=") for a in command)
             assert "--attempts" not in command
             return SimpleNamespace(returncode=0, stdout="sent")
 
@@ -1203,3 +1207,266 @@ class TestTheLaneRunnerNeverRunsTheAlert:
         assert rc == 1
         assert len(lane_calls) == config.max_attempts
         assert alert_run.call_count == 1
+
+
+class TestTheEquityLaneFallsBackToMassive:
+    """Silver must not be hostage to IB.
+
+    Silver reads equity bronze and the corporate-action store, both
+    Massive-backed. But the equity lane runs on IB by default, so a down
+    Gateway skipped it and `silver_inputs_ok` then blocked the rebuild for the
+    whole ~13K universe — the exact cascade CLAUDE.md says must not happen,
+    arriving by an indirect route.
+
+    Futures and cmdty get NO fallback: Massive does not carry those asset
+    classes, so a fallback there would be a fabricated success.
+
+    Consequence worth stating rather than discovering: if IB is down AND
+    Massive cannot answer either, equity's code is no longer 86, so the lane
+    leaves `degraded` for `failed` and the job pages. That is right — no source
+    produced the session's bars — but it fires only when both providers are gone.
+    """
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _lanes(config, daily, silver_code):
+        """Everything main() calls except the equity retry under test."""
+        with (
+            patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
+            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=daily),
+            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_fx_sync", return_value=0),
+            patch(
+                "livewire_scripts.run_daily_update_job.run_silver_rebuild",
+                return_value=silver_code,
+            ) as silver,
+        ):
+            yield silver
+
+    def test_a_down_gateway_retries_equity_on_massive(self, tmp_path):
+        config = _config(tmp_path)
+        calls: list[list[str]] = []
+
+        def daily(cfg, daily_update_args, **kwargs):
+            args = list(daily_update_args)
+            calls.append(args)
+            if "--source" in args and args[args.index("--source") + 1] == "massive":
+                return 0
+            return GATEWAY_DOWN_EXIT_CODE
+
+        with self._lanes(config, daily, 0) as silver:
+            main([])
+
+        equity_calls = [c for c in calls if "equity" in c]
+        assert len(equity_calls) == 2, "equity should be retried exactly once"
+        assert equity_calls[1][equity_calls[1].index("--source") + 1] == "massive"
+        silver.assert_called_once()
+
+    def test_futures_and_cmdty_get_no_fallback(self, tmp_path):
+        config = _config(tmp_path)
+        calls: list[list[str]] = []
+
+        def daily(cfg, daily_update_args, **kwargs):
+            calls.append(list(daily_update_args))
+            return GATEWAY_DOWN_EXIT_CODE
+
+        with self._lanes(config, daily, 0) as silver:
+            main([])
+
+        for asset_class in ("futures", "cmdty"):
+            lane_calls = [c for c in calls if asset_class in c]
+            assert len(lane_calls) == 1, f"{asset_class} must not be retried — Massive has no such data"
+            assert "--source" not in lane_calls[0]
+        silver.assert_not_called()
+
+    def test_an_explicit_source_ib_does_not_defeat_the_fallback(self, tmp_path):
+        """argparse honours the LAST --source; _requires_ib_preflight reads the FIRST.
+
+        So appending --source massive to args that already carry --source ib
+        would leave the preflight gating on ib, exit 86 again, and the retry
+        would look like it ran while nothing changed.
+        """
+        config = _config(tmp_path)
+        calls: list[list[str]] = []
+
+        def daily(cfg, daily_update_args, **kwargs):
+            args = list(daily_update_args)
+            calls.append(args)
+            if args.count("--source") > 1:
+                raise AssertionError(f"ambiguous --source in {args}")
+            if "--source" in args and args[args.index("--source") + 1] == "massive":
+                return 0
+            return GATEWAY_DOWN_EXIT_CODE
+
+        with self._lanes(config, daily, 0):
+            main(["--source", "ib"])
+
+        fallback = [c for c in calls if "massive" in c]
+        assert len(fallback) == 1
+        assert fallback[0].count("--source") == 1, "exactly one --source reaches the preflight"
+
+    def test_a_fallback_that_also_exits_86_fails_rather_than_degrades(self, tmp_path):
+        """Equity stops being an IB lane once Massive answers for it.
+
+        Classifying the FALLBACK's 86 as a Gateway outage would leave `failed`
+        empty, exit 0, and skip Silver — reporting success for a night where
+        no provider produced the session's bars. Same rule as sync_runner:
+        degrade eligibility is membership of the IB set, not the exit code.
+        """
+        config = _config(tmp_path)
+
+        def daily(cfg, daily_update_args, **kwargs):
+            return GATEWAY_DOWN_EXIT_CODE  # both IB and the Massive fallback
+
+        with self._lanes(config, daily, 0) as silver:
+            assert main([]) == GATEWAY_DOWN_EXIT_CODE, "no source produced bars — that is a failure"
+        silver.assert_not_called()
+
+    def test_futures_at_86_still_degrades(self, tmp_path):
+        """The narrowing must not break the case it was built for."""
+        config = _config(tmp_path)
+
+        def daily(cfg, daily_update_args, **kwargs):
+            args = list(daily_update_args)
+            if "--source" in args and args[args.index("--source") + 1] == "massive":
+                return 0
+            return GATEWAY_DOWN_EXIT_CODE
+
+        with self._lanes(config, daily, 0) as silver:
+            assert main([]) == 0, "futures/cmdty down on IB is degraded, not failed"
+        silver.assert_called_once(), "equity recovered via Massive, so Silver runs"
+
+    def test_both_providers_down_fails_rather_than_degrades(self, tmp_path):
+        """No source produced the bars. That is a failure, not a degrade."""
+        config = _config(tmp_path)
+
+        def daily(cfg, daily_update_args, **kwargs):
+            args = list(daily_update_args)
+            if "--source" in args and args[args.index("--source") + 1] == "massive":
+                return 7
+            return GATEWAY_DOWN_EXIT_CODE
+
+        with self._lanes(config, daily, 0) as silver:
+            assert main([]) == 7
+        silver.assert_not_called()
+
+
+class TestTheAlertCommandCarriesTheSummaryAsOneToken:
+    """The Python side must emit the single-token form.
+
+    Fixing the parser alone leaves the callers still passing two tokens, which
+    still breaks the moment the summary begins with "--".
+    """
+
+    def test_error_summary_is_a_single_equals_token(self, tmp_path):
+        summary = "--- Runbook: /Users/moremeds/runbooks/trading-stack/ib-gateway-ibc.md ---"
+        request = AlertRequest(
+            run_date="2026-08-08",
+            log_file=tmp_path / "daily_update_2026-08-08.log",
+            attempts=1,
+            exit_code=86,
+            error_summary=summary,
+            repo_root=tmp_path / "repo",
+        )
+
+        command = build_alert_command(_config(tmp_path), request)
+
+        assert f"--error-summary={summary}" in command
+        assert "--error-summary" not in command, "the bare two-token form must be gone"
+
+
+class TestTheDailyJobNoLongerRunsCoverage:
+    """Coverage does not belong on the nightly job's critical path.
+
+    It was given a 600s budget, then 1800s; both were guesses against a warm
+    cache and both expired. An arbitrary timeout around a job whose runtime is
+    dominated by cold external-volume I/O is the bug, not the number.
+
+    This calls `run_post_success_quality` directly rather than `main([])`: the
+    autouse `no_real_quality_spawn` fixture patches it wholesale, so a `main([])`
+    test can never observe what it spawns.
+    """
+
+    @staticmethod
+    def _spawned(tmp_path) -> list[list[str]]:
+        commands: list[list[str]] = []
+
+        def fake_runner(command, **kwargs):
+            commands.append(list(command))
+            return CompletedProcess(command, 0, stdout="", stderr="")
+
+        run_post_success_quality(
+            _config(tmp_path),
+            tmp_path / "daily_update_2026-08-08.log",
+            runner=fake_runner,
+        )
+        return commands
+
+    def test_no_coverage_subcommand_is_spawned(self, tmp_path):
+        subcommands = [c[2:] for c in self._spawned(tmp_path)]
+
+        assert not any(sub[:1] == ["coverage"] for sub in subcommands), "coverage has its own launchd job now"
+        assert ["weekly"] in subcommands, "weekly still runs here"
+        assert any(sub[:1] == ["digest"] for sub in subcommands), "the digest still runs here"
+
+
+class TestTheCoverageLaunchdTemplate:
+    def test_plist_exists_and_carries_its_invariants(self):
+        plist = Path(__file__).resolve().parent.parent / "launchd" / "com.livewire.coverage.plist.example"
+        assert plist.exists(), f"missing plist template at {plist}"
+
+        text = plist.read_text(encoding="utf-8")
+        assert "<string>com.livewire.coverage</string>" in text
+        # Runs the immutable release, not the checkout — same as the other three.
+        assert "/path/to/warehouse/current" in text
+        assert ".venv/bin/python scripts/livewire_quality.py coverage" in text
+        assert "/path/to/repo" not in text
+        # 11:00 UTC = 19:00 on this Mac (Asia/Hong_Kong). After the daily job's
+        # 4h deadline (10:00 UTC), not merely after its 3.27h healthy peak.
+        assert "<integer>19</integer>" in text
+        # node lives in homebrew; without it on PATH the alert cannot send.
+        assert "/opt/homebrew/bin" in text
+        # A budget is exactly what this job exists to not have.
+        assert "TimeOut" not in text
+        # RunAtLoad would fire a full cold pass every time anyone reloads it.
+        assert "RunAtLoad" not in text
+
+
+class TestHousekeepingRunsAfterTheDigest:
+    def test_the_nightly_job_runs_a_housekeeping_sweep(self, tmp_path):
+        commands: list[list[str]] = []
+
+        def fake_runner(command, **kwargs):
+            commands.append(list(command))
+            return CompletedProcess(command, 0, stdout="", stderr="")
+
+        run_post_success_quality(
+            _config(tmp_path),
+            tmp_path / "daily_update_2026-08-08.log",
+            runner=fake_runner,
+        )
+
+        sweeps = [c for c in commands if "housekeeping" in c]
+        assert len(sweeps) == 1
+        assert sweeps[0][1].endswith("livewire_ops.py"), "housekeeping is an ops command"
+        assert "--apply" in sweeps[0]
+        # It runs last: the digest must already have been sent.
+        assert commands.index(sweeps[0]) == len(commands) - 1
+
+    def test_a_failed_sweep_only_warns(self, tmp_path):
+        """A sweep that deleted nothing is never worth failing a good ingest run.
+
+        The warning shape is load-bearing: `_quality_jobs_section` counts
+        exactly this, and it is the only reason the four-week coverage outage
+        was eventually visible at all.
+        """
+        log_file = tmp_path / "daily_update_2026-08-08.log"
+
+        def fake_runner(command, **kwargs):
+            failed = "housekeeping" in command
+            return CompletedProcess(command, 1 if failed else 0, stdout="", stderr="")
+
+        run_post_success_quality(_config(tmp_path), log_file, runner=fake_runner)
+
+        assert "WARNING: housekeeping failed" in log_file.read_text(encoding="utf-8")

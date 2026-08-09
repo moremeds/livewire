@@ -456,3 +456,37 @@ test("daily-summary mode renders rollup HTML", async () => {
   assert.match(msg.html, /97\.2/);
   assert.match(msg.html, /SMH/);
 });
+
+// The 2026-08-08 and 2026-08-09 intraday-catchup pages were never sent:
+// "Missing value for --error-summary". The summary is log-derived text and
+// began with "--- Runbook: ...", and parseArgs treats any value starting with
+// "--" as the next flag. The watchdog caught it 5.5h later.
+test("a value beginning with -- survives when passed as --key=value", () => {
+  const summary = "--- Runbook: /Users/moremeds/runbooks/trading-stack/ib-gateway-ibc.md ---";
+  const options = parseArgs([
+    "--run-date", "2026-08-08",
+    `--error-summary=${summary}`,
+    "--job-name", "intraday_catchup",
+  ]);
+  assert.equal(options.errorSummary, summary);
+  assert.equal(options.jobName, "intraday_catchup");
+});
+
+test("an = inside the value is preserved", () => {
+  const options = parseArgs(["--error-summary=exit_code=86 lanes=equity,futures"]);
+  assert.equal(options.errorSummary, "exit_code=86 lanes=equity,futures");
+});
+
+test("the two-token form still works for ordinary values", () => {
+  const options = parseArgs(["--run-date", "2026-08-08", "--exit-code", "86"]);
+  assert.equal(options.runDate, "2026-08-08");
+  assert.equal(options.exitCode, 86);
+});
+
+test("an empty --key= value is accepted, not read as a missing value", () => {
+  assert.equal(parseArgs(["--error-summary="]).errorSummary, "");
+});
+
+test("an unknown --key=value is still rejected", () => {
+  assert.throws(() => parseArgs(["--nonsense=x"]), /Unknown option: --nonsense/);
+});

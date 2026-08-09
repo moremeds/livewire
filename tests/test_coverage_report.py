@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
 import sys
 from datetime import UTC, date, datetime, time
 from pathlib import Path
@@ -13,6 +16,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from livewire_scripts import coverage_report
 from livewire_scripts.coverage_report import (
     NON_EQUITY_ASSET_CLASSES,
     CoverageResult,
@@ -27,6 +31,17 @@ from livewire_scripts.coverage_report import (
     main,
     write_coverage_log,
 )
+
+
+def _error_summary(cmd) -> str:
+    """The summary is one `--error-summary=<text>` token.
+
+    The two-token form could not carry a value beginning with "--", which is
+    exactly what the log-derived summary is (see the 2026-08-08 lost page).
+    """
+    token = next(a for a in cmd if a.startswith("--error-summary="))
+    return token.removeprefix("--error-summary=")
+
 
 _ET = ZoneInfo("America/New_York")
 
@@ -479,8 +494,8 @@ class TestSendAlert:
         assert "livewire_ops.py" in cmd[1]
         assert cmd[2] == "send-alert"
         assert "--job-name" in cmd
-        idx = cmd.index("--error-summary")
-        assert "5m" in cmd[idx + 1] and "1h" in cmd[idx + 1]
+        summary = _error_summary(cmd)
+        assert "5m" in summary and "1h" in summary
 
     def test_aborted_outcome_in_summary(self, tmp_path):
         log_path = tmp_path / "x.log"
@@ -489,8 +504,7 @@ class TestSendAlert:
         with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
             _send_alert(date(2026, 4, 6), outcomes, log_path)
         cmd = mock_run.call_args[0][0]
-        idx = cmd.index("--error-summary")
-        assert "ABORTED" in cmd[idx + 1]
+        assert "ABORTED" in _error_summary(cmd)
 
 
 # ── _resolve_target_date ─────────────────────────────────────────────────────
@@ -547,7 +561,7 @@ class TestMain:
         monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
-            wraps=lambda d, bronze_root=None: compute_coverage(d, bronze_root=seeded_bronze),
+            wraps=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=seeded_bronze),
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
                 with patch.object(
@@ -562,7 +576,7 @@ class TestMain:
         monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
-            wraps=lambda d, bronze_root=None: compute_coverage(d, bronze_root=seeded_bronze),
+            wraps=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=seeded_bronze),
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
                 with patch.object(
@@ -591,7 +605,7 @@ class TestMain:
 
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
-            side_effect=lambda d, bronze_root=None: compute_coverage(d, bronze_root=root),
+            side_effect=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=root),
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
                 with patch.object(
@@ -623,7 +637,7 @@ class TestMain:
 
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
-            side_effect=lambda d, bronze_root=None: compute_coverage(d, bronze_root=root),
+            side_effect=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=root),
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
                 with patch.object(
@@ -648,7 +662,7 @@ class TestMain:
 
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
-            side_effect=lambda d, bronze_root=None: compute_coverage(d, bronze_root=root),
+            side_effect=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=root),
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
                 with patch.object(
@@ -724,3 +738,170 @@ class TestNonEquityCoverage:
         results = compute_non_equity_coverage(date(2026, 4, 6), bronze_root=tmp_path / "bronze")
         for asset_class in NON_EQUITY_ASSET_CLASSES:
             assert results[asset_class].total == 0
+
+
+def _count_opens(monkeypatch) -> list[Path]:
+    """Record every footer read, delegating to the real one."""
+    opens: list[Path] = []
+    real = coverage_report._latest_date_in_parquet
+    monkeypatch.setattr(
+        coverage_report,
+        "_latest_date_in_parquet",
+        lambda path, column_name: (opens.append(path), real(path, column_name))[1],
+    )
+    return opens
+
+
+class TestFooterReadsAreIncremental:
+    """A parquet whose mtime has not moved cannot have a new max date.
+
+    Re-reading its footer is pure cost, and on the external exFAT volume that
+    cost IS the runtime: a full cold pass measured 2858s on 2026-08-09 against
+    an 1800s budget, while the same 1d pass warm takes 29.2s. Threads do not
+    fix a cold metadata walk; not doing the walk does.
+    """
+
+    def test_an_unchanged_file_is_not_reopened(self, tmp_path, monkeypatch):
+        root = tmp_path / "bronze"
+        _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6)])
+        cache_path = tmp_path / "cache.json"
+        opens = _count_opens(monkeypatch)
+
+        first = coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+        assert len(opens) >= 1
+        opens.clear()
+
+        second = coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+        assert opens == [], "an unchanged parquet must not be reopened"
+        assert second["1d"].present == first["1d"].present
+        assert second["1d"].missing_symbols == first["1d"].missing_symbols
+
+    def test_a_touched_file_is_reread(self, tmp_path, monkeypatch):
+        root = tmp_path / "bronze"
+        _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6)])
+        cache_path = tmp_path / "cache.json"
+        coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+
+        parquet = root / "asset_class=equity" / "symbol=NVDA" / "1d.parquet"
+        _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6), date(2026, 8, 7)])
+        # Bump mtime explicitly. Two writes inside one test can land on the same
+        # stat timestamp, and a test that depends on filesystem clock resolution
+        # is a flake waiting for a slower machine.
+        stamp = parquet.stat().st_mtime + 10
+        os.utime(parquet, (stamp, stamp))
+
+        opens = _count_opens(monkeypatch)
+        results = coverage_report.compute_coverage(date(2026, 8, 7), bronze_root=root, cache_path=cache_path)
+        assert opens == [parquet], "a rewritten parquet must be reread"
+        assert results["1d"].missing_symbols == []
+
+    def test_a_same_mtime_rewrite_is_caught_by_size(self, tmp_path, monkeypatch):
+        """exFAT stores mtime at 2-second granularity.
+
+        A republish landing inside that bucket leaves the timestamp unchanged,
+        so mtime alone would keep serving the pre-publish max date forever. Any
+        real republish that adds a row also changes the size.
+        """
+        root = tmp_path / "bronze"
+        _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6)])
+        cache_path = tmp_path / "cache.json"
+        coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+
+        parquet = root / "asset_class=equity" / "symbol=NVDA" / "1d.parquet"
+        frozen = parquet.stat().st_mtime
+        _write_daily(
+            root,
+            "NVDA",
+            [date(d.year, d.month, d.day) for d in [date(2026, 7, d) for d in range(1, 25)]]
+            + [date(2026, 8, 5), date(2026, 8, 6), date(2026, 8, 7)],
+        )
+        os.utime(parquet, (frozen, frozen))
+        assert parquet.stat().st_mtime == frozen
+
+        opens = _count_opens(monkeypatch)
+        results = coverage_report.compute_coverage(date(2026, 8, 7), bronze_root=root, cache_path=cache_path)
+        assert opens == [parquet], "a size change must invalidate the entry"
+        assert results["1d"].missing_symbols == []
+
+    def test_no_cache_path_means_no_caching(self, tmp_path, monkeypatch):
+        root = tmp_path / "bronze"
+        _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6)])
+        opens = _count_opens(monkeypatch)
+        for _ in range(2):
+            coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root)
+        assert len(opens) == 2, "without a cache path every run reads every footer"
+
+    def test_a_corrupt_cache_is_not_fatal(self, tmp_path, monkeypatch):
+        """Failing the freshness detector because its optimisation file is
+        malformed would trade a real signal for a cosmetic one."""
+        root = tmp_path / "bronze"
+        _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6)])
+        cache_path = tmp_path / "cache.json"
+        cache_path.write_text("{not json", encoding="utf-8")
+
+        results = coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+        assert results["1d"].total == 1
+
+    def test_a_removed_symbol_drops_out_of_the_cache(self, tmp_path):
+        """Rebuilt, not mutated — otherwise an archived symbol accumulates forever."""
+        root = tmp_path / "bronze"
+        _write_daily(root, "NVDA", [date(2026, 8, 6)])
+        _write_daily(root, "HON", [date(2026, 8, 6)])
+        cache_path = tmp_path / "cache.json"
+        coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+        assert len(json.loads(cache_path.read_text())) == 2
+
+        shutil.rmtree(root / "asset_class=equity" / "symbol=HON")
+        coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+        entries = json.loads(cache_path.read_text())
+        assert len(entries) == 1
+        assert all("NVDA" in key for key in entries)
+
+
+class TestTheCacheCannotKillTheRun:
+    """_load_footer_cache promises a bad cache costs one slow run, not a failure.
+
+    It only guards against malformed JSON. A malformed *entry* used to raise
+    ValueError inside pool.map and take the whole coverage pass with it — the
+    freshness detector dying of its own optimisation file.
+    """
+
+    def test_a_malformed_latest_is_a_miss_not_an_exception(self, tmp_path):
+        parquet = tmp_path / "1d.parquet"
+        parquet.write_text("x", encoding="utf-8")
+        stat = parquet.stat()
+        cache = {str(parquet): {"mtime": stat.st_mtime, "size": stat.st_size, "latest": "not-a-date"}}
+
+        with patch.object(coverage_report, "_latest_date_in_parquet", return_value=date(2026, 8, 6)):
+            latest, cached, stamp = coverage_report._latest_date_with_cache(parquet, "trade_date", cache)
+
+        assert latest == date(2026, 8, 6), "falls back to a real footer read"
+        assert cached is False
+        assert stamp == (stat.st_mtime, stat.st_size)
+
+    def test_a_non_dict_entry_is_a_miss(self, tmp_path):
+        parquet = tmp_path / "1d.parquet"
+        parquet.write_text("x", encoding="utf-8")
+
+        with patch.object(coverage_report, "_latest_date_in_parquet", return_value=None):
+            latest, cached, _ = coverage_report._latest_date_with_cache(
+                parquet, "trade_date", {str(parquet): "garbage"}
+            )
+
+        assert latest is None
+        assert cached is False
+
+    def test_a_whole_run_survives_a_corrupt_entry(self, tmp_path):
+        root = tmp_path / "bronze"
+        _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6)])
+        parquet = root / "asset_class=equity" / "symbol=NVDA" / "1d.parquet"
+        stat = parquet.stat()
+        cache_path = tmp_path / "cache.json"
+        cache_path.write_text(
+            json.dumps({str(parquet): {"mtime": stat.st_mtime, "size": stat.st_size, "latest": "garbage"}}),
+            encoding="utf-8",
+        )
+
+        results = coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+
+        assert results["1d"].present == 1, "the run completes and measures correctly"

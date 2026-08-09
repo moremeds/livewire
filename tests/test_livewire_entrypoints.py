@@ -391,8 +391,7 @@ def test_ingest_preserves_nonzero_system_exit(monkeypatch) -> None:
     [
         ["daily"],
         ["daily", "--source", "ib"],
-        ["backfill-all"],
-        ["daily-backfill"],
+        ["intraday-backfill"],
     ],
 )
 def test_ingest_ib_commands_keep_preflight(monkeypatch, argv) -> None:
@@ -410,6 +409,29 @@ def test_ingest_ib_commands_keep_preflight(monkeypatch, argv) -> None:
 
     assert livewire_ingest.main(argv) == 0
     assert preflight_calls == [True]
+
+
+@pytest.mark.parametrize("argv", [["backfill-all"], ["daily-backfill"]])
+def test_ingest_orchestrators_do_not_preflight(monkeypatch, argv) -> None:
+    """Each orchestrator runs nine phases and only two of them use IB.
+
+    Preflighting here exited 86 before dispatch, so a down Gateway took out the
+    Massive equity day_aggs lane, the flat-file intraday lane, FRED and CBOE —
+    none of which have an IB dependency. Phase 5 shells out to
+    `intraday-backfill`, which still preflights itself.
+    """
+    monkeypatch.setattr(
+        ib_gateway_preflight,
+        "assert_gateway_up",
+        lambda: (_ for _ in ()).throw(AssertionError("orchestrators must not preflight")),
+    )
+    monkeypatch.setattr(
+        livewire_ingest.importlib,
+        "import_module",
+        lambda name: _fake_module([], name, accepts_argv=False),
+    )
+
+    assert livewire_ingest.main(argv) == 0
 
 
 def test_ingest_daily_help_does_not_preflight(monkeypatch) -> None:

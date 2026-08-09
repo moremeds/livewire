@@ -27,6 +27,17 @@ from livewire_scripts.health_check import (
     report_intraday_health,
 )
 
+
+def _error_summary(cmd) -> str:
+    """The summary is one `--error-summary=<text>` token.
+
+    The two-token form could not carry a value beginning with "--", which is
+    exactly what the log-derived summary is (see the 2026-08-08 lost page).
+    """
+    token = next(a for a in cmd if a.startswith("--error-summary="))
+    return token.removeprefix("--error-summary=")
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 _EQUITY_SCHEMA = pa.schema(
@@ -318,7 +329,7 @@ class TestSendAlert:
         assert "2026-04-05" in cmd
         assert "--log-file" in cmd
         assert str(log_path) in cmd
-        assert "--error-summary" in cmd
+        assert any(a.startswith("--error-summary=") for a in cmd)
         assert "--job-name" in cmd
         assert "health_check" in cmd
 
@@ -330,8 +341,7 @@ class TestSendAlert:
             _send_alert("2026-04-05", "futures", 5, 3, log_path)
 
         cmd = mock_run.call_args[0][0]
-        summary_idx = cmd.index("--error-summary") + 1
-        summary = cmd[summary_idx]
+        summary = _error_summary(cmd)
         assert "futures" in summary
         assert "5" in summary
         assert "3" in summary

@@ -18,7 +18,7 @@ function usage() {
     "  --log-file /absolute/path/to/log",
     "  --attempts N",
     "  --exit-code N",
-    "  --error-summary TEXT",
+    "  --error-summary=TEXT   (=form required: the summary can begin with --)",
     "  --repo-root /absolute/path/to/repo",
     "  --job-name NAME",
     "  --tail-lines N",
@@ -76,12 +76,24 @@ export function parseArgs(argv) {
       throw new Error(`Unexpected argument: ${token}`);
     }
 
-    const key = token.slice(2);
-    const value = argv[index + 1];
-    if (value == null || value.startsWith("--")) {
-      throw new Error(`Missing value for --${key}`);
+    // `--key=value` first. The two-token form cannot carry a value that starts
+    // with "--", and the error summary is log-derived text: on 2026-08-08 it
+    // began with "--- Runbook: ..." and the page was never sent. Splitting on
+    // the FIRST "=" only, so an "=" inside the value survives.
+    let key;
+    let value;
+    const equals = token.indexOf("=");
+    if (equals > 2) {
+      key = token.slice(2, equals);
+      value = token.slice(equals + 1);
+    } else {
+      key = token.slice(2);
+      value = argv[index + 1];
+      if (value == null || value.startsWith("--")) {
+        throw new Error(`Missing value for --${key}`);
+      }
+      index += 1;
     }
-    index += 1;
 
     switch (key) {
       case "run-date":

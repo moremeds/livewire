@@ -11,7 +11,9 @@ from unittest.mock import patch
 
 import pytest
 
+from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts import sync_runner
+from livewire_scripts.daily_outcomes import SUMMARY_PREFIX
 from livewire_scripts.sync_runner import (
     SyncConfig,
     _derive_vol_1h,
@@ -583,3 +585,73 @@ class TestPhaseTimeout:
     def test_budget_is_env_tunable(self, monkeypatch):
         monkeypatch.setenv("MDW_SYNC_PHASE_TIMEOUT_SECONDS", "900")
         assert sync_runner.phase_timeout_seconds() == 900
+
+
+class TestAGatewayOutageDegradesRatherThanFails:
+    """A Gateway outage must degrade the run, not fail it.
+
+    Task 1 lets the seven non-IB phases run when IB is down. This is the other
+    half: the two IB phases exit 86, and without this the orchestrator still
+    returns 1 and reports them in SUMMARY_JSON["failed"] — so the wrapper pages
+    and the digest shows a red run for a dependency outage the design calls
+    degraded.
+    """
+
+    @staticmethod
+    def _summary(capsys) -> dict:
+        lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith(SUMMARY_PREFIX)]
+        return json.loads(lines[-1].removeprefix(SUMMARY_PREFIX))
+
+    def test_ib_phases_exiting_86_do_not_fail_the_run(self, tmp_path, capsys):
+        config = _make_config(tmp_path)
+
+        def runner(command, **kwargs):
+            rc = GATEWAY_DOWN_EXIT_CODE if "intraday-backfill" in command else 0
+            return CompletedProcess(args=command, returncode=rc)
+
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+            rc = run_sync(config, runner=runner, trading_day_fn=lambda: "2026-08-07")
+
+        assert rc == 0, "a Gateway outage is degraded, not failed"
+        summary = self._summary(capsys)
+        assert summary["failed"] == []
+        assert sorted(summary["degraded"]) == [
+            "daily_backfill_intraday_30m_volatility",
+            "daily_backfill_intraday_5m_volatility",
+        ]
+
+    def test_a_real_phase_failure_still_fails_the_run(self, tmp_path, capsys):
+        config = _make_config(tmp_path)
+
+        def runner(command, **kwargs):
+            rc = 1 if "flatfile-ingest-daily" in command else 0
+            return CompletedProcess(args=command, returncode=rc)
+
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+            rc = run_sync(config, runner=runner, trading_day_fn=lambda: "2026-08-07")
+
+        assert rc == 1
+        summary = self._summary(capsys)
+        assert "daily_backfill_equity_day_aggs" in summary["failed"]
+        assert summary["degraded"] == []
+
+    def test_a_non_ib_phase_at_86_is_still_a_failure(self, tmp_path, capsys):
+        """86 is livewire's own preflight code, not a universal 'IB is down'.
+
+        A Massive/FRED/CBOE/DuckDB phase returning it for an unrelated reason
+        must not be swallowed — degrade eligibility is membership of the IB
+        phase set, never the exit code alone.
+        """
+        config = _make_config(tmp_path)
+
+        def runner(command, **kwargs):
+            rc = GATEWAY_DOWN_EXIT_CODE if "duckdb" in command else 0
+            return CompletedProcess(args=command, returncode=rc)
+
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+            rc = run_sync(config, runner=runner, trading_day_fn=lambda: "2026-08-07")
+
+        assert rc == 1
+        summary = self._summary(capsys)
+        assert summary["failed"] == ["daily_backfill_duckdb_coverage"]
+        assert summary["degraded"] == []
