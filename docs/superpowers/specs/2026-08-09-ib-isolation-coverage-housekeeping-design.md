@@ -44,10 +44,15 @@ session were stopped by the same down Gateway — `daily-update` skipped its equ
 lane by design (it is an IB lane), and `intraday-catchup` never reached its
 Massive lane because of this bug.
 
-**This is not a weekend pattern.** Over sixteen logged days, exit 86 occurred
-twice: 2026-07-27 (Mon) and 2026-08-08 (Sat). The previous weekend — 2026-08-01
-(Sat) and 2026-08-02 (Sun) — both completed normally. IB outages are sporadic;
-what makes them expensive is that the blast radius is total.
+**This is not a weekend pattern.** Over sixteen logged days, exit 86 occurred on
+2026-07-27 (Mon), 2026-08-08 (Sat) and again on 2026-08-09 (Sun). The previous
+weekend — 2026-08-01 (Sat) and 2026-08-02 (Sun) — both completed normally. IB
+outages are sporadic; what makes them expensive is that the blast radius is total.
+
+The 2026-08-09 coverage pass measured the damage warehouse-wide for the
+2026-08-07 session: **equity 0/13311, futures 0/14, rates 0/4.** Only
+volatility (42/43) has it, because CBOE and FX are the two lanes of the *other*
+job that do not touch IB.
 
 CLAUDE.md already states the invariant this violates: *"IB is not a single point
 of failure."* That invariant was implemented in `run_daily_update_job` and never
@@ -97,9 +102,12 @@ The structural fact underneath:
 
 | Condition | Wall clock |
 |---|---|
-| equity `1d`, 13,270 footers, warm, 1 thread | 154.0s |
 | equity `1d`, 13,270 footers, warm, 16 threads | 29.2s |
-| equity `1d`, **cold** (measured 2026-08-09) | **>1140s and still running** |
+| equity `1d`, 13,270 footers, warm, 1 thread | 154.0s |
+| **full five-timeframe pass, cold, 16 threads** (2026-08-09, 03:43:54Z → 04:31:32Z) | **2858s** |
+
+2858s against an 1800s budget — 1.6× over, with `--no-recover` so no recovery
+subprocess was included.
 
 The lake lives on an external exFAT volume
 (`/Volumes/DATA_LAKE`, 13 TiB). Metadata traversal there is orders of magnitude
@@ -123,6 +131,16 @@ data-lake -> /Volumes/DATA_LAKE/livewire/data-lake     13Ti   49%   6.6Ti avail
 `release promote` consumes another 422 MB.
 
 One symlink was enough to silently swap the monitored object.
+
+**Correction to an earlier framing of this section.** livewire's total footprint
+on that volume is ~2.5 GB out of 173 GB used, so the 93% is not livewire filling
+the disk and housekeeping will not meaningfully change it. This is a *monitoring*
+gap: the warehouse writes to a volume whose headroom nothing measures, and the
+next `promote` is the operation that would hit the wall. The reclaimable bulk —
+26 GB in `data-lake/repairs/`, 21 GB of it 12,636 verbatim `.parquet.bak` files
+from the 2026-07-15 cutover — sits on the *other* volume, which has 6.6 TiB free.
+Nothing forces that call, so it stays an operator decision and out of the
+automated policy.
 
 ## Design
 
