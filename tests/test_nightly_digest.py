@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -470,3 +471,75 @@ class TestTheDigestFindsCoverageOnAnySchedule:
         lines = nightly_digest._coverage_section("2026-08-09", tmp_path)
         assert "  something" in lines
         assert not any("⚠" in line for line in lines)
+
+
+_Usage = collections.namedtuple("_Usage", "total used free")
+_GIB = 1024**3
+
+
+class TestTheDiskCheckWatchesBothVolumes:
+    """One symlink was enough to silently swap the monitored volume.
+
+    data-lake points at an external 13 TiB volume, so the nightly line read
+    "6752.4 GiB free (48% used)" while the volume that actually holds releases,
+    logs and the venv was under its own reserve with nothing reporting it.
+    """
+
+    @staticmethod
+    def _dirs(tmp_path):
+        lake = tmp_path / "lake"
+        warehouse = tmp_path / "warehouse"
+        lake.mkdir()
+        warehouse.mkdir()
+        return lake, warehouse
+
+    def test_a_full_warehouse_volume_warns_even_when_the_lake_is_empty(
+        self, tmp_path, monkeypatch
+    ):
+        lake, warehouse = self._dirs(tmp_path)
+
+        def fake_usage(path):
+            if Path(path) == lake:
+                return _Usage(13_000 * _GIB, 6_400 * _GIB, 6_600 * _GIB)
+            return _Usage(228 * _GIB, 214 * _GIB, 14 * _GIB)
+
+        monkeypatch.setattr(nightly_digest.shutil, "disk_usage", fake_usage)
+
+        text = "\n".join(nightly_digest._disk_section(lake, warehouse))
+
+        assert "6600.0 GiB" in text
+        assert "14.0 GiB" in text
+        assert "⚠" in text, "the warehouse volume is under reserve and must warn"
+
+    def test_both_healthy_does_not_warn(self, tmp_path, monkeypatch):
+        lake, warehouse = self._dirs(tmp_path)
+        monkeypatch.setattr(
+            nightly_digest.shutil,
+            "disk_usage",
+            lambda path: _Usage(13_000 * _GIB, 6_400 * _GIB, 6_600 * _GIB),
+        )
+        assert "⚠" not in "\n".join(nightly_digest._disk_section(lake, warehouse))
+
+    def test_one_volume_reports_once_when_both_paths_share_it(self, tmp_path, monkeypatch):
+        shared = tmp_path / "everything"
+        shared.mkdir()
+        monkeypatch.setattr(
+            nightly_digest.shutil,
+            "disk_usage",
+            lambda path: _Usage(228 * _GIB, 100 * _GIB, 128 * _GIB),
+        )
+        lines = nightly_digest._disk_section(shared, shared)
+        assert len([ln for ln in lines if ln.startswith("Disk")]) == 1
+
+    def test_an_unreadable_path_is_skipped_not_fatal(self, tmp_path, monkeypatch):
+        lake, warehouse = self._dirs(tmp_path)
+
+        def fake_usage(path):
+            if Path(path) == lake:
+                raise OSError("volume not mounted")
+            return _Usage(228 * _GIB, 100 * _GIB, 128 * _GIB)
+
+        monkeypatch.setattr(nightly_digest.shutil, "disk_usage", fake_usage)
+        lines = nightly_digest._disk_section(lake, warehouse)
+        assert len([ln for ln in lines if ln.startswith("Disk")]) == 1
+        assert "128.0 GiB" in lines[0]

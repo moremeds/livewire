@@ -177,14 +177,52 @@ def _coverage_section(run_date: str, log_dir: Path) -> list[str]:
     return lines
 
 
-def _disk_section(data_lake: Path) -> list[str]:
-    usage = shutil.disk_usage(data_lake)
-    free_gib = usage.free / _GIB
-    pct_used = 100.0 * (usage.used / usage.total)
-    line = f"Disk: {free_gib:.1f} GiB free ({pct_used:.0f}% used)"
-    if free_gib < 2 * _MIN_FREE_GB:
-        line += f"  ⚠ raw retention deferred — free space under {2 * _MIN_FREE_GB:.0f} GiB"
-    return [line]
+def _disk_section(data_lake: Path, warehouse: Path | None = None) -> list[str]:
+    """Report every distinct volume the warehouse depends on.
+
+    `data-lake` is a symlink to an external volume, so measuring it alone read
+    "6752.4 GiB free" every night while the internal volume holding releases,
+    logs, cursors and the venv sat below its own reserve, unreported. One
+    symlink silently swapped the monitored object.
+
+    Deduplicated on the usage triple, not on st_dev: when both paths live on
+    one filesystem — any deployment without the external drive — disk_usage
+    returns identical numbers and this prints a single line. Read field by
+    field rather than `tuple(usage)` so any object exposing total/used/free
+    works, which is what the existing tripwire test patches in.
+
+    # ponytail: two genuinely distinct volumes with byte-identical
+    # total/used/free would collapse to one line. Cosmetic, astronomically
+    # unlikely, and it keeps the dedup to data this function already has.
+    """
+    paths = [("lake", data_lake)]
+    if warehouse is not None:
+        paths.append(("warehouse", warehouse))
+
+    volumes: list[tuple[str, tuple[int, int, int]]] = []
+    seen: set[tuple[int, int, int]] = set()
+    for label, path in paths:
+        try:
+            usage = shutil.disk_usage(path)
+        except OSError:
+            continue
+        key = (usage.total, usage.used, usage.free)
+        if key in seen:
+            continue
+        seen.add(key)
+        volumes.append((label, key))
+
+    # Label only once there is something to distinguish. A single-filesystem
+    # deployment keeps reading plain "Disk:", which is also what it means.
+    lines: list[str] = []
+    for label, (total, used, free) in volumes:
+        free_gib = free / _GIB
+        suffix = "" if len(volumes) == 1 else f" [{label}]"
+        line = f"Disk{suffix}: {free_gib:.1f} GiB free ({100.0 * used / total:.0f}% used)"
+        if free_gib < 2 * _MIN_FREE_GB:
+            line += f"  ⚠ raw retention deferred — free space under {2 * _MIN_FREE_GB:.0f} GiB"
+        lines.append(line)
+    return lines
 
 
 def build_digest(run_date: date, log_dir: Path, data_lake: Path) -> str:
@@ -197,7 +235,7 @@ def build_digest(run_date: date, log_dir: Path, data_lake: Path) -> str:
         _silver_section(run, log_dir),
         _quality_jobs_section(run, log_dir),
         _coverage_section(run, log_dir),
-        _disk_section(data_lake),
+        _disk_section(data_lake, log_dir.parent),
     ]
     return "\n\n".join("\n".join(section) for section in sections) + "\n"
 
