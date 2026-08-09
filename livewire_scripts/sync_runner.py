@@ -388,9 +388,7 @@ def run_sync(
                 "job": "daily_backfill",
                 "target_date": str(target_date),
                 "phases": phase_results,
-                "failed": [
-                    p["label"] for p in phase_results if p["exit"] != 0 and not _degraded(p)
-                ],
+                "failed": [p["label"] for p in phase_results if p["exit"] != 0 and not _degraded(p)],
                 "degraded": [p["label"] for p in phase_results if _degraded(p)],
             },
             separators=(",", ":"),

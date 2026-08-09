@@ -155,9 +155,16 @@ def _coverage_section(run_date: str, log_dir: Path) -> list[str]:
     logs = sorted(log_dir.glob("coverage_*.log"))
     for path in reversed(logs):
         text = _read_text(path)
-        if not text or not text.strip():
+        if not text:
             continue
-        lines.append("  " + text.splitlines()[0].strip())
+        # First NON-BLANK line, not first line. A partially-flushed write whose
+        # first line is empty would otherwise print a bare "  " and return —
+        # a blank line that reads as "coverage ran fine" while saying nothing,
+        # and it would mask the older log that does carry a measurement.
+        measurement = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        if not measurement:
+            continue
+        lines.append("  " + measurement)
         # Decoupling the schedules removes the ordering bug but opens a new
         # silence: if com.livewire.coverage stops firing, the newest log simply
         # stops advancing and the digest keeps printing a green line forever —
@@ -169,9 +176,7 @@ def _coverage_section(run_date: str, log_dir: Path) -> list[str]:
         except ValueError:
             return lines
         if age > _COVERAGE_STALE_DAYS:
-            lines.append(
-                f"  ⚠ newest coverage log is {age} days old — has the coverage job run?"
-            )
+            lines.append(f"  ⚠ newest coverage log is {age} days old — has the coverage job run?")
         return lines
     lines.append("  (not found)")
     return lines
@@ -206,11 +211,19 @@ def _disk_section(data_lake: Path, warehouse: Path | None = None) -> list[str]:
             usage = shutil.disk_usage(path)
         except OSError:
             continue
+        # A filesystem reporting total=0 tells us nothing, and dividing by it
+        # would raise out of _disk_section — killing the WHOLE digest, which
+        # this module's docstring promises never happens on a missing input.
+        if not usage.total:
+            continue
         key = (usage.total, usage.used, usage.free)
         if key in seen:
             continue
         seen.add(key)
         volumes.append((label, key))
+
+    if not volumes:
+        return ["Disk: (unavailable)"]
 
     # Label only once there is something to distinguish. A single-filesystem
     # deployment keeps reading plain "Disk:", which is also what it means.

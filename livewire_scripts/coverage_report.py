@@ -176,7 +176,11 @@ def _save_footer_cache(cache_path: Path | None, cache: dict) -> None:
         return
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cache_path.with_suffix(".tmp")
+        # PID in the temp name: the launchd job and an operator running coverage
+        # by hand would otherwise write the same tmp path, and the loser's
+        # os.replace fails ENOENT after the winner moved it away — a spurious
+        # warning for a benign race.
+        tmp = cache_path.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(json.dumps(cache, separators=(",", ":")), encoding="utf-8")
         os.replace(tmp, cache_path)
     except OSError as exc:  # pragma: no cover - logged but tolerated
@@ -199,6 +203,14 @@ def _latest_date_with_cache(
     removes a row also changes the size, and both come from the one `stat()`
     this makes anyway.
 
+    `(mtime, size)` is not content identity — a republish inside the 2-second
+    bucket that happens to compress to the identical byte length would serve a
+    stale entry. That is accepted rather than hashed: hashing 13,270+ files
+    costs far more than the footer reads this exists to avoid, and the failure
+    is loud rather than silent. A stale entry can only hold an EARLIER date,
+    and `present_symbols` requires `latest >= target_date`, so the symbol reads
+    as MISSING and triggers recovery. It over-reports gaps; it cannot hide one.
+
     Read-only on purpose. This runs on 16 threads, and having each worker write
     into a shared dict would rest the whole cache's correctness on an argument
     about `dict.__setitem__` atomicity under the GIL — an argument that stops
@@ -213,9 +225,17 @@ def _latest_date_with_cache(
         return None, False, None
     stamp = (stat.st_mtime, stat.st_size)
     entry = cache.get(key)
-    if entry is not None and (entry.get("mtime"), entry.get("size")) == stamp:
+    if isinstance(entry, dict) and (entry.get("mtime"), entry.get("size")) == stamp:
         stored = entry.get("latest")
-        return (date.fromisoformat(stored) if stored else None), True, stamp
+        try:
+            return (date.fromisoformat(stored) if stored else None), True, stamp
+        except (TypeError, ValueError):
+            # A malformed entry is a cache miss, never an exception. This runs
+            # inside pool.map, so raising here kills the whole coverage run —
+            # and `_load_footer_cache` only guards against malformed JSON, not
+            # malformed contents. The detector must not die of its own
+            # optimisation file; the cost of a bad entry is one footer read.
+            log.warning("ignoring malformed footer-cache entry for %s", key)
     return _latest_date_in_parquet(path, column_name), False, stamp
 
 

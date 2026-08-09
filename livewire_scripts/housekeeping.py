@@ -79,6 +79,11 @@ def plan_housekeeping(
     cutoff = now.toordinal() - log_retention_days
     for path in sorted(log_dir_path.glob("*.log")):
         try:
+            # is_file, not just glob: a DIRECTORY named `*.log` would otherwise
+            # be planned and main() would rmtree the whole tree. This prunes
+            # log files; anything else is out of scope by construction.
+            if not path.is_file():
+                continue
             modified = date.fromtimestamp(path.stat().st_mtime)
         except OSError:
             continue
@@ -112,9 +117,7 @@ def plan_housekeeping(
 def plan_appledouble(data_lake: Path) -> list[tuple[str, Path]]:
     """Opt-in sweep. Walks the whole lake — minutes, not seconds. Never nightly."""
     return [
-        ("AppleDouble sidecar", path)
-        for path in sorted(data_lake.rglob("._*"))
-        if not _is_protected(path, data_lake)
+        ("AppleDouble sidecar", path) for path in sorted(data_lake.rglob("._*")) if not _is_protected(path, data_lake)
     ]
 
 

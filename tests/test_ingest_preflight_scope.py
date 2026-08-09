@@ -33,7 +33,4 @@ class TestTheIBPhasesStillGate:
         assert _requires_ib_preflight("daily", ["--asset-class", "equity"]) is True
 
     def test_daily_with_massive_source_does_not(self):
-        assert (
-            _requires_ib_preflight("daily", ["--asset-class", "equity", "--source", "massive"])
-            is False
-        )
+        assert _requires_ib_preflight("daily", ["--asset-class", "equity", "--source", "massive"]) is False

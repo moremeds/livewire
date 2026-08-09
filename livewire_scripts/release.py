@@ -214,6 +214,13 @@ def prune(keep: int, *, dry_run: bool = False) -> list[str]:
             continue
         if not dry_run:
             _discard(path)
+            if path.exists():
+                # `_discard` uses rmtree(ignore_errors=True), so returning the
+                # name unconditionally would have housekeeping log "pruned
+                # release X" over a directory still sitting on disk — the same
+                # green-while-wrong shape its own delete loop refuses.
+                LOGGER.warning("could not prune release %s — still on disk", path.name)
+                continue
         removed.append(path.name)
     return removed
 

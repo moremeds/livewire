@@ -1276,11 +1276,66 @@ class TestTheEquityLaneFallsBackToMassive:
 
         for asset_class in ("futures", "cmdty"):
             lane_calls = [c for c in calls if asset_class in c]
-            assert len(lane_calls) == 1, (
-                f"{asset_class} must not be retried — Massive has no such data"
-            )
+            assert len(lane_calls) == 1, f"{asset_class} must not be retried — Massive has no such data"
             assert "--source" not in lane_calls[0]
         silver.assert_not_called()
+
+    def test_an_explicit_source_ib_does_not_defeat_the_fallback(self, tmp_path):
+        """argparse honours the LAST --source; _requires_ib_preflight reads the FIRST.
+
+        So appending --source massive to args that already carry --source ib
+        would leave the preflight gating on ib, exit 86 again, and the retry
+        would look like it ran while nothing changed.
+        """
+        config = _config(tmp_path)
+        calls: list[list[str]] = []
+
+        def daily(cfg, daily_update_args, **kwargs):
+            args = list(daily_update_args)
+            calls.append(args)
+            if args.count("--source") > 1:
+                raise AssertionError(f"ambiguous --source in {args}")
+            if "--source" in args and args[args.index("--source") + 1] == "massive":
+                return 0
+            return GATEWAY_DOWN_EXIT_CODE
+
+        with self._lanes(config, daily, 0):
+            main(["--source", "ib"])
+
+        fallback = [c for c in calls if "massive" in c]
+        assert len(fallback) == 1
+        assert fallback[0].count("--source") == 1, "exactly one --source reaches the preflight"
+
+    def test_a_fallback_that_also_exits_86_fails_rather_than_degrades(self, tmp_path):
+        """Equity stops being an IB lane once Massive answers for it.
+
+        Classifying the FALLBACK's 86 as a Gateway outage would leave `failed`
+        empty, exit 0, and skip Silver — reporting success for a night where
+        no provider produced the session's bars. Same rule as sync_runner:
+        degrade eligibility is membership of the IB set, not the exit code.
+        """
+        config = _config(tmp_path)
+
+        def daily(cfg, daily_update_args, **kwargs):
+            return GATEWAY_DOWN_EXIT_CODE  # both IB and the Massive fallback
+
+        with self._lanes(config, daily, 0) as silver:
+            assert main([]) == GATEWAY_DOWN_EXIT_CODE, "no source produced bars — that is a failure"
+        silver.assert_not_called()
+
+    def test_futures_at_86_still_degrades(self, tmp_path):
+        """The narrowing must not break the case it was built for."""
+        config = _config(tmp_path)
+
+        def daily(cfg, daily_update_args, **kwargs):
+            args = list(daily_update_args)
+            if "--source" in args and args[args.index("--source") + 1] == "massive":
+                return 0
+            return GATEWAY_DOWN_EXIT_CODE
+
+        with self._lanes(config, daily, 0) as silver:
+            assert main([]) == 0, "futures/cmdty down on IB is degraded, not failed"
+        silver.assert_called_once(), "equity recovered via Massive, so Silver runs"
 
     def test_both_providers_down_fails_rather_than_degrades(self, tmp_path):
         """No source produced the bars. That is a failure, not a degrade."""
@@ -1351,9 +1406,7 @@ class TestTheDailyJobNoLongerRunsCoverage:
     def test_no_coverage_subcommand_is_spawned(self, tmp_path):
         subcommands = [c[2:] for c in self._spawned(tmp_path)]
 
-        assert not any(sub[:1] == ["coverage"] for sub in subcommands), (
-            "coverage has its own launchd job now"
-        )
+        assert not any(sub[:1] == ["coverage"] for sub in subcommands), "coverage has its own launchd job now"
         assert ["weekly"] in subcommands, "weekly still runs here"
         assert any(sub[:1] == ["digest"] for sub in subcommands), "the digest still runs here"
 

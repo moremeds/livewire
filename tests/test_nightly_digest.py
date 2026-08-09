@@ -8,8 +8,8 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from subprocess import CompletedProcess
 
-from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, build_summary_line
 from livewire_scripts import nightly_digest
+from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, build_summary_line
 from livewire_scripts.nightly_digest import build_digest, main
 
 
@@ -380,16 +380,12 @@ class TestTheDigestDistinguishesDegradedFromFailed:
             {
                 "job": "daily_backfill",
                 "target_date": "2026-08-07",
-                "phases": [
-                    {"label": "daily_backfill_equity_day_aggs", "exit": 1, "duration_s": 3.0}
-                ],
+                "phases": [{"label": "daily_backfill_equity_day_aggs", "exit": 1, "duration_s": 3.0}],
                 "failed": ["daily_backfill_equity_day_aggs"],
                 "degraded": [],
             },
         )
-        assert "FAILED (exit 1)" in "\n".join(
-            nightly_digest._phases_section("2026-08-08", tmp_path)
-        )
+        assert "FAILED (exit 1)" in "\n".join(nightly_digest._phases_section("2026-08-08", tmp_path))
 
     def test_a_summary_without_the_field_is_unchanged(self, tmp_path):
         """Old logs predate `degraded` and must still render exactly as before."""
@@ -398,15 +394,11 @@ class TestTheDigestDistinguishesDegradedFromFailed:
             {
                 "job": "daily_backfill",
                 "target_date": "2026-08-07",
-                "phases": [
-                    {"label": "daily_backfill_equity_day_aggs", "exit": 2, "duration_s": 3.0}
-                ],
+                "phases": [{"label": "daily_backfill_equity_day_aggs", "exit": 2, "duration_s": 3.0}],
                 "failed": ["daily_backfill_equity_day_aggs"],
             },
         )
-        assert "FAILED (exit 2)" in "\n".join(
-            nightly_digest._phases_section("2026-08-08", tmp_path)
-        )
+        assert "FAILED (exit 2)" in "\n".join(nightly_digest._phases_section("2026-08-08", tmp_path))
 
 
 class TestTheDigestFindsCoverageOnAnySchedule:
@@ -451,9 +443,7 @@ class TestTheDigestFindsCoverageOnAnySchedule:
         (tmp_path / "coverage_2026-08-08.log").write_text(
             "2026-08-08 coverage: 1d=13300/13311 (99.92%)\n", encoding="utf-8"
         )
-        assert not any(
-            "⚠" in line for line in nightly_digest._coverage_section("2026-08-09", tmp_path)
-        )
+        assert not any("⚠" in line for line in nightly_digest._coverage_section("2026-08-09", tmp_path))
 
     def test_a_stale_log_warns_that_the_job_may_be_dead(self, tmp_path):
         # Decoupling the schedules must not buy a silent detector back. If the
@@ -493,9 +483,7 @@ class TestTheDiskCheckWatchesBothVolumes:
         warehouse.mkdir()
         return lake, warehouse
 
-    def test_a_full_warehouse_volume_warns_even_when_the_lake_is_empty(
-        self, tmp_path, monkeypatch
-    ):
+    def test_a_full_warehouse_volume_warns_even_when_the_lake_is_empty(self, tmp_path, monkeypatch):
         lake, warehouse = self._dirs(tmp_path)
 
         def fake_usage(path):
@@ -543,3 +531,55 @@ class TestTheDiskCheckWatchesBothVolumes:
         lines = nightly_digest._disk_section(lake, warehouse)
         assert len([ln for ln in lines if ln.startswith("Disk")]) == 1
         assert "128.0 GiB" in lines[0]
+
+
+class TestTheDigestSurvivesDegenerateInputs:
+    """build_digest promises never to raise on a missing input.
+
+    A section that throws takes the whole nightly email with it — the one
+    artifact a human actually reads.
+    """
+
+    def test_a_coverage_log_with_a_blank_first_line_is_skipped(self, tmp_path):
+        # A partially-flushed write. Printing "  " would read as a healthy
+        # coverage line while carrying no measurement at all.
+        (tmp_path / "coverage_2026-08-06.log").write_text(
+            "2026-08-06 coverage: 1d=13265/13270 (99.96%)\n", encoding="utf-8"
+        )
+        (tmp_path / "coverage_2026-08-08.log").write_text("\n\n", encoding="utf-8")
+
+        lines = nightly_digest._coverage_section("2026-08-09", tmp_path)
+
+        assert not any(line.strip() == "" for line in lines[1:]), "no blank measurement line"
+        assert any("2026-08-06" in line for line in lines), "falls through to the real one"
+
+    def test_a_leading_blank_line_does_not_hide_the_measurement(self, tmp_path):
+        (tmp_path / "coverage_2026-08-08.log").write_text(
+            "\n2026-08-08 coverage: 1d=13300/13311 (99.92%)\n", encoding="utf-8"
+        )
+        lines = nightly_digest._coverage_section("2026-08-09", tmp_path)
+        assert any("13300/13311" in line for line in lines)
+
+    def test_a_zero_total_filesystem_does_not_raise(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(nightly_digest.shutil, "disk_usage", lambda path: _Usage(0, 0, 0))
+        assert nightly_digest._disk_section(tmp_path, tmp_path) == ["Disk: (unavailable)"]
+
+    def test_one_usable_volume_still_reports_when_the_other_is_degenerate(self, tmp_path, monkeypatch):
+        lake = tmp_path / "lake"
+        warehouse = tmp_path / "warehouse"
+        lake.mkdir()
+        warehouse.mkdir()
+
+        def fake_usage(path):
+            if Path(path) == lake:
+                return _Usage(0, 0, 0)
+            return _Usage(228 * _GIB, 100 * _GIB, 128 * _GIB)
+
+        monkeypatch.setattr(nightly_digest.shutil, "disk_usage", fake_usage)
+        lines = nightly_digest._disk_section(lake, warehouse)
+        assert lines == ["Disk: 128.0 GiB free (44% used)"]
+
+    def test_build_digest_never_raises_on_a_degenerate_filesystem(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(nightly_digest.shutil, "disk_usage", lambda path: _Usage(0, 0, 0))
+        out = build_digest(date(2026, 8, 9), tmp_path / "logs", tmp_path)
+        assert "Livewire nightly digest" in out

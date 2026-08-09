@@ -767,15 +767,11 @@ class TestFooterReadsAreIncremental:
         cache_path = tmp_path / "cache.json"
         opens = _count_opens(monkeypatch)
 
-        first = coverage_report.compute_coverage(
-            date(2026, 8, 6), bronze_root=root, cache_path=cache_path
-        )
+        first = coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
         assert len(opens) >= 1
         opens.clear()
 
-        second = coverage_report.compute_coverage(
-            date(2026, 8, 6), bronze_root=root, cache_path=cache_path
-        )
+        second = coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
         assert opens == [], "an unchanged parquet must not be reopened"
         assert second["1d"].present == first["1d"].present
         assert second["1d"].missing_symbols == first["1d"].missing_symbols
@@ -784,9 +780,7 @@ class TestFooterReadsAreIncremental:
         root = tmp_path / "bronze"
         _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6)])
         cache_path = tmp_path / "cache.json"
-        coverage_report.compute_coverage(
-            date(2026, 8, 6), bronze_root=root, cache_path=cache_path
-        )
+        coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
 
         parquet = root / "asset_class=equity" / "symbol=NVDA" / "1d.parquet"
         _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6), date(2026, 8, 7)])
@@ -797,9 +791,7 @@ class TestFooterReadsAreIncremental:
         os.utime(parquet, (stamp, stamp))
 
         opens = _count_opens(monkeypatch)
-        results = coverage_report.compute_coverage(
-            date(2026, 8, 7), bronze_root=root, cache_path=cache_path
-        )
+        results = coverage_report.compute_coverage(date(2026, 8, 7), bronze_root=root, cache_path=cache_path)
         assert opens == [parquet], "a rewritten parquet must be reread"
         assert results["1d"].missing_symbols == []
 
@@ -813,22 +805,21 @@ class TestFooterReadsAreIncremental:
         root = tmp_path / "bronze"
         _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6)])
         cache_path = tmp_path / "cache.json"
-        coverage_report.compute_coverage(
-            date(2026, 8, 6), bronze_root=root, cache_path=cache_path
-        )
+        coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
 
         parquet = root / "asset_class=equity" / "symbol=NVDA" / "1d.parquet"
         frozen = parquet.stat().st_mtime
-        _write_daily(root, "NVDA", [date(d.year, d.month, d.day) for d in
-                                    [date(2026, 7, d) for d in range(1, 25)]]
-                     + [date(2026, 8, 5), date(2026, 8, 6), date(2026, 8, 7)])
+        _write_daily(
+            root,
+            "NVDA",
+            [date(d.year, d.month, d.day) for d in [date(2026, 7, d) for d in range(1, 25)]]
+            + [date(2026, 8, 5), date(2026, 8, 6), date(2026, 8, 7)],
+        )
         os.utime(parquet, (frozen, frozen))
         assert parquet.stat().st_mtime == frozen
 
         opens = _count_opens(monkeypatch)
-        results = coverage_report.compute_coverage(
-            date(2026, 8, 7), bronze_root=root, cache_path=cache_path
-        )
+        results = coverage_report.compute_coverage(date(2026, 8, 7), bronze_root=root, cache_path=cache_path)
         assert opens == [parquet], "a size change must invalidate the entry"
         assert results["1d"].missing_symbols == []
 
@@ -848,9 +839,7 @@ class TestFooterReadsAreIncremental:
         cache_path = tmp_path / "cache.json"
         cache_path.write_text("{not json", encoding="utf-8")
 
-        results = coverage_report.compute_coverage(
-            date(2026, 8, 6), bronze_root=root, cache_path=cache_path
-        )
+        results = coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
         assert results["1d"].total == 1
 
     def test_a_removed_symbol_drops_out_of_the_cache(self, tmp_path):
@@ -859,15 +848,60 @@ class TestFooterReadsAreIncremental:
         _write_daily(root, "NVDA", [date(2026, 8, 6)])
         _write_daily(root, "HON", [date(2026, 8, 6)])
         cache_path = tmp_path / "cache.json"
-        coverage_report.compute_coverage(
-            date(2026, 8, 6), bronze_root=root, cache_path=cache_path
-        )
+        coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
         assert len(json.loads(cache_path.read_text())) == 2
 
         shutil.rmtree(root / "asset_class=equity" / "symbol=HON")
-        coverage_report.compute_coverage(
-            date(2026, 8, 6), bronze_root=root, cache_path=cache_path
-        )
+        coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
         entries = json.loads(cache_path.read_text())
         assert len(entries) == 1
         assert all("NVDA" in key for key in entries)
+
+
+class TestTheCacheCannotKillTheRun:
+    """_load_footer_cache promises a bad cache costs one slow run, not a failure.
+
+    It only guards against malformed JSON. A malformed *entry* used to raise
+    ValueError inside pool.map and take the whole coverage pass with it — the
+    freshness detector dying of its own optimisation file.
+    """
+
+    def test_a_malformed_latest_is_a_miss_not_an_exception(self, tmp_path):
+        parquet = tmp_path / "1d.parquet"
+        parquet.write_text("x", encoding="utf-8")
+        stat = parquet.stat()
+        cache = {str(parquet): {"mtime": stat.st_mtime, "size": stat.st_size, "latest": "not-a-date"}}
+
+        with patch.object(coverage_report, "_latest_date_in_parquet", return_value=date(2026, 8, 6)):
+            latest, cached, stamp = coverage_report._latest_date_with_cache(parquet, "trade_date", cache)
+
+        assert latest == date(2026, 8, 6), "falls back to a real footer read"
+        assert cached is False
+        assert stamp == (stat.st_mtime, stat.st_size)
+
+    def test_a_non_dict_entry_is_a_miss(self, tmp_path):
+        parquet = tmp_path / "1d.parquet"
+        parquet.write_text("x", encoding="utf-8")
+
+        with patch.object(coverage_report, "_latest_date_in_parquet", return_value=None):
+            latest, cached, _ = coverage_report._latest_date_with_cache(
+                parquet, "trade_date", {str(parquet): "garbage"}
+            )
+
+        assert latest is None
+        assert cached is False
+
+    def test_a_whole_run_survives_a_corrupt_entry(self, tmp_path):
+        root = tmp_path / "bronze"
+        _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6)])
+        parquet = root / "asset_class=equity" / "symbol=NVDA" / "1d.parquet"
+        stat = parquet.stat()
+        cache_path = tmp_path / "cache.json"
+        cache_path.write_text(
+            json.dumps({str(parquet): {"mtime": stat.st_mtime, "size": stat.st_size, "latest": "garbage"}}),
+            encoding="utf-8",
+        )
+
+        results = coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+
+        assert results["1d"].present == 1, "the run completes and measures correctly"

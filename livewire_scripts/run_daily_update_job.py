@@ -798,6 +798,31 @@ def run_silver_rebuild(
     )
 
 
+def _without_flag(args: Sequence[str], flag: str) -> list[str]:
+    """Drop every `flag value` / `flag=value` occurrence.
+
+    Appending `--source massive` to args that already carry `--source ib` is
+    not enough: argparse honours the LAST occurrence, but
+    `_requires_ib_preflight` reads the FIRST (`_arg_value`,
+    `scripts/livewire_ingest.py:75`). The preflight would still gate on `ib`,
+    exit 86 again, and the fallback would silently defeat itself — the retry
+    would look like it ran while nothing changed.
+    """
+    kept: list[str] = []
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
+            continue
+        if arg == flag:
+            skip = True
+            continue
+        if arg.startswith(f"{flag}="):
+            continue
+        kept.append(arg)
+    return kept
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     config = build_config()
     args = list(argv or sys.argv[1:])
@@ -835,14 +860,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     # cannot hit the preflight again. Futures and cmdty deliberately get no
     # fallback: Massive does not carry those asset classes, and a fallback there
     # would manufacture a success out of missing data.
+    ib_lanes = set(ASSET_CLASSES)
     if lane_codes.get("equity") == GATEWAY_DOWN_EXIT_CODE:
         lane_codes["equity"] = run_with_retries(
             config,
-            args + ["--asset-class", "equity", "--source", "massive"],
+            _without_flag(args, "--source") + ["--asset-class", "equity", "--source", "massive"],
             env=env,
             completion_scope="equity",
             deadline=deadline,
         )
+        # Equity stops being an IB lane the moment Massive answers for it, so
+        # an 86 from the FALLBACK is not a Gateway outage and must not degrade.
+        # Otherwise both providers failing would leave `failed` empty, exit 0,
+        # and skip Silver while reporting success. Same rule as sync_runner:
+        # degrade eligibility is membership of the IB set, not the exit code.
+        ib_lanes.discard("equity")
 
     # Sync all volatility indices via CBOE API (authoritative source)
     cboe_code = run_cboe_volatility_sync(config, env=env, deadline=deadline)
@@ -853,8 +885,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # A Gateway outage is a degraded run, not a failed one. It must not mark
     # the job failed and must not gate anything that does not read IB.
-    degraded = sorted(name for name, code in lane_codes.items() if code == GATEWAY_DOWN_EXIT_CODE)
-    failed = {name: code for name, code in lane_codes.items() if code not in (0, GATEWAY_DOWN_EXIT_CODE)}
+    def _is_degraded(name: str, code: int) -> bool:
+        return code == GATEWAY_DOWN_EXIT_CODE and name in ib_lanes
+
+    degraded = sorted(name for name, code in lane_codes.items() if _is_degraded(name, code))
+    failed = {name: code for name, code in lane_codes.items() if code != 0 and not _is_degraded(name, code)}
 
     final_code = action_code or cboe_code or fx_code or next(iter(failed.values()), 0)
 

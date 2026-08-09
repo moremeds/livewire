@@ -224,9 +224,7 @@ class TestMainIsDryRunUnlessTold:
         housekeeping.main(["--apply", "--log-dir", str(logs), "--data-lake", str(lake)])
         assert sidecar.exists(), "an rglob over 13 TiB is not part of the default sweep"
 
-        housekeeping.main(
-            ["--apply", "--appledouble", "--log-dir", str(logs), "--data-lake", str(lake)]
-        )
+        housekeeping.main(["--apply", "--appledouble", "--log-dir", str(logs), "--data-lake", str(lake)])
         assert not sidecar.exists()
 
     def test_releases_are_previewed_in_the_dry_run(self, tmp_path, monkeypatch, caplog):
@@ -245,3 +243,22 @@ class TestMainIsDryRunUnlessTold:
 
         assert seen == {"keep": housekeeping.KEEP_RELEASES, "dry_run": True}
         assert "would prune release deadbeef" in caplog.text
+
+
+def test_a_directory_named_like_a_log_is_never_planned(tmp_path):
+    """glob('*.log') can match a directory, and main() rmtree's directories.
+
+    Pruning log files must not become pruning an arbitrary tree because
+    something was named `*.log`.
+    """
+    logs = tmp_path / "logs"
+    trap = logs / "archive.log"
+    trap.mkdir(parents=True)
+    _touch(trap / "keep-me.parquet")
+    os.utime(trap, (0, 0))
+
+    planned = plan_housekeeping(
+        logs, tmp_path / "data-lake", log_retention_days=60, keep_evicted=2, now=date(2026, 8, 9)
+    )
+
+    assert trap not in [p for _, p in planned]

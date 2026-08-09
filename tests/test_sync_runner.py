@@ -599,11 +599,7 @@ class TestAGatewayOutageDegradesRatherThanFails:
 
     @staticmethod
     def _summary(capsys) -> dict:
-        lines = [
-            ln
-            for ln in capsys.readouterr().out.splitlines()
-            if ln.startswith(SUMMARY_PREFIX)
-        ]
+        lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith(SUMMARY_PREFIX)]
         return json.loads(lines[-1].removeprefix(SUMMARY_PREFIX))
 
     def test_ib_phases_exiting_86_do_not_fail_the_run(self, tmp_path, capsys):
