@@ -276,6 +276,19 @@ def test_prune_never_drops_the_release_being_served(warehouse):
     assert (warehouse / "releases" / "served").exists()
 
 
+def test_prune_dry_run_names_what_would_go_without_removing_it(warehouse):
+    """The housekeeping review is worthless if the largest category is invisible.
+
+    Releases are 422 MB each — by far the biggest thing the sweep deletes — so
+    an operator reading a dry run has to see them before committing to --apply.
+    """
+    for index, sha in enumerate(["old", "mid", "new"]):
+        make_release(warehouse, sha, 1_000.0 + index)
+
+    assert release.prune(keep=2, dry_run=True) == ["old"]
+    assert (warehouse / "releases" / "old").exists(), "dry run must not delete"
+
+
 def test_prune_is_a_noop_without_a_releases_directory(tmp_path, monkeypatch):
     monkeypatch.setenv("MDW_RELEASES_DIR", str(tmp_path / "absent"))
     monkeypatch.setenv("MDW_CURRENT_LINK", str(tmp_path / "current"))

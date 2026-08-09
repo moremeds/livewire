@@ -200,14 +200,20 @@ def _by_recency(root: Path) -> list[Path]:
     )
 
 
-def prune(keep: int) -> list[str]:
-    """Drop all but the ``keep`` newest releases, never the one being served."""
+def prune(keep: int, *, dry_run: bool = False) -> list[str]:
+    """Drop all but the ``keep`` newest releases, never the one being served.
+
+    ``dry_run`` returns what would go without removing it — the housekeeping
+    review this exists for is worthless if the one category that deletes
+    422 MB at a time is invisible until --apply.
+    """
     active = current_sha()
     removed = []
     for path in _by_recency(releases_dir())[keep:]:
         if path.name == active:
             continue
-        _discard(path)
+        if not dry_run:
+            _discard(path)
         removed.append(path.name)
     return removed
 
