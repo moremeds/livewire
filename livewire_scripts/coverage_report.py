@@ -156,9 +156,73 @@ def _latest_date_in_parquet(path: Path, column_name: str) -> date | None:
     return max(dates)
 
 
+def _load_footer_cache(cache_path: Path | None) -> dict:
+    """Return the persisted footer cache, or an empty one.
+
+    A corrupt or unreadable cache is not an error: the worst case is one slow
+    run, and failing the freshness detector because its optimisation file is
+    malformed would be trading a real signal for a cosmetic one.
+    """
+    if cache_path is None:
+        return {}
+    try:
+        return json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_footer_cache(cache_path: Path | None, cache: dict) -> None:
+    if cache_path is None:
+        return
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(cache, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, cache_path)
+    except OSError as exc:  # pragma: no cover - logged but tolerated
+        log.warning("could not persist the footer cache: %s", exc)
+
+
+def _latest_date_with_cache(
+    path: Path, column_name: str, cache: dict
+) -> tuple[date | None, bool, tuple[float, int] | None]:
+    """Return (latest_date, cache_hit, (mtime, size)). Reads `cache`; never writes it.
+
+    A parquet whose mtime and size have not moved since the last run cannot
+    have gained a later max date, so opening its footer is pure cost. On the
+    external exFAT volume that cost is the entire runtime — 2858s cold on
+    2026-08-09 against an 1800s budget, versus 29.2s warm for the same 1d pass.
+
+    `size` is in the key on purpose: bronze publishes by `os.replace()` and
+    exFAT stores mtime at 2-second granularity, so a republish landing inside
+    that bucket leaves the timestamp unchanged. Any real republish that adds or
+    removes a row also changes the size, and both come from the one `stat()`
+    this makes anyway.
+
+    Read-only on purpose. This runs on 16 threads, and having each worker write
+    into a shared dict would rest the whole cache's correctness on an argument
+    about `dict.__setitem__` atomicity under the GIL — an argument that stops
+    holding the day anyone runs this on a free-threaded build. `pool.map`
+    preserves input order, so the caller reassembles the new cache
+    single-threaded from the returned tuples and the question never arises.
+    """
+    key = str(path)
+    try:
+        stat = path.stat()
+    except OSError:
+        return None, False, None
+    stamp = (stat.st_mtime, stat.st_size)
+    entry = cache.get(key)
+    if entry is not None and (entry.get("mtime"), entry.get("size")) == stamp:
+        stored = entry.get("latest")
+        return (date.fromisoformat(stored) if stored else None), True, stamp
+    return _latest_date_in_parquet(path, column_name), False, stamp
+
+
 def compute_coverage(
     target_date: date,
     bronze_root: Path | None = None,
+    cache_path: Path | None = None,
 ) -> dict[str, CoverageResult]:
     """Return per-timeframe coverage as-of *target_date*.
 
@@ -169,6 +233,8 @@ def compute_coverage(
     """
     bronze_root = bronze_root or _resolved_data_lake() / "bronze"
     results: dict[str, CoverageResult] = {}
+    cache = _load_footer_cache(cache_path)
+    fresh: dict = {}
 
     # The provider's exact target-day traded set, used only to exclude
     # instruments that did not trade from the "missing" count.
@@ -199,16 +265,36 @@ def compute_coverage(
         # Threaded: the pass is one small footer read per file, so it is bound by
         # I/O rather than the GIL — pyarrow releases it for the read and the parse.
         started = time.monotonic()
+        worker = partial(_latest_date_with_cache, column_name=column_name, cache=cache)
         with ThreadPoolExecutor(max_workers=FOOTER_READ_WORKERS) as pool:
-            latest_dates = pool.map(partial(_latest_date_in_parquet, column_name=column_name), parquet_paths)
-            latest_by_symbol = {
-                _symbol_from_parquet_path(path): latest
-                for path, latest in zip(parquet_paths, latest_dates, strict=True)
-                if latest is not None
-            }
+            rows = list(pool.map(worker, parquet_paths))
+        hits = sum(1 for _, cached, _ in rows if cached)
+        # Rebuilt, not mutated: `fresh` ends up holding exactly the files that
+        # exist right now, so a symbol archived to bronze-delisted/ drops out
+        # instead of accumulating in the cache forever.
+        for path, (latest, _, stamp) in zip(parquet_paths, rows, strict=True):
+            if stamp is not None:
+                fresh[str(path)] = {
+                    "mtime": stamp[0],
+                    "size": stamp[1],
+                    "latest": latest.isoformat() if latest else None,
+                }
+        latest_by_symbol = {
+            _symbol_from_parquet_path(path): latest
+            for path, (latest, _, _) in zip(parquet_paths, rows, strict=True)
+            if latest is not None
+        }
         # Logged so the next time this outgrows its budget it is measurable rather
-        # than a bare timeout. It outgrew the old one silently for four weeks.
-        log.info("%s: read %d footers in %.1fs", tf, len(parquet_paths), time.monotonic() - started)
+        # than a bare timeout. It outgrew the old one silently for four weeks, and
+        # then outgrew the replacement too.
+        log.info(
+            "%s: %d files, %d cached, %d read, %.1fs",
+            tf,
+            len(parquet_paths),
+            hits,
+            len(parquet_paths) - hits,
+            time.monotonic() - started,
+        )
         present_symbols = {
             symbol
             for symbol in universe
@@ -223,6 +309,7 @@ def compute_coverage(
             missing_symbols=missing,
         )
 
+    _save_footer_cache(cache_path, fresh)
     return results
 
 
