@@ -811,6 +811,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             deadline=deadline,
         )
 
+    # Massive owns equity daily whenever IB cannot answer. Silver reads equity
+    # bronze and the corporate-action store and nothing else, both Massive-backed
+    # — so without this a Gateway outage silently gated the adjusted rebuild for
+    # the whole ~13K universe, the same cascade the lane split was meant to end.
+    #
+    # `_requires_ib_preflight` exempts `daily --source massive`, so the retry
+    # cannot hit the preflight again. Futures and cmdty deliberately get no
+    # fallback: Massive does not carry those asset classes, and a fallback there
+    # would manufacture a success out of missing data.
+    if lane_codes.get("equity") == GATEWAY_DOWN_EXIT_CODE:
+        lane_codes["equity"] = run_with_retries(
+            config,
+            args + ["--asset-class", "equity", "--source", "massive"],
+            env=env,
+            completion_scope="equity",
+            deadline=deadline,
+        )
+
     # Sync all volatility indices via CBOE API (authoritative source)
     cboe_code = run_cboe_volatility_sync(config, env=env, deadline=deadline)
 

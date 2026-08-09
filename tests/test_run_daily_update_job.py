@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 from datetime import UTC, datetime
@@ -1203,3 +1204,91 @@ class TestTheLaneRunnerNeverRunsTheAlert:
         assert rc == 1
         assert len(lane_calls) == config.max_attempts
         assert alert_run.call_count == 1
+
+
+class TestTheEquityLaneFallsBackToMassive:
+    """Silver must not be hostage to IB.
+
+    Silver reads equity bronze and the corporate-action store, both
+    Massive-backed. But the equity lane runs on IB by default, so a down
+    Gateway skipped it and `silver_inputs_ok` then blocked the rebuild for the
+    whole ~13K universe — the exact cascade CLAUDE.md says must not happen,
+    arriving by an indirect route.
+
+    Futures and cmdty get NO fallback: Massive does not carry those asset
+    classes, so a fallback there would be a fabricated success.
+
+    Consequence worth stating rather than discovering: if IB is down AND
+    Massive cannot answer either, equity's code is no longer 86, so the lane
+    leaves `degraded` for `failed` and the job pages. That is right — no source
+    produced the session's bars — but it fires only when both providers are gone.
+    """
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _lanes(config, daily, silver_code):
+        """Everything main() calls except the equity retry under test."""
+        with (
+            patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
+            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=daily),
+            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_fx_sync", return_value=0),
+            patch(
+                "livewire_scripts.run_daily_update_job.run_silver_rebuild",
+                return_value=silver_code,
+            ) as silver,
+        ):
+            yield silver
+
+    def test_a_down_gateway_retries_equity_on_massive(self, tmp_path):
+        config = _config(tmp_path)
+        calls: list[list[str]] = []
+
+        def daily(cfg, daily_update_args, **kwargs):
+            args = list(daily_update_args)
+            calls.append(args)
+            if "--source" in args and args[args.index("--source") + 1] == "massive":
+                return 0
+            return GATEWAY_DOWN_EXIT_CODE
+
+        with self._lanes(config, daily, 0) as silver:
+            main([])
+
+        equity_calls = [c for c in calls if "equity" in c]
+        assert len(equity_calls) == 2, "equity should be retried exactly once"
+        assert equity_calls[1][equity_calls[1].index("--source") + 1] == "massive"
+        silver.assert_called_once()
+
+    def test_futures_and_cmdty_get_no_fallback(self, tmp_path):
+        config = _config(tmp_path)
+        calls: list[list[str]] = []
+
+        def daily(cfg, daily_update_args, **kwargs):
+            calls.append(list(daily_update_args))
+            return GATEWAY_DOWN_EXIT_CODE
+
+        with self._lanes(config, daily, 0) as silver:
+            main([])
+
+        for asset_class in ("futures", "cmdty"):
+            lane_calls = [c for c in calls if asset_class in c]
+            assert len(lane_calls) == 1, (
+                f"{asset_class} must not be retried — Massive has no such data"
+            )
+            assert "--source" not in lane_calls[0]
+        silver.assert_not_called()
+
+    def test_both_providers_down_fails_rather_than_degrades(self, tmp_path):
+        """No source produced the bars. That is a failure, not a degrade."""
+        config = _config(tmp_path)
+
+        def daily(cfg, daily_update_args, **kwargs):
+            args = list(daily_update_args)
+            if "--source" in args and args[args.index("--source") + 1] == "massive":
+                return 7
+            return GATEWAY_DOWN_EXIT_CODE
+
+        with self._lanes(config, daily, 0) as silver:
+            assert main([]) == 7
+        silver.assert_not_called()
