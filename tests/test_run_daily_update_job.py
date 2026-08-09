@@ -456,7 +456,7 @@ class TestEndOfDayQualityReport:
         def _runner(command, stdout=None, env=None, timeout=None, **_):
             assert command[0] == "/usr/bin/python3"
             assert command[2] == "send-alert"
-            assert "--error-summary" in command
+            assert any(a.startswith("--error-summary=") for a in command)
             assert "--attempts" not in command
             return SimpleNamespace(returncode=0, stdout="sent")
 
@@ -1292,3 +1292,27 @@ class TestTheEquityLaneFallsBackToMassive:
         with self._lanes(config, daily, 0) as silver:
             assert main([]) == 7
         silver.assert_not_called()
+
+
+class TestTheAlertCommandCarriesTheSummaryAsOneToken:
+    """The Python side must emit the single-token form.
+
+    Fixing the parser alone leaves the callers still passing two tokens, which
+    still breaks the moment the summary begins with "--".
+    """
+
+    def test_error_summary_is_a_single_equals_token(self, tmp_path):
+        summary = "--- Runbook: /Users/moremeds/runbooks/trading-stack/ib-gateway-ibc.md ---"
+        request = AlertRequest(
+            run_date="2026-08-08",
+            log_file=tmp_path / "daily_update_2026-08-08.log",
+            attempts=1,
+            exit_code=86,
+            error_summary=summary,
+            repo_root=tmp_path / "repo",
+        )
+
+        command = build_alert_command(_config(tmp_path), request)
+
+        assert f"--error-summary={summary}" in command
+        assert "--error-summary" not in command, "the bare two-token form must be gone"

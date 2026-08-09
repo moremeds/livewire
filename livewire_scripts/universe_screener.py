@@ -259,8 +259,9 @@ def _send_screener_alert(
         "send-alert",
         "--run-date",
         run_date.isoformat(),
-        "--error-summary",
-        error_summary,
+        # One token. The two-token form breaks whenever the summary begins with
+        # "--", which is how the 2026-08-08 page was lost.
+        f"--error-summary={error_summary}",
         "--repo-root",
         str(PROJECT_ROOT),
         "--job-name",

@@ -28,6 +28,17 @@ from livewire_scripts.coverage_report import (
     write_coverage_log,
 )
 
+
+def _error_summary(cmd) -> str:
+    """The summary is one `--error-summary=<text>` token.
+
+    The two-token form could not carry a value beginning with "--", which is
+    exactly what the log-derived summary is (see the 2026-08-08 lost page).
+    """
+    token = next(a for a in cmd if a.startswith("--error-summary="))
+    return token.removeprefix("--error-summary=")
+
+
 _ET = ZoneInfo("America/New_York")
 
 _DAILY_SCHEMA = pa.schema(
@@ -479,8 +490,8 @@ class TestSendAlert:
         assert "livewire_ops.py" in cmd[1]
         assert cmd[2] == "send-alert"
         assert "--job-name" in cmd
-        idx = cmd.index("--error-summary")
-        assert "5m" in cmd[idx + 1] and "1h" in cmd[idx + 1]
+        summary = _error_summary(cmd)
+        assert "5m" in summary and "1h" in summary
 
     def test_aborted_outcome_in_summary(self, tmp_path):
         log_path = tmp_path / "x.log"
@@ -489,8 +500,7 @@ class TestSendAlert:
         with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
             _send_alert(date(2026, 4, 6), outcomes, log_path)
         cmd = mock_run.call_args[0][0]
-        idx = cmd.index("--error-summary")
-        assert "ABORTED" in cmd[idx + 1]
+        assert "ABORTED" in _error_summary(cmd)
 
 
 # ── _resolve_target_date ─────────────────────────────────────────────────────

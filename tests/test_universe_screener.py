@@ -293,7 +293,7 @@ class TestSendAlert:
         with patch("subprocess.run") as mock_run:
             _send_screener_alert(run_date, {"NVDA"}, {"GOOG"})
             cmd = mock_run.call_args[0][0]
-            assert "--error-summary" in cmd
+            assert any(a.startswith("--error-summary=") for a in cmd)
 
 
 # ══════════════════════════════════════════════════════════════════════

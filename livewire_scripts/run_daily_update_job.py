@@ -154,8 +154,9 @@ def build_alert_command(config: RunnerConfig, request: AlertRequest) -> list[str
         request.run_date,
         "--log-file",
         str(request.log_file),
-        "--error-summary",
-        request.error_summary,
+        # One token. The two-token form breaks whenever the summary begins with
+        # "--", which is how the 2026-08-08 page was lost.
+        f"--error-summary={request.error_summary}",
         "--repo-root",
         str(request.repo_root),
         "--job-name",

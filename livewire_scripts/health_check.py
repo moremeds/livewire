@@ -337,8 +337,9 @@ def _send_alert(
         run_date,
         "--log-file",
         str(log_path),
-        "--error-summary",
-        error_summary,
+        # One token. The two-token form breaks whenever the summary begins with
+        # "--", which is how the 2026-08-08 page was lost.
+        f"--error-summary={error_summary}",
         "--repo-root",
         str(_REPO_ROOT),
         "--job-name",
