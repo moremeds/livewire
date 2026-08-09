@@ -155,7 +155,15 @@ to where the dependency actually is.
 
 **1.2 A phase exiting 86 is degraded, not failed.** Mirror what
 `run_daily_update_job` already does: record it as degraded, keep it out of
-`failures`, and do not turn the orchestrator red for it.
+`failures`, and do not turn the orchestrator red for it. Eligibility is
+**membership of the two IB phase labels**, not the exit code alone — 86 from a
+Massive or CBOE phase would be an unrelated failure and must stay a failure.
+
+The digest has to render it too. `nightly_digest._phases_section` prints
+`FAILED (exit N)` for every nonzero phase, so emitting the field without
+touching that leaves the orchestrator green while the nightly email still reads
+`FAILED (exit 86)`. The classification is only real once it reaches the one
+place a human looks.
 
 **1.3 The equity lane falls back to Massive.** When the equity lane's preflight
 returns 86, re-run it once with `--source massive`. `_requires_ib_preflight`
@@ -181,10 +189,34 @@ suit the parser — an alert that lies about what happened.
 add `com.livewire.coverage` pointing at `<warehouse>/current`, with **no budget**.
 An arbitrary timeout is what produced this bug twice.
 
-**3.2 Incremental footer reads.** Persist `(symbol, timeframe) -> (mtime,
+Scheduled at **11:00 UTC**, chosen against the daily job's 4h *deadline*
+(06:00 + 4h = 10:00 UTC) rather than its 3.27h healthy peak, and after the 10:30
+UTC watchdog. A slow-but-legal daily run must never still be publishing while
+coverage walks bronze — that would produce a mixed-time snapshot, a spurious
+recovery subprocess, and cache entries recorded against a half-written tree.
+
+`scripts/livewire_quality.py` loads the scheduled environment **only for
+`watchdog`** today, because every other quality command was spawned by a job
+that had already loaded it. A standalone launchd job is cold, so `coverage`
+joins that branch — otherwise it resolves the Massive key and SMTP credentials
+to nothing and can neither recover nor report what it measured.
+
+**3.2 Incremental footer reads.** Persist `(symbol, timeframe) -> (mtime, size,
 latest_date)`. Each run `os.stat`s the file and re-opens the footer only when
-mtime changed. The first night stays slow; subsequent nights touch only what
+either changed. The first night stays slow; subsequent nights touch only what
 actually changed.
+
+**Size is in the key, not just mtime.** Bronze publishes by `os.replace()`, and
+exFAT stores mtime at 2-second granularity — a republish landing inside that
+bucket leaves the timestamp untouched, so an mtime-only cache would keep serving
+the pre-publish max date. Any republish that adds or removes a row also changes
+the size, and both come from the one `stat()` the code already makes. The
+post-recovery re-check inside a single run passes no cache at all, since that is
+the one place where writes and reads are seconds apart by construction.
+
+This part is an **optimisation, not the fix**. 3.1 alone ends the outage — with
+no budget, a 2858s run simply finishes. If anything has to be cut under time
+pressure, cut 3.2, not 3.1.
 
 **3.3 Break the ordering coupling.** `nightly_digest._coverage_section` looks up
 `coverage_<target_session>.log`, which an independently scheduled coverage job
@@ -193,11 +225,23 @@ log's own date. A one-day lag is irrelevant to a freshness trend, and this
 removes the run-order dependency instead of pushing it onto the watchdog's
 schedule.
 
+**With an age guard, because decoupling buys back a new silence.** If
+`com.livewire.coverage` stops firing — plist never loaded, job erroring — the
+newest log simply stops advancing and the digest prints a reassuring line
+forever. That is the dead-detector shape again, one level up. Over
+`_COVERAGE_STALE_DAYS` (3) the section warns that the job may not be running.
+Nothing else watches this job; the watchdog watches the daily one.
+
 ### Part 4 — Housekeeping
 
 **4.1 Fix the disk check.** `_disk_section` reports **both** volumes — the lake
 volume and the warehouse volume — and warns when either falls under the reserve.
 This is the only item in Part 4 that is a defect rather than maintenance.
+
+Deduplicated on the `(total, used, free)` triple rather than `st_dev`: a
+single-filesystem deployment still prints one line, and — unlike `st_dev` — the
+two-volume case stays testable, since two directories under one `tmp_path`
+necessarily share a device.
 
 **4.2 `scripts/livewire_ops.py housekeeping [--dry-run]`**, dry-run by default:
 
@@ -206,7 +250,15 @@ This is the only item in Part 4 that is a defect rather than maintenance.
 | `logs/*.log` | 60 days |
 | `releases/` | reuse the existing `release prune`, keep 3 |
 | `silver/evicted/<rev>` | keep the 2 most recent (present: 10, 12, 14, 19, 21; current revision is 24) |
-| AppleDouble `._*` under the lake | delete all — exFAT artifacts that also pollute symbol discovery |
+| AppleDouble `._*` under the lake | **opt-in `--appledouble` only, never nightly** |
+
+The AppleDouble sweep is deliberately out of the nightly policy. Finding them
+means `rglob("._*")` over the whole 13 TiB exFAT volume — the very operation
+measured at 281s cold for a *single* timeframe glob, and `du -sh` over bronze
+never returned at all. Inside a nightly budget it would not merely fail to
+delete sidecars: planning completes before anything is removed, so a traversal
+that blows the budget deletes **nothing**, logs and evicted revisions included.
+They are a one-off artifact of the exFAT move, not recurring garbage.
 
 **Never touched, asserted in code and in tests:**
 
@@ -217,14 +269,19 @@ This is the only item in Part 4 that is a defect rather than maintenance.
   `promote` refuses to rebuild
 
 **4.3** Runs after the digest. A manual `--dry-run` pass is reviewed before
-anything is deleted for the first time.
+anything is deleted for the first time — which requires `release.prune` to gain a
+`dry_run` flag, since releases are the largest category in the policy (422 MB
+each) and would otherwise be invisible until after mutation began.
 
 ## Testing
 
 - **1.1** — a test asserting `daily-backfill` and `backfill-all` do *not* require
   preflight, and that `intraday-backfill` still does.
 - **1.2** — a `sync_runner` test where one IB phase exits 86: the orchestrator
-  exit code is not a failure and `SUMMARY_JSON["failed"]` excludes it.
+  exit code is not a failure and `SUMMARY_JSON["failed"]` excludes it. Plus a
+  `nightly_digest._phases_section` test that the same phase renders
+  `DEGRADED (IB down)` and the word `FAILED` does not appear — the field is not
+  the fix, the rendering is.
 - **1.3** — a `run_daily_update_job` test where the equity lane's first invocation
   exits 86: assert the retry command contains `--source massive`, and that
   futures/cmdty get **no** such retry.
@@ -235,11 +292,19 @@ anything is deleted for the first time.
 - **3.2** — an incremental test: unchanged mtime reuses the cached date without
   opening the file (assert the footer reader is not called); changed mtime re-reads.
 - **3.3** — a digest test with a coverage log whose date differs from the target
-  session: it is found and its date is printed.
+  session: it is found and its date is printed. Plus one where the newest log is
+  weeks old: the age warning fires and the measured date is still shown.
 - **4.1** — a `_disk_section` test with two volumes where only the non-lake one is
   under reserve: the warning fires.
 - **4.2** — a housekeeping test asserting each protected path survives a run with
-  aggressive retention.
+  aggressive retention, parametrised over **both** planners. The nightly sweep no
+  longer walks the lake at all, so checked against it alone those assertions pass
+  vacuously — and a protection test that cannot fail reads as coverage while
+  providing none. `plan_appledouble` is the function that does the recursive walk,
+  so it is the one that must be proven not to enter `raw/` or `repairs/`.
+- **4.2** — `--apply` must not report a clean sweep over failed deletions:
+  `shutil.rmtree(..., ignore_errors=True)` would produce exactly the
+  green-while-wrong shape this whole change removes.
 
 ## Out of scope
 

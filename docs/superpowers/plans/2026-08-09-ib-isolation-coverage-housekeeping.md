@@ -40,10 +40,12 @@
 |---|---|---|
 | `scripts/livewire_ingest.py` | CLI dispatch + preflight gate | Modify `IB_COMMANDS` (`:33-41`) |
 | `livewire_scripts/sync_runner.py` | 9-phase daily-backfill orchestrator | Modify `run_sync` (`:204-385`) |
+| `scripts/livewire_quality.py` | quality CLI dispatch | `load_scheduled_env` for `coverage` too (`:56`) |
+| `livewire_scripts/release.py` | release lifecycle | `prune` gains `dry_run` (`:203`) |
 | `livewire_scripts/run_daily_update_job.py` | nightly lane runner | Modify `main` (`:786-845`), remove coverage spawn (`:570`) |
 | `livewire_node/send_daily_update_failure_email.mjs` | alert CLI | Modify `parseArgs` (`:62-83`) |
 | `livewire_scripts/coverage_report.py` | freshness detector | Modify `compute_coverage` (`:159-226`), add cache helpers |
-| `livewire_scripts/nightly_digest.py` | digest assembly | Modify `_coverage_section` (`:146-153`), `_disk_section` (`:156-163`) |
+| `livewire_scripts/nightly_digest.py` | digest assembly | Modify `_phases_section` (`:63`), `_coverage_section` (`:146-153`, deletes `_target_session`), `_disk_section` (`:156-163`) |
 | `livewire_scripts/housekeeping.py` | **new** — retention sweeps | Create |
 | `scripts/livewire_ops.py` | ops CLI dispatch | Add `housekeeping` to `COMMANDS` (`:23-27`) |
 | `launchd/com.livewire.coverage.plist.example` | **new** — coverage schedule | Create |
@@ -158,7 +160,8 @@ itself, so the check is not removed — it moves to the dependency it describes.
 
 **Files:**
 - Modify: `livewire_scripts/sync_runner.py:313-385`
-- Test: `tests/test_sync_runner.py`
+- Modify: `livewire_scripts/nightly_digest.py:63` (`_phases_section` must render the new field)
+- Test: `tests/test_sync_runner.py`, `tests/test_nightly_digest.py`
 
 **Interfaces:**
 - Consumes: `GATEWAY_DOWN_EXIT_CODE` from `clients.ib_gateway_preflight`
@@ -184,14 +187,14 @@ from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 
 
 class TestAGatewayOutageDegradesRatherThanFails:
-    def test_ib_phases_exiting_86_do_not_fail_the_run(self, tmp_path, capsys, monkeypatch):
-        config = _sync_config(tmp_path)  # existing helper in this module
+    def test_ib_phases_exiting_86_do_not_fail_the_run(self, tmp_path, capsys):
+        config = _make_config(tmp_path)  # existing helper, tests/test_sync_runner.py:52
 
-        def runner(command, *args, **kwargs):
+        def runner(command, **kwargs):
             rc = GATEWAY_DOWN_EXIT_CODE if "intraday-backfill" in command else 0
             return subprocess.CompletedProcess(command, rc)
 
-        rc = run_sync(config, runner=runner, trading_day_fn=lambda: date(2026, 8, 7))
+        rc = run_sync(config, runner=runner, trading_day_fn=lambda: "2026-08-07")
 
         assert rc == 0, "a Gateway outage is degraded, not failed"
         summary = json.loads(
@@ -205,13 +208,13 @@ class TestAGatewayOutageDegradesRatherThanFails:
         ]
 
     def test_a_real_phase_failure_still_fails_the_run(self, tmp_path, capsys):
-        config = _sync_config(tmp_path)
+        config = _make_config(tmp_path)
 
-        def runner(command, *args, **kwargs):
+        def runner(command, **kwargs):
             rc = 1 if "flatfile-ingest-daily" in command else 0
             return subprocess.CompletedProcess(command, rc)
 
-        rc = run_sync(config, runner=runner, trading_day_fn=lambda: date(2026, 8, 7))
+        rc = run_sync(config, runner=runner, trading_day_fn=lambda: "2026-08-07")
 
         assert rc == 1
         summary = json.loads(
@@ -222,10 +225,20 @@ class TestAGatewayOutageDegradesRatherThanFails:
         assert summary["degraded"] == []
 ```
 
-If `_sync_config` does not already exist in `tests/test_sync_runner.py`, write it
-as a module-level helper returning a `SyncConfig` with `log_dir=tmp_path` and the
-script paths pointed at the repo root, matching how the existing tests in that
-file build their config.
+**Verified against the real module, do not re-derive:**
+- The helper is `_make_config(tmp_path)` (`tests/test_sync_runner.py:52`) — there is
+  no `_sync_config`.
+- `trading_day_fn` returns a **string**: `latest_complete_trading_day() -> str`
+  (`sync_runner.py:83`) and every existing test passes `lambda: "2026-05-28"`.
+  Passing a `date` puts a non-str into the phase command list.
+- `run_sync` calls `require_flatfile_credentials()` first and returns 2 on failure,
+  but `tests/test_sync_runner.py:47` has an **autouse** `_flatfile_credentials`
+  fixture, so these tests need nothing extra.
+- `run_phase` invokes `runner(command, stdout=…, stderr=…, text=…, check=…,
+  timeout=…)` — all keyword, so `def runner(command, **kwargs)` is the right fake
+  shape (matching the existing `_ok_runner`, `:91`).
+- `VOL_INTRADAY_TIMEFRAMES = ("30m", "5m")` (`sync_runner.py:39`), and the phase 3b
+  label is `daily_backfill_equity_day_aggs` (`:281`).
 
 - [ ] **Step 2: Run it and watch it fail**
 
@@ -243,7 +256,9 @@ from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 # livewire_scripts/sync_runner.py:313-335 — Phase 5, replace the failure append
     # Phase 5: Volatility intraday via IB
     vol_tickers = load_tickers(config.vol_preset)
+    ib_phase_labels: set[str] = set()
     for tf in VOL_INTRADAY_TIMEFRAMES:
+        ib_phase_labels.add(f"daily_backfill_intraday_{tf}_volatility")
         rc = _phase(
             f"daily_backfill_intraday_{tf}_volatility",
             [
@@ -274,6 +289,16 @@ from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
     # Machine-readable per-phase summary for the nightly digest / watchdog.
     # `failed` and `degraded` are disjoint by construction: the digest and the
     # watchdog both read `failed`, and a Gateway outage must not appear there.
+    #
+    # Membership of `ib_phase_labels` is what makes a phase eligible to degrade,
+    # NOT the exit code alone. 86 is livewire's own preflight code, but nothing
+    # stops a Massive/FRED/CBOE/DuckDB phase from returning it for an unrelated
+    # reason, and treating that as degraded would silently swallow a real
+    # failure — the same class of exit-code-versus-summary disagreement this
+    # runner was already fixed for once.
+    def _degraded(p: dict) -> bool:
+        return p["label"] in ib_phase_labels and p["exit"] == GATEWAY_DOWN_EXIT_CODE
+
     print(
         SUMMARY_PREFIX
         + json.dumps(
@@ -281,15 +306,90 @@ from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
                 "job": "daily_backfill",
                 "target_date": str(target_date),
                 "phases": phase_results,
-                "failed": [
-                    p["label"] for p in phase_results if p["exit"] not in (0, GATEWAY_DOWN_EXIT_CODE)
-                ],
-                "degraded": [p["label"] for p in phase_results if p["exit"] == GATEWAY_DOWN_EXIT_CODE],
+                "failed": [p["label"] for p in phase_results if p["exit"] != 0 and not _degraded(p)],
+                "degraded": [p["label"] for p in phase_results if _degraded(p)],
             },
             separators=(",", ":"),
         )
     )
 ```
+
+The Phase 5 `failures.append` guard must use the same rule — `if rc not in (0,
+GATEWAY_DOWN_EXIT_CODE)` is already inside the IB loop, so it is scoped
+correctly by construction; no other phase's guard changes.
+
+- [ ] **Step 3b: Make the digest render it — the field alone changes nothing**
+
+`_phases_section` (`livewire_scripts/nightly_digest.py:63`) prints
+`"ok" if p["exit"] == 0 else f"FAILED (exit {p['exit']})"`. Emitting a `degraded`
+list without touching this leaves the orchestrator returning success while the
+nightly email still reads `FAILED (exit 86)` for both IB phases — the operator
+sees a red run and the exit code says green. The digest is the only place a
+human reads this, so the classification has to reach it:
+
+```python
+# livewire_scripts/nightly_digest.py:69-72 — inside _phases_section
+    degraded = set(summary.get("degraded", []))
+    for p in summary.get("phases", []):
+        label = p.get("label", "?")
+        if p.get("exit") == 0:
+            status = "ok"
+        elif label in degraded:
+            # A Gateway outage is not a failure. Naming it "DEGRADED" rather
+            # than "FAILED (exit 86)" is the whole point of the new field —
+            # a page-shaped word for a non-page trains the reader to ignore it.
+            status = "DEGRADED (IB down)"
+        else:
+            status = f"FAILED (exit {p.get('exit')})"
+        lines.append(f"  {label:<44} {status:<18} {p.get('duration_s', '?')}s")
+    if summary.get("degraded"):
+        lines.append(f"  degraded: {', '.join(summary['degraded'])}")
+    if summary.get("failed"):
+        lines.append(f"  failed: {', '.join(summary['failed'])}")
+```
+
+Test it in `tests/test_nightly_digest.py`:
+
+```python
+class TestTheDigestDistinguishesDegradedFromFailed:
+    def test_an_ib_phase_at_86_reads_degraded_not_failed(self, tmp_path):
+        summary = {
+            "job": "daily_backfill",
+            "target_date": "2026-08-07",
+            "phases": [
+                {"label": "daily_backfill_equity_day_aggs", "exit": 0, "duration_s": 41.0},
+                {"label": "daily_backfill_intraday_30m_volatility", "exit": 86, "duration_s": 0.2},
+            ],
+            "failed": [],
+            "degraded": ["daily_backfill_intraday_30m_volatility"],
+        }
+        (tmp_path / "intraday_catchup_2026-08-08.log").write_text(
+            nightly_digest.SUMMARY_PREFIX + json.dumps(summary) + "\n", encoding="utf-8"
+        )
+
+        lines = nightly_digest._phases_section("2026-08-08", tmp_path)
+        text = "\n".join(lines)
+
+        assert "DEGRADED (IB down)" in text
+        assert "FAILED" not in text, "a Gateway outage must not read as a failure"
+
+    def test_a_real_failure_still_reads_failed(self, tmp_path):
+        summary = {
+            "job": "daily_backfill",
+            "target_date": "2026-08-07",
+            "phases": [{"label": "daily_backfill_equity_day_aggs", "exit": 1, "duration_s": 3.0}],
+            "failed": ["daily_backfill_equity_day_aggs"],
+            "degraded": [],
+        }
+        (tmp_path / "intraday_catchup_2026-08-08.log").write_text(
+            nightly_digest.SUMMARY_PREFIX + json.dumps(summary) + "\n", encoding="utf-8"
+        )
+        assert "FAILED (exit 1)" in "\n".join(nightly_digest._phases_section("2026-08-08", tmp_path))
+```
+
+`SUMMARY_PREFIX` is **not** a `nightly_digest` attribute — it lives in
+`livewire_scripts/daily_outcomes.py:13` (`"SUMMARY_JSON "`), which is also where
+`nightly_digest` imports `parse_last_summary_json` from. Import it from there.
 
 - [ ] **Step 4: Run the tests**
 
@@ -317,8 +417,26 @@ and the watchdog both read failed."
 - Test: `tests/test_run_daily_update_job.py`
 
 **Interfaces:**
-- Consumes: `run_with_retries(config, args, *, env, completion_scope, deadline) -> int` (`:459`), `GATEWAY_DOWN_EXIT_CODE`
-- Produces: `lane_codes["equity"]` may now be the fallback's exit code rather than 86, which `silver_inputs_ok` (`:831`) reads.
+- Consumes: `run_with_retries(config, daily_update_args, env=None, sleep_fn=…,
+  runner=…, now_fn=…, completion_scope=None, deadline=None) -> int` (`:459` — note
+  the second parameter is named `daily_update_args`, and none of these are
+  keyword-only), `GATEWAY_DOWN_EXIT_CODE`
+- Produces: `lane_codes["equity"]` may now be the fallback's exit code rather than 86.
+  Both `degraded`/`failed` (`:822-823`) and `silver_inputs_ok` (`:831`) read
+  `lane_codes`, so the retry must be inserted **before** them — i.e. right after the
+  `ASSET_CLASSES` loop, which is where Step 3 puts it.
+
+**The fallback command is already proven in production.** `sync_runner`'s Phase 1
+(`:242-259`) is `daily --asset-class equity --source massive …` and runs nightly
+against the same credentials from the same `~/market-warehouse/.env`. This task is
+pointing an existing, exercised path at a new trigger, not introducing one. The
+lane also passes no `--tickers`, so `daily` discovers the universe from bronze —
+the fallback covers exactly what the IB lane would have.
+
+**`tests/test_run_daily_update_job.py:45` has an autouse `no_real_quality_spawn`
+fixture** that patches `run_post_success_quality` wholesale, so any `main([])` test
+already cannot shell out to the quality CLI. Do **not** also patch
+`_spawn_post_success_quality` in these tests — it is never reached.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -333,6 +451,12 @@ exact cascade CLAUDE.md says must not happen, arriving by an indirect route.
 
 Futures and cmdty get NO fallback: Massive does not carry those asset classes,
 so a fallback there would be a fabricated success.
+
+Consequence worth stating rather than discovering: if IB is down AND Massive
+cannot answer either, equity's code is no longer 86, so the lane leaves
+`degraded` for `failed` and the job pages. That is right — no source produced
+the session's bars, which is not a degrade — but it is a real change in when
+this job wakes someone up, and it fires only when both providers are gone.
 """
 
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
@@ -342,8 +466,9 @@ class TestTheEquityLaneFallsBackToMassive:
     def test_a_down_gateway_retries_equity_on_massive(self, monkeypatch, tmp_path):
         calls: list[list[str]] = []
 
-        def fake_run_with_retries(config, args, *, env, completion_scope, deadline):
-            calls.append(list(args))
+        def fake_run_with_retries(config, daily_update_args, **kwargs):
+            args = list(daily_update_args)
+            calls.append(args)
             if "--source" in args and args[args.index("--source") + 1] == "massive":
                 return 0
             return GATEWAY_DOWN_EXIT_CODE
@@ -356,7 +481,6 @@ class TestTheEquityLaneFallsBackToMassive:
         monkeypatch.setattr(
             daily_runner, "run_silver_rebuild", lambda *a, **k: (silver_ran.append(True), 0)[1]
         )
-        monkeypatch.setattr(daily_runner, "_spawn_post_success_quality", lambda *a, **k: None)
 
         daily_runner.main([])
 
@@ -368,15 +492,14 @@ class TestTheEquityLaneFallsBackToMassive:
     def test_futures_and_cmdty_get_no_fallback(self, monkeypatch, tmp_path):
         calls: list[list[str]] = []
 
-        def fake_run_with_retries(config, args, *, env, completion_scope, deadline):
-            calls.append(list(args))
+        def fake_run_with_retries(config, daily_update_args, **kwargs):
+            calls.append(list(daily_update_args))
             return GATEWAY_DOWN_EXIT_CODE
 
         monkeypatch.setattr(daily_runner, "run_with_retries", fake_run_with_retries)
         monkeypatch.setattr(daily_runner, "run_corporate_action_sync", lambda *a, **k: 0)
         monkeypatch.setattr(daily_runner, "run_cboe_volatility_sync", lambda *a, **k: 0)
         monkeypatch.setattr(daily_runner, "run_fx_sync", lambda *a, **k: 0)
-        monkeypatch.setattr(daily_runner, "_spawn_post_success_quality", lambda *a, **k: None)
 
         daily_runner.main([])
 
@@ -519,7 +642,10 @@ token is read as a flag name).
     }
 ```
 
-Leave the `switch (key)` block below unchanged.
+Leave the `switch (key)` block below unchanged. Also update the usage text at
+`send_daily_update_failure_email.mjs:21` from `--error-summary TEXT` to
+`--error-summary=TEXT` — the help is what the next operator copies, and the
+two-token form it currently advertises is the form that lost the page.
 
 - [ ] **Step 4: Run the Node test**
 
@@ -538,29 +664,31 @@ still breaks the moment the summary begins with "--".
 
 
 class TestTheAlertCommandCarriesTheSummaryAsOneToken:
-    def test_error_summary_is_a_single_equals_token(self):
+    def test_error_summary_is_a_single_equals_token(self, tmp_path):
         summary = "--- Runbook: /Users/moremeds/runbooks/trading-stack/ib-gateway-ibc.md ---"
-        captured: list[list[str]] = []
-
-        def fake_run(command, **kwargs):
-            captured.append(command)
-            return subprocess.CompletedProcess(command, 0, stdout="sent")
-
-        daily_runner.send_failure_alert(
-            _runner_config(),  # existing helper in this module
-            daily_runner.AlertRequest(exit_code=86, attempts=1, error_summary=summary),
-            Path("/tmp/daily_update_2026-08-08.log"),
-            runner=fake_run,
+        config = _config(tmp_path)  # existing helper, tests/test_run_daily_update_job.py:58
+        request = daily_runner.AlertRequest(
+            run_date="2026-08-08",
+            log_file=tmp_path / "daily_update_2026-08-08.log",
+            attempts=1,
+            exit_code=86,
+            error_summary=summary,
+            repo_root=tmp_path / "repo",
         )
 
-        command = captured[0]
+        command = daily_runner.build_alert_command(config, request)
+
         assert f"--error-summary={summary}" in command
         assert "--error-summary" not in command, "the bare two-token form must be gone"
 ```
 
-Adjust `AlertRequest(...)` construction to match the real dataclass in
-`run_daily_update_job.py`; read it before writing this test rather than
-guessing the field names.
+**Verified, do not re-derive:** `AlertRequest` (`run_daily_update_job.py:59`) has
+six required fields — `run_date`, `log_file`, `attempts`, `exit_code`,
+`error_summary`, `repo_root` — and none have defaults. The command is assembled by
+`build_alert_command(config, request)`, which `send_failure_alert` (`:271`) then
+hands to the runner; testing the builder directly needs no subprocess fake at all.
+The config helper is `_config(tmp_path, *, node_bin=…)` (`:58`), not
+`_runner_config`.
 
 - [ ] **Step 6: Run it and watch it fail**
 
@@ -592,12 +720,43 @@ and use its own name:
 - `livewire_scripts/health_check.py:340`
 - `livewire_scripts/universe_screener.py:262`
 
+⚠️ **Five existing assertions pin the two-token form and will fail.** They are
+not incidental — each is a real test of the alert command, so update rather than
+delete them:
+
+| Test | Currently asserts |
+|---|---|
+| `tests/test_coverage_report.py:482` | `idx = cmd.index("--error-summary")` then reads `cmd[idx+1]` |
+| `tests/test_coverage_report.py:492` | same |
+| `tests/test_health_check.py:321` | `"--error-summary" in cmd` |
+| `tests/test_health_check.py:333` | `summary_idx = cmd.index("--error-summary") + 1` |
+| `tests/test_universe_screener.py:296` | `"--error-summary" in cmd` |
+| `tests/test_run_daily_update_job.py:458` | `"--error-summary" in command` |
+
+Rewrite each as a prefix match on the single token, which tests the same thing
+without depending on adjacency:
+
+```python
+summary = next(a for a in cmd if a.startswith("--error-summary="))
+assert summary.removeprefix("--error-summary=") == expected
+```
+
+**The Node tests at `tests/node/…:46,221,264,340,387` stay as they are.** They
+use the two-token form, and the parser must keep accepting it — that is exactly
+what the new `test("the two-token form still works…")` case asserts. Only the
+Python emitters change form; the parser gains a form.
+
 - [ ] **Step 8: Run everything**
 
-Run: `npm run test:alerts && uv run pytest tests/ -v --deselect tests/test_daily_bar_fallback.py::test_nasdaq_fallback_live --deselect tests/test_daily_bar_fallback.py::test_stooq_fallback_live`
-Expected: all PASS. (Confirm the two deselect targets against the real test ids
-before running; the constraint is that the two network-touching compat tests are
-excluded.)
+Run: `npm run test:alerts && uv run pytest tests/ -v -m "not integration"`
+Expected: all PASS.
+
+The two network-touching tests are `@pytest.mark.integration`-marked in
+`tests/test_storage_client_compat.py` (`:61`
+`test_fetch_helpers_write_parquet_for_compat_storage` and `:86`
+`test_main_calls_write_ticker_parquet_for_compat_storage`) — they are the only two
+so marked in the suite, so `-m "not integration"` is the whole deselection and no
+node ids need guessing.
 
 - [ ] **Step 9: Commit**
 
@@ -625,14 +784,22 @@ call sites now emit the single-token form, so no value can be read as a flag."
 **Interfaces:**
 - Consumes: `_latest_date_in_parquet(path: Path, column_name: str) -> date | None` (`:120`)
 - Produces:
-  - `_latest_date_with_cache(path: Path, column_name: str, cache: dict) -> tuple[date | None, bool]` — returns `(latest, was_cache_hit)`
+  - `_latest_date_with_cache(path: Path, column_name: str, cache: dict) -> tuple[date | None, bool, tuple[float, int] | None]` — returns `(latest, was_cache_hit, (mtime, size))`
   - `compute_coverage(target_date, bronze_root=None, cache_path: Path | None = None)` — new third parameter; `None` means no caching (existing callers unaffected until Task 6 wires it)
 
 **Cache format** (`<log_dir>/coverage_footer_cache.json`):
 
 ```json
-{"/abs/path/symbol=NVDA/1d.parquet": {"mtime": 1754700000.0, "latest": "2026-08-06"}}
+{"/abs/path/symbol=NVDA/1d.parquet": {"mtime": 1754700000.0, "size": 41233, "latest": "2026-08-06"}}
 ```
+
+**`size` is in the key on purpose.** mtime alone is not sufficient here: bronze
+publishes by `os.replace()`, and **exFAT stores mtime at 2-second granularity**,
+so a republish landing inside that bucket leaves the timestamp unchanged and a
+mtime-only cache would keep serving the pre-publish max date. Any real
+republish that adds or removes a row also changes the file size, so the pair is
+far stronger than either half — and both come from the one `stat()` the code
+already makes.
 
 `"latest": null` records a file that yielded no date, so an unreadable file is
 not re-opened every run either.
@@ -652,75 +819,75 @@ metadata walk; not doing the walk does.
 import json
 
 
+def _count_opens(monkeypatch) -> list[Path]:
+    """Record every footer read, delegating to the real one."""
+    opens: list[Path] = []
+    real = coverage_report._latest_date_in_parquet
+    monkeypatch.setattr(
+        coverage_report,
+        "_latest_date_in_parquet",
+        lambda path, column_name: (opens.append(path), real(path, column_name))[1],
+    )
+    return opens
+
+
 class TestFooterReadsAreIncremental:
     def test_an_unchanged_file_is_not_reopened(self, tmp_path, monkeypatch):
-        parquet = _write_equity_1d(tmp_path, "NVDA", last_date=date(2026, 8, 6))  # existing helper
+        root = tmp_path / "bronze"
+        _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6)])  # existing helper, :59
         cache_path = tmp_path / "cache.json"
-
-        opens: list[Path] = []
-        real = coverage_report._latest_date_in_parquet
-
-        def counting(path, column_name):
-            opens.append(path)
-            return real(path, column_name)
-
-        monkeypatch.setattr(coverage_report, "_latest_date_in_parquet", counting)
+        opens = _count_opens(monkeypatch)
 
         first = coverage_report.compute_coverage(
-            date(2026, 8, 6), bronze_root=tmp_path / "bronze", cache_path=cache_path
+            date(2026, 8, 6), bronze_root=root, cache_path=cache_path
         )
         assert len(opens) >= 1
         opens.clear()
 
         second = coverage_report.compute_coverage(
-            date(2026, 8, 6), bronze_root=tmp_path / "bronze", cache_path=cache_path
+            date(2026, 8, 6), bronze_root=root, cache_path=cache_path
         )
         assert opens == [], "an unchanged parquet must not be reopened"
         assert second["1d"].present == first["1d"].present
         assert second["1d"].missing_symbols == first["1d"].missing_symbols
 
     def test_a_touched_file_is_reread(self, tmp_path, monkeypatch):
-        parquet = _write_equity_1d(tmp_path, "NVDA", last_date=date(2026, 8, 6))
+        root = tmp_path / "bronze"
+        _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6)])
         cache_path = tmp_path / "cache.json"
-        coverage_report.compute_coverage(
-            date(2026, 8, 6), bronze_root=tmp_path / "bronze", cache_path=cache_path
-        )
+        coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
 
-        _write_equity_1d(tmp_path, "NVDA", last_date=date(2026, 8, 7))  # rewrites, new mtime
+        parquet = root / "asset_class=equity" / "symbol=NVDA" / "1d.parquet"
+        _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6), date(2026, 8, 7)])
+        # Bump mtime explicitly. Two writes inside one test can land on the same
+        # stat timestamp, and a test that depends on filesystem clock resolution
+        # is a flake waiting for a slower machine.
+        stamp = parquet.stat().st_mtime + 10
+        os.utime(parquet, (stamp, stamp))
 
-        opens: list[Path] = []
-        real = coverage_report._latest_date_in_parquet
-        monkeypatch.setattr(
-            coverage_report,
-            "_latest_date_in_parquet",
-            lambda p, column_name: (opens.append(p), real(p, column_name))[1],
-        )
-
+        opens = _count_opens(monkeypatch)
         results = coverage_report.compute_coverage(
-            date(2026, 8, 7), bronze_root=tmp_path / "bronze", cache_path=cache_path
+            date(2026, 8, 7), bronze_root=root, cache_path=cache_path
         )
-        assert opens, "a rewritten parquet must be reread"
+        assert opens == [parquet], "a rewritten parquet must be reread"
         assert results["1d"].missing_symbols == []
 
     def test_no_cache_path_means_no_caching(self, tmp_path, monkeypatch):
-        _write_equity_1d(tmp_path, "NVDA", last_date=date(2026, 8, 6))
-        opens: list[Path] = []
-        real = coverage_report._latest_date_in_parquet
-        monkeypatch.setattr(
-            coverage_report,
-            "_latest_date_in_parquet",
-            lambda p, column_name: (opens.append(p), real(p, column_name))[1],
-        )
+        root = tmp_path / "bronze"
+        _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6)])
+        opens = _count_opens(monkeypatch)
         for _ in range(2):
-            coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=tmp_path / "bronze")
-        assert len(opens) >= 2, "without a cache path every run reads every footer"
+            coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root)
+        assert len(opens) == 2, "without a cache path every run reads every footer"
 ```
 
-`_write_equity_1d` must write a real parquet at
-`<tmp>/bronze/asset_class=equity/symbol=<TICKER>/1d.parquet` with a `trade_date`
-column. If `tests/test_coverage_report.py` already has such a helper, reuse it;
-otherwise write one using **NVDA's real closes** frozen at authoring time with
-the as-of date in a comment, per the no-synthetic-data rule.
+**Verified, do not re-derive:** the helper is
+`_write_daily(bronze_root, symbol, dates)` (`tests/test_coverage_report.py:59`) —
+there is no `_write_equity_1d`. Reusing it also settles the frozen-price question:
+no new fixture data is authored. `CoverageResult` (`coverage_report.py:76`) exposes
+`timeframe/total/present/missing_symbols`. With no `raw/.../_symbols.parquet`
+present the traded set is empty, so nothing counts missing — which is what these
+assertions rely on. Add `import os` to the test module.
 
 - [ ] **Step 2: Run it and watch it fail**
 
@@ -759,29 +926,34 @@ def _save_footer_cache(cache_path: Path | None, cache: dict) -> None:
         log.warning("could not persist the footer cache: %s", exc)
 
 
-def _latest_date_with_cache(path: Path, column_name: str, cache: dict) -> tuple[date | None, bool]:
-    """Return (latest_date, cache_hit).
+def _latest_date_with_cache(
+    path: Path, column_name: str, cache: dict
+) -> tuple[date | None, bool, tuple[float, int] | None]:
+    """Return (latest_date, cache_hit, (mtime, size)). Reads `cache`; never writes it.
 
     A parquet whose mtime has not moved since the last run cannot have gained a
     later max date, so opening its footer is pure cost. On the external exFAT
     volume that cost is the entire runtime — 2858s cold on 2026-08-09 against an
     1800s budget, versus 29.2s warm for the same 1d pass.
 
-    `cache` is mutated from the thread pool. Each worker assigns one distinct
-    key and no worker reads another's, so the GIL makes this safe without a lock.
+    Read-only on purpose. This runs on 16 threads, and having each worker write
+    into a shared dict would rest the whole cache's correctness on an argument
+    about `dict.__setitem__` atomicity under the GIL — an argument that stops
+    holding the day anyone runs this on a free-threaded build. `pool.map`
+    preserves input order, so the caller reassembles the new cache
+    single-threaded from the returned tuples and the question never arises.
     """
     key = str(path)
     try:
-        mtime = path.stat().st_mtime
+        stat = path.stat()
     except OSError:
-        return None, False
+        return None, False, None
+    stamp = (stat.st_mtime, stat.st_size)
     entry = cache.get(key)
-    if entry is not None and entry.get("mtime") == mtime:
+    if entry is not None and (entry.get("mtime"), entry.get("size")) == stamp:
         stored = entry.get("latest")
-        return (date.fromisoformat(stored) if stored else None), True
-    latest = _latest_date_in_parquet(path, column_name)
-    cache[key] = {"mtime": mtime, "latest": latest.isoformat() if latest else None}
-    return latest, False
+        return (date.fromisoformat(stored) if stored else None), True, stamp
+    return _latest_date_in_parquet(path, column_name), False, stamp
 ```
 
 Add `import json` and `import os` to the module imports if absent.
@@ -800,6 +972,7 @@ def compute_coverage(
 ```python
 # livewire_scripts/coverage_report.py — after `results: dict[str, CoverageResult] = {}` (:171)
     cache = _load_footer_cache(cache_path)
+    fresh: dict = {}
 ```
 
 ```python
@@ -810,11 +983,21 @@ def compute_coverage(
         started = time.monotonic()
         worker = partial(_latest_date_with_cache, column_name=column_name, cache=cache)
         with ThreadPoolExecutor(max_workers=FOOTER_READ_WORKERS) as pool:
-            pairs = list(pool.map(worker, parquet_paths))
-        hits = sum(1 for _, cached in pairs if cached)
+            rows = list(pool.map(worker, parquet_paths))
+        hits = sum(1 for _, cached, _ in rows if cached)
+        # Rebuilt, not mutated: `fresh` ends up holding exactly the files that
+        # exist right now, so a symbol archived to bronze-delisted/ drops out
+        # instead of accumulating in the cache forever.
+        for path, (latest, _, stamp) in zip(parquet_paths, rows, strict=True):
+            if stamp is not None:
+                fresh[str(path)] = {
+                    "mtime": stamp[0],
+                    "size": stamp[1],
+                    "latest": latest.isoformat() if latest else None,
+                }
         latest_by_symbol = {
             _symbol_from_parquet_path(path): latest
-            for path, (latest, _) in zip(parquet_paths, pairs, strict=True)
+            for path, (latest, _, _) in zip(parquet_paths, rows, strict=True)
             if latest is not None
         }
         # Logged so the next time this outgrows its budget it is measurable rather
@@ -832,7 +1015,7 @@ def compute_coverage(
 
 ```python
 # livewire_scripts/coverage_report.py — immediately before `return results` (:226)
-    _save_footer_cache(cache_path, cache)
+    _save_footer_cache(cache_path, fresh)
 ```
 
 - [ ] **Step 5: Run the tests**
@@ -863,6 +1046,8 @@ versus read, so the next regression is measurable instead of a bare timeout."
 **Files:**
 - Modify: `livewire_scripts/run_daily_update_job.py:565-570`
 - Modify: `livewire_scripts/coverage_report.py` (`main`, `:475`) — pass the cache path
+- Modify: `scripts/livewire_quality.py:56` — load the scheduled env for `coverage`
+- Modify: `tests/test_coverage_report.py:550,565,594,626` — widen the stub lambdas
 - Create: `launchd/com.livewire.coverage.plist.example`
 - Test: `tests/test_run_daily_update_job.py`
 
@@ -870,11 +1055,30 @@ versus read, so the next regression is measurable instead of a bare timeout."
 - Consumes: `compute_coverage(target_date, bronze_root, cache_path)` from Task 5
 - Produces: nothing importable. The daily job no longer spawns `coverage`.
 
-**Schedule.** The daily job starts 06:00 UTC and peaks at 3.27h, so it is done by
-~09:15 UTC. The watchdog runs 10:30 UTC. Put coverage at **09:30 UTC**, which on
-this Mac (`Asia/Hong_Kong`, UTC+8) is `Hour: 17, Minute: 30`. Task 7 removes the
-digest's dependency on coverage having already run, so this time only needs to be
-after the daily job, not before the digest.
+**Schedule — 11:00 UTC, and the reasoning matters.** The daily job starts 06:00
+UTC. Its *healthy* peak is 3.27h (≈09:15 UTC), but `MDW_DAILY_JOB_DEADLINE_SECONDS`
+is **4h**, so a legitimate slow run may still be publishing at **10:00 UTC**.
+Scheduling coverage at 09:30 would let it walk bronze while equity or Silver is
+mid-publish — a mixed-time snapshot, false "missing" counts, a spurious recovery
+subprocess, and cache entries recorded against a half-written tree. Pick a time
+after the *deadline*, not after the average: **11:00 UTC**, which is also after
+the 10:30 UTC watchdog. On this Mac (`Asia/Hong_Kong`, UTC+8) that is
+`Hour: 19, Minute: 0`. Task 7 removes the digest's dependency on coverage having
+already run, so nothing constrains this from the other side.
+
+⚠️ **The entrypoint must load the scheduled environment.**
+`scripts/livewire_quality.py:56-59` calls `load_scheduled_env(REPO_ROOT)` **only**
+for `watchdog`, because until now every other quality command was spawned by a
+job that had already loaded it. A standalone launchd job is cold: without this,
+coverage resolves `MASSIVE_API_KEY` and the SMTP credentials to nothing, so its
+auto-recovery cannot fetch and its alert cannot send — it would measure the gap
+and then be unable to do or say anything about it. Add `coverage` to that branch:
+
+```python
+# scripts/livewire_quality.py:56 — both of these are now launched cold by launchd
+    if args.command in {"watchdog", "coverage"}:
+        load_scheduled_env(REPO_ROOT)
+```
 
 - [ ] **Step 1: Write the failing test**
 
@@ -889,34 +1093,43 @@ by cold external-volume I/O is the bug, not the number.
 
 
 class TestTheDailyJobNoLongerRunsCoverage:
-    def test_no_coverage_subcommand_is_spawned(self, monkeypatch):
-        spawned: list[list[str]] = []
-        monkeypatch.setattr(
-            daily_runner,
-            "_spawn_post_success_quality",
-            lambda runner, log_file, args, label, timeout=120: spawned.append(list(args)),
+    def test_no_coverage_subcommand_is_spawned(self, tmp_path):
+        commands: list[list[str]] = []
+
+        def fake_runner(command, **kwargs):
+            commands.append(list(command))
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        config = _config(tmp_path)
+        log_file = tmp_path / "daily_update_2026-08-08.log"
+
+        run_post_success_quality(config, log_file, runner=fake_runner)
+
+        subcommands = [c[2:] for c in commands]  # drop [python, livewire_quality.py]
+        assert not any(sub[:1] == ["coverage"] for sub in subcommands), (
+            "coverage has its own launchd job now"
         )
-        monkeypatch.setattr(daily_runner, "run_with_retries", lambda *a, **k: 0)
-        monkeypatch.setattr(daily_runner, "run_corporate_action_sync", lambda *a, **k: 0)
-        monkeypatch.setattr(daily_runner, "run_cboe_volatility_sync", lambda *a, **k: 0)
-        monkeypatch.setattr(daily_runner, "run_fx_sync", lambda *a, **k: 0)
-        monkeypatch.setattr(daily_runner, "run_silver_rebuild", lambda *a, **k: 0)
-
-        daily_runner.main([])
-
-        assert ["coverage"] not in spawned, "coverage has its own launchd job now"
-        assert ["weekly"] in spawned, "weekly still runs here"
+        assert ["weekly"] in subcommands, "weekly still runs here"
+        assert any(sub[:1] == ["digest"] for sub in subcommands), "the digest still runs here"
 ```
+
+**Why this calls `run_post_success_quality` directly rather than `main([])`:**
+`tests/test_run_daily_update_job.py:45` has an **autouse** `no_real_quality_spawn`
+fixture patching `run_post_success_quality` wholesale, so a `main([])` test can
+never observe what it spawns. `run_post_success_quality(config, log_file,
+runner=…)` is already how the existing test at `:335` does it.
 
 - [ ] **Step 2: Run it and watch it fail**
 
 Run: `uv run pytest tests/test_run_daily_update_job.py -k NoLongerRunsCoverage -v`
-Expected: FAIL — `["coverage"]` is in `spawned`.
+Expected: FAIL — a `["coverage"]` subcommand is present.
 
 - [ ] **Step 3: Remove the spawn**
 
-Delete the coverage spawn and its comment block at
-`livewire_scripts/run_daily_update_job.py:563-570`, replacing it with:
+Inside `run_post_success_quality` (`livewire_scripts/run_daily_update_job.py:551`),
+delete the `["coverage"]` spawn and the comment block above it — the block ending
+`_spawn_post_success_quality(runner, log_file, ["coverage"], "coverage report",
+timeout=1800)` — replacing it with:
 
 ```python
     # Coverage runs as com.livewire.coverage, not here. It was given 600s, then
@@ -930,9 +1143,24 @@ Delete the coverage spawn and its comment block at
 - [ ] **Step 4: Pass the cache path from coverage's own main**
 
 In `livewire_scripts/coverage_report.py` `main()` (`:475`), pass
-`cache_path=_resolved_log_dir() / "coverage_footer_cache.json"` into the
+`cache_path=_resolved_log_dir() / "coverage_footer_cache.json"` into the **first**
 `compute_coverage(...)` call. Read the surrounding lines first — `main` also
 calls `compute_non_equity_coverage`, which is a 61-file pass and needs no cache.
+
+⚠️ **Four existing tests stub `compute_coverage` with a two-parameter lambda** —
+`tests/test_coverage_report.py:550, 565, 594, 626` all use
+`lambda d, bronze_root=None: compute_coverage(d, bronze_root=…)`. Once `main()`
+passes `cache_path=`, every one raises `TypeError: unexpected keyword argument`.
+Widen them to `lambda d, bronze_root=None, cache_path=None: …` — they are
+stubbing the call, not asserting its arity.
+
+⚠️ **The post-recovery re-check must pass `cache_path=None`.** Auto-recovery
+republishes parquet and then re-measures within the same run, and **exFAT stores
+mtime at 2-second granularity** — a rewrite finishing inside that window leaves
+the stat unchanged, so a cached re-check would report the gap recovery just
+closed. Across the 24 hours between scheduled runs the granularity is irrelevant;
+within one run it is exactly the failure mode. The re-check reads only the small
+set of symbols recovery touched, so skipping the cache there costs nothing.
 
 - [ ] **Step 5: Create the plist**
 
@@ -941,14 +1169,16 @@ calls `compute_non_equity_coverage`, which is a 61-file pass and needs no cache.
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Coverage freshness pass. Runs 09:30 UTC, after the daily job (06:00 UTC,
-  peaks at 3.27h) and independent of the watchdog at 10:30 UTC.
+  Coverage freshness pass. Runs 11:00 UTC — after the daily job's 4h DEADLINE
+  (06:00 + 4h = 10:00 UTC), not merely after its 3.27h healthy peak, and after
+  the 10:30 UTC watchdog. A slow-but-legal daily run must never still be
+  publishing while this walks bronze.
 
   launchd has no TimeZone key, so Hour/Minute are Mac-local. On this Mac
-  (Asia/Hong_Kong, UTC+8) 17:30 local = 09:30 UTC. Other Mac timezones:
-    America/New_York (EDT, UTC-4)  -> Hour 5, Minute 30
-    Europe/London    (BST, UTC+1)  -> Hour 10, Minute 30
-    UTC                            -> Hour 9, Minute 30
+  (Asia/Hong_Kong, UTC+8) 19:00 local = 11:00 UTC. Other Mac timezones:
+    America/New_York (EDT, UTC-4)  -> Hour 7,  Minute 0
+    Europe/London    (BST, UTC+1)  -> Hour 12, Minute 0
+    UTC                            -> Hour 11, Minute 0
 
   Deliberately no timeout: this job's runtime is dominated by cold metadata
   reads on the external lake volume, and every budget guessed for it so far
@@ -958,34 +1188,51 @@ calls `compute_non_equity_coverage`, which is a 61-file pass and needs no cache.
 <dict>
     <key>Label</key>
     <string>com.livewire.coverage</string>
+
     <key>ProgramArguments</key>
     <array>
-        <string>/path/to/warehouse/current/.venv/bin/python</string>
-        <string>/path/to/warehouse/current/scripts/livewire_quality.py</string>
-        <string>coverage</string>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>cd /path/to/warehouse/current &amp;&amp; .venv/bin/python scripts/livewire_quality.py coverage</string>
     </array>
-    <key>WorkingDirectory</key>
-    <string>/path/to/warehouse/current</string>
+
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
-        <integer>17</integer>
+        <integer>19</integer>
         <key>Minute</key>
-        <integer>30</integer>
+        <integer>0</integer>
     </dict>
+
     <key>StandardOutPath</key>
-    <string>/path/to/warehouse/logs/coverage_job.log</string>
+    <string>/tmp/com.livewire.coverage.stdout.log</string>
+
     <key>StandardErrorPath</key>
-    <string>/path/to/warehouse/logs/coverage_job.log</string>
-    <key>RunAtLoad</key>
-    <false/>
+    <string>/tmp/com.livewire.coverage.stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
 </dict>
 </plist>
 ```
 
-Compare against `launchd/com.livewire.daily-update.plist.example` and match its
-structure — if it sets `EnvironmentVariables` or a different venv path shape,
-mirror that rather than the above.
+**Matched to `launchd/com.livewire.daily-update.plist.example` (read 2026-08-09),
+not invented.** Three details are load-bearing and were wrong in an earlier draft
+of this plan:
+
+- **`/bin/bash -c "cd … && .venv/bin/python …"`**, not a direct `ProgramArguments`
+  array. The `cd` into `current` is what makes `os.getcwd()` physical, which is
+  the mechanism that lets a flip of the symlink mid-run be safe.
+- **`EnvironmentVariables.PATH` must include `/opt/homebrew/bin`.** launchd gives
+  a job a minimal PATH. Coverage shells out for recovery and sends its alert
+  through the Nodemailer CLI — without homebrew on PATH, `node` is not found and
+  the alert dies exactly where this branch is trying to stop alerts from dying.
+- **No `RunAtLoad`, no `WorkingDirectory`** — neither appears in the three
+  existing job plists, and `RunAtLoad` would fire a full coverage pass every time
+  anyone reloads the agent.
 
 - [ ] **Step 6: Run the tests**
 
@@ -1002,7 +1249,7 @@ git commit -m "fix(quality): coverage gets its own job instead of a guessed budg
 PR #78. Both numbers came from warm-cache measurements of work whose real cost
 is cold metadata I/O on the external lake volume — a cold pass measured 2858s.
 
-Coverage now runs as com.livewire.coverage at 09:30 UTC with no timeout, and
+Coverage now runs as com.livewire.coverage at 11:00 UTC with no timeout, and
 uses the incremental footer cache. The daily job keeps weekly and the digest."
 ```
 
@@ -1018,8 +1265,9 @@ uses the incremental footer cache. The daily job keeps weekly and the digest."
 - Consumes: nothing new
 - Produces: `_coverage_section(run_date: str, log_dir: Path) -> list[str]` — same
   signature, now resolves the newest `coverage_*.log` rather than an exact date.
-  `_target_session` (`:130`) becomes unused by this function; leave it in place,
-  it is still the honest way to name the session elsewhere.
+- **Deletes `_target_session` (`:130`).** Verified: `_coverage_section` is its only
+  caller anywhere in `livewire_scripts/` or `tests/`. Leaving it would be dead code
+  that still has to clear the 95% coverage gate. Delete its direct tests with it.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1056,6 +1304,23 @@ class TestTheDigestFindsCoverageOnAnySchedule:
         (tmp_path / "coverage_2026-08-07.log").write_text("", encoding="utf-8")
         lines = nightly_digest._coverage_section("2026-08-09", tmp_path)
         assert "  (not found)" in lines
+
+    def test_a_recent_log_does_not_warn(self, tmp_path):
+        (tmp_path / "coverage_2026-08-08.log").write_text(
+            "2026-08-08 coverage: 1d=13300/13311 (99.92%)\n", encoding="utf-8"
+        )
+        assert not any("⚠" in line for line in nightly_digest._coverage_section("2026-08-09", tmp_path))
+
+    def test_a_stale_log_warns_that_the_job_may_be_dead(self, tmp_path):
+        # Decoupling the schedules must not buy a silent detector back. If the
+        # coverage job stops firing, the newest log stops advancing and the
+        # digest would otherwise print a reassuring line indefinitely.
+        (tmp_path / "coverage_2026-06-17.log").write_text(
+            "2026-06-17 coverage: 1d=13100/13141 (99.69%)\n", encoding="utf-8"
+        )
+        lines = nightly_digest._coverage_section("2026-08-09", tmp_path)
+        assert any("⚠" in line and "coverage job" in line for line in lines)
+        assert any("2026-06-17" in line for line in lines), "still shows what it measured"
 ```
 
 - [ ] **Step 2: Run it and watch it fail**
@@ -1080,12 +1345,29 @@ def _coverage_section(run_date: str, log_dir: Path) -> list[str]:
     logs = sorted(log_dir.glob("coverage_*.log"))
     for path in reversed(logs):
         text = _read_text(path)
-        if text and text.strip():
-            lines.append("  " + text.splitlines()[0].strip())
+        if not text or not text.strip():
+            continue
+        lines.append("  " + text.splitlines()[0].strip())
+        # Decoupling the schedules removes the ordering bug but opens a new
+        # silence: if com.livewire.coverage stops firing, the newest log simply
+        # stops advancing and the digest keeps printing a green line forever —
+        # the same dead-detector shape, one level up. Age is the only thing that
+        # distinguishes "measured yesterday" from "has not run since July".
+        measured = path.stem.removeprefix("coverage_")
+        try:
+            age = (date.fromisoformat(run_date) - date.fromisoformat(measured)).days
+        except ValueError:
             return lines
+        if age > _COVERAGE_STALE_DAYS:
+            lines.append(f"  ⚠ newest coverage log is {age} days old — has the coverage job run?")
+        return lines
     lines.append("  (not found)")
     return lines
 ```
+
+Add `_COVERAGE_STALE_DAYS = 3` beside the other module constants — coverage is
+daily, the digest reads yesterday's by design, and 3 absorbs one missed run
+without absorbing a dead job.
 
 Sorting `coverage_YYYY-MM-DD.log` lexically is date order; taking the newest
 non-empty one skips a stub left by a crashed run.
@@ -1210,30 +1492,48 @@ def _disk_section(data_lake: Path, warehouse: Path | None = None) -> list[str]:
     logs, cursors and the venv sat below its own reserve, unreported. One
     symlink silently swapped the monitored object.
 
-    Deduplicated by device id: when both paths live on one filesystem — any
-    deployment without the external drive — this prints a single line.
+    Deduplicated on the usage triple, not on st_dev: when both paths live on one
+    filesystem — any deployment without the external drive — disk_usage returns
+    the identical numbers and this prints a single line.
+
+    # ponytail: two genuinely distinct volumes with byte-identical total/used/free
+    # would collapse to one line. Cosmetic, astronomically unlikely, and it keeps
+    # the dedup to data this function already has.
     """
     paths = [("lake", data_lake)] if warehouse is None else [("lake", data_lake), ("warehouse", warehouse)]
     lines: list[str] = []
-    seen: set[int] = set()
+    seen: set[tuple[int, int, int]] = set()
     for label, path in paths:
         try:
-            device = path.stat().st_dev
+            usage = shutil.disk_usage(path)
         except OSError:
             continue
-        if device in seen:
+        if tuple(usage) in seen:
             continue
-        seen.add(device)
-        usage = shutil.disk_usage(path)
+        seen.add(tuple(usage))
         free_gib = usage.free / _GIB
         pct_used = 100.0 * (usage.used / usage.total)
         suffix = "" if len(paths) == 1 else f" [{label}]"
         line = f"Disk{suffix}: {free_gib:.1f} GiB free ({pct_used:.0f}% used)"
         if free_gib < 2 * _MIN_FREE_GB:
-            line += f"  ⚠ under {2 * _MIN_FREE_GB:.0f} GiB — raw retention deferred / promotes at risk"
+            line += f"  ⚠ raw retention deferred — free space under {2 * _MIN_FREE_GB:.0f} GiB"
         lines.append(line)
     return lines
 ```
+
+**Two things this pins down, both found by trying to write the test:**
+
+1. **Dedup cannot key on `st_dev`.** The test creates `lake` and `warehouse` as two
+   directories under one `tmp_path` — necessarily the same device — so an `st_dev`
+   dedup collapses them and the two-volume case becomes untestable without faking
+   `Path.stat` as well. Keying on the usage triple makes the fake the only thing the
+   test has to control, and gives the same answer in production.
+2. **The warning string must keep the substring `raw retention deferred`.** The
+   existing `test_disk_tripwire_warns_under_reserve`
+   (`tests/test_nightly_digest.py:112`) asserts exactly that, and
+   `test_build_digest_missing_inputs_render_not_found` (`:104`) passes
+   `log_dir=tmp_path/"empty_logs"` and `data_lake=tmp_path`, so `log_dir.parent`
+   and the lake share a filesystem and the dedup must keep it at one `Disk:` line.
 
 ```python
 # livewire_scripts/nightly_digest.py:176 — in build_digest, pass the second volume
@@ -1256,8 +1556,8 @@ data-lake is a symlink to an external 13 TiB drive, so shutil.disk_usage saw
 releases, logs, cursors and the venv sat at 93% / 14.7 GiB — below the 25 GiB
 reserve, with nothing reporting it. Each release promote takes another 422 MB.
 
-Both volumes now report, deduplicated by device id so a single-filesystem
-deployment still prints one line."
+Both volumes now report, deduplicated on the (total, used, free) triple so a
+single-filesystem deployment still prints one line."
 ```
 
 ---
@@ -1272,13 +1572,22 @@ deployment still prints one line."
 **Interfaces:**
 - Consumes: `livewire_scripts.release.prune(keep: int) -> list[str]` (`release.py:203`),
   `livewire_scripts.paths.log_dir()`, `livewire_scripts.paths.data_lake_dir()`
+- **Modifies `release.prune` to take `dry_run: bool = False`** — three lines: skip
+  the `_discard(path)` call and still return the names. Without it the dry run
+  cannot show the release deletions at all, and releases are the largest single
+  category in the policy (422 MB each). `promote(..., dry_run=…)` already
+  establishes this parameter's spelling in the same module.
 - Produces:
   - `PROTECTED_LAKE_DIRS: frozenset[str]`
-  - `plan_housekeeping(log_dir: Path, data_lake: Path, *, log_retention_days: int, keep_releases: int, keep_evicted: int, now: date) -> list[tuple[str, Path]]` — `(reason, path)` pairs, never mutates
+  - `plan_appledouble(data_lake: Path) -> list[tuple[str, Path]]` — the opt-in
+    whole-lake `._*` walk, deliberately outside the nightly sweep
+  - `plan_housekeeping(log_dir_path: Path, data_lake: Path, *, log_retention_days: int, keep_evicted: int, now: date | None) -> list[tuple[str, Path]]` — `(reason, path)` pairs, never mutates. Releases are **not** its business: `release.prune()` owns them because it is the only thing that knows to spare what `current` points at.
   - `main(argv=None) -> int` — `--dry-run` (default true), `--apply`
 
-**Scope, deliberately narrow.** Automated retention covers logs, releases,
-evicted silver revisions and AppleDouble sidecars. It does **not** touch
+**Scope, deliberately narrow.** Automated retention covers logs, releases and
+evicted silver revisions — three small, known paths. AppleDouble sidecars need a
+recursive walk of the whole lake, so they are `--appledouble`, opt-in, and never
+part of the nightly sweep. Retention does **not** touch
 `data-lake/repairs/`, which is 26 GB — 21 GB of it 12,636 `.parquet.bak` files
 from the 2026-07-15 cutover. Those are verbatim rollback material and deleting
 them is an operator decision with a sign-off, not a retention rule. They also sit
@@ -1300,57 +1609,64 @@ with retention set aggressively enough to delete everything else:
                   promote then refuses to rebuild
 """
 
-from datetime import date
+import os
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from livewire_scripts.housekeeping import plan_housekeeping
+import pytest
+
+from livewire_scripts.housekeeping import plan_appledouble, plan_housekeeping
+
+
+_NOW = datetime(2026, 8, 9, 12, 0, 0)  # the fixed "today" every test below passes as `now`
 
 
 def _touch(path: Path, *, days_old: int = 0) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("x", encoding="utf-8")
     if days_old:
-        stamp = (date(2026, 8, 9).toordinal() - days_old) * 86400
+        # A POSIX timestamp, not ordinal*86400 — ordinals count from year 1, so
+        # that arithmetic lands the mtime somewhere around the year 4000 and the
+        # age comparison silently inverts.
+        stamp = (_NOW - timedelta(days=days_old)).timestamp()
         os.utime(path, (stamp, stamp))
     return path
 
 
+# Checked against BOTH planners. `plan_housekeeping` no longer walks the lake at
+# all, so on its own these four would pass vacuously — and a protection test that
+# cannot fail is worse than none, because it reads as coverage. `plan_appledouble`
+# is the function that does the recursive walk, so it is the one that has to be
+# proven not to enter these trees.
+@pytest.mark.parametrize(
+    "relative",
+    [
+        # older than the rolling 5-year GET floor; cannot be refetched, ever
+        "raw/massive/us_stocks_sip/day_aggs_v1/date=2021-07-28/part.parquet",
+        # a verdict obtainable today may be unobtainable next year
+        "repairs/triage/current.json",
+        # the only basis rollback-legacy-basis has
+        "repairs/yahoo-relabel-batch1/backup/NVDA.parquet",
+        # 12,636 verbatim .bak files from the 2026-07-15 cutover: operator call
+        "repairs/adjusted-silver-cutover-20260715-production/A.abc.parquet.bak",
+        # the protection must hold for the sidecars inside those trees too
+        "raw/massive/us_stocks_sip/day_aggs_v1/date=2021-07-28/._part.parquet",
+    ],
+)
 class TestProtectedPathsSurvive:
-    def test_raw_partitions_are_never_planned_for_deletion(self, tmp_path):
+    def test_the_nightly_sweep_never_plans_it(self, tmp_path, relative):
         lake = tmp_path / "data-lake"
-        raw = _touch(lake / "raw/massive/us_stocks_sip/day_aggs_v1/date=2021-07-28/part.parquet")
+        protected = _touch(lake / relative)
         planned = plan_housekeeping(
             tmp_path / "logs", lake,
-            log_retention_days=0, keep_releases=0, keep_evicted=0, now=date(2026, 8, 9),
+            log_retention_days=0, keep_evicted=0, now=date(2026, 8, 9),
         )
-        assert raw not in [p for _, p in planned]
+        assert protected not in [p for _, p in planned]
 
-    def test_the_triage_verdict_store_is_never_planned(self, tmp_path):
+    def test_the_opt_in_lake_walk_never_plans_it(self, tmp_path, relative):
         lake = tmp_path / "data-lake"
-        verdicts = _touch(lake / "repairs/triage/current.json")
-        planned = plan_housekeeping(
-            tmp_path / "logs", lake,
-            log_retention_days=0, keep_releases=0, keep_evicted=0, now=date(2026, 8, 9),
-        )
-        assert verdicts not in [p for _, p in planned]
-
-    def test_repair_backups_are_never_planned(self, tmp_path):
-        lake = tmp_path / "data-lake"
-        backup = _touch(lake / "repairs/yahoo-relabel-batch1/backup/NVDA.parquet")
-        planned = plan_housekeeping(
-            tmp_path / "logs", lake,
-            log_retention_days=0, keep_releases=0, keep_evicted=0, now=date(2026, 8, 9),
-        )
-        assert backup not in [p for _, p in planned]
-
-    def test_the_whole_repairs_tree_is_out_of_scope(self, tmp_path):
-        lake = tmp_path / "data-lake"
-        cutover = _touch(lake / "repairs/adjusted-silver-cutover-20260715-production/A.abc.parquet.bak")
-        planned = plan_housekeeping(
-            tmp_path / "logs", lake,
-            log_retention_days=0, keep_releases=0, keep_evicted=0, now=date(2026, 8, 9),
-        )
-        assert cutover not in [p for _, p in planned]
+        protected = _touch(lake / relative)
+        assert protected not in [p for _, p in plan_appledouble(lake)]
 
 
 class TestRetentionDoesItsJob:
@@ -1360,7 +1676,7 @@ class TestRetentionDoesItsJob:
         recent = _touch(logs / "daily_update_2026-08-08.log", days_old=1)
         planned = [p for _, p in plan_housekeeping(
             logs, tmp_path / "data-lake",
-            log_retention_days=60, keep_releases=3, keep_evicted=2, now=date(2026, 8, 9),
+            log_retention_days=60, keep_evicted=2, now=date(2026, 8, 9),
         )]
         assert old in planned
         assert recent not in planned
@@ -1371,23 +1687,32 @@ class TestRetentionDoesItsJob:
             _touch(lake / f"silver/evicted/{rev}/NVDA.parquet")
         planned = [str(p) for _, p in plan_housekeeping(
             tmp_path / "logs", lake,
-            log_retention_days=60, keep_releases=3, keep_evicted=2, now=date(2026, 8, 9),
+            log_retention_days=60, keep_evicted=2, now=date(2026, 8, 9),
         )]
         assert any("evicted/10" in p for p in planned)
         assert any("evicted/14" in p for p in planned)
         assert not any("evicted/19" in p for p in planned), "the 2 newest are kept"
         assert not any("evicted/21" in p for p in planned)
 
-    def test_appledouble_sidecars_are_planned(self, tmp_path):
+    def test_appledouble_is_opt_in_and_never_in_the_nightly_sweep(self, tmp_path):
         lake = tmp_path / "data-lake"
         sidecar = _touch(lake / "bronze/asset_class=equity/symbol=NVDA/._1d.parquet")
         real = _touch(lake / "bronze/asset_class=equity/symbol=NVDA/1d.parquet")
-        planned = [p for _, p in plan_housekeeping(
+
+        nightly = [p for _, p in plan_housekeeping(
             tmp_path / "logs", lake,
-            log_retention_days=60, keep_releases=3, keep_evicted=2, now=date(2026, 8, 9),
+            log_retention_days=60, keep_evicted=2, now=date(2026, 8, 9),
         )]
-        assert sidecar in planned
-        assert real not in planned
+        assert sidecar not in nightly, "an rglob over the whole lake is not a nightly job"
+
+        opt_in = [p for _, p in plan_appledouble(lake)]
+        assert sidecar in opt_in
+        assert real not in opt_in
+
+    def test_appledouble_still_respects_the_protected_trees(self, tmp_path):
+        lake = tmp_path / "data-lake"
+        protected = _touch(lake / "raw/massive/us_stocks_sip/day_aggs_v1/date=2021-07-28/._part.parquet")
+        assert protected not in [p for _, p in plan_appledouble(lake)]
 
 
 class TestDryRunIsTheDefault:
@@ -1396,7 +1721,7 @@ class TestDryRunIsTheDefault:
         old = _touch(logs / "daily_update_2026-06-01.log", days_old=90)
         plan_housekeeping(
             logs, tmp_path / "data-lake",
-            log_retention_days=60, keep_releases=3, keep_evicted=2, now=date(2026, 8, 9),
+            log_retention_days=60, keep_evicted=2, now=date(2026, 8, 9),
         )
         assert old.exists(), "planning is read-only"
 ```
@@ -1471,10 +1796,13 @@ def plan_housekeeping(
     data_lake: Path,
     *,
     log_retention_days: int = LOG_RETENTION_DAYS,
-    keep_releases: int = KEEP_RELEASES,
     keep_evicted: int = KEEP_EVICTED,
     now: date | None = None,
 ) -> list[tuple[str, Path]]:
+    # No `keep_releases` here on purpose: releases are pruned by
+    # `release.prune()` in main(), which alone knows not to collect what
+    # `current` points at. A parameter this function never reads would be a
+    # promise it does not keep.
     """Return (reason, path) pairs this run would delete. Never mutates."""
     now = now or datetime.now().date()
     planned: list[tuple[str, Path]] = []
@@ -1500,17 +1828,36 @@ def plan_housekeeping(
         for directory in revisions[: max(0, len(revisions) - keep_evicted)]:
             planned.append(("superseded evicted revision", directory))
 
-    # AppleDouble sidecars. exFAT artifacts; they also pollute symbol discovery.
-    for path in sorted(data_lake.rglob("._*")):
-        if not _is_protected(path, data_lake):
-            planned.append(("AppleDouble sidecar", path))
-
+    # AppleDouble sidecars are NOT swept here. `data_lake.rglob("._*")` is a full
+    # recursive walk of a 13 TiB exFAT volume — the exact operation this branch is
+    # fixing everywhere else (a single-timeframe glob measured 281s cold; `du -sh`
+    # over bronze never returned). Putting it inside a nightly 600s budget would
+    # reintroduce the bug one task over — and worse than "the sidecars survive":
+    # planning completes before anything is deleted, so a traversal that blows
+    # the budget deletes NOTHING, logs and evicted revisions included. The whole
+    # sweep would be permanently ineffective while reporting only a warning.
+    # They are a one-off artifact of the exFAT move, not recurring garbage, so
+    # `--appledouble` runs it deliberately instead.
     return planned
+
+
+def plan_appledouble(data_lake: Path) -> list[tuple[str, Path]]:
+    """Opt-in sweep. Walks the whole lake — minutes, not seconds. Never nightly."""
+    return [
+        ("AppleDouble sidecar", path)
+        for path in sorted(data_lake.rglob("._*"))
+        if not _is_protected(path, data_lake)
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Warehouse retention sweeps")
     parser.add_argument("--apply", action="store_true", help="Actually delete (default: dry run)")
+    parser.add_argument(
+        "--appledouble",
+        action="store_true",
+        help="Also sweep exFAT ._* sidecars. Walks the whole lake — minutes. Not for the nightly job.",
+    )
     parser.add_argument("--log-retention-days", type=int, default=LOG_RETENTION_DAYS)
     parser.add_argument("--keep-releases", type=int, default=KEEP_RELEASES)
     parser.add_argument("--keep-evicted", type=int, default=KEEP_EVICTED)
@@ -1526,25 +1873,41 @@ def main(argv: list[str] | None = None) -> int:
         resolved_logs,
         resolved_lake,
         log_retention_days=args.log_retention_days,
-        keep_releases=args.keep_releases,
         keep_evicted=args.keep_evicted,
     )
+    if args.appledouble:
+        planned += plan_appledouble(resolved_lake)
     for reason, path in planned:
         log.info("%s %s (%s)", "DELETE" if args.apply else "would delete", path, reason)
 
+    # release.prune never collects the release `current` points at. Previewed in
+    # dry run too: the operator review this command exists for is worthless if
+    # the one category that deletes 422 MB at a time is invisible until --apply.
+    from livewire_scripts.release import prune
+
+    for name in prune(args.keep_releases, dry_run=not args.apply):
+        log.info("%s release %s", "pruned" if args.apply else "would prune", name)
+
+    deleted = 0
+    failed = 0
     if args.apply:
         for _, path in planned:
-            if path.is_dir():
-                shutil.rmtree(path, ignore_errors=True)
-            else:
-                path.unlink(missing_ok=True)
-        # release.prune never collects the release `current` points at.
-        from livewire_scripts.release import prune
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)  # not ignore_errors: see below
+                else:
+                    path.unlink(missing_ok=True)
+                deleted += 1
+            except OSError as exc:
+                # `ignore_errors=True` would let this report a clean sweep while
+                # the artifacts are still there — the exact "green while wrong"
+                # shape the rest of this branch exists to remove.
+                failed += 1
+                log.warning("could not delete %s: %s", path, exc)
+        log.info("%d item(s) deleted, %d failed", deleted, failed)
+        return 1 if failed else 0
 
-        for name in prune(args.keep_releases):
-            log.info("pruned release %s", name)
-
-    log.info("%d item(s) %s", len(planned), "deleted" if args.apply else "would be deleted")
+    log.info("%d item(s) would be deleted", len(planned))
     return 0
 
 
@@ -1606,62 +1969,75 @@ forces the call."
 ```python
 # append to tests/test_run_daily_update_job.py
 class TestHousekeepingRunsAfterTheDigest:
-    def test_the_nightly_job_runs_a_housekeeping_sweep(self, monkeypatch):
-        spawned: list[list[str]] = []
-        monkeypatch.setattr(
-            daily_runner,
-            "_spawn_post_success_quality",
-            lambda runner, log_file, args, label, timeout=120: spawned.append(list(args)),
-        )
-        for name in (
-            "run_with_retries", "run_corporate_action_sync",
-            "run_cboe_volatility_sync", "run_fx_sync", "run_silver_rebuild",
-        ):
-            monkeypatch.setattr(daily_runner, name, lambda *a, **k: 0)
-        swept: list[list[str]] = []
-        monkeypatch.setattr(daily_runner, "_spawn_housekeeping", lambda runner, log_file: swept.append(["ran"]))
+    def test_the_nightly_job_runs_a_housekeeping_sweep(self, tmp_path):
+        commands: list[list[str]] = []
 
-        daily_runner.main([])
+        def fake_runner(command, **kwargs):
+            commands.append(list(command))
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-        assert swept == [["ran"]]
+        run_post_success_quality(_config(tmp_path), tmp_path / "daily_update_2026-08-08.log",
+                                 runner=fake_runner)
+
+        sweeps = [c for c in commands if "housekeeping" in c]
+        assert len(sweeps) == 1
+        assert sweeps[0][1].endswith("livewire_ops.py"), "housekeeping is an ops command"
+        assert "--apply" in sweeps[0]
+        # It runs last: the digest must already have been sent.
+        assert commands.index(sweeps[0]) == len(commands) - 1
 ```
+
+Same reason as Task 6: the autouse `no_real_quality_spawn` fixture makes
+`main([])` blind to what `run_post_success_quality` spawns, so the test calls it
+directly.
 
 - [ ] **Step 2: Run it and watch it fail**
 
 Run: `uv run pytest tests/test_run_daily_update_job.py -k Housekeeping -v`
-Expected: FAIL — `AttributeError: module has no attribute '_spawn_housekeeping'`.
+Expected: FAIL — no housekeeping command is spawned.
 
 - [ ] **Step 3: Add the spawn**
 
-```python
-# livewire_scripts/run_daily_update_job.py — beside _spawn_post_success_quality
-def _spawn_housekeeping(runner, log_file) -> None:
-    """Run the retention sweep. A failure logs a warning and nothing more.
+`_spawn_post_success_quality` already is this function — try/except, `check=False`,
+`capture_output`, and a `WARNING: <label> failed:` line in exactly the shape
+`_quality_jobs_section` counts. The only thing it hardcodes is `QUALITY_SCRIPT`, so
+give it a parameter rather than writing a second copy that will drift from the
+first:
 
-    Housekeeping deleting nothing is never worth failing a successful ingest
-    run for — but the warning must be counted, which `_quality_jobs_section`
-    already does by matching the same "WARNING: <label> failed:" shape.
+```python
+# livewire_scripts/run_daily_update_job.py:344 — one new keyword argument
+def _spawn_post_success_quality(runner, log_file, args, label, timeout=120, script=None):
+    """Run a post-success subcommand; a failure logs a warning only.
+
+    These jobs must never flip a successful daily run to failure.
     """
     try:
         result = runner(
-            [sys.executable, str(OPS_SCRIPT), "housekeeping", "--apply"],
-            timeout=600,
+            [sys.executable, str(script or QUALITY_SCRIPT), *args],
+            timeout=timeout,
             check=False,
             capture_output=True,
         )
-        if result.returncode != 0:
-            append_log(log_file, f"WARNING: housekeeping failed: exit_code={result.returncode}")
-    except Exception as exc:  # pragma: no cover - logged but tolerated
-        append_log(log_file, f"WARNING: housekeeping failed: {exc}")
 ```
 
-Define `OPS_SCRIPT` beside the existing `QUALITY_SCRIPT` constant, pointing at
-`scripts/livewire_ops.py`. Call `_spawn_housekeeping(runner, log_file)`
-immediately after the nightly digest is sent.
+The rest of the body is unchanged. Define `OPS_SCRIPT` beside `QUALITY_SCRIPT`,
+pointing at `scripts/livewire_ops.py`, and add this as the **last** call in
+`run_post_success_quality`, after the digest:
+
+```python
+    # Retention sweep, last. It can only warn: a sweep that deleted nothing is
+    # never worth failing a successful ingest run for, and the warning is
+    # already counted — `_quality_jobs_section` matches this exact shape, which
+    # is the only reason the four-week coverage outage was eventually visible.
+    _spawn_post_success_quality(
+        runner, log_file, ["housekeeping", "--apply"], "housekeeping",
+        timeout=600, script=OPS_SCRIPT,
+    )
+```
 
 - [ ] **Step 4: Run the tests**
 
-Run: `uv run pytest tests/ -v` (with the two network compat tests deselected)
+Run: `uv run pytest tests/ -v -m "not integration"`
 Expected: all PASS, coverage gate ≥95%.
 
 - [ ] **Step 5: Document the invariants**
@@ -1695,7 +2071,7 @@ Append to `CLAUDE.md` under "Scheduled-job invariants worth not re-breaking":
   came from warm-cache measurements; a cold full pass measured **2858s** on
   2026-08-09. The lake is on an external exFAT volume and the nightly 23.57 GB
   of intraday writes evict the cache, so **cold is the normal state** and thread
-  count does not help. `com.livewire.coverage` runs at 09:30 UTC with no timeout,
+  count does not help. `com.livewire.coverage` runs at 11:00 UTC with no timeout,
   and the footer pass now caches `(mtime, latest)` per file — an unchanged mtime
   cannot mean a later max date.
 - ⚠️ **The nightly disk line measured the wrong volume.** `data-lake` is a
@@ -1704,12 +2080,19 @@ Append to `CLAUDE.md` under "Scheduled-job invariants worth not re-breaking":
   and the venv sat at 93% / 14.7 GiB — below the 25 GiB reserve, unreported.
   livewire's own footprint there is only ~2.5 GB, so this is a monitoring gap
   rather than livewire filling the disk; each `release promote` still takes
-  another 422 MB. `_disk_section` now reports both, deduplicated by device id.
-- **`housekeeping` prunes logs (60d), releases (keep 3), superseded evicted
-  silver revisions (keep 2) and AppleDouble sidecars.** `raw/` and `repairs/`
-  are protected **by name**: raw below the rolling GET floor cannot be refetched,
-  and repairs holds the triage verdict store plus every rollback backup. The
-  26 GB of 2026-07-15 cutover `.parquet.bak` files are out of scope by design.
+  another 422 MB. `_disk_section` now reports both, deduplicated on the usage triple so a
+  single-filesystem deployment still prints one line.
+- **`housekeeping` prunes logs (60d), releases (keep 3) and superseded evicted
+  silver revisions (keep 2).** `raw/` and `repairs/` are protected **by name**,
+  never by an age rule: raw below the rolling GET floor cannot be refetched, and
+  repairs holds the triage verdict store plus every rollback backup. The 26 GB of
+  2026-07-15 cutover `.parquet.bak` files are out of scope by design.
+- ⚠️ **The AppleDouble sweep is `--appledouble`, opt-in, and must never go in the
+  nightly job.** Finding `._*` means `rglob` over the whole 13 TiB exFAT volume —
+  the operation measured at 281s cold for a *single* timeframe glob. Under a
+  nightly budget the failure is worse than surviving sidecars: planning finishes
+  before anything is deleted, so a traversal that blows the budget deletes
+  **nothing**, logs and evicted revisions included, while reporting one warning.
 ```
 
 - [ ] **Step 6: Commit**
@@ -1743,9 +2126,18 @@ Expected: PASS.
 - [ ] **Step 2: Housekeeping dry run against the real warehouse**
 
 Run: `uv run python scripts/livewire_ops.py housekeeping`
-Expected: a list of `would delete` lines. **Read it before going further.**
+Expected: `would delete` lines for old logs and superseded evicted revisions,
+plus `would prune release <sha>` lines. **Read it before going further.**
 Confirm nothing under `data-lake/raw/`, `data-lake/repairs/`, or the release
-`current` points at appears anywhere in the output.
+`current` points at appears anywhere in the output — cross-check the latter with
+`readlink ~/market-warehouse/current`.
+
+Then, separately and once:
+
+Run: `uv run python scripts/livewire_ops.py housekeeping --appledouble`
+Expected: minutes, not seconds — this is the whole-lake walk. Review the `._*`
+list before ever adding `--apply` to it. This command is **not** wired into any
+schedule and must not be.
 
 - [ ] **Step 3: Coverage timing check with the cache cold, then warm**
 
@@ -1842,10 +2234,48 @@ every test unpacks `(reason, path)`. `_latest_date_with_cache` returns
 `GATEWAY_DOWN_EXIT_CODE` is imported from `clients.ib_gateway_preflight` in both
 `sync_runner` and `run_daily_update_job`.
 
-**Known soft spots the implementer must resolve by reading, not guessing:**
-- `AlertRequest`'s real field names (Task 4, Step 5).
-- Whether `tests/test_sync_runner.py` already has a `_sync_config` helper (Task 2).
-- Whether `tests/test_coverage_report.py` already has a parquet-writing helper
-  (Task 5) — and if not, the frozen-real-price rule applies to the new one.
-- The exact ids of the two network-touching compat tests to deselect.
-- `launchd/com.livewire.daily-update.plist.example`'s actual structure (Task 6).
+**Resolved by reading the source (2026-08-09), no longer open questions:**
+
+| Was uncertain | Verified |
+|---|---|
+| `AlertRequest` fields | six, all required: `run_date`, `log_file`, `attempts`, `exit_code`, `error_summary`, `repo_root` (`run_daily_update_job.py:59`). The command comes from `build_alert_command(config, request)`, so Task 4 tests the builder and needs no subprocess fake. |
+| sync_runner test helper | `_make_config(tmp_path)` (`:52`), **not** `_sync_config`. `_flatfile_credentials` is autouse (`:47`). |
+| `trading_day_fn`'s type | returns **`str`** (`sync_runner.py:83`); every existing test passes `lambda: "2026-05-28"`. |
+| coverage test helper | `_write_daily(bronze_root, symbol, dates)` (`test_coverage_report.py:59`), **not** `_write_equity_1d`. Reusing it means no new fixture prices are authored. |
+| the two network tests | the only two `@pytest.mark.integration` in the suite, both in `tests/test_storage_client_compat.py` (`:61`, `:86`) — so `-m "not integration"` is the whole deselection. |
+| existing `main()` tests | `tests/test_run_daily_update_job.py:45` has an **autouse** fixture patching `run_post_success_quality`, so Tasks 6 and 10 must call it directly (as `:335` already does) rather than assert through `main([])`. |
+
+**Three defects Pass 1 found in this plan's own test code, now fixed above:**
+1. `st_dev` dedup made Task 8's two-volume test unwritable — two dirs under one
+   `tmp_path` always share a device. Deduping on the usage triple is both testable
+   and correct in production.
+2. `_touch`'s `toordinal() * 86400` is not a POSIX timestamp; it put the mtime near
+   the year 4000 and inverted every age comparison in Task 9.
+3. `plan_housekeeping` took a `keep_releases` it never read — releases are
+   `release.prune()`'s business, because only it spares what `current` points at.
+
+| the coverage plist's shape | matched to `launchd/com.livewire.daily-update.plist.example`: `/bin/bash -c "cd … && .venv/bin/python …"`, `EnvironmentVariables.PATH` including `/opt/homebrew/bin`, no `RunAtLoad`, no `WorkingDirectory`. |
+| `SUMMARY_PREFIX`'s home | `livewire_scripts/daily_outcomes.py:13`, not `nightly_digest`. |
+
+**Six defects the codex tribunal found that Pass 1 and Pass 3 both missed:**
+1. `scripts/livewire_quality.py:56` loads the scheduled env **only for
+   `watchdog`** — a cold launchd coverage job would have no Massive key and no
+   SMTP credentials, so it could measure the gap and then neither fix nor report
+   it.
+2. 09:30 UTC is inside the daily job's legal window: the deadline is 4h from
+   06:00, i.e. **10:00 UTC**, not the 3.27h healthy peak. Moved to 11:00 UTC.
+3. Adding a `degraded` field changes nothing a human sees —
+   `_phases_section` still prints `FAILED (exit 86)`. The rendering is the fix.
+4. Six existing assertions pin the two-token `--error-summary` form
+   (`test_coverage_report.py:482,492`, `test_health_check.py:321,333`,
+   `test_universe_screener.py:296`, `test_run_daily_update_job.py:458`).
+5. Four existing stubs type `compute_coverage` as `(d, bronze_root=None)`
+   (`test_coverage_report.py:550,565,594,626`) and would `TypeError` on
+   `cache_path`.
+6. `mtime` alone is not a safe cache key on a 2-second-granularity filesystem
+   whose publish path is `os.replace()`; `st_size` joins it.
+
+**Still not verified, and deliberately so:** the wall-clock effect of the footer
+cache. Task 11, Step 3 measures it cold then warm on the real lake, and those two
+numbers replace the 2858s figure. Everything in this plan that depends on the
+cache being *fast* rather than *correct* rests on that unrun measurement.
