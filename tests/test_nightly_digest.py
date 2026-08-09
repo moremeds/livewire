@@ -86,11 +86,12 @@ def test_build_digest_renders_failed_phases(tmp_path):
     assert "failed: daily_backfill_fred_rates" in out
 
 
-def test_coverage_is_read_from_the_session_the_run_ingested(tmp_path):
+def test_coverage_from_an_earlier_session_reaches_the_digest(tmp_path):
     """Coverage names its log after the session it measured, not the run date.
 
-    The job runs at 02:00 ET the morning AFTER that session, so run_date is one
-    trading day later and `coverage_{run_date}.log` never existed. Production
+    Two reasons it will not match: the daily job runs at 02:00 ET the morning
+    AFTER the session it ingested, and coverage now runs on its own launchd
+    schedule entirely. An exact-filename lookup found neither. Production
     shape: the 2026-08-01 run ingested the 2026-07-31 session.
     """
     log_dir = tmp_path / "logs"
@@ -405,3 +406,67 @@ class TestTheDigestDistinguishesDegradedFromFailed:
         assert "FAILED (exit 2)" in "\n".join(
             nightly_digest._phases_section("2026-08-08", tmp_path)
         )
+
+
+class TestTheDigestFindsCoverageOnAnySchedule:
+    """Coverage runs on its own schedule now, so its log will not match the run date.
+
+    Requiring an exact filename match would make the digest report
+    "(not found)" forever — the same silence that hid the dead detector for
+    four weeks. Read the newest log and print the date it actually measured.
+    """
+
+    def test_a_coverage_log_from_another_date_is_found(self, tmp_path):
+        (tmp_path / "coverage_2026-08-06.log").write_text(
+            "2026-08-06 coverage: 1d=13265/13270 (99.96%)\n", encoding="utf-8"
+        )
+        (tmp_path / "coverage_2026-08-07.log").write_text(
+            "2026-08-07 coverage: 1d=13300/13311 (99.92%)\n", encoding="utf-8"
+        )
+
+        lines = nightly_digest._coverage_section("2026-08-09", tmp_path)
+
+        assert any("2026-08-07" in line for line in lines), "the newest log wins"
+        assert not any("2026-08-06" in line for line in lines)
+        assert "(not found)" not in "".join(lines)
+
+    def test_no_coverage_logs_at_all_still_says_not_found(self, tmp_path):
+        assert "  (not found)" in nightly_digest._coverage_section("2026-08-09", tmp_path)
+
+    def test_an_empty_coverage_log_is_skipped_for_the_next_newest(self, tmp_path):
+        """A crashed run leaves a stub; it must not mask a real measurement."""
+        (tmp_path / "coverage_2026-08-06.log").write_text(
+            "2026-08-06 coverage: 1d=13265/13270 (99.96%)\n", encoding="utf-8"
+        )
+        (tmp_path / "coverage_2026-08-07.log").write_text("", encoding="utf-8")
+        lines = nightly_digest._coverage_section("2026-08-09", tmp_path)
+        assert any("2026-08-06" in line for line in lines)
+
+    def test_only_an_empty_log_is_not_found(self, tmp_path):
+        (tmp_path / "coverage_2026-08-07.log").write_text("", encoding="utf-8")
+        assert "  (not found)" in nightly_digest._coverage_section("2026-08-09", tmp_path)
+
+    def test_a_recent_log_does_not_warn(self, tmp_path):
+        (tmp_path / "coverage_2026-08-08.log").write_text(
+            "2026-08-08 coverage: 1d=13300/13311 (99.92%)\n", encoding="utf-8"
+        )
+        assert not any(
+            "⚠" in line for line in nightly_digest._coverage_section("2026-08-09", tmp_path)
+        )
+
+    def test_a_stale_log_warns_that_the_job_may_be_dead(self, tmp_path):
+        # Decoupling the schedules must not buy a silent detector back. If the
+        # coverage job stops firing, the newest log stops advancing and the
+        # digest would otherwise print a reassuring line indefinitely.
+        (tmp_path / "coverage_2026-06-17.log").write_text(
+            "2026-06-17 coverage: 1d=13100/13141 (99.69%)\n", encoding="utf-8"
+        )
+        lines = nightly_digest._coverage_section("2026-08-09", tmp_path)
+        assert any("⚠" in line and "coverage job" in line for line in lines)
+        assert any("2026-06-17" in line for line in lines), "still shows what it measured"
+
+    def test_an_unparseable_filename_does_not_raise(self, tmp_path):
+        (tmp_path / "coverage_rotated.log").write_text("something\n", encoding="utf-8")
+        lines = nightly_digest._coverage_section("2026-08-09", tmp_path)
+        assert "  something" in lines
+        assert not any("⚠" in line for line in lines)

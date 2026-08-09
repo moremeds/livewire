@@ -33,6 +33,9 @@ _DATA_LAKE: Path | None = None
 _FAILURE_EMAIL_SCRIPT = _PROJECT_ROOT / "livewire_node" / "send_daily_update_failure_email.mjs"
 _MIN_FREE_GB = float(os.getenv("MDW_FLATFILE_MIN_FREE_GB", "25"))
 _GIB = 1024**3
+#: Coverage is daily and the digest reads yesterday's by design, so 3 absorbs
+#: one missed run without absorbing a job that has stopped firing entirely.
+_COVERAGE_STALE_DAYS = 3
 
 
 def _read_text(path: Path) -> str | None:
@@ -139,29 +142,38 @@ def _quality_jobs_section(run_date: str, log_dir: Path) -> list[str]:
     return [f"Quality jobs: {len(seen)} FAILED"] + [f"  {label}: {reason}" for label, reason in sorted(seen.items())]
 
 
-def _target_session(run_date: str, log_dir: Path) -> str:
-    """The trading session this run ingested — what coverage names its log after.
-
-    Coverage keys its log on the session it measured, but the job runs at 02:00 ET
-    the morning after, so run_date is one trading day later. Looking up
-    `coverage_{run_date}.log` therefore always missed. The daily-update
-    SUMMARY_JSON already carries the session, so read it rather than give the
-    digest a second copy of the trading calendar to drift out of sync.
-    """
-    text = _read_text(log_dir / f"daily_update_{run_date}.log") or ""
-    for summary in parse_all_summary_json(text):
-        if summary.get("job") == "daily_update" and summary.get("target_date"):
-            return str(summary["target_date"])
-    return run_date
-
-
 def _coverage_section(run_date: str, log_dir: Path) -> list[str]:
-    text = _read_text(log_dir / f"coverage_{_target_session(run_date, log_dir)}.log")
+    """Report the newest coverage measurement, whatever day it measured.
+
+    Coverage runs as its own launchd job now, so its log will rarely carry the
+    run date. Matching on an exact filename would report "(not found)" every
+    night — indistinguishable from the detector being dead, which is exactly
+    how the real outage hid for four weeks. The measured date is in the line
+    itself, so a lag is visible rather than silent.
+    """
     lines = ["Coverage:"]
-    if not text or not text.strip():
-        lines.append("  (not found)")
+    logs = sorted(log_dir.glob("coverage_*.log"))
+    for path in reversed(logs):
+        text = _read_text(path)
+        if not text or not text.strip():
+            continue
+        lines.append("  " + text.splitlines()[0].strip())
+        # Decoupling the schedules removes the ordering bug but opens a new
+        # silence: if com.livewire.coverage stops firing, the newest log simply
+        # stops advancing and the digest keeps printing a green line forever —
+        # the same dead-detector shape, one level up. Age is the only thing that
+        # distinguishes "measured yesterday" from "has not run since July".
+        measured = path.stem.removeprefix("coverage_")
+        try:
+            age = (date.fromisoformat(run_date) - date.fromisoformat(measured)).days
+        except ValueError:
+            return lines
+        if age > _COVERAGE_STALE_DAYS:
+            lines.append(
+                f"  ⚠ newest coverage log is {age} days old — has the coverage job run?"
+            )
         return lines
-    lines.append("  " + text.splitlines()[0].strip())
+    lines.append("  (not found)")
     return lines
 
 
