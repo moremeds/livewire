@@ -105,9 +105,22 @@ The structural fact underneath:
 | equity `1d`, 13,270 footers, warm, 16 threads | 29.2s |
 | equity `1d`, 13,270 footers, warm, 1 thread | 154.0s |
 | **full five-timeframe pass, cold, 16 threads** (2026-08-09, 03:43:54Z → 04:31:32Z) | **2858s** |
+| full pass, no footer cache file (2026-08-10, post-deploy) | **1534.04s** |
+| the same pass again, 71,763 cache entries all hitting | **1398.77s** |
 
 2858s against an 1800s budget — 1.6× over, with `--no-recover` so no recovery
 subprocess was included.
+
+**The post-deploy pair settles what the footer cache is worth: 8.8%.** The cache
+removes 135s of a ~1500s run, because 16 threads had already compressed the
+footer reads to about that much; the per-file 1100× speedup (7.13 ms → 0.01 ms)
+is real but describes a component, not the job. `user+sys` was 26.7s of 1534s —
+the process is **98% blocked on I/O**, which is the same reason threads stopped
+helping. Note the second run had the filesystem cache still warm from the first
+and *still* took 1399s.
+
+So one run ranges over **~1400–2860s** and crosses both retired budgets. That
+range, not any single number, is the argument for no timeout at all.
 
 The lake lives on an external exFAT volume
 (`/Volumes/DATA_LAKE`, 13 TiB). Metadata traversal there is orders of magnitude
@@ -259,6 +272,12 @@ never returned at all. Inside a nightly budget it would not merely fail to
 delete sidecars: planning completes before anything is removed, so a traversal
 that blows the budget deletes **nothing**, logs and evicted revisions included.
 They are a one-off artifact of the exFAT move, not recurring garbage.
+
+Measured 2026-08-10, the first real run: **2047s (34 min), 324,121 sidecars**,
+`user+sys` 51s — 97.5% I/O wait, so threads would not rescue it either. On its
+own that is **3.4× the 600s budget** the nightly sweep used to live under, which
+is the argument stated as a number. The dry run named no path under `raw/` or
+`repairs/`, and never named the release `current` points at.
 
 **Never touched, asserted in code and in tests:**
 

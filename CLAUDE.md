@@ -461,10 +461,19 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
   **7.13 ms/file**, a cache hit **0.01 ms/file** (~1100×, identical results).
   But `compute_coverage` still runs `sorted(bronze_root.glob(...))` per
   timeframe, and a cold glob measured **281s for one timeframe** — five of
-  those is most of a cold run, and no cache entry avoids any of it. This is
-  why the **no-timeout job is the fix and the cache is only an optimisation**:
-  the full cold-vs-warm wall clock is still unmeasured, and nothing here rests
-  on it. `(mtime, size)` is also not content identity — a same-bucket
+  those is most of a cold run, and no cache entry avoids any of it.
+  ⚠️ **Quote the whole-run number, not the per-file one.** Measured 2026-08-10
+  back-to-back on the real lake (`--no-recover --force`, 71,763 cached
+  entries): **1534.04s** with no cache file, **1398.77s** with every entry
+  hitting — **−135s, 8.8%**. Both figures are honest; the per-file 1100× is
+  the *footer read* alone, which 16 threads had already compressed to ~135s of
+  a ~1500s run. So the **no-timeout job is the fix and the cache is only an
+  optimisation** — now measured, not inferred. `user+sys` was **26.7s of
+  1534s (1.7%)**: the process is 98% blocked on I/O, which is also why adding
+  threads does not help. Note run 2 ran with the filesystem cache still warm
+  from run 1 and *still* took 1399s; with the 2858s cold pass, one run ranges
+  over **~1400–2860s** and crosses both retired budgets (600s, 1800s). No
+  constant is safe here. `(mtime, size)` is also not content identity — a same-bucket
   republish compressing to an identical length serves a stale entry, which can
   only hold an *earlier* date, so the symbol reads as MISSING and triggers
   recovery. It over-reports gaps; it cannot hide one.
@@ -494,6 +503,11 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
   nightly budget the failure is worse than surviving sidecars: planning finishes
   before anything is deleted, so a traversal that blows the budget deletes
   **nothing**, logs and evicted revisions included, while reporting one warning.
+  Measured 2026-08-10, first real run: **2047s (34 min) for 324,121 sidecars**,
+  `user+sys` 51s — 97.5% I/O wait, so this cannot be threaded out either. It is
+  **3.4× the retired 600s housekeeping budget on its own**, which is the whole
+  argument. The dry run named no path under `raw/` or `repairs/` and never named
+  the release `current` points at.
 
 Silver artifacts are published beneath `MDW_SILVER_DIR` (default
 `data-lake/silver`). Daily files preserve Apex-required OHLCV names and add

@@ -2115,7 +2115,14 @@ alert argument form, coverage's cold-I/O cost, and the two-volume disk check."
 
 **Files:** none — verification only.
 
-- [ ] **Step 1: Full suite**
+**Outcome (2026-08-10).** All six steps done. PR #79 merged as `e08004d`,
+release `e08004da…` promoted and serving, `com.livewire.coverage` loaded.
+Measured: coverage **1534.04s → 1398.77s** (footer cache = 8.8%),
+`--appledouble` **2047s / 324,121 sidecars**. Step 2's protected-path check
+passed on the real lake — no `raw/`, no `repairs/`, and not the release
+`current` points at.
+
+- [x] **Step 1: Full suite**
 
 Run: `uv run pytest tests/ -v --cov=clients --cov=scripts --cov=livewire_scripts --cov-report=term-missing`
 Expected: PASS, coverage ≥95%.
@@ -2123,7 +2130,7 @@ Expected: PASS, coverage ≥95%.
 Run: `npm run test:alerts`
 Expected: PASS.
 
-- [ ] **Step 2: Housekeeping dry run against the real warehouse**
+- [x] **Step 2: Housekeeping dry run against the real warehouse**
 
 Run: `uv run python scripts/livewire_ops.py housekeeping`
 Expected: `would delete` lines for old logs and superseded evicted revisions,
@@ -2139,14 +2146,14 @@ Expected: minutes, not seconds — this is the whole-lake walk. Review the `._*`
 list before ever adding `--apply` to it. This command is **not** wired into any
 schedule and must not be.
 
-- [ ] **Step 3: Coverage timing check with the cache cold, then warm**
+- [x] **Step 3: Coverage timing check with the cache cold, then warm**
 
 Run: `time uv run python scripts/livewire_quality.py coverage --no-recover --force`
 twice. Expected: the first run logs mostly `read`, the second mostly `cached`,
 and the second is dramatically faster. Record both numbers — they replace the
 2858s figure in the spec.
 
-- [ ] **Step 4: Open the PR**
+- [x] **Step 4: Open the PR**
 
 ```bash
 git push -u origin fix/ib-isolation-coverage-housekeeping
@@ -2187,7 +2194,7 @@ BODY
 )"
 ```
 
-- [ ] **Step 5: Wait for CI, then merge and promote**
+- [x] **Step 5: Wait for CI, then merge and promote**
 
 Never merge before CI is green. After merging, wait for the push-to-main run to
 complete, then:
@@ -2200,7 +2207,7 @@ python scripts/livewire_ops.py release promote
 `promote` runs the **checkout's** builder while exporting `origin/main`, so the
 `git checkout main && git pull` is required, not optional.
 
-- [ ] **Step 6: Install the new plist**
+- [x] **Step 6: Install the new plist**
 
 ```bash
 WAREHOUSE=~/market-warehouse
@@ -2275,7 +2282,9 @@ every test unpacks `(reason, path)`. `_latest_date_with_cache` returns
 6. `mtime` alone is not a safe cache key on a 2-second-granularity filesystem
    whose publish path is `os.replace()`; `st_size` joins it.
 
-**Still not verified, and deliberately so:** the wall-clock effect of the footer
-cache. Task 11, Step 3 measures it cold then warm on the real lake, and those two
-numbers replace the 2858s figure. Everything in this plan that depends on the
-cache being *fast* rather than *correct* rests on that unrun measurement.
+**Since measured (2026-08-10, after the merge and promote):** the wall-clock
+effect of the footer cache is **8.8%** — 1534.04s with no cache file, 1398.77s
+with all 71,763 entries hitting. The cache is worth 135s of a ~1500s run because
+16 threads had already compressed the footer reads to about that; `user+sys` was
+26.7s of 1534s, i.e. the job is 98% I/O-blocked. Nothing in this plan rested on
+the cache being fast — the no-timeout job is the fix, and this number is why.
