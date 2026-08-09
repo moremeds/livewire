@@ -456,6 +456,18 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
   deliberately **uncached** for that same reason. The lookup is read-only and
   the caller rebuilds the cache single-threaded from returned tuples — 16
   threads writing a shared dict would rest correctness on GIL atomicity.
+  ⚠️ **The cache does not touch the glob, and the glob is the cold cost.**
+  Measured 2026-08-09 over 400 real equity `1d` files: a footer read is
+  **7.13 ms/file**, a cache hit **0.01 ms/file** (~1100×, identical results).
+  But `compute_coverage` still runs `sorted(bronze_root.glob(...))` per
+  timeframe, and a cold glob measured **281s for one timeframe** — five of
+  those is most of a cold run, and no cache entry avoids any of it. This is
+  why the **no-timeout job is the fix and the cache is only an optimisation**:
+  the full cold-vs-warm wall clock is still unmeasured, and nothing here rests
+  on it. `(mtime, size)` is also not content identity — a same-bucket
+  republish compressing to an identical length serves a stale entry, which can
+  only hold an *earlier* date, so the symbol reads as MISSING and triggers
+  recovery. It over-reports gaps; it cannot hide one.
 - **The digest reads the newest `coverage_*.log`, not an exact filename**, and
   warns when it is more than 3 days old. Decoupling the schedules removes the
   ordering bug but buys back a new silence: a coverage job that stopped firing
