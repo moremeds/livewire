@@ -561,7 +561,7 @@ class TestMain:
         monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
-            wraps=lambda d, bronze_root=None: compute_coverage(d, bronze_root=seeded_bronze),
+            wraps=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=seeded_bronze),
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
                 with patch.object(
@@ -576,7 +576,7 @@ class TestMain:
         monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
-            wraps=lambda d, bronze_root=None: compute_coverage(d, bronze_root=seeded_bronze),
+            wraps=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=seeded_bronze),
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
                 with patch.object(
@@ -605,7 +605,7 @@ class TestMain:
 
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
-            side_effect=lambda d, bronze_root=None: compute_coverage(d, bronze_root=root),
+            side_effect=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=root),
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
                 with patch.object(
@@ -637,7 +637,7 @@ class TestMain:
 
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
-            side_effect=lambda d, bronze_root=None: compute_coverage(d, bronze_root=root),
+            side_effect=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=root),
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
                 with patch.object(
@@ -662,7 +662,7 @@ class TestMain:
 
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
-            side_effect=lambda d, bronze_root=None: compute_coverage(d, bronze_root=root),
+            side_effect=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=root),
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
                 with patch.object(

@@ -489,6 +489,13 @@ def auto_recover(
             check=False,
         )
 
+    # Deliberately uncached. Recovery just republished parquet and this
+    # re-measures within the same run, and exFAT stores mtime at 2-second
+    # granularity — a rewrite finishing inside that window leaves the stat
+    # unchanged, so a cached re-check would report the gap recovery just
+    # closed. Across the 24h between scheduled runs the granularity is
+    # irrelevant; within one run it is exactly the failure mode. This reads
+    # only the symbols recovery touched, so skipping the cache costs nothing.
     rechecked = compute_coverage(effective_target, bronze_root=bronze_root)[timeframe]
     still_missing = [s for s in missing_symbols if s in rechecked.missing_symbols]
     recovered = len(missing_symbols) - len(still_missing)
@@ -591,7 +598,9 @@ def main() -> None:
         return
 
     console.print(f"\n[bold]Coverage Report[/bold]  target_date={target}")
-    results = compute_coverage(target)
+    # Cached across runs: an unchanged (mtime, size) cannot mean a later max
+    # date, and the cold footer walk is what this job's runtime actually is.
+    results = compute_coverage(target, cache_path=_resolved_log_dir() / "coverage_footer_cache.json")
     line = format_one_liner(target, results)
     console.print(line)
     blocks = format_missing_blocks(results)

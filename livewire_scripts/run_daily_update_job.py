@@ -554,7 +554,7 @@ def run_post_success_quality(
     log_file: Path,
     runner: callable = subprocess.run,
 ) -> None:
-    """Run coverage, weekly, and the nightly digest exactly once, last.
+    """Run weekly and the nightly digest exactly once, last.
 
     These used to fire inside each asset class's success branch — up to four
     coverage runs and four digest emails a night, all of them before the
@@ -562,13 +562,10 @@ def run_post_success_quality(
     SUMMARY_JSON, which had not been written yet, so the window_regressions
     warning the digest is supposed to carry could never appear.
     """
-    # Coverage may launch a recovery subprocess, so give it a longer budget.
-    # 600s was not a budget, it was a guillotine: the footer pass is ~150-300s
-    # per timeframe across five timeframes, so coverage timed out every night
-    # from 2026-07-07 and the weekly report has been an empty stub since.
-    # `FOOTER_READ_WORKERS` takes 5.3x off that; this absorbs what threads
-    # cannot — a cold glob measured at 281s for a single timeframe.
-    _spawn_post_success_quality(runner, log_file, ["coverage"], "coverage report", timeout=1800)
+    # Coverage runs as com.livewire.coverage, not here. It was given 600s, then
+    # 1800s; a cold full pass measured 2858s on 2026-08-09. The bug was putting
+    # a guessed budget around work whose runtime is dominated by cold I/O on an
+    # external volume — so it now has its own job and no budget at all.
     # weekly self-skips on non-Sunday.
     _spawn_post_success_quality(runner, log_file, ["weekly"], "weekly quality report")
     run_date = log_file.stem.removeprefix("daily_update_")

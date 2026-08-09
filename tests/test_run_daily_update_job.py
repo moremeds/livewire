@@ -370,7 +370,7 @@ class TestEndOfDayQualityReport:
         assert "--run-date" in digest_cmd
         assert not any("report" in c and "summary" in c for c in quality_calls)
 
-    def test_coverage_and_weekly_spawned(self, tmp_path):
+    def test_weekly_spawned(self, tmp_path):
         config = _config(tmp_path)
         calls = []
 
@@ -380,20 +380,23 @@ class TestEndOfDayQualityReport:
 
         self._run(config, fake_runner)
         quality_calls = [c for c in calls if any("livewire_quality.py" in str(x) for x in c)]
-        assert any("coverage" in c for c in quality_calls)
         assert any("weekly" in c for c in quality_calls)
 
-    def test_coverage_spawn_failure_is_logged_not_raised(self, tmp_path):
+    def test_weekly_spawn_failure_is_logged_not_raised(self, tmp_path):
+        """A post-success job must never flip a successful ingest run to failure.
+
+        The WARNING is not cosmetic: `nightly_digest._quality_jobs_section`
+        counts exactly this shape, and it is the only reason the four-week
+        coverage outage was eventually visible at all.
+        """
         config = _config(tmp_path)
 
         def fake_runner(cmd, **kwargs):
-            # Match the quality subcommand arg, not the worktree path (which
-            # itself contains the word "coverage").
-            is_coverage = any("livewire_quality.py" in str(x) for x in cmd) and "coverage" in cmd
-            return CompletedProcess(args=cmd, returncode=3 if is_coverage else 0, stdout=b"", stderr=b"")
+            is_weekly = any("livewire_quality.py" in str(x) for x in cmd) and "weekly" in cmd
+            return CompletedProcess(args=cmd, returncode=3 if is_weekly else 0, stdout=b"", stderr=b"")
 
         log_file = self._run(config, fake_runner)
-        assert "WARNING: coverage report failed" in log_file.read_text(encoding="utf-8")
+        assert "WARNING: weekly quality report failed" in log_file.read_text(encoding="utf-8")
 
     def test_digest_failure_is_logged_not_raised(self, tmp_path):
         config = _config(tmp_path)
@@ -1316,3 +1319,62 @@ class TestTheAlertCommandCarriesTheSummaryAsOneToken:
 
         assert f"--error-summary={summary}" in command
         assert "--error-summary" not in command, "the bare two-token form must be gone"
+
+
+class TestTheDailyJobNoLongerRunsCoverage:
+    """Coverage does not belong on the nightly job's critical path.
+
+    It was given a 600s budget, then 1800s; both were guesses against a warm
+    cache and both expired. An arbitrary timeout around a job whose runtime is
+    dominated by cold external-volume I/O is the bug, not the number.
+
+    This calls `run_post_success_quality` directly rather than `main([])`: the
+    autouse `no_real_quality_spawn` fixture patches it wholesale, so a `main([])`
+    test can never observe what it spawns.
+    """
+
+    @staticmethod
+    def _spawned(tmp_path) -> list[list[str]]:
+        commands: list[list[str]] = []
+
+        def fake_runner(command, **kwargs):
+            commands.append(list(command))
+            return CompletedProcess(command, 0, stdout="", stderr="")
+
+        run_post_success_quality(
+            _config(tmp_path),
+            tmp_path / "daily_update_2026-08-08.log",
+            runner=fake_runner,
+        )
+        return commands
+
+    def test_no_coverage_subcommand_is_spawned(self, tmp_path):
+        subcommands = [c[2:] for c in self._spawned(tmp_path)]
+
+        assert not any(sub[:1] == ["coverage"] for sub in subcommands), (
+            "coverage has its own launchd job now"
+        )
+        assert ["weekly"] in subcommands, "weekly still runs here"
+        assert any(sub[:1] == ["digest"] for sub in subcommands), "the digest still runs here"
+
+
+class TestTheCoverageLaunchdTemplate:
+    def test_plist_exists_and_carries_its_invariants(self):
+        plist = Path(__file__).resolve().parent.parent / "launchd" / "com.livewire.coverage.plist.example"
+        assert plist.exists(), f"missing plist template at {plist}"
+
+        text = plist.read_text(encoding="utf-8")
+        assert "<string>com.livewire.coverage</string>" in text
+        # Runs the immutable release, not the checkout — same as the other three.
+        assert "/path/to/warehouse/current" in text
+        assert ".venv/bin/python scripts/livewire_quality.py coverage" in text
+        assert "/path/to/repo" not in text
+        # 11:00 UTC = 19:00 on this Mac (Asia/Hong_Kong). After the daily job's
+        # 4h deadline (10:00 UTC), not merely after its 3.27h healthy peak.
+        assert "<integer>19</integer>" in text
+        # node lives in homebrew; without it on PATH the alert cannot send.
+        assert "/opt/homebrew/bin" in text
+        # A budget is exactly what this job exists to not have.
+        assert "TimeOut" not in text
+        # RunAtLoad would fire a full cold pass every time anyone reloads it.
+        assert "RunAtLoad" not in text
