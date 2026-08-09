@@ -67,9 +67,21 @@ def _phases_section(run_date: str, log_dir: Path) -> list[str]:
     if summary is None or summary.get("job") != "daily_backfill":
         lines.append("  (not found)")
         return lines
+    degraded = set(summary.get("degraded", []))
     for p in summary.get("phases", []):
-        status = "ok" if p.get("exit") == 0 else f"FAILED (exit {p.get('exit')})"
-        lines.append(f"  {p.get('label', '?'):<44} {status:<18} {p.get('duration_s', '?')}s")
+        label = p.get("label", "?")
+        if p.get("exit") == 0:
+            status = "ok"
+        elif label in degraded:
+            # A Gateway outage is not a failure. Naming it "DEGRADED" rather
+            # than "FAILED (exit 86)" is the whole point of the new field —
+            # a page-shaped word for a non-page trains the reader to ignore it.
+            status = "DEGRADED (IB down)"
+        else:
+            status = f"FAILED (exit {p.get('exit')})"
+        lines.append(f"  {label:<44} {status:<18} {p.get('duration_s', '?')}s")
+    if summary.get("degraded"):
+        lines.append(f"  degraded: {', '.join(summary['degraded'])}")
     if summary.get("failed"):
         lines.append(f"  failed: {', '.join(summary['failed'])}")
     return lines

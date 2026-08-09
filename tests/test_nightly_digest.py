@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 from subprocess import CompletedProcess
 
 from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, build_summary_line
+from livewire_scripts import nightly_digest
 from livewire_scripts.nightly_digest import build_digest, main
 
 
@@ -330,3 +332,76 @@ def test_an_unrelated_warning_is_not_a_quality_job(tmp_path):
     _write_quality_warnings(log_dir, "2026-07-27", ["WARNING: some other thing happened"])
 
     assert "Quality jobs: all green" in build_digest(date(2026, 7, 27), log_dir, tmp_path)
+
+
+class TestTheDigestDistinguishesDegradedFromFailed:
+    """A `degraded` field nobody renders changes nothing an operator sees.
+
+    The orchestrator can return 0 while the nightly email still reads
+    `FAILED (exit 86)` — the exit code and the only human-facing artifact
+    disagreeing about the same run.
+    """
+
+    @staticmethod
+    def _write(tmp_path, summary):
+        (tmp_path / "intraday_catchup_2026-08-08.log").write_text(
+            SUMMARY_PREFIX + json.dumps(summary) + "\n", encoding="utf-8"
+        )
+
+    def test_an_ib_phase_at_86_reads_degraded_not_failed(self, tmp_path):
+        self._write(
+            tmp_path,
+            {
+                "job": "daily_backfill",
+                "target_date": "2026-08-07",
+                "phases": [
+                    {"label": "daily_backfill_equity_day_aggs", "exit": 0, "duration_s": 41.0},
+                    {
+                        "label": "daily_backfill_intraday_30m_volatility",
+                        "exit": 86,
+                        "duration_s": 0.2,
+                    },
+                ],
+                "failed": [],
+                "degraded": ["daily_backfill_intraday_30m_volatility"],
+            },
+        )
+
+        text = "\n".join(nightly_digest._phases_section("2026-08-08", tmp_path))
+
+        assert "DEGRADED (IB down)" in text
+        assert "FAILED" not in text, "a Gateway outage must not read as a failure"
+
+    def test_a_real_failure_still_reads_failed(self, tmp_path):
+        self._write(
+            tmp_path,
+            {
+                "job": "daily_backfill",
+                "target_date": "2026-08-07",
+                "phases": [
+                    {"label": "daily_backfill_equity_day_aggs", "exit": 1, "duration_s": 3.0}
+                ],
+                "failed": ["daily_backfill_equity_day_aggs"],
+                "degraded": [],
+            },
+        )
+        assert "FAILED (exit 1)" in "\n".join(
+            nightly_digest._phases_section("2026-08-08", tmp_path)
+        )
+
+    def test_a_summary_without_the_field_is_unchanged(self, tmp_path):
+        """Old logs predate `degraded` and must still render exactly as before."""
+        self._write(
+            tmp_path,
+            {
+                "job": "daily_backfill",
+                "target_date": "2026-08-07",
+                "phases": [
+                    {"label": "daily_backfill_equity_day_aggs", "exit": 2, "duration_s": 3.0}
+                ],
+                "failed": ["daily_backfill_equity_day_aggs"],
+            },
+        )
+        assert "FAILED (exit 2)" in "\n".join(
+            nightly_digest._phases_section("2026-08-08", tmp_path)
+        )

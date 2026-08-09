@@ -26,6 +26,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, parse_last_summary_json
 
 logger = logging.getLogger("livewire.sync_runner")
@@ -312,7 +313,9 @@ def run_sync(
 
     # Phase 5: Volatility intraday via IB
     vol_tickers = load_tickers(config.vol_preset)
+    ib_phase_labels: set[str] = set()
     for tf in VOL_INTRADAY_TIMEFRAMES:
+        ib_phase_labels.add(f"daily_backfill_intraday_{tf}_volatility")
         rc = _phase(
             f"daily_backfill_intraday_{tf}_volatility",
             [
@@ -331,7 +334,10 @@ def run_sync(
                 str(config.intraday_days),
             ],
         )
-        if rc != 0:
+        # A down Gateway is degraded, never failed. 2FA and IBKR maintenance are
+        # not something livewire recovers, and paging for them trains the reader
+        # to ignore the page.
+        if rc not in (0, GATEWAY_DOWN_EXIT_CODE):
             failures.append(f"vol_intraday_{tf}")
 
     # Phase 5b: Derive 1h from 30m locally.
@@ -363,6 +369,18 @@ def run_sync(
         failures.append("duckdb_coverage")
 
     # Machine-readable per-phase summary for the nightly digest / watchdog.
+    # `failed` and `degraded` are disjoint by construction: the digest and the
+    # watchdog both read `failed`, and a Gateway outage must not appear there.
+    #
+    # Membership of `ib_phase_labels` is what makes a phase eligible to degrade,
+    # NOT the exit code alone. 86 is livewire's own preflight code, but nothing
+    # stops a Massive/FRED/CBOE/DuckDB phase from returning it for an unrelated
+    # reason, and treating that as degraded would silently swallow a real
+    # failure — the same class of exit-code-versus-summary disagreement this
+    # runner was already fixed for once.
+    def _degraded(p: dict) -> bool:
+        return p["label"] in ib_phase_labels and p["exit"] == GATEWAY_DOWN_EXIT_CODE
+
     print(
         SUMMARY_PREFIX
         + json.dumps(
@@ -370,7 +388,10 @@ def run_sync(
                 "job": "daily_backfill",
                 "target_date": str(target_date),
                 "phases": phase_results,
-                "failed": [p["label"] for p in phase_results if p["exit"] != 0],
+                "failed": [
+                    p["label"] for p in phase_results if p["exit"] != 0 and not _degraded(p)
+                ],
+                "degraded": [p["label"] for p in phase_results if _degraded(p)],
             },
             separators=(",", ":"),
         )
