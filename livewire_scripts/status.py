@@ -194,6 +194,36 @@ def _phases_section(run_date: str, log_dir: Path) -> Section:
     return Section("Intraday catch-up phases", Verdict.OK, lines)
 
 
+def _previous_silver_summary(run_date: str, log_dir: Path) -> dict | None:
+    """The most recent Silver SUMMARY_JSON from a log older than *run_date*.
+
+    Reverse-sorted filenames mean this normally reads exactly one file. There is
+    no absolute threshold for `failed` anywhere in this module: 233 may be
+    normal or catastrophic and nothing measured tells us which, so the baseline
+    is the previous run and the signal is the change.
+
+    The date is PARSED rather than string-compared. `daily_update_*.log` also
+    matches `daily_update_watchdog_<date>.log`, which is a different job's log
+    — those sort first under `reverse=True` and only fall out of a `>=` string
+    comparison because "w" happens to exceed "2". Right answer, wrong reason.
+    """
+    try:
+        cutoff = date.fromisoformat(run_date)
+    except ValueError:
+        return None
+    for path in sorted(log_dir.glob("daily_update_*.log"), reverse=True):
+        try:
+            stamp = date.fromisoformat(path.stem.removeprefix("daily_update_"))
+        except ValueError:
+            continue  # daily_update_watchdog_*.log, or anything else undated
+        if stamp >= cutoff:
+            continue
+        summaries = [s for s in parse_all_summary_json(_read_text(path) or "") if "window_regressions" in s]
+        if summaries:
+            return summaries[-1]
+    return None
+
+
 def _silver_section(run_date: str, log_dir: Path) -> Section:
     """Silver rebuild outcome, and loudly whenever new data cost published history.
 
@@ -218,6 +248,17 @@ def _silver_section(run_date: str, log_dir: Path) -> Section:
             f"cost published history. They still serve their previous window — investigate the "
             f"newest bars before the next publish."
         )
+    previous = _previous_silver_summary(run_date, log_dir)
+    if previous is None:
+        lines.append("  no previous run to compare against")
+        # A missing baseline makes the DELTA unmeasurable, not the regressions.
+        # Returning UNKNOWN here would DOWNGRADE a known warning — UNKNOWN
+        # ranks below WARN — which is the shape this module exists to prevent.
+        verdict = Verdict.WARN if regressions else Verdict.UNKNOWN
+        return Section("Silver rebuild", verdict, lines, fix=_SILVER_FIX)
+    delta = int(s.get("failed", 0)) - int(previous.get("failed", 0))
+    lines.append(f"  failed {delta:+d} vs revision {previous.get('revision', '?')}")
+    if regressions or delta > 0:
         return Section("Silver rebuild", Verdict.WARN, lines, fix=_SILVER_FIX)
     return Section("Silver rebuild", Verdict.OK, lines)
 

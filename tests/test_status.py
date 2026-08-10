@@ -718,3 +718,51 @@ def test_duckdb_one_session_behind_is_still_ok(monkeypatch) -> None:
         lambda _db: {"bronze_equity_1d": (13311, date(2026, 8, 7))},
     )
     assert _duckdb_section(date(2026, 8, 10)).verdict is Verdict.OK
+
+
+_SILVER_CLEAN = (
+    'SUMMARY_JSON {"revision":25,"rebuilt":2,"unchanged":13076,"trimmed":254,"failed":233,"window_regressions":0}'
+)
+_SILVER_WORSE = (
+    'SUMMARY_JSON {"revision":26,"rebuilt":2,"unchanged":13076,"trimmed":254,"failed":301,"window_regressions":0}'
+)
+
+
+def test_silver_failed_rising_is_a_warning(tmp_path: Path) -> None:
+    (tmp_path / "daily_update_2026-08-09.log").write_text(_SILVER_CLEAN, encoding="utf-8")
+    (tmp_path / "daily_update_2026-08-10.log").write_text(_SILVER_WORSE, encoding="utf-8")
+    section = _silver_section("2026-08-10", tmp_path)
+    assert section.verdict is Verdict.WARN
+    assert "+68" in "\n".join(section.lines)
+
+
+def test_silver_failed_flat_is_ok_and_still_prints_the_absolute(tmp_path: Path) -> None:
+    """failed=233 is not graded on an absolute line — there is no measured
+    basis for one, and inventing a threshold would be fabrication."""
+    (tmp_path / "daily_update_2026-08-09.log").write_text(_SILVER_CLEAN, encoding="utf-8")
+    (tmp_path / "daily_update_2026-08-10.log").write_text(_SILVER_CLEAN, encoding="utf-8")
+    section = _silver_section("2026-08-10", tmp_path)
+    assert section.verdict is Verdict.OK
+    assert "failed=233" in "\n".join(section.lines)
+
+
+def test_silver_without_a_baseline_is_unknown(tmp_path: Path) -> None:
+    (tmp_path / "daily_update_2026-08-10.log").write_text(_SILVER_CLEAN, encoding="utf-8")
+    assert _silver_section("2026-08-10", tmp_path).verdict is Verdict.UNKNOWN
+
+
+def test_the_watchdog_log_is_not_mistaken_for_a_silver_baseline(tmp_path: Path) -> None:
+    """`daily_update_*.log` also matches `daily_update_watchdog_<date>.log`,
+    a different job's log. It sorts FIRST under reverse=True and only fell out
+    of a `>=` string comparison because "w" happens to exceed "2"."""
+    (tmp_path / "daily_update_watchdog_2026-08-11.log").write_text(_SILVER_WORSE, encoding="utf-8")
+    (tmp_path / "daily_update_2026-08-09.log").write_text(_SILVER_CLEAN, encoding="utf-8")
+    (tmp_path / "daily_update_2026-08-10.log").write_text(_SILVER_CLEAN, encoding="utf-8")
+    assert _silver_section("2026-08-10", tmp_path).verdict is Verdict.OK
+
+
+def test_a_missing_baseline_never_downgrades_a_known_regression(tmp_path: Path) -> None:
+    """UNKNOWN ranks BELOW WARN. A baseline we cannot find makes the DELTA
+    unmeasurable — it does not un-measure the 39 withheld symbols."""
+    (tmp_path / "daily_update_2026-08-10.log").write_text(_SILVER, encoding="utf-8")
+    assert _silver_section("2026-08-10", tmp_path).verdict is Verdict.WARN
