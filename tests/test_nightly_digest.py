@@ -8,9 +8,28 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from subprocess import CompletedProcess
 
-from livewire_scripts import nightly_digest
+import pytest
+
+from livewire_scripts import nightly_digest, status
 from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, build_summary_line
 from livewire_scripts.nightly_digest import build_digest, main
+
+
+@pytest.fixture(autouse=True)
+def _no_real_launchctl(monkeypatch):
+    """build_digest reaches collect(), and collect() shells out to launchctl.
+
+    Every digest assertion here would otherwise depend on which plists happen
+    to be loaded on the machine running the test — green on this Mac, a
+    different verdict on CI, and an unmocked subprocess either way.
+    """
+    monkeypatch.setattr(
+        status.subprocess,
+        "run",
+        lambda *_a, **_kw: CompletedProcess(
+            [], 0, stdout="".join(f"-\t0\t{label}\n" for label in status._LAUNCHD_JOBS), stderr=""
+        ),
+    )
 
 
 def _write_daily_log(log_dir, run, summaries):

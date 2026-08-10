@@ -7,14 +7,17 @@ import inspect
 import json
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 from livewire_scripts import status
 from livewire_scripts.daily_outcomes import SUMMARY_PREFIX
 from livewire_scripts.status import (
+    _LAUNCHD_JOBS,
     Section,
     Verdict,
     _coverage_section,
     _disk_section,
+    _launchd_section,
     _outcomes_section,
     _phases_section,
     _quality_jobs_section,
@@ -78,7 +81,7 @@ def test_a_total_wipeout_is_bad_and_one_flaky_symbol_is_only_warn(tmp_path: Path
 
 def test_every_non_ok_section_carries_a_runnable_fix(tmp_path: Path) -> None:
     """Pain point 3. A fix with an unsubstituted <placeholder> is not a fix."""
-    for section in collect(date(2026, 8, 10), tmp_path, tmp_path):
+    for section in collect(date(2026, 8, 10), tmp_path, tmp_path, runner=_fake_launchctl):
         if section.verdict is Verdict.OK:
             continue
         assert section.fix, f"{section.name} is {section.verdict} with no fix"
@@ -208,8 +211,8 @@ def test_unknown_outranks_ok_so_a_run_verdict_can_never_be_green_on_a_gap() -> N
 
 
 def test_collect_returns_a_section_per_check(tmp_path: Path) -> None:
-    sections = collect(date(2026, 8, 10), tmp_path, tmp_path)
-    assert len(sections) == 6
+    sections = collect(date(2026, 8, 10), tmp_path, tmp_path, runner=_fake_launchctl)
+    assert len(sections) == 7
     assert all(isinstance(s, Section) for s in sections)
 
 
@@ -218,7 +221,7 @@ def test_collect_never_raises_when_a_check_explodes(tmp_path: Path, monkeypatch)
         raise RuntimeError("footer read exploded")
 
     monkeypatch.setattr("livewire_scripts.status._disk_section", _boom)
-    sections = collect(date(2026, 8, 10), tmp_path, tmp_path)
+    sections = collect(date(2026, 8, 10), tmp_path, tmp_path, runner=_fake_launchctl)
     disk = [s for s in sections if s.name == "Disk"]
     assert len(disk) == 1
     assert disk[0].verdict is Verdict.UNKNOWN
@@ -518,22 +521,66 @@ def test_render_survives_markup_in_log_derived_text(capsys) -> None:
     assert "1800" in out
 
 
-def test_main_exits_zero_even_when_everything_is_broken(tmp_path: Path, capsys) -> None:
+def test_main_exits_zero_even_when_everything_is_broken(tmp_path: Path, capsys, monkeypatch) -> None:
     """A nonzero exit invites someone to schedule this, and every stale
     launchctl red would then page."""
+    # main() builds its own collect() arguments, so it cannot be handed a fake
+    # runner. Without this the unit test shells out to the operator's real
+    # launchctl and its verdict depends on the machine it runs on.
+    monkeypatch.setattr("livewire_scripts.status.subprocess.run", _fake_launchctl)
     rc = main(["--run-date", "2026-08-10", "--log-dir", str(tmp_path), "--data-lake", str(tmp_path)])
     assert rc == 0
     assert "Livewire status" in capsys.readouterr().out
 
 
-def test_a_fix_command_survives_a_narrow_terminal_in_one_piece(tmp_path: Path, capsys) -> None:
+def test_a_fix_command_survives_a_narrow_terminal_in_one_piece(tmp_path: Path, capsys, monkeypatch) -> None:
     """The fixes exist to be COPIED. rich's default word-wrap inserts real
     newlines at the console width, so a long command came back as two lines and
     pasted as two commands — pain point 3 surviving its own cure."""
     # 101 characters — comfortably past the 80-column default rich falls back to
     # when stdout is not a TTY, which is exactly the case under pytest capture.
+    monkeypatch.setattr("livewire_scripts.status.subprocess.run", _fake_launchctl)
     assert len(status._SILVER_FIX) > 80
     (tmp_path / "daily_update_2026-08-10.log").write_text(_SILVER, encoding="utf-8")
     main(["--run-date", "2026-08-10", "--log-dir", str(tmp_path), "--data-lake", str(tmp_path)])
     out = capsys.readouterr().out
     assert status._SILVER_FIX in out
+
+
+def _fake_launchctl(_cmd, **_kw):
+    return SimpleNamespace(stdout="".join(f"-\t0\t{label}\n" for label in _LAUNCHD_JOBS), returncode=0)
+
+
+def test_a_job_that_is_not_loaded_is_bad() -> None:
+    def _runner(_cmd, **_kw):
+        return SimpleNamespace(stdout="-\t0\tcom.livewire.daily-update\n", returncode=0)
+
+    section = _launchd_section(runner=_runner)
+    assert section.verdict is Verdict.BAD
+    assert "com.livewire.coverage" in "\n".join(section.lines)
+
+
+def test_a_nonzero_exit_is_capped_at_warn() -> None:
+    """launchctl reports the LAST exit with no timestamp. Today's watchdog=1 is
+    residue from a run that predates the fix already in production. Calling that
+    BAD is the fastest way to make the whole surface ignorable."""
+    stdout = "".join(f"-\t0\t{label}\n" for label in _LAUNCHD_JOBS)
+    stdout = stdout.replace("-\t0\tcom.livewire.intraday-catchup", "-\t86\tcom.livewire.intraday-catchup")
+
+    def _runner(_cmd, **_kw):
+        return SimpleNamespace(stdout=stdout, returncode=0)
+
+    section = _launchd_section(runner=_runner)
+    assert section.verdict is Verdict.WARN
+    assert "no timestamp" in "\n".join(section.lines)
+
+
+def test_all_jobs_green_is_ok() -> None:
+    assert _launchd_section(runner=_fake_launchctl).verdict is Verdict.OK
+
+
+def test_launchctl_missing_is_unknown() -> None:
+    def _runner(_cmd, **_kw):
+        raise FileNotFoundError("launchctl")
+
+    assert _launchd_section(runner=_runner).verdict is Verdict.UNKNOWN

@@ -399,6 +399,72 @@ def _disk_section(data_lake: Path, warehouse: Path | None = None) -> Section:
     return Section("Disk", Verdict.OK, lines)
 
 
+#: Every plist under launchd/. A job that is absent cannot run and cannot
+#: recover on its own, which is the only BAD this check ever reports.
+_LAUNCHD_JOBS: tuple[str, ...] = (
+    "com.livewire.daily-update",
+    "com.livewire.daily-update-watchdog",
+    "com.livewire.intraday-catchup",
+    "com.livewire.coverage",
+    "com.livewire.release-promote",
+)
+
+
+def _launchd_section(runner=subprocess.run) -> Section:
+    """Grade the scheduled jobs from `launchctl list`.
+
+    `launchctl list` prints "PID\\tStatus\\tLabel" and the status is the LAST
+    exit code with no indication of when it happened. This check therefore
+    caps a nonzero exit at WARN: right now the watchdog shows 1 and
+    intraday-catchup shows 86, both residue from runs predating the fix now in
+    production. Overstating a stale red trains the reader to ignore the surface.
+    """
+    try:
+        result = runner(["launchctl", "list"], capture_output=True, text=True, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return Section(
+            "launchd jobs",
+            Verdict.UNKNOWN,
+            [f"launchd jobs: launchctl unavailable — {exc}"],
+            fix="launchctl list | grep com.livewire",
+        )
+
+    loaded: dict[str, str] = {}
+    for line in (result.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3 and parts[2] in _LAUNCHD_JOBS:
+            loaded[parts[2]] = parts[1]
+
+    missing = [label for label in _LAUNCHD_JOBS if label not in loaded]
+    nonzero = {label: code for label, code in loaded.items() if code not in {"0", "-"}}
+
+    lines = ["launchd jobs:"]
+    for label in _LAUNCHD_JOBS:
+        lines.append(f"  {label:<38} {loaded.get(label, 'NOT LOADED')}")
+    if missing:
+        # Name EVERY missing job, not just the first — an operator who runs the
+        # printed command and sees the section still red learns to distrust it.
+        # And check the plist actually exists: the repo ships `.plist.example`
+        # templates that must be rendered first, so `launchctl load` on an
+        # uninstalled label fails with a message that explains nothing.
+        agents = Path.home() / "Library/LaunchAgents"
+        installed = [label for label in missing if (agents / f"{label}.plist").exists()]
+        uninstalled = [label for label in missing if label not in installed]
+        lines.append(f"  missing: {', '.join(missing)}")
+        if uninstalled:
+            fix = (
+                f"render the plist first — no {agents}/{uninstalled[0]}.plist exists; "
+                f"see launchd/{uninstalled[0]}.plist.example and the CLAUDE.md scheduling block"
+            )
+        else:
+            fix = " && ".join(f"launchctl load {agents}/{label}.plist" for label in installed)
+        return Section("launchd jobs", Verdict.BAD, lines, fix=fix)
+    if nonzero:
+        lines.append("  note: exit code carries no timestamp — check the matching log before acting")
+        return Section("launchd jobs", Verdict.WARN, lines, fix="ls -lt ~/market-warehouse/logs/ | head")
+    return Section("launchd jobs", Verdict.OK, lines)
+
+
 def _safe(name: str, builder) -> Section:
     """Run one check, degrading a crash to UNKNOWN.
 
@@ -435,6 +501,7 @@ def collect(
     """
     run = run_date.isoformat()
     return [
+        _safe("launchd jobs", lambda: _launchd_section(runner=runner)),
         _safe("Daily update outcomes", lambda: _outcomes_section(run, log_dir)),
         _safe("Intraday catch-up phases", lambda: _phases_section(run, log_dir)),
         _safe("Silver rebuild", lambda: _silver_section(run, log_dir)),
