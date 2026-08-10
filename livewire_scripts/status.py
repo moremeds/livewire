@@ -465,6 +465,67 @@ def _launchd_section(runner=subprocess.run) -> Section:
     return Section("launchd jobs", Verdict.OK, lines)
 
 
+def _undelivered_queues(log_dir: Path) -> list[Path]:
+    """BOTH queues. The repo keeps two, deliberately and separately.
+
+    `MDW_UNDELIVERED_DIR` (default `quality_alerts_undelivered`) is per-flag
+    quality alerts — the 4,408 files. `run_daily_update_job.undelivered_dir`
+    writes scheduled-job alerts to `<log_dir>/alerts_undelivered` and its
+    docstring says the split is intentional. A section called "Undelivered
+    alerts" that counts only one of them is misnamed, and the one it would omit
+    is the *job failure* page.
+    """
+    return [
+        Path(os.environ.get("MDW_UNDELIVERED_DIR", log_dir / "quality_alerts_undelivered")),
+        log_dir / "alerts_undelivered",
+    ]
+
+
+def _undelivered_section(log_dir: Path) -> Section:
+    """Count alerts that could not be sent.
+
+    No severity ladder by age. 4,408 files whose newest is a week old is a
+    historic pile-up; one file from an hour ago is an active failure; a rule
+    that tries to tell them apart would be guessing. Print both numbers and let
+    the reader judge.
+    """
+    lines, total, newest_ts, unreadable = ["Undelivered alerts:"], 0, 0.0, []
+    for directory in _undelivered_queues(log_dir):
+        try:
+            entries = [p for p in directory.iterdir() if p.is_file()]
+        except FileNotFoundError:
+            lines.append(f"  {directory.name:<28} none")
+            continue
+        except OSError as exc:
+            unreadable.append(f"{directory.name}: {exc}")
+            lines.append(f"  {directory.name:<28} unreadable — {exc}")
+            continue
+        if not entries:
+            lines.append(f"  {directory.name:<28} none")
+            continue
+        stamp = max(p.stat().st_mtime for p in entries)
+        newest_ts = max(newest_ts, stamp)
+        total += len(entries)
+        lines.append(
+            f"  {directory.name:<28} {len(entries):>6,} file(s), newest {date.fromtimestamp(stamp).isoformat()}"
+        )
+
+    if unreadable:
+        return Section("Undelivered alerts", Verdict.UNKNOWN, lines, fix=f"ls -ld {log_dir}")
+    if not total:
+        return Section("Undelivered alerts", Verdict.OK, ["Undelivered alerts: none"])
+    return Section(
+        "Undelivered alerts",
+        Verdict.WARN,
+        [f"Undelivered alerts: {total:,} across 2 queues, newest {date.fromtimestamp(newest_ts).isoformat()}"]
+        + lines[1:],
+        # An honest instruction: read one to learn WHY delivery failed, then
+        # delete the batch. `ls | head` alone neither diagnoses nor clears, and
+        # a fix that overpromises is a fix nobody trusts twice.
+        fix=f"cat $(ls -t {log_dir}/quality_alerts_undelivered/* | head -1)   # then rm the batch once understood",
+    )
+
+
 def _safe(name: str, builder) -> Section:
     """Run one check, degrading a crash to UNKNOWN.
 
@@ -502,6 +563,7 @@ def collect(
     run = run_date.isoformat()
     return [
         _safe("launchd jobs", lambda: _launchd_section(runner=runner)),
+        _safe("Undelivered alerts", lambda: _undelivered_section(log_dir)),
         _safe("Daily update outcomes", lambda: _outcomes_section(run, log_dir)),
         _safe("Intraday catch-up phases", lambda: _phases_section(run, log_dir)),
         _safe("Silver rebuild", lambda: _silver_section(run, log_dir)),

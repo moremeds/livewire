@@ -22,6 +22,7 @@ from livewire_scripts.status import (
     _phases_section,
     _quality_jobs_section,
     _silver_section,
+    _undelivered_section,
     collect,
     main,
     render,
@@ -212,7 +213,7 @@ def test_unknown_outranks_ok_so_a_run_verdict_can_never_be_green_on_a_gap() -> N
 
 def test_collect_returns_a_section_per_check(tmp_path: Path) -> None:
     sections = collect(date(2026, 8, 10), tmp_path, tmp_path, runner=_fake_launchctl)
-    assert len(sections) == 7
+    assert len(sections) == 8
     assert all(isinstance(s, Section) for s in sections)
 
 
@@ -584,3 +585,44 @@ def test_launchctl_missing_is_unknown() -> None:
         raise FileNotFoundError("launchctl")
 
     assert _launchd_section(runner=_runner).verdict is Verdict.UNKNOWN
+
+
+def test_an_empty_or_absent_queue_is_ok(tmp_path: Path) -> None:
+    assert _undelivered_section(tmp_path).verdict is Verdict.OK
+    (tmp_path / "quality_alerts_undelivered").mkdir()
+    assert _undelivered_section(tmp_path).verdict is Verdict.OK
+
+
+def test_any_undelivered_alert_is_a_warning(tmp_path: Path) -> None:
+    """4,408 of these were on disk, newest 2026-08-02, and appeared in no
+    report anywhere — the channel that would report it was the broken one."""
+    queue = tmp_path / "quality_alerts_undelivered"
+    queue.mkdir()
+    (queue / "2026-08-02T05-54-08Z_ib_CL_202612.html").write_text("<p>x</p>", encoding="utf-8")
+    section = _undelivered_section(tmp_path)
+    assert section.verdict is Verdict.WARN
+    assert "1" in "\n".join(section.lines)
+    assert section.fix is not None
+
+
+def test_the_scheduled_job_queue_is_counted_too(tmp_path: Path) -> None:
+    """The repo keeps TWO queues, deliberately and separately. The one this
+    used to omit is the JOB FAILURE page — the more serious of the pair."""
+    queue = tmp_path / "alerts_undelivered"
+    queue.mkdir()
+    (queue / "2026-08-08T06-00-00Z_daily_update.html").write_text("<p>x</p>", encoding="utf-8")
+    section = _undelivered_section(tmp_path)
+    assert section.verdict is Verdict.WARN
+    assert "alerts_undelivered" in "\n".join(section.lines)
+
+
+def test_the_quality_queue_honours_its_env_knob(tmp_path: Path, monkeypatch) -> None:
+    """MDW_UNDELIVERED_DIR relocates the quality queue; the section must follow
+    it rather than assuming the default sits under log_dir."""
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    (elsewhere / "2026-08-02T05-54-08Z_ib_CL_202612.html").write_text("<p>x</p>", encoding="utf-8")
+    monkeypatch.setenv("MDW_UNDELIVERED_DIR", str(elsewhere))
+    section = _undelivered_section(tmp_path / "logs")
+    assert section.verdict is Verdict.WARN
+    assert "somewhere-else" in "\n".join(section.lines)
