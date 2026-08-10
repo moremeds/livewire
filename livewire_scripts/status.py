@@ -14,6 +14,7 @@ grades how old that is as its own signal.
 
 from __future__ import annotations
 
+import argparse
 import enum
 import os
 import re
@@ -21,8 +22,11 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
+
+from rich.console import Console
+from rich.markup import escape
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
@@ -33,6 +37,8 @@ from livewire_scripts.daily_outcomes import (
     parse_last_summary_json,
     resolve_exit_code,
 )
+from livewire_scripts.paths import data_lake_dir
+from livewire_scripts.paths import log_dir as default_log_dir
 
 _MIN_FREE_GB = float(os.getenv("MDW_FLATFILE_MIN_FREE_GB", "25"))
 _GIB = 1024**3
@@ -436,3 +442,55 @@ def collect(
         _safe("Coverage", lambda: _coverage_section(run, log_dir)),
         _safe("Disk", lambda: _disk_section(data_lake, log_dir.parent)),
     ]
+
+
+def render(sections: list[Section]) -> str:
+    """Render for a terminal. Returns rich markup; Console() applies it.
+
+    EVERY line here is log-derived text and MUST go through `escape()`.
+    Measured 2026-08-10 against rich: a line containing "[/]" raises
+    MarkupError and takes the whole command down, and a line containing
+    "[bold red]" is silently consumed as a style — the text vanishes from the
+    report. Both shapes occur in real log output (error payloads, path
+    fragments, `top_errors` reprs).
+
+    Note that a bare "[BAD ]" is NOT a hazard — rich leaves unrecognised tags
+    literal. The verdict keeps its brackets so the terminal and the email read
+    identically; colour is added on top, not instead.
+    """
+    lines = ["Livewire status"]
+    for section in sections:
+        # `lines` defaults to [] on the dataclass and render() is the one path
+        # with no try/except above it — an empty-lines Section must not be the
+        # thing that kills the report it was added to.
+        headline = section.lines[0] if section.lines else f"{section.name}: (no detail)"
+        lines.append(f"[{section.verdict.style}][{section.verdict.glyph}][/] {escape(headline)}")
+        lines.extend(f"  {escape(line.lstrip())}" for line in section.lines[1:])
+        if section.fix and section.verdict is not Verdict.OK:
+            lines.append(f"  [dim]fix:[/] {escape(section.fix)}")
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Assess Livewire's operational state")
+    parser.add_argument("--run-date", type=date.fromisoformat, default=datetime.now(UTC).date())
+    parser.add_argument("--log-dir", type=Path, default=None)
+    parser.add_argument("--data-lake", type=Path, default=None)
+    args = parser.parse_args(argv)
+    sections = collect(
+        args.run_date,
+        args.log_dir or default_log_dir(),
+        args.data_lake or data_lake_dir(),
+    )
+    # Exit 0 always: see the module docstring. rich strips markup when not a TTY.
+    #
+    # soft_wrap=True because the fix commands are meant to be COPIED. rich's
+    # default word-wrap inserts real newlines at the console width, so
+    # `rebuild-silver --full --dry-run --failure-output …` came back as two
+    # lines and pasted as two commands. Let the terminal wrap visually instead.
+    Console(soft_wrap=True).print(render(sections))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

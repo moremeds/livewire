@@ -20,6 +20,8 @@ from livewire_scripts.status import (
     _quality_jobs_section,
     _silver_section,
     collect,
+    main,
+    render,
 )
 
 _SILVER = (
@@ -482,3 +484,56 @@ class TestTheDigestDistinguishesDegradedFromFailed:
             },
         )
         assert "FAILED (exit 2)" in "\n".join(_phases_section("2026-08-08", tmp_path).lines)
+
+
+def test_render_shows_the_fix_for_anything_not_ok() -> None:
+    out = render([Section(name="Coverage", verdict=Verdict.BAD, lines=["Coverage:"], fix="run me")])
+    assert "run me" in out
+    assert "BAD" in out
+
+
+def test_render_omits_the_fix_when_ok() -> None:
+    out = render([Section(name="Disk", verdict=Verdict.OK, lines=["Disk: fine"], fix="run me")])
+    assert "run me" not in out
+
+
+def test_render_names_a_section_that_produced_no_lines() -> None:
+    out = render([Section(name="Coverage", verdict=Verdict.UNKNOWN)])
+    assert "Coverage" in out
+
+
+def test_render_survives_markup_in_log_derived_text(capsys) -> None:
+    """Measured: a log line containing "[/]" raises MarkupError and takes the
+    whole command down; "[bold red]" is silently eaten as a style."""
+    from rich.console import Console
+
+    hostile = Section(
+        name="Quality jobs",
+        verdict=Verdict.WARN,
+        lines=["Quality jobs: 1 FAILED", "  coverage failed: timed out [/] after [bold red]1800[/bold red]s"],
+    )
+    Console().print(render([hostile]))
+    out = capsys.readouterr().out
+    assert "[/]" in out
+    assert "1800" in out
+
+
+def test_main_exits_zero_even_when_everything_is_broken(tmp_path: Path, capsys) -> None:
+    """A nonzero exit invites someone to schedule this, and every stale
+    launchctl red would then page."""
+    rc = main(["--run-date", "2026-08-10", "--log-dir", str(tmp_path), "--data-lake", str(tmp_path)])
+    assert rc == 0
+    assert "Livewire status" in capsys.readouterr().out
+
+
+def test_a_fix_command_survives_a_narrow_terminal_in_one_piece(tmp_path: Path, capsys) -> None:
+    """The fixes exist to be COPIED. rich's default word-wrap inserts real
+    newlines at the console width, so a long command came back as two lines and
+    pasted as two commands — pain point 3 surviving its own cure."""
+    # 101 characters — comfortably past the 80-column default rich falls back to
+    # when stdout is not a TTY, which is exactly the case under pytest capture.
+    assert len(status._SILVER_FIX) > 80
+    (tmp_path / "daily_update_2026-08-10.log").write_text(_SILVER, encoding="utf-8")
+    main(["--run-date", "2026-08-10", "--log-dir", str(tmp_path), "--data-lake", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert status._SILVER_FIX in out
