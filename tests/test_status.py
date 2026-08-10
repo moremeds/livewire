@@ -766,3 +766,75 @@ def test_a_missing_baseline_never_downgrades_a_known_regression(tmp_path: Path) 
     unmeasurable — it does not un-measure the 39 withheld symbols."""
     (tmp_path / "daily_update_2026-08-10.log").write_text(_SILVER, encoding="utf-8")
     assert _silver_section("2026-08-10", tmp_path).verdict is Verdict.WARN
+
+
+def test_duckdb_two_sessions_behind_is_a_warning(monkeypatch) -> None:
+    """The state the real warehouse was in on 2026-08-10: bronze_cmdty_1d at
+    2026-08-05, three sessions back. Behind but not yet dead."""
+    monkeypatch.setattr(
+        "livewire_scripts.status._coverage_headline",
+        lambda _db: {"bronze_equity_1d": (13311, date(2026, 8, 5))},
+    )
+    assert _duckdb_section(date(2026, 8, 10)).verdict is Verdict.WARN
+
+
+def test_a_coverage_line_that_carries_no_timeframes_is_unknown(tmp_path: Path) -> None:
+    """A dated log whose measurement does not parse. Reporting OK would be the
+    dead-detector shape with an extra step."""
+    (tmp_path / "coverage_2026-08-10.log").write_text("coverage run aborted\n", encoding="utf-8")
+    section = _coverage_section("2026-08-10", tmp_path)
+    assert section.verdict is Verdict.UNKNOWN
+    assert "did not parse" in (section.fix or "")
+
+
+def test_an_unparseable_run_date_yields_no_silver_baseline(tmp_path: Path) -> None:
+    assert status._previous_silver_summary("not-a-date", tmp_path) is None
+
+
+def test_an_unreadable_alert_queue_is_unknown_not_ok(tmp_path: Path, monkeypatch) -> None:
+    """A queue we cannot read holds an unknown number of undelivered pages."""
+    queue = tmp_path / "quality_alerts_undelivered"
+    queue.mkdir()
+    real_iterdir = Path.iterdir
+
+    def _denied(self):
+        if self == queue:
+            raise PermissionError("Operation not permitted")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _denied)
+    section = _undelivered_section(tmp_path)
+    assert section.verdict is Verdict.UNKNOWN
+    assert "unreadable" in "\n".join(section.lines)
+
+
+def test_an_uninstalled_plist_says_render_it_not_launchctl_load(tmp_path: Path, monkeypatch) -> None:
+    """The repo ships `.plist.example` templates. `launchctl load` on a label
+    with no rendered plist fails with a message that explains nothing."""
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+
+    def _runner(_cmd, **_kw):
+        return SimpleNamespace(stdout="-\t0\tcom.livewire.daily-update\n", returncode=0)
+
+    section = _launchd_section(runner=_runner)
+    assert section.verdict is Verdict.BAD
+    assert "render the plist first" in (section.fix or "")
+
+
+def test_an_installed_but_unloaded_plist_says_launchctl_load(tmp_path: Path, monkeypatch) -> None:
+    agents = tmp_path / "Library/LaunchAgents"
+    agents.mkdir(parents=True)
+    for label in _LAUNCHD_JOBS:
+        (agents / f"{label}.plist").write_text("<plist/>", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+
+    def _runner(_cmd, **_kw):
+        return SimpleNamespace(stdout="-\t0\tcom.livewire.daily-update\n", returncode=0)
+
+    section = _launchd_section(runner=_runner)
+    assert section.verdict is Verdict.BAD
+    assert (section.fix or "").startswith("launchctl load ")
+    # EVERY missing job, not just the first: an operator who runs the printed
+    # command and sees the section still red learns to distrust the surface.
+    for label in _LAUNCHD_JOBS[1:]:
+        assert label in (section.fix or "")

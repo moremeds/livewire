@@ -53,12 +53,12 @@ A pure move. Behaviour must be byte-identical so the existing digest tests pass 
 - Consumes: nothing.
 - Produces: `status._read_text(path) -> str | None`, `status._outcomes_section(run_date: str, log_dir: Path) -> list[str]`, `status._phases_section(run_date: str, log_dir: Path) -> list[str]`, `status._silver_section(run_date: str, log_dir: Path) -> list[str]`, `status._quality_jobs_section(run_date: str, log_dir: Path) -> list[str]`, `status._coverage_section(run_date: str, log_dir: Path) -> list[str]`, `status._disk_section(data_lake: Path, warehouse: Path | None = None) -> list[str]`. Also the module constants `_MIN_FREE_GB`, `_GIB`, `_COVERAGE_STALE_DAYS`, `_QUALITY_WARNING_RE`.
 
-- [ ] **Step 1: Run the existing digest tests to capture the green baseline**
+- [x] **Step 1: Run the existing digest tests to capture the green baseline**
 
 Run: `uv run pytest tests/test_nightly_digest.py -q`
 Expected: PASS. Note the count — the same count must pass at the end of this task.
 
-- [ ] **Step 2: Create `livewire_scripts/status.py` with the moved code**
+- [x] **Step 2: Create `livewire_scripts/status.py` with the moved code**
 
 Cut lines 41–238 of `livewire_scripts/nightly_digest.py` (`_read_text` through `_disk_section`) and paste them into the new module, along with the constants `_MIN_FREE_GB`, `_GIB`, `_COVERAGE_STALE_DAYS` and `_QUALITY_WARNING_RE`. Do not change a single line of their bodies.
 
@@ -101,7 +101,7 @@ _COVERAGE_STALE_DAYS = 3
 # ... the six moved functions and _QUALITY_WARNING_RE, verbatim ...
 ```
 
-- [ ] **Step 3: Re-point `nightly_digest.py` at the moved functions**
+- [x] **Step 3: Re-point `nightly_digest.py` at the moved functions**
 
 Delete the moved bodies and their now-unused imports (`re`, `shutil` stays — `main()` uses `shutil.which`), then import them:
 
@@ -118,7 +118,7 @@ from livewire_scripts.status import (
 
 `build_digest` is unchanged.
 
-- [ ] **Step 4: Run the digest tests — the same count must still pass**
+- [x] **Step 4: Run the digest tests — the same count must still pass**
 
 Run: `uv run pytest tests/test_nightly_digest.py -q`
 Expected: PASS, identical count to Step 1. Any failure means the move was not faithful.
@@ -127,12 +127,12 @@ Two things that look like they should break and do not — **do not "fix" them i
 - Eleven tests call `nightly_digest._disk_section(...)` / `nightly_digest._coverage_section(...)` directly. The imported names are still module attributes, and they still return `list[str]`, so the calls resolve. Task 2 is where they change.
 - `monkeypatch.setattr(nightly_digest.shutil, "disk_usage", ...)` still works: `nightly_digest.shutil` and `status.shutil` are the same cached module object, and the patch lands on that object.
 
-- [ ] **Step 5: Run the full gate**
+- [x] **Step 5: Run the full gate**
 
 Run: `uv run ruff check . && uv run ruff format --check . && uv run pytest tests/ -m "not integration" -q`
 Expected: all pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add livewire_scripts/status.py livewire_scripts/nightly_digest.py
@@ -156,7 +156,7 @@ consumer (a terminal command) is about to need the same parsers."
 - Consumes: the six `_*_section` functions from Task 1.
 - Produces: `status.Verdict` (enum: `OK`, `UNKNOWN`, `WARN`, `BAD`, ordered worst-last, with `.glyph` and `.style`), `status.Section` (frozen dataclass: `name: str`, `verdict: Verdict`, `lines: list[str]`, `fix: str | None = None`), `status._safe(name: str, builder) -> Section`, `status.collect(run_date: date, log_dir: Path, data_lake: Path, *, runner=subprocess.run, database: Path | None = None) -> list[Section]`. All six section functions now return `Section` instead of `list[str]`, and `nightly_digest.build_digest` consumes `collect()`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/test_status.py`:
 
@@ -349,12 +349,12 @@ def test_collect_never_raises_when_a_check_explodes(tmp_path: Path, monkeypatch)
 
 Import `inspect`, `collect`, `_safe` and `date` at the top of the test file.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/test_status.py -q`
 Expected: FAIL — `ImportError: cannot import name 'Section'`.
 
-- [ ] **Step 3: Add the types and the verdicts**
+- [x] **Step 3: Add the types and the verdicts**
 
 In `livewire_scripts/status.py`:
 
@@ -478,7 +478,7 @@ def _coverage_ratios(measurement: str) -> dict[str, float]:
     }
 ```
 
-- [ ] **Step 4: Add `_safe` and `collect()`, and make `build_digest` consume them**
+- [x] **Step 4: Add `_safe` and `collect()`, and make `build_digest` consume them**
 
 ⚠️ **`build_digest` must call `collect()`, never its own list of sections.** An
 earlier draft of this plan had `build_digest` enumerate the six sections
@@ -576,7 +576,7 @@ def test_the_digest_and_the_terminal_see_the_same_checks(tmp_path: Path) -> None
         assert name not in source, "build_digest must not enumerate sections itself"
 ```
 
-- [ ] **Step 5: Migrate the eleven direct callers in `tests/test_nightly_digest.py`**
+- [x] **Step 5: Migrate the eleven direct callers in `tests/test_nightly_digest.py`**
 
 Task 1 kept these green because the moved functions still returned `list[str]`. Task 2 changes that return type, so every direct call breaks. There are exactly eleven, all in the two test classes at the end of the file:
 
@@ -589,12 +589,12 @@ Task 1 kept these green because the moved functions still returned `list[str]`. 
 
 Everything else in `tests/test_nightly_digest.py` keeps passing: `_LOG_DIR` and `datetime` stay in that module, and the whole-digest assertions are substring checks (`"Disk:" in out`) that survive a verdict prefix. Do not weaken any assertion that checks content.
 
-- [ ] **Step 6: Run both test files**
+- [x] **Step 6: Run both test files**
 
 Run: `uv run pytest tests/test_status.py tests/test_nightly_digest.py -q`
 Expected: PASS. Fix only assertions that anchor on line starts.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add livewire_scripts/status.py livewire_scripts/nightly_digest.py tests/test_status.py tests/test_nightly_digest.py
@@ -618,7 +618,7 @@ UNKNOWN deliberately outranks OK: a check that could not measure has not passed.
 - Consumes: `Section`, `Verdict`, `collect()` and `_safe()` from Task 2.
 - Produces: `status.render(sections: list[Section]) -> str`, `status.main(argv: list[str] | None = None) -> int`, and the `status` subcommand on `scripts/livewire_ops.py`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_status.py` (the `collect()` tests belong to Task 2, where `collect` is introduced — add these there instead if you are working ahead):
 
@@ -660,12 +660,12 @@ def test_main_exits_zero_even_when_everything_is_broken(tmp_path: Path, capsys) 
 
 Extend the import at the top of the file with `collect`, `main`, `render`.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/test_status.py -q`
 Expected: FAIL — `ImportError: cannot import name 'collect'`.
 
-- [ ] **Step 3: Implement `collect`, `render` and `main`**
+- [x] **Step 3: Implement `collect`, `render` and `main`**
 
 ```python
 import argparse
@@ -724,7 +724,7 @@ if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
 ```
 
-- [ ] **Step 4: Register the subcommand**
+- [x] **Step 4: Register the subcommand**
 
 In `scripts/livewire_ops.py`, add to `COMMANDS`:
 
@@ -732,17 +732,17 @@ In `scripts/livewire_ops.py`, add to `COMMANDS`:
     "status": "livewire_scripts.status",
 ```
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `uv run pytest tests/test_status.py tests/test_livewire_entrypoints.py -q`
 Expected: PASS. If `test_livewire_entrypoints.py` asserts an exact subcommand list, add `status` to it.
 
-- [ ] **Step 6: Run it against the real warehouse and eyeball the output**
+- [x] **Step 6: Run it against the real warehouse and eyeball the output**
 
 Run: `uv run python scripts/livewire_ops.py status`
 Expected: six graded lines. Coverage should read BAD (the newest log measures 2026-08-07 at 0.00%) and Disk should read BAD or WARN.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add livewire_scripts/status.py scripts/livewire_ops.py tests/test_status.py tests/test_livewire_entrypoints.py
@@ -761,7 +761,7 @@ git commit -m "feat: livewire_ops.py status — one graded terminal view"
 - Consumes: `Section`, `Verdict`.
 - Produces: `status._launchd_section(runner=subprocess.run) -> Section`, and `collect()` returns 7 sections.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_a_job_that_is_not_loaded_is_bad() -> None:
@@ -806,12 +806,12 @@ def test_launchctl_missing_is_unknown() -> None:
 
 Add `from types import SimpleNamespace` and `_LAUNCHD_JOBS`, `_launchd_section` to the imports.
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `uv run pytest tests/test_status.py -k launchd -q`
 Expected: FAIL — `cannot import name '_launchd_section'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # `import subprocess` already landed in Task 3 as collect()'s runner default.
@@ -898,12 +898,12 @@ def _fake_launchctl(_cmd, **_kw):
 
 (and take `monkeypatch` as a parameter). Without this the test shells out to the operator's real `launchctl`.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `uv run pytest tests/test_status.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add livewire_scripts/status.py tests/test_status.py
@@ -922,7 +922,7 @@ git commit -m "feat(status): report the launchd jobs, capping a stale red at WAR
 - Consumes: `Section`, `Verdict`.
 - Produces: `status._undelivered_section(log_dir: Path) -> Section`, and `collect()` returns 8 sections.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_an_empty_or_absent_queue_is_ok(tmp_path: Path) -> None:
@@ -943,12 +943,12 @@ def test_any_undelivered_alert_is_a_warning(tmp_path: Path) -> None:
     assert section.fix is not None
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `uv run pytest tests/test_status.py -k undelivered -q`
 Expected: FAIL — `cannot import name '_undelivered_section'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 def _undelivered_queues(log_dir: Path) -> list[Path]:
@@ -1020,12 +1020,12 @@ Add to `collect()` after the launchd check:
 
 and update the count test to 8.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `uv run pytest tests/test_status.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add livewire_scripts/status.py tests/test_status.py
@@ -1048,7 +1048,7 @@ channel that would have reported it was the one that broke."
 - Consumes: `Section`, `Verdict`.
 - Produces: `clients.duckdb_catalog.coverage_headline(database: Path | str | None = None) -> dict[str, tuple[int, date | None]]`; `status._duckdb_section(target: date, database: Path | None = None) -> Section`; `collect()` returns 9 sections.
 
-- [ ] **Step 1: Write the failing test for `coverage_headline`**
+- [x] **Step 1: Write the failing test for `coverage_headline`**
 
 Append to `tests/test_duckdb_catalog.py`:
 
@@ -1090,12 +1090,12 @@ def test_coverage_headline_raises_when_the_file_holds_no_coverage_table(tmp_path
 
 Add `coverage_headline` to the file's existing `from clients.duckdb_catalog import (...)` block, and `import pytest` if it is not already there.
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `uv run pytest tests/test_duckdb_catalog.py -k headline -q`
 Expected: FAIL — `cannot import name 'coverage_headline'`.
 
-- [ ] **Step 3: Implement `coverage_headline`**
+- [x] **Step 3: Implement `coverage_headline`**
 
 In `clients/duckdb_catalog.py`, below `build_coverage`:
 
@@ -1129,7 +1129,7 @@ def coverage_headline(database: Path | str | None = None) -> dict[str, tuple[int
 
 Add `from datetime import date` to the module imports if absent.
 
-- [ ] **Step 4: Write the failing tests for the status check**
+- [x] **Step 4: Write the failing tests for the status check**
 
 ```python
 def test_duckdb_check_is_unknown_when_duckdb_is_not_installed(monkeypatch) -> None:
@@ -1176,12 +1176,12 @@ def test_duckdb_check_is_unknown_when_never_built(monkeypatch) -> None:
     assert section.fix is not None
 ```
 
-- [ ] **Step 5: Run to verify failure**
+- [x] **Step 5: Run to verify failure**
 
 Run: `uv run pytest tests/test_status.py -k duckdb -q`
 Expected: FAIL — `cannot import name '_duckdb_section'`.
 
-- [ ] **Step 6: Implement the status check**
+- [x] **Step 6: Implement the status check**
 
 ```python
 #: Indirection so tests can replace the catalog read without importing duckdb,
@@ -1293,12 +1293,12 @@ Update the count test to 9, and pass `database=tmp_path / "absent.duckdb"` in ev
 
 One seam, patched the same way everywhere. Do not reach for `default_database` — importing it at module level in `status.py` would pull in `clients.duckdb_catalog`, and therefore `duckdb`, at import time, which is exactly what the ImportError guard exists to avoid.
 
-- [ ] **Step 7: Run the containment test and the full suite**
+- [x] **Step 7: Run the containment test and the full suite**
 
 Run: `uv run pytest tests/test_duckdb_containment.py tests/test_status.py tests/test_duckdb_catalog.py -q`
 Expected: PASS, with **no new entry** in `ALLOWED_DUCKDB_IMPORTERS`. If the containment test fails, `status.py` imports duckdb somewhere — fix `status.py`, never the allowlist.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add clients/duckdb_catalog.py livewire_scripts/status.py tests/test_status.py tests/test_duckdb_catalog.py
@@ -1321,7 +1321,7 @@ what keeps DuckDB a query layer — needs no new exception."
 - Consumes: `Section`, `Verdict`, `parse_all_summary_json`.
 - Produces: `status._previous_silver_summary(run_date: str, log_dir: Path) -> dict | None`. `_silver_section` keeps its signature.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 _SILVER_CLEAN = (
@@ -1357,12 +1357,12 @@ def test_silver_without_a_baseline_is_unknown(tmp_path: Path) -> None:
     assert _silver_section("2026-08-10", tmp_path).verdict is Verdict.UNKNOWN
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `uv run pytest tests/test_status.py -k silver -q`
 Expected: FAIL — the current section returns OK with no delta line.
 
-- [ ] **Step 3: Implement the baseline lookup and the delta rule**
+- [x] **Step 3: Implement the baseline lookup and the delta rule**
 
 ```python
 def _previous_silver_summary(run_date: str, log_dir: Path) -> dict | None:
@@ -1415,12 +1415,12 @@ In `_silver_section`, after the existing `lines.append(...)` calls, replace the 
 
 with `_SILVER_FIX = "python scripts/livewire_store.py rebuild-silver --full --dry-run --failure-output /tmp/silver-dry.json"` at module level.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `uv run pytest tests/test_status.py -q`
 Expected: PASS. Task 2's `test_withheld_windows_are_a_warning` still passes — `window_regressions=39` keeps WARN with or without a baseline.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add livewire_scripts/status.py tests/test_status.py
@@ -1442,7 +1442,7 @@ is the previous run and the signal is the delta."
 - Consumes: everything above.
 - Produces: nothing new.
 
-- [ ] **Step 1: Document the command**
+- [x] **Step 1: Document the command**
 
 In `CLAUDE.md`, under "Reliability tooling", add:
 
@@ -1477,7 +1477,7 @@ python scripts/livewire_ops.py status
   defined once and both surfaces get it.
 ````
 
-- [ ] **Step 2: Run the complete CI gate**
+- [x] **Step 2: Run the complete CI gate**
 
 ```bash
 uv run ruff check . && \
@@ -1487,12 +1487,12 @@ uv run pytest tests/ -m "not integration" --cov --cov-fail-under=95 -W error::Ru
 ```
 Expected: all pass, coverage ≥ 95%.
 
-- [ ] **Step 3: Run the command against the real warehouse one final time**
+- [x] **Step 3: Run the command against the real warehouse one final time**
 
 Run: `uv run python scripts/livewire_ops.py status`
 Expected: nine graded lines. Record the actual output in the PR body — it is the evidence the surface works on real data.
 
-- [ ] **Step 4: Tick every checkbox in this plan, then commit**
+- [x] **Step 4: Tick every checkbox in this plan, then commit**
 
 ```bash
 git add CLAUDE.md docs/superpowers/plans/2026-08-10-graded-status-surface.md
