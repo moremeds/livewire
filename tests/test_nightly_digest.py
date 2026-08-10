@@ -17,12 +17,18 @@ from livewire_scripts.nightly_digest import build_digest, main
 
 @pytest.fixture(autouse=True)
 def _no_real_launchctl(monkeypatch):
-    """build_digest reaches collect(), and collect() shells out to launchctl.
+    """build_digest reaches collect(), which shells out to launchctl AND opens
+    the operator's real analytics.duckdb.
 
     Every digest assertion here would otherwise depend on which plists happen
     to be loaded on the machine running the test — green on this Mac, a
     different verdict on CI, and an unmocked subprocess either way.
     """
+    monkeypatch.setattr(
+        status,
+        "_coverage_headline",
+        lambda _db: (_ for _ in ()).throw(FileNotFoundError("analytics.duckdb")),
+    )
     monkeypatch.setattr(
         status.subprocess,
         "run",

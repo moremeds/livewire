@@ -17,6 +17,7 @@ from livewire_scripts.status import (
     Verdict,
     _coverage_section,
     _disk_section,
+    _duckdb_section,
     _launchd_section,
     _outcomes_section,
     _phases_section,
@@ -82,7 +83,9 @@ def test_a_total_wipeout_is_bad_and_one_flaky_symbol_is_only_warn(tmp_path: Path
 
 def test_every_non_ok_section_carries_a_runnable_fix(tmp_path: Path) -> None:
     """Pain point 3. A fix with an unsubstituted <placeholder> is not a fix."""
-    for section in collect(date(2026, 8, 10), tmp_path, tmp_path, runner=_fake_launchctl):
+    for section in collect(
+        date(2026, 8, 10), tmp_path, tmp_path, runner=_fake_launchctl, database=tmp_path / "absent.duckdb"
+    ):
         if section.verdict is Verdict.OK:
             continue
         assert section.fix, f"{section.name} is {section.verdict} with no fix"
@@ -212,8 +215,10 @@ def test_unknown_outranks_ok_so_a_run_verdict_can_never_be_green_on_a_gap() -> N
 
 
 def test_collect_returns_a_section_per_check(tmp_path: Path) -> None:
-    sections = collect(date(2026, 8, 10), tmp_path, tmp_path, runner=_fake_launchctl)
-    assert len(sections) == 8
+    sections = collect(
+        date(2026, 8, 10), tmp_path, tmp_path, runner=_fake_launchctl, database=tmp_path / "absent.duckdb"
+    )
+    assert len(sections) == 9
     assert all(isinstance(s, Section) for s in sections)
 
 
@@ -222,7 +227,9 @@ def test_collect_never_raises_when_a_check_explodes(tmp_path: Path, monkeypatch)
         raise RuntimeError("footer read exploded")
 
     monkeypatch.setattr("livewire_scripts.status._disk_section", _boom)
-    sections = collect(date(2026, 8, 10), tmp_path, tmp_path, runner=_fake_launchctl)
+    sections = collect(
+        date(2026, 8, 10), tmp_path, tmp_path, runner=_fake_launchctl, database=tmp_path / "absent.duckdb"
+    )
     disk = [s for s in sections if s.name == "Disk"]
     assert len(disk) == 1
     assert disk[0].verdict is Verdict.UNKNOWN
@@ -529,6 +536,9 @@ def test_main_exits_zero_even_when_everything_is_broken(tmp_path: Path, capsys, 
     # runner. Without this the unit test shells out to the operator's real
     # launchctl and its verdict depends on the machine it runs on.
     monkeypatch.setattr("livewire_scripts.status.subprocess.run", _fake_launchctl)
+    # Same reason for the catalog: main() cannot be handed a database= either,
+    # so without this the unit test opens the operator's real analytics.duckdb.
+    monkeypatch.setattr("livewire_scripts.status._coverage_headline", _no_catalog)
     rc = main(["--run-date", "2026-08-10", "--log-dir", str(tmp_path), "--data-lake", str(tmp_path)])
     assert rc == 0
     assert "Livewire status" in capsys.readouterr().out
@@ -541,11 +551,16 @@ def test_a_fix_command_survives_a_narrow_terminal_in_one_piece(tmp_path: Path, c
     # 101 characters — comfortably past the 80-column default rich falls back to
     # when stdout is not a TTY, which is exactly the case under pytest capture.
     monkeypatch.setattr("livewire_scripts.status.subprocess.run", _fake_launchctl)
+    monkeypatch.setattr("livewire_scripts.status._coverage_headline", _no_catalog)
     assert len(status._SILVER_FIX) > 80
     (tmp_path / "daily_update_2026-08-10.log").write_text(_SILVER, encoding="utf-8")
     main(["--run-date", "2026-08-10", "--log-dir", str(tmp_path), "--data-lake", str(tmp_path)])
     out = capsys.readouterr().out
     assert status._SILVER_FIX in out
+
+
+def _no_catalog(_db):
+    raise FileNotFoundError("analytics.duckdb")
 
 
 def _fake_launchctl(_cmd, **_kw):
@@ -626,3 +641,80 @@ def test_the_quality_queue_honours_its_env_knob(tmp_path: Path, monkeypatch) -> 
     section = _undelivered_section(tmp_path / "logs")
     assert section.verdict is Verdict.WARN
     assert "somewhere-else" in "\n".join(section.lines)
+
+
+def test_duckdb_check_is_unknown_when_duckdb_is_not_installed(monkeypatch) -> None:
+    """~/market-warehouse/.venv genuinely has no duckdb. A status command that
+    cannot start in one of the three real environments is worthless.
+
+    Patches the `_coverage_headline` seam rather than `builtins.__import__` —
+    replacing __import__ affects every import for the duration of the test,
+    including pytest's own, and a status check is not worth that blast radius.
+    """
+
+    def _no_duckdb(_db):
+        raise ImportError("No module named 'duckdb'")
+
+    monkeypatch.setattr("livewire_scripts.status._coverage_headline", _no_duckdb)
+    section = _duckdb_section(date(2026, 8, 10))
+    assert section.verdict is Verdict.UNKNOWN
+    assert "duckdb" in "\n".join(section.lines).lower()
+
+
+def test_duckdb_check_is_bad_when_the_table_lags_by_more_than_three_sessions(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "livewire_scripts.status._coverage_headline",
+        lambda _db: {"bronze_equity_1d": (13311, date(2026, 7, 1))},
+    )
+    assert _duckdb_section(date(2026, 8, 10)).verdict is Verdict.BAD
+
+
+def test_duckdb_check_is_ok_when_current(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "livewire_scripts.status._coverage_headline",
+        lambda _db: {"bronze_equity_1d": (13311, date(2026, 8, 10))},
+    )
+    assert _duckdb_section(date(2026, 8, 10)).verdict is Verdict.OK
+
+
+def test_duckdb_grades_the_oldest_view_not_the_freshest(monkeypatch) -> None:
+    """max(dates) would let one current view green the whole check while
+    bronze_equity_1d sat frozen — a fact nobody grades, one level down."""
+    monkeypatch.setattr(
+        "livewire_scripts.status._coverage_headline",
+        lambda _db: {
+            "bronze_equity_1d": (13311, date(2026, 7, 1)),
+            "silver_equity_1d": (13076, date(2026, 8, 10)),
+        },
+    )
+    section = _duckdb_section(date(2026, 8, 10))
+    assert section.verdict is Verdict.BAD
+    assert "bronze_equity_1d" in section.lines[1], "the laggard is named in the headline detail"
+
+
+def test_duckdb_check_is_unknown_when_never_built(monkeypatch) -> None:
+    def _absent(_db):
+        raise FileNotFoundError("analytics.duckdb")
+
+    monkeypatch.setattr("livewire_scripts.status._coverage_headline", _absent)
+    section = _duckdb_section(date(2026, 8, 10))
+    assert section.verdict is Verdict.UNKNOWN
+    assert section.fix is not None
+
+
+def test_duckdb_check_is_unknown_when_the_table_has_no_dated_rows(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "livewire_scripts.status._coverage_headline",
+        lambda _db: {"bronze_equity_1d": (0, None)},
+    )
+    assert _duckdb_section(date(2026, 8, 10)).verdict is Verdict.UNKNOWN
+
+
+def test_duckdb_one_session_behind_is_still_ok(monkeypatch) -> None:
+    """Friday measured against Monday is one session behind but three calendar
+    days — a calendar-day rule would flag every Monday morning."""
+    monkeypatch.setattr(
+        "livewire_scripts.status._coverage_headline",
+        lambda _db: {"bronze_equity_1d": (13311, date(2026, 8, 7))},
+    )
+    assert _duckdb_section(date(2026, 8, 10)).verdict is Verdict.OK

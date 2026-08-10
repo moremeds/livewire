@@ -526,6 +526,94 @@ def _undelivered_section(log_dir: Path) -> Section:
     )
 
 
+#: Indirection so tests can replace the catalog read without importing duckdb,
+#: and so the ImportError guard has exactly one place to live.
+def _coverage_headline(database: Path | None):
+    from clients.duckdb_catalog import coverage_headline
+
+    return coverage_headline(database)
+
+
+#: Deliberately the same NUMBER as _COVERAGE_STALE_DAYS and deliberately a
+#: separate constant: that one counts calendar days, this one counts trading
+#: sessions. Sharing the name would make a future edit to one silently change
+#: the other's meaning. The value itself is a starting guess, not a
+#: measurement — correct it the first time it misfires.
+_CATALOG_STALE_SESSIONS = 3
+
+
+def _sessions_behind(newest: date, target: date, limit: int = 10) -> int:
+    """Trading sessions between *newest* and *target*, saturating at *limit*.
+
+    Sessions, not calendar days: newest=Friday against target=Monday is one
+    session behind but three days, and a calendar-day rule would flag every
+    Monday morning as stale.
+    """
+    from clients.trading_calendar import previous_trading_day
+
+    cursor, count = target, 0
+    while cursor > newest and count < limit:
+        cursor = previous_trading_day(cursor)
+        count += 1
+    return count
+
+
+def _duckdb_section(target: date, database: Path | None = None) -> Section:
+    """Grade the DuckDB coverage table's own staleness.
+
+    The table is refreshed by the last phase of `daily-backfill`. When that
+    orchestrator stopped running, the table quietly froze — on 2026-08-10 it
+    still read 2026-08-07 — and nothing anywhere said so. Catalog staleness is
+    a symptom of an upstream lane, which is exactly why it belongs here.
+    """
+    try:
+        headline = _coverage_headline(database)
+    except ImportError as exc:
+        return Section(
+            "DuckDB catalog",
+            Verdict.UNKNOWN,
+            [f"DuckDB catalog: duckdb unavailable in this environment — {exc}"],
+            fix="use the release venv: ~/market-warehouse/current/.venv/bin/python",
+        )
+    except FileNotFoundError:
+        return Section(
+            "DuckDB catalog",
+            Verdict.UNKNOWN,
+            ["DuckDB catalog: never built"],
+            fix="python scripts/livewire_store.py duckdb build",
+        )
+    # No broad `except Exception` here: collect() wraps every check in _safe(),
+    # which already degrades an unexpected crash to UNKNOWN. The two caught
+    # above are caught because each has a SPECIFIC, actionable message.
+
+    dated = [(name, last) for name, (_count, last) in headline.items() if last is not None]
+    if not dated:
+        return Section(
+            "DuckDB catalog",
+            Verdict.UNKNOWN,
+            ["DuckDB catalog: table holds no dated rows"],
+            fix="python scripts/livewire_store.py duckdb build",
+        )
+
+    # The WORST view, not the freshest. `max(dates)` would let one current view
+    # green the whole check while bronze_equity_1d sat frozen — the detail lines
+    # would print the stale view under an OK headline that carries no fix, which
+    # is the same "a fact nobody grades" shape this module exists to kill.
+    laggard, oldest = min(dated, key=lambda item: item[1])
+    behind = _sessions_behind(oldest, target)
+    lines = [
+        "DuckDB catalog:",
+        f"  oldest view {laggard} last_date={oldest.isoformat()}  ({behind} session(s) behind {target})",
+    ]
+    for view_name, (count, last) in sorted(headline.items()):
+        lines.append(f"  {view_name:<24} {count:>7,} symbols  last={last}")
+    if behind > _CATALOG_STALE_SESSIONS:
+        return Section("DuckDB catalog", Verdict.BAD, lines, fix="python scripts/livewire_store.py duckdb build")
+    if behind > 1:
+        return Section("DuckDB catalog", Verdict.WARN, lines, fix="python scripts/livewire_store.py duckdb build")
+    return Section("DuckDB catalog", Verdict.OK, lines)
+
+
 def _safe(name: str, builder) -> Section:
     """Run one check, degrading a crash to UNKNOWN.
 
@@ -569,6 +657,7 @@ def collect(
         _safe("Silver rebuild", lambda: _silver_section(run, log_dir)),
         _safe("Quality jobs", lambda: _quality_jobs_section(run, log_dir)),
         _safe("Coverage", lambda: _coverage_section(run, log_dir)),
+        _safe("DuckDB catalog", lambda: _duckdb_section(run_date, database)),
         _safe("Disk", lambda: _disk_section(data_lake, log_dir.parent)),
     ]
 
