@@ -25,14 +25,7 @@ if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from livewire_scripts.paths import data_lake_dir, log_dir
-from livewire_scripts.status import (
-    _coverage_section,
-    _disk_section,
-    _outcomes_section,
-    _phases_section,
-    _quality_jobs_section,
-    _silver_section,
-)
+from livewire_scripts.status import Verdict, collect
 
 _LOG_DIR: Path | None = None
 _DATA_LAKE: Path | None = None
@@ -40,18 +33,22 @@ _FAILURE_EMAIL_SCRIPT = _PROJECT_ROOT / "livewire_node" / "send_daily_update_fai
 
 
 def build_digest(run_date: date, log_dir: Path, data_lake: Path) -> str:
-    """Assemble the nightly digest text. Never raises on missing inputs."""
-    run = run_date.isoformat()
-    sections: list[list[str]] = [
-        [f"Livewire nightly digest — {run}"],
-        _outcomes_section(run, log_dir),
-        _phases_section(run, log_dir),
-        _silver_section(run, log_dir),
-        _quality_jobs_section(run, log_dir),
-        _coverage_section(run, log_dir),
-        _disk_section(data_lake, log_dir.parent),
-    ]
-    return "\n\n".join("\n".join(section) for section in sections) + "\n"
+    """Assemble the nightly digest text. Never raises on missing inputs.
+
+    Renders exactly what `livewire_ops.py status` renders — same checks, same
+    verdicts, same fixes. Anything added to collect() reaches both surfaces or
+    neither; there is no list here to forget to update.
+    """
+    blocks = [f"Livewire nightly digest — {run_date.isoformat()}"]
+    for section in collect(run_date, log_dir, data_lake):
+        headline = section.lines[0] if section.lines else f"{section.name}: (no detail)"
+        lines = [f"[{section.verdict.glyph}] {headline}", *section.lines[1:]]
+        # Same rule as render(): a fix line on a green section is noise, and
+        # noise on the green path is what trains a reader to skim the email.
+        if section.fix and section.verdict is not Verdict.OK:
+            lines.append(f"  fix: {section.fix}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks) + "\n"
 
 
 def _send_email(body: str, run_date: date, node_bin: str, log_dir: Path, runner) -> int:
