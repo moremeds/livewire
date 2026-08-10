@@ -123,6 +123,10 @@ from livewire_scripts.status import (
 Run: `uv run pytest tests/test_nightly_digest.py -q`
 Expected: PASS, identical count to Step 1. Any failure means the move was not faithful.
 
+Two things that look like they should break and do not — **do not "fix" them in this task**:
+- Eleven tests call `nightly_digest._disk_section(...)` / `nightly_digest._coverage_section(...)` directly. The imported names are still module attributes, and they still return `list[str]`, so the calls resolve. Task 2 is where they change.
+- `monkeypatch.setattr(nightly_digest.shutil, "disk_usage", ...)` still works: `nightly_digest.shutil` and `status.shutil` are the same cached module object, and the patch lands on that object.
+
 - [ ] **Step 5: Run the full gate**
 
 Run: `uv run ruff check . && uv run ruff format --check . && uv run pytest tests/ -m "not integration" -q`
@@ -150,7 +154,7 @@ consumer (a terminal command) is about to need the same parsers."
 
 **Interfaces:**
 - Consumes: the six `_*_section` functions from Task 1.
-- Produces: `status.Verdict` (enum: `OK`, `WARN`, `BAD`, `UNKNOWN`, with a `.glyph` property), `status.Section` (frozen dataclass: `name: str`, `verdict: Verdict`, `lines: list[str]`, `fix: str | None = None`). All six section functions now return `Section` instead of `list[str]`.
+- Produces: `status.Verdict` (enum: `OK`, `UNKNOWN`, `WARN`, `BAD`, ordered worst-last, with `.glyph` and `.style`), `status.Section` (frozen dataclass: `name: str`, `verdict: Verdict`, `lines: list[str]`, `fix: str | None = None`), `status._safe(name: str, builder) -> Section`, `status.collect(run_date: date, log_dir: Path, data_lake: Path, *, runner=subprocess.run, database: Path | None = None) -> list[Section]`. All six section functions now return `Section` instead of `list[str]`, and `nightly_digest.build_digest` consumes `collect()`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -186,8 +190,18 @@ _EQUITY_OK = (
 )
 
 
-def test_a_missing_log_is_unknown_not_ok(tmp_path: Path) -> None:
-    """The defect being fixed: '(not found)' used to render like a healthy line."""
+def test_a_missing_run_log_is_bad_not_ok(tmp_path: Path) -> None:
+    """The defect being fixed: '(not found)' used to render like a healthy line.
+    A log that does not exist means the run appears never to have happened."""
+    section = _outcomes_section("2026-08-10", tmp_path)
+    assert section.verdict is Verdict.BAD
+    assert section.fix is not None
+
+
+def test_a_log_with_no_summary_is_unknown(tmp_path: Path) -> None:
+    """Distinct from the above: the job ran and wrote something, but produced
+    no machine-readable outcome. Cannot measure is not the same as did not run."""
+    (tmp_path / "daily_update_2026-08-10.log").write_text("starting...\n", encoding="utf-8")
     section = _outcomes_section("2026-08-10", tmp_path)
     assert section.verdict is Verdict.UNKNOWN
     assert section.verdict is not Verdict.OK
@@ -196,6 +210,35 @@ def test_a_missing_log_is_unknown_not_ok(tmp_path: Path) -> None:
 def test_outcomes_with_no_errors_is_ok(tmp_path: Path) -> None:
     (tmp_path / "daily_update_2026-08-10.log").write_text(_EQUITY_OK, encoding="utf-8")
     assert _outcomes_section("2026-08-10", tmp_path).verdict is Verdict.OK
+
+
+def test_a_total_wipeout_is_bad_and_one_flaky_symbol_is_only_warn(tmp_path: Path) -> None:
+    """updated=0 with 13,311 errors must not render at the same severity as one
+    bad warrant. resolve_exit_code already encodes the measured rule."""
+    wipeout = (
+        'SUMMARY_JSON {"job":"daily_update","asset_class":"equity","source":"ib",'
+        '"target_date":"2026-08-07","updated":0,"no_trade":0,"partial":0,'
+        '"errors":13311,"bars_inserted":0,"validation_issues":0,"top_errors":[]}'
+    )
+    (tmp_path / "daily_update_2026-08-10.log").write_text(wipeout, encoding="utf-8")
+    assert _outcomes_section("2026-08-10", tmp_path).verdict is Verdict.BAD
+
+    one_bad = (
+        'SUMMARY_JSON {"job":"daily_update","asset_class":"equity","source":"ib",'
+        '"target_date":"2026-08-07","updated":13000,"no_trade":277,"partial":0,'
+        '"errors":1,"bars_inserted":13000,"validation_issues":0,"top_errors":[]}'
+    )
+    (tmp_path / "daily_update_2026-08-10.log").write_text(one_bad, encoding="utf-8")
+    assert _outcomes_section("2026-08-10", tmp_path).verdict is Verdict.WARN
+
+
+def test_every_non_ok_section_carries_a_runnable_fix(tmp_path: Path) -> None:
+    """Pain point 3. A fix with an unsubstituted <placeholder> is not a fix."""
+    for section in collect(date(2026, 8, 10), tmp_path, tmp_path, runner=_fake_launchctl):
+        if section.verdict is Verdict.OK:
+            continue
+        assert section.fix, f"{section.name} is {section.verdict} with no fix"
+        assert "<" not in section.fix, f"{section.name} fix has an unsubstituted placeholder"
 
 
 def test_a_failed_phase_is_bad_and_a_degraded_phase_is_warn(tmp_path: Path) -> None:
@@ -277,7 +320,34 @@ def test_a_failed_quality_job_is_a_warning(tmp_path: Path) -> None:
 def test_section_is_frozen() -> None:
     section = Section(name="x", verdict=Verdict.OK, lines=["x"])
     assert section.fix is None
+
+
+def test_unknown_outranks_ok_so_a_run_verdict_can_never_be_green_on_a_gap() -> None:
+    """The ordering is the mechanism, not the documentation. max() over a run
+    of sections must not report OK when one of them could not measure."""
+    assert max(Verdict.OK, Verdict.UNKNOWN) is Verdict.UNKNOWN
+    assert max(Verdict.OK, Verdict.UNKNOWN, Verdict.WARN, Verdict.BAD) is Verdict.BAD
+
+
+def test_collect_returns_a_section_per_check(tmp_path: Path) -> None:
+    sections = collect(date(2026, 8, 10), tmp_path, tmp_path)
+    assert len(sections) == 6
+    assert all(isinstance(s, Section) for s in sections)
+
+
+def test_collect_never_raises_when_a_check_explodes(tmp_path: Path, monkeypatch) -> None:
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("footer read exploded")
+
+    monkeypatch.setattr("livewire_scripts.status._disk_section", _boom)
+    sections = collect(date(2026, 8, 10), tmp_path, tmp_path)
+    disk = [s for s in sections if s.name == "Disk"]
+    assert len(disk) == 1
+    assert disk[0].verdict is Verdict.UNKNOWN
+    assert "footer read exploded" in "\n".join(disk[0].lines)
 ```
+
+Import `inspect`, `collect`, `_safe` and `date` at the top of the test file.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -293,12 +363,16 @@ import enum
 from dataclasses import dataclass, field
 
 
-class Verdict(enum.Enum):
+class Verdict(enum.IntEnum):
     """Ordered worst-last so `max()` over a run of checks is the run's verdict.
 
     UNKNOWN outranks OK deliberately. A check that could not measure has not
     passed — rendering it green is exactly how coverage stayed dead for four
     weeks while the digest printed a line every night.
+
+    IntEnum, not Enum: plain Enum members are unorderable and `max()` over them
+    raises TypeError, so the ordering above would have been documentation with
+    no mechanism behind it. Identity comparison (`is Verdict.OK`) still works.
     """
 
     OK = 0
@@ -325,14 +399,62 @@ class Section:
     fix: str | None = None
 ```
 
-Then change each of the six functions to build and return a `Section`. Keep every existing `lines.append(...)` exactly as it is; only the `return` changes. Verdict rules:
+Then change each of the six functions to build and return a `Section`. Keep every existing `lines.append(...)` exactly as it is; only the `return` changes.
 
-- `_outcomes_section` — no summaries → `UNKNOWN`, fix `check that com.livewire.daily-update ran: launchctl list | grep livewire`. Any summary with `errors` > 0 → `WARN`. Otherwise `OK`.
-- `_phases_section` — no summary → `UNKNOWN`, same fix wording but naming `com.livewire.intraday-catchup`. `summary["failed"]` non-empty → `BAD`, fix `python scripts/livewire_ingest.py daily-backfill`. Else `summary["degraded"]` non-empty → `WARN`, fix `nc -z 127.0.0.1 4001  # IB Gateway: 2FA/maintenance, do not restart from this repo`. Else `OK`.
-- `_silver_section` — no summary → `UNKNOWN`, fix `python scripts/livewire_store.py rebuild-silver --full --dry-run`. `window_regressions` > 0 → `WARN`, fix `python livewire_scripts/validate_silver_canary.py --tickers <symbol>`. Else `OK`. (The `failed` delta arrives in Task 7.)
-- `_quality_jobs_section` — any warning → `WARN`, fix `grep '^WARNING:' <log>`. Else `OK`.
-- `_coverage_section` — no log → `UNKNOWN`. Parse the measurement with the regex below; any timeframe whose ratio is below `_THRESHOLD` → `BAD`, fix `python scripts/livewire_quality.py coverage --target-date <measured>`. Age > `_COVERAGE_STALE_DAYS` → `BAD`, fix `launchctl start com.livewire.coverage`. An unparseable line → `UNKNOWN`. Else `OK`.
-- `_disk_section` — no volume readable → `UNKNOWN`. Any volume under `_MIN_FREE_GB` → `BAD`; under `2 * _MIN_FREE_GB` → `WARN`; else `OK`. Fix `python scripts/livewire_ops.py housekeeping` (dry run is the default).
+`Section.name` must be **exactly** these strings — `collect()` and the tests match on them:
+
+| function | `Section.name` |
+|---|---|
+| `_outcomes_section` | `"Daily update outcomes"` |
+| `_phases_section` | `"Intraday catch-up phases"` |
+| `_silver_section` | `"Silver rebuild"` |
+| `_quality_jobs_section` | `"Quality jobs"` |
+| `_coverage_section` | `"Coverage"` |
+| `_disk_section` | `"Disk"` |
+
+Verdict rules:
+
+**Every non-OK verdict must carry a fix with no unsubstituted placeholder.** A
+fix reading `grep '^WARNING:' <log>` is pain point 3 surviving the change —
+interpolate the real path.
+
+- `_outcomes_section` — **log file absent → `BAD`** (the nightly run appears never to have happened), fix `launchctl start com.livewire.daily-update`. Log present but no summaries → `UNKNOWN`, fix `tail -50 {path}`. Otherwise grade with the repo's own systemic-failure rule (below). Any remaining `errors` > 0 → `WARN`, fix `grep -c ERROR {path}`. Else `OK`.
+- `_phases_section` — same missing-vs-malformed split as above, naming `com.livewire.intraday-catchup`. `summary["failed"]` non-empty → `BAD`, fix `python scripts/livewire_ingest.py daily-backfill`. Else `summary["degraded"]` non-empty → `WARN`, fix `nc -z 127.0.0.1 4001  # IB Gateway: 2FA/maintenance, do not restart from this repo`. Else `OK`.
+- `_silver_section` — no summary → `UNKNOWN`, fix `_SILVER_FIX` (below). `window_regressions` > 0 → `WARN`, fix `_SILVER_FIX` — **not** `validate_silver_canary --tickers <symbol>`: the Silver summary carries aggregate counts only and names no symbol, so that command cannot be run as printed. `--failure-output` is what produces the symbol list. Else `OK`. (The `failed` delta arrives in Task 7.)
+- `_quality_jobs_section` — any warning → `WARN`, fix `grep '^WARNING:' {log_dir}/daily_update_{run_date}.log` with both values interpolated. Else `OK`.
+- `_coverage_section` — no log → `UNKNOWN`, fix `launchctl start com.livewire.coverage`. Parse the measurement with the regex below; any timeframe whose ratio is below `_THRESHOLD` → `BAD`, fix `python scripts/livewire_quality.py coverage --target-date {measured}` with the measured date interpolated. Age > `_COVERAGE_STALE_DAYS` → `BAD`, fix `launchctl start com.livewire.coverage`. An unparseable line → `UNKNOWN`, fix `head -1 {path}   # coverage line did not parse`. Else `OK`.
+- `_disk_section` — no volume readable → `UNKNOWN`, fix `df -h`. Any volume under `_MIN_FREE_GB` → `BAD`; under `2 * _MIN_FREE_GB` → `WARN`; else `OK`. Fix `python scripts/livewire_ops.py housekeeping` (dry run is the default). Note this reuses the existing **number** but is a new verdict *interpretation*: today the digest only prints a ⚠ below 2× and says nothing below 1×.
+
+Module level:
+
+```python
+_SILVER_FIX = "python scripts/livewire_store.py rebuild-silver --full --dry-run --failure-output /tmp/silver-dry.json"
+```
+
+**`_outcomes_section` must not flatten scale into one severity.** The repo
+already contains the measured systemic-failure rule, in
+`daily_outcomes.resolve_exit_code`: zero updates with any error, or errors over
+`max(50, 5% of processed)`. Grading every nonzero `errors` as `WARN` would put
+`updated=0, errors=13311` at the same severity as one flaky warrant — which is
+the exact disease this whole change exists to cure, reproduced inside the cure.
+Reuse the rule rather than inventing a second one:
+
+```python
+from livewire_scripts.daily_outcomes import parse_all_summary_json, parse_last_summary_json, resolve_exit_code
+
+    systemic = any(
+        resolve_exit_code(
+            updated=int(s.get("updated", 0)),
+            no_trade=int(s.get("no_trade", 0)),
+            partial=int(s.get("partial", 0)),
+            errors=int(s.get("errors", 0)),
+        )
+        != 0
+        for s in summaries
+    )
+```
+
+`systemic` → `BAD`, fix `python scripts/livewire_ingest.py daily --target-date {target}` using the summary's own `target_date`.
 
 Add the coverage parser:
 
@@ -356,34 +478,123 @@ def _coverage_ratios(measurement: str) -> dict[str, float]:
     }
 ```
 
-- [ ] **Step 4: Update `build_digest` to render verdicts and fixes**
+- [ ] **Step 4: Add `_safe` and `collect()`, and make `build_digest` consume them**
+
+⚠️ **`build_digest` must call `collect()`, never its own list of sections.** An
+earlier draft of this plan had `build_digest` enumerate the six sections
+directly and introduced `collect()` a task later; Tasks 4–6 then added the
+launchd, undelivered-alert and DuckDB checks to `collect()` only. The result
+would have been that **the nightly email — the surface the operator actually
+reported as broken — never receives the 4,408-file backlog**, and that the
+email renderer alone runs outside `_safe`, so a crashing check silently kills
+the whole digest. One assessment layer means one, for both renderers.
+
+In `livewire_scripts/status.py`:
+
+```python
+def _safe(name: str, builder) -> Section:
+    """Run one check, degrading a crash to UNKNOWN.
+
+    Both renderers go through this: nightly_digest's contract is that a missing
+    input cannot suppress the whole report, and a check that *crashes* must be
+    visible rather than silently absent.
+    """
+    try:
+        return builder()
+    except Exception as exc:  # a broken check must not kill the report
+        return Section(
+            name=name,
+            verdict=Verdict.UNKNOWN,
+            lines=[f"{name}: check failed — {exc}"],
+            fix="python scripts/livewire_ops.py status   # reproduce, then read the traceback",
+        )
+
+
+def collect(
+    run_date: date,
+    log_dir: Path,
+    data_lake: Path,
+    *,
+    runner=subprocess.run,
+    database: Path | None = None,
+) -> list[Section]:
+    """Assess every cheap signal. Never raises. Never scans parquet.
+
+    `runner` and `database` exist so tests reach no real machine state. Without
+    them the launchd check (Task 4) shells out to the operator's real
+    `launchctl` and the catalog check (Task 6) opens the operator's real
+    analytics.duckdb — both from a unit test, which the repo's testing rules
+    forbid. They are declared here rather than in Task 4/6 so the signature
+    never changes underneath a written test.
+    """
+    run = run_date.isoformat()
+    return [
+        _safe("Daily update outcomes", lambda: _outcomes_section(run, log_dir)),
+        _safe("Intraday catch-up phases", lambda: _phases_section(run, log_dir)),
+        _safe("Silver rebuild", lambda: _silver_section(run, log_dir)),
+        _safe("Quality jobs", lambda: _quality_jobs_section(run, log_dir)),
+        _safe("Coverage", lambda: _coverage_section(run, log_dir)),
+        _safe("Disk", lambda: _disk_section(data_lake, log_dir.parent)),
+    ]
+```
+
+Add `import subprocess` to `status.py` (Task 4 is its first real use).
+
+In `livewire_scripts/nightly_digest.py`, replace the whole section list with one `collect()` call, and replace the six-name import with `from livewire_scripts.status import Verdict, collect`:
 
 ```python
 def build_digest(run_date: date, log_dir: Path, data_lake: Path) -> str:
-    """Assemble the nightly digest text. Never raises on missing inputs."""
-    run = run_date.isoformat()
-    blocks = [f"Livewire nightly digest — {run}"]
-    for section in [
-        _outcomes_section(run, log_dir),
-        _phases_section(run, log_dir),
-        _silver_section(run, log_dir),
-        _quality_jobs_section(run, log_dir),
-        _coverage_section(run, log_dir),
-        _disk_section(data_lake, log_dir.parent),
-    ]:
-        lines = [f"[{section.verdict.glyph}] {section.lines[0]}", *section.lines[1:]]
-        if section.fix:
+    """Assemble the nightly digest text. Never raises on missing inputs.
+
+    Renders exactly what `livewire_ops.py status` renders — same checks, same
+    verdicts, same fixes. Anything added to collect() reaches both surfaces or
+    neither; there is no list here to forget to update.
+    """
+    blocks = [f"Livewire nightly digest — {run_date.isoformat()}"]
+    for section in collect(run_date, log_dir, data_lake):
+        headline = section.lines[0] if section.lines else f"{section.name}: (no detail)"
+        lines = [f"[{section.verdict.glyph}] {headline}", *section.lines[1:]]
+        # Same rule as render(): a fix line on a green section is noise, and
+        # noise on the green path is what trains a reader to skim the email.
+        if section.fix and section.verdict is not Verdict.OK:
             lines.append(f"  fix: {section.fix}")
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks) + "\n"
 ```
 
-- [ ] **Step 5: Run both test files**
+Add to `tests/test_status.py`:
+
+```python
+def test_the_digest_and_the_terminal_see_the_same_checks(tmp_path: Path) -> None:
+    """The defect this replaces: build_digest had its own hard-coded list, so
+    every check added later reached the terminal and never the email."""
+    from livewire_scripts import nightly_digest
+
+    source = inspect.getsource(nightly_digest.build_digest)
+    assert "collect(" in source
+    for name in ("_outcomes_section", "_coverage_section", "_disk_section"):
+        assert name not in source, "build_digest must not enumerate sections itself"
+```
+
+- [ ] **Step 5: Migrate the eleven direct callers in `tests/test_nightly_digest.py`**
+
+Task 1 kept these green because the moved functions still returned `list[str]`. Task 2 changes that return type, so every direct call breaks. There are exactly eleven, all in the two test classes at the end of the file:
+
+- `nightly_digest._disk_section(...)` — 5 call sites (lines ~496, 509, 519, 531, 565, 579)
+- `nightly_digest._coverage_section(...)` — 6 call sites (lines ~420, 435, 455, 461, 551, 560)
+
+**Move both test classes to `tests/test_status.py`** and change each call to the direct import plus `.lines`, e.g. `"\n".join(_disk_section(lake, warehouse).lines)`. Do not leave them reaching through `nightly_digest` into another module's internals — that is what rots.
+
+`monkeypatch.setattr(nightly_digest.shutil, "disk_usage", ...)` becomes `monkeypatch.setattr(status.shutil, ...)`. Note that either form actually works, because both names bind the same cached `shutil` module object and the patch lands on that object's attribute — but write the honest one.
+
+Everything else in `tests/test_nightly_digest.py` keeps passing: `_LOG_DIR` and `datetime` stay in that module, and the whole-digest assertions are substring checks (`"Disk:" in out`) that survive a verdict prefix. Do not weaken any assertion that checks content.
+
+- [ ] **Step 6: Run both test files**
 
 Run: `uv run pytest tests/test_status.py tests/test_nightly_digest.py -q`
-Expected: `test_status.py` passes. `test_nightly_digest.py` may need small edits where an assertion anchors to the start of a line; substring assertions such as `"Disk:" in out` still pass. Fix only assertions that anchor on line starts — do not weaken any assertion that checks content.
+Expected: PASS. Fix only assertions that anchor on line starts.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add livewire_scripts/status.py livewire_scripts/nightly_digest.py tests/test_status.py tests/test_nightly_digest.py
@@ -404,32 +615,14 @@ UNKNOWN deliberately outranks OK: a check that could not measure has not passed.
 - Test: `tests/test_status.py`
 
 **Interfaces:**
-- Consumes: `Section`, `Verdict` and the six section functions from Task 2.
-- Produces: `status.collect(run_date: date, log_dir: Path, data_lake: Path) -> list[Section]`, `status.render(sections: list[Section]) -> str`, `status.main(argv: list[str] | None = None) -> int`.
+- Consumes: `Section`, `Verdict`, `collect()` and `_safe()` from Task 2.
+- Produces: `status.render(sections: list[Section]) -> str`, `status.main(argv: list[str] | None = None) -> int`, and the `status` subcommand on `scripts/livewire_ops.py`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/test_status.py`:
+Append to `tests/test_status.py` (the `collect()` tests belong to Task 2, where `collect` is introduced — add these there instead if you are working ahead):
 
 ```python
-def test_collect_returns_a_section_per_check(tmp_path: Path) -> None:
-    sections = collect(date(2026, 8, 10), tmp_path, tmp_path)
-    assert len(sections) == 6
-    assert all(isinstance(s, Section) for s in sections)
-
-
-def test_collect_never_raises_when_a_check_explodes(tmp_path: Path, monkeypatch) -> None:
-    def _boom(*_args, **_kwargs):
-        raise RuntimeError("footer read exploded")
-
-    monkeypatch.setattr("livewire_scripts.status._disk_section", _boom)
-    sections = collect(date(2026, 8, 10), tmp_path, tmp_path)
-    disk = [s for s in sections if s.name == "Disk"]
-    assert len(disk) == 1
-    assert disk[0].verdict is Verdict.UNKNOWN
-    assert "footer read exploded" in "\n".join(disk[0].lines)
-
-
 def test_render_shows_the_fix_for_anything_not_ok() -> None:
     out = render([Section(name="Coverage", verdict=Verdict.BAD, lines=["Coverage:"], fix="run me")])
     assert "run me" in out
@@ -439,6 +632,22 @@ def test_render_shows_the_fix_for_anything_not_ok() -> None:
 def test_render_omits_the_fix_when_ok() -> None:
     out = render([Section(name="Disk", verdict=Verdict.OK, lines=["Disk: fine"], fix="run me")])
     assert "run me" not in out
+
+
+def test_render_survives_markup_in_log_derived_text(capsys) -> None:
+    """Measured: a log line containing "[/]" raises MarkupError and takes the
+    whole command down; "[bold red]" is silently eaten as a style."""
+    from rich.console import Console
+
+    hostile = Section(
+        name="Quality jobs",
+        verdict=Verdict.WARN,
+        lines=["Quality jobs: 1 FAILED", "  coverage failed: timed out [/] after [bold red]1800[/bold red]s"],
+    )
+    Console().print(render([hostile]))
+    out = capsys.readouterr().out
+    assert "[/]" in out
+    assert "1800" in out
 
 
 def test_main_exits_zero_even_when_everything_is_broken(tmp_path: Path, capsys) -> None:
@@ -463,43 +672,35 @@ import argparse
 from datetime import UTC, datetime
 
 from rich.console import Console
+from rich.markup import escape
 
 from livewire_scripts.paths import data_lake_dir, log_dir as default_log_dir
 
 
-def _safe(name: str, builder) -> Section:
-    """Run one check, degrading a crash to UNKNOWN.
-
-    collect() must never raise: nightly_digest's contract is that a missing
-    input cannot suppress the whole report. A check that *crashes* is now
-    visible rather than silently absent.
-    """
-    try:
-        return builder()
-    except Exception as exc:  # noqa: BLE001 - a broken check must not kill the report
-        return Section(name=name, verdict=Verdict.UNKNOWN, lines=[f"{name}: check failed — {exc}"])
-
-
-def collect(run_date: date, log_dir: Path, data_lake: Path) -> list[Section]:
-    """Assess every cheap signal. Never raises. Never scans parquet."""
-    run = run_date.isoformat()
-    return [
-        _safe("Daily update outcomes", lambda: _outcomes_section(run, log_dir)),
-        _safe("Intraday catch-up phases", lambda: _phases_section(run, log_dir)),
-        _safe("Silver rebuild", lambda: _silver_section(run, log_dir)),
-        _safe("Quality jobs", lambda: _quality_jobs_section(run, log_dir)),
-        _safe("Coverage", lambda: _coverage_section(run, log_dir)),
-        _safe("Disk", lambda: _disk_section(data_lake, log_dir.parent)),
-    ]
-
-
 def render(sections: list[Section]) -> str:
+    """Render for a terminal. Returns rich markup; Console() applies it.
+
+    EVERY line here is log-derived text and MUST go through `escape()`.
+    Measured 2026-08-10 against rich: a line containing "[/]" raises
+    MarkupError and takes the whole command down, and a line containing
+    "[bold red]" is silently consumed as a style — the text vanishes from the
+    report. Both shapes occur in real log output (error payloads, path
+    fragments, `top_errors` reprs).
+
+    Note that a bare "[BAD ]" is NOT a hazard — rich leaves unrecognised tags
+    literal. The verdict keeps its brackets so the terminal and the email read
+    identically; colour is added on top, not instead.
+    """
     lines = ["Livewire status"]
     for section in sections:
-        lines.append(f"[{section.verdict.style}][{section.verdict.glyph}][/] {section.lines[0]}")
-        lines.extend(f"  {line.lstrip()}" for line in section.lines[1:])
+        # `lines` defaults to [] on the dataclass and render() is the one path
+        # with no try/except above it — an empty-lines Section must not be the
+        # thing that kills the report it was added to.
+        headline = section.lines[0] if section.lines else f"{section.name}: (no detail)"
+        lines.append(f"[{section.verdict.style}][{section.verdict.glyph}][/] {escape(headline)}")
+        lines.extend(f"  {escape(line.lstrip())}" for line in section.lines[1:])
         if section.fix and section.verdict is not Verdict.OK:
-            lines.append(f"  [dim]fix:[/] {section.fix}")
+            lines.append(f"  [dim]fix:[/] {escape(section.fix)}")
     return "\n".join(lines)
 
 
@@ -613,7 +814,7 @@ Expected: FAIL — `cannot import name '_launchd_section'`.
 - [ ] **Step 3: Implement**
 
 ```python
-import subprocess
+# `import subprocess` already landed in Task 3 as collect()'s runner default.
 
 #: Every plist under launchd/. A job that is absent cannot run and cannot
 #: recover on its own, which is the only BAD this check ever reports.
@@ -653,12 +854,23 @@ def _launchd_section(runner=subprocess.run) -> Section:
     for label in _LAUNCHD_JOBS:
         lines.append(f"  {label:<38} {loaded.get(label, 'NOT LOADED')}")
     if missing:
-        return Section(
-            "launchd jobs",
-            Verdict.BAD,
-            lines,
-            fix=f"launchctl load ~/Library/LaunchAgents/{missing[0]}.plist",
-        )
+        # Name EVERY missing job, not just the first — an operator who runs the
+        # printed command and sees the section still red learns to distrust it.
+        # And check the plist actually exists: the repo ships `.plist.example`
+        # templates that must be rendered first, so `launchctl load` on an
+        # uninstalled label fails with a message that explains nothing.
+        agents = Path.home() / "Library/LaunchAgents"
+        installed = [label for label in missing if (agents / f"{label}.plist").exists()]
+        uninstalled = [label for label in missing if label not in installed]
+        lines.append(f"  missing: {', '.join(missing)}")
+        if uninstalled:
+            fix = (
+                f"render the plist first — no {agents}/{uninstalled[0]}.plist exists; "
+                f"see launchd/{uninstalled[0]}.plist.example and the CLAUDE.md scheduling block"
+            )
+        else:
+            fix = " && ".join(f"launchctl load {agents}/{label}.plist" for label in installed)
+        return Section("launchd jobs", Verdict.BAD, lines, fix=fix)
     if nonzero:
         lines.append("  note: exit code carries no timestamp — check the matching log before acting")
         return Section("launchd jobs", Verdict.WARN, lines, fix="ls -lt ~/market-warehouse/logs/ | head")
@@ -668,10 +880,23 @@ def _launchd_section(runner=subprocess.run) -> Section:
 Add to `collect()`, first in the list:
 
 ```python
-        _safe("launchd jobs", _launchd_section),
+        _safe("launchd jobs", lambda: _launchd_section(runner=runner)),
 ```
 
-and update `test_collect_returns_a_section_per_check` to expect 7.
+Update `test_collect_returns_a_section_per_check` to expect 7, and give every `collect(...)` call in the tests a fake runner so no test shells out to the real `launchctl`:
+
+```python
+def _fake_launchctl(_cmd, **_kw):
+    return SimpleNamespace(stdout="".join(f"-\t0\t{label}\n" for label in _LAUNCHD_JOBS), returncode=0)
+```
+
+`main()` builds its own `collect()` arguments, so `test_main_exits_zero_even_when_everything_is_broken` cannot pass `runner=`. Add to it:
+
+```python
+    monkeypatch.setattr("livewire_scripts.status.subprocess.run", _fake_launchctl)
+```
+
+(and take `monkeypatch` as a parameter). Without this the test shells out to the operator's real `launchctl`.
 
 - [ ] **Step 4: Run the tests**
 
@@ -726,6 +951,22 @@ Expected: FAIL — `cannot import name '_undelivered_section'`.
 - [ ] **Step 3: Implement**
 
 ```python
+def _undelivered_queues(log_dir: Path) -> list[Path]:
+    """BOTH queues. The repo keeps two, deliberately and separately.
+
+    `MDW_UNDELIVERED_DIR` (default `quality_alerts_undelivered`) is per-flag
+    quality alerts — the 4,408 files. `run_daily_update_job.undelivered_dir`
+    writes scheduled-job alerts to `<log_dir>/alerts_undelivered` and its
+    docstring says the split is intentional. A section called "Undelivered
+    alerts" that counts only one of them is misnamed, and the one it would omit
+    is the *job failure* page.
+    """
+    return [
+        Path(os.environ.get("MDW_UNDELIVERED_DIR", log_dir / "quality_alerts_undelivered")),
+        log_dir / "alerts_undelivered",
+    ]
+
+
 def _undelivered_section(log_dir: Path) -> Section:
     """Count alerts that could not be sent.
 
@@ -734,23 +975,40 @@ def _undelivered_section(log_dir: Path) -> Section:
     that tries to tell them apart would be guessing. Print both numbers and let
     the reader judge.
     """
-    directory = Path(os.environ.get("MDW_UNDELIVERED_DIR", log_dir / "quality_alerts_undelivered"))
-    try:
-        entries = [p for p in directory.iterdir() if p.is_file()]
-    except FileNotFoundError:
-        return Section("Undelivered alerts", Verdict.OK, ["Undelivered alerts: none"])
-    except OSError as exc:
-        return Section("Undelivered alerts", Verdict.UNKNOWN, [f"Undelivered alerts: {exc}"])
+    lines, total, newest_ts, unreadable = ["Undelivered alerts:"], 0, 0.0, []
+    for directory in _undelivered_queues(log_dir):
+        try:
+            entries = [p for p in directory.iterdir() if p.is_file()]
+        except FileNotFoundError:
+            lines.append(f"  {directory.name:<28} none")
+            continue
+        except OSError as exc:
+            unreadable.append(f"{directory.name}: {exc}")
+            lines.append(f"  {directory.name:<28} unreadable — {exc}")
+            continue
+        if not entries:
+            lines.append(f"  {directory.name:<28} none")
+            continue
+        stamp = max(p.stat().st_mtime for p in entries)
+        newest_ts = max(newest_ts, stamp)
+        total += len(entries)
+        lines.append(
+            f"  {directory.name:<28} {len(entries):>6,} file(s), newest {date.fromtimestamp(stamp).isoformat()}"
+        )
 
-    if not entries:
+    if unreadable:
+        return Section("Undelivered alerts", Verdict.UNKNOWN, lines, fix=f"ls -ld {log_dir}")
+    if not total:
         return Section("Undelivered alerts", Verdict.OK, ["Undelivered alerts: none"])
-
-    newest = date.fromtimestamp(max(p.stat().st_mtime for p in entries))
     return Section(
         "Undelivered alerts",
         Verdict.WARN,
-        [f"Undelivered alerts: {len(entries):,} file(s) in {directory}, newest {newest.isoformat()}"],
-        fix=f"review then clear: ls -lt {directory} | head",
+        [f"Undelivered alerts: {total:,} across 2 queues, newest {date.fromtimestamp(newest_ts).isoformat()}"]
+        + lines[1:],
+        # An honest instruction: read one to learn WHY delivery failed, then
+        # delete the batch. `ls | head` alone neither diagnoses nor clears, and
+        # a fix that overpromises is a fix nobody trusts twice.
+        fix=f"cat $(ls -t {log_dir}/quality_alerts_undelivered/* | head -1)   # then rm the batch once understood",
     )
 ```
 
@@ -794,12 +1052,14 @@ channel that would have reported it was the one that broke."
 
 Append to `tests/test_duckdb_catalog.py`:
 
+This file already has `lake` and `silver` fixtures and builds real catalogs with `build_coverage(dest, lake_root=lake, silver_root=silver)` — reuse that exact pattern (see `test_build_coverage_publishes_expected_rows`). Do not invent a second seeding helper.
+
 ```python
-def test_coverage_headline_reports_symbols_and_newest_date(tmp_path: Path) -> None:
+def test_coverage_headline_reports_symbols_and_newest_date(tmp_path: Path, lake: Path, silver: Path) -> None:
     from clients.duckdb_catalog import coverage_headline
 
     database = tmp_path / "analytics.duckdb"
-    _seed_coverage_table(database)  # existing helper in this file; reuse it
+    build_coverage(database, lake_root=lake, silver_root=silver)
     headline = coverage_headline(database)
 
     assert "bronze_equity_1d" in headline
@@ -813,9 +1073,22 @@ def test_coverage_headline_raises_when_the_catalog_was_never_built(tmp_path: Pat
 
     with pytest.raises(FileNotFoundError):
         coverage_headline(tmp_path / "absent.duckdb")
+
+
+def test_coverage_headline_raises_when_the_file_holds_no_coverage_table(tmp_path: Path) -> None:
+    """What an interrupted `duckdb build` leaves behind. The caller cannot
+    catch DuckDB's own exception — importing duckdb is what the containment
+    test forbids it — so the translation has to happen here."""
+    from clients.duckdb_catalog import connect, coverage_headline
+
+    database = tmp_path / "empty.duckdb"
+    connect(database, read_only=False).close()
+
+    with pytest.raises(FileNotFoundError):
+        coverage_headline(database)
 ```
 
-If `tests/test_duckdb_catalog.py` has no `_seed_coverage_table` helper, build the fixture the way the existing coverage-table tests in that file already do — reuse their setup rather than inventing a second one.
+Add `coverage_headline` to the file's existing `from clients.duckdb_catalog import (...)` block, and `import pytest` if it is not already there.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -834,15 +1107,23 @@ def coverage_headline(database: Path | str | None = None) -> dict[str, tuple[int
     only this module and the catalog CLI to import duckdb, and that test is what
     keeps DuckDB a query layer rather than a second warehouse.
 
-    Raises FileNotFoundError when the catalog has never been built.
+    Raises FileNotFoundError when the catalog has never been built — including
+    the case where the FILE exists but holds no `coverage` table, which is what
+    an interrupted `duckdb build` leaves behind. The caller cannot distinguish
+    them itself: catching DuckDB's CatalogException would mean importing duckdb,
+    which is exactly what the containment test forbids it from doing. Translate
+    here, where duckdb is allowed.
     """
     path = Path(database) if database is not None else default_database()
     if not path.exists():
         raise FileNotFoundError(path)
     with open_catalog(path) as con:
-        rows = con.execute(
-            "SELECT view_name, count(*), max(last_date) FROM coverage GROUP BY view_name ORDER BY view_name"
-        ).fetchall()
+        try:
+            rows = con.execute(
+                "SELECT view_name, count(*), max(last_date) FROM coverage GROUP BY view_name ORDER BY view_name"
+            ).fetchall()
+        except duckdb.CatalogException as exc:
+            raise FileNotFoundError(f"{path}: no coverage table") from exc
     return {str(name): (int(count), last) for name, count, last in rows}
 ```
 
@@ -853,18 +1134,20 @@ Add `from datetime import date` to the module imports if absent.
 ```python
 def test_duckdb_check_is_unknown_when_duckdb_is_not_installed(monkeypatch) -> None:
     """~/market-warehouse/.venv genuinely has no duckdb. A status command that
-    cannot start in one of the three real environments is worthless."""
-    import builtins
+    cannot start in one of the three real environments is worthless.
 
-    real_import = builtins.__import__
+    Patches the `_coverage_headline` seam rather than `builtins.__import__` —
+    replacing __import__ affects every import for the duration of the test,
+    including pytest's own, and a status check is not worth that blast radius.
+    """
 
-    def _no_duckdb(name, *args, **kwargs):
-        if name == "clients.duckdb_catalog":
-            raise ImportError("No module named 'duckdb'")
-        return real_import(name, *args, **kwargs)
+    def _no_duckdb(_db):
+        raise ImportError("No module named 'duckdb'")
 
-    monkeypatch.setattr(builtins, "__import__", _no_duckdb)
-    assert _duckdb_section(date(2026, 8, 10)).verdict is Verdict.UNKNOWN
+    monkeypatch.setattr("livewire_scripts.status._coverage_headline", _no_duckdb)
+    section = _duckdb_section(date(2026, 8, 10))
+    assert section.verdict is Verdict.UNKNOWN
+    assert "duckdb" in "\n".join(section.lines).lower()
 
 
 def test_duckdb_check_is_bad_when_the_table_lags_by_more_than_three_sessions(monkeypatch) -> None:
@@ -909,8 +1192,20 @@ def _coverage_headline(database: Path | None):
     return coverage_headline(database)
 
 
+#: Deliberately the same NUMBER as _COVERAGE_STALE_DAYS and deliberately a
+#: separate constant: that one counts calendar days, this one counts trading
+#: sessions. Sharing the name would make a future edit to one silently change
+#: the other's meaning.
+_CATALOG_STALE_SESSIONS = 3
+
+
 def _sessions_behind(newest: date, target: date, limit: int = 10) -> int:
-    """Trading sessions between *newest* and *target*, saturating at *limit*."""
+    """Trading sessions between *newest* and *target*, saturating at *limit*.
+
+    Sessions, not calendar days: newest=Friday against target=Monday is one
+    session behind but three days, and a calendar-day rule would flag every
+    Monday morning as stale.
+    """
     from clients.trading_calendar import previous_trading_day
 
     cursor, count = target, 0
@@ -944,8 +1239,9 @@ def _duckdb_section(target: date, database: Path | None = None) -> Section:
             ["DuckDB catalog: never built"],
             fix="python scripts/livewire_store.py duckdb build",
         )
-    except Exception as exc:  # noqa: BLE001 - a broken catalog must not kill the report
-        return Section("DuckDB catalog", Verdict.UNKNOWN, [f"DuckDB catalog: {exc}"])
+    # No broad `except Exception` here: collect() wraps every check in _safe(),
+    # which already degrades an unexpected crash to UNKNOWN. The two caught
+    # above are caught because each has a SPECIFIC, actionable message.
 
     dates = [last for _count, last in headline.values() if last is not None]
     if not dates:
@@ -956,12 +1252,22 @@ def _duckdb_section(target: date, database: Path | None = None) -> Section:
             fix="python scripts/livewire_store.py duckdb build",
         )
 
-    newest = max(dates)
-    behind = _sessions_behind(newest, target)
-    lines = ["DuckDB catalog:", f"  newest last_date={newest.isoformat()}  ({behind} session(s) behind {target})"]
+    # The WORST view, not the freshest. `max(dates)` would let one current view
+    # green the whole check while bronze_equity_1d sat frozen — the detail lines
+    # would print the stale view under an OK headline that carries no fix, which
+    # is the same "a fact nobody grades" shape this module exists to kill.
+    laggard, oldest = min(
+        ((name, last) for name, (_count, last) in headline.items() if last is not None),
+        key=lambda item: item[1],
+    )
+    behind = _sessions_behind(oldest, target)
+    lines = [
+        "DuckDB catalog:",
+        f"  oldest view {laggard} last_date={oldest.isoformat()}  ({behind} session(s) behind {target})",
+    ]
     for view_name, (count, last) in sorted(headline.items()):
         lines.append(f"  {view_name:<24} {count:>7,} symbols  last={last}")
-    if behind > _COVERAGE_STALE_DAYS:
+    if behind > _CATALOG_STALE_SESSIONS:
         return Section("DuckDB catalog", Verdict.BAD, lines, fix="python scripts/livewire_store.py duckdb build")
     if behind > 1:
         return Section("DuckDB catalog", Verdict.WARN, lines, fix="python scripts/livewire_store.py duckdb build")
@@ -971,10 +1277,21 @@ def _duckdb_section(target: date, database: Path | None = None) -> Section:
 Add to `collect()`, after the coverage check:
 
 ```python
-        _safe("DuckDB catalog", lambda: _duckdb_section(run_date)),
+        _safe("DuckDB catalog", lambda: _duckdb_section(run_date, database)),
 ```
 
-and update the count test to 9.
+Update the count test to 9, and pass `database=tmp_path / "absent.duckdb"` in every `collect(...)` test call — otherwise `default_database()` opens the operator's real `~/market-warehouse/analytics.duckdb` from a unit test. An absent path yields `UNKNOWN`, which is the correct verdict for a test warehouse.
+
+`main()` cannot pass `database=`, so patch the same `_coverage_headline` seam every other DuckDB test uses. Add to `test_main_exits_zero_even_when_everything_is_broken`:
+
+```python
+    def _absent(_db):
+        raise FileNotFoundError("analytics.duckdb")
+
+    monkeypatch.setattr("livewire_scripts.status._coverage_headline", _absent)
+```
+
+One seam, patched the same way everywhere. Do not reach for `default_database` — importing it at module level in `status.py` would pull in `clients.duckdb_catalog`, and therefore `duckdb`, at import time, which is exactly what the ImportError guard exists to avoid.
 
 - [ ] **Step 7: Run the containment test and the full suite**
 
@@ -1055,10 +1372,22 @@ def _previous_silver_summary(run_date: str, log_dir: Path) -> dict | None:
     no absolute threshold for `failed` anywhere in this module: 233 may be
     normal or catastrophic and nothing measured tells us which, so the baseline
     is the previous run and the signal is the change.
+
+    The date is PARSED rather than string-compared. `daily_update_*.log` also
+    matches `daily_update_watchdog_<date>.log`, which is a different job's log
+    — those sort first under `reverse=True` and only fall out of a `>=` string
+    comparison because "w" happens to exceed "2". Right answer, wrong reason.
     """
-    current = f"daily_update_{run_date}.log"
+    try:
+        cutoff = date.fromisoformat(run_date)
+    except ValueError:
+        return None
     for path in sorted(log_dir.glob("daily_update_*.log"), reverse=True):
-        if path.name >= current:
+        try:
+            stamp = date.fromisoformat(path.stem.removeprefix("daily_update_"))
+        except ValueError:
+            continue  # daily_update_watchdog_*.log, or anything else undated
+        if stamp >= cutoff:
             continue
         summaries = [s for s in parse_all_summary_json(_read_text(path) or "") if "window_regressions" in s]
         if summaries:
@@ -1154,7 +1483,7 @@ python scripts/livewire_ops.py status
 uv run ruff check . && \
 uv run ruff format --check . && \
 uv run pyright && \
-uv run pytest tests/ -m "not integration" --cov=clients --cov=scripts --cov=livewire_scripts --cov-fail-under=95 -W error::RuntimeWarning
+uv run pytest tests/ -m "not integration" --cov --cov-fail-under=95 -W error::RuntimeWarning
 ```
 Expected: all pass, coverage ≥ 95%.
 
@@ -1189,7 +1518,13 @@ Wait for CI to go green before merging. Never merge on a red or pending check.
 |---|---|
 | `Section`/`Verdict` types | 2 |
 | Six sections move to `status.py` | 1 |
-| `collect(run_date)` preserves digest file selection | 3 |
+| `collect(run_date)` preserves digest file selection | 2 |
+| **`build_digest` consumes `collect()`, never its own list** | 2 (+ a test asserting it) |
+| Outcomes reuse `resolve_exit_code`, not a flat `errors > 0` | 2 |
+| Missing log → BAD, malformed log → UNKNOWN | 2 |
+| Every non-OK verdict carries a placeholder-free fix | 2 (+ a test asserting it) |
+| DuckDB grades the oldest view, not the newest | 6 |
+| Both undelivered queues counted | 5 |
 | `UNKNOWN` is not `OK` | 2 (type ordering + test), 8 (documented) |
 | Check 1 launchd, WARN-capped | 4 |
 | Checks 2/3 nightly + intraday | 2 |

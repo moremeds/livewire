@@ -113,11 +113,36 @@ appends its `fix` line.
 
 Three new sections are added for the sources the digest cannot currently reach.
 
+### Both renderers consume `collect()`, or the architecture is a lie
+
+`build_digest` must call `collect()` and must not hold its own list of sections.
+A draft of this design had the email enumerate the original six directly while
+the three new checks were added to `collect()` alone — which would have meant
+**the nightly email never receives the 4,408-file backlog**, the very surface
+the operator reported as broken. It also would have left the email renderer
+outside `_safe`, so one crashing check could kill the whole digest.
+
+The rule: anything added to `collect()` reaches both surfaces or neither. There
+is no second list to forget.
+
 ### `UNKNOWN` is not `OK`
 
 The single most important rule. Today `(not found)` renders like a healthy line.
 `UNKNOWN` must render as visibly not-green — a missing input is a failure to
 measure, and failures to measure are how every defect this quarter hid.
+
+The mechanism is the enum's own ordering — `Verdict` is an `IntEnum` valued
+`OK < UNKNOWN < WARN < BAD`, so `max()` over a run of sections can never report
+green while one of them could not measure. A plain `Enum` would make that
+sentence documentation with nothing enforcing it; its members are unorderable
+and `max()` raises `TypeError`.
+
+`UNKNOWN` and "the input is missing" are also not the same thing. A log file
+that does not exist means the run appears never to have happened → **BAD**. A
+log that exists but carries no `SUMMARY_JSON` means the run said nothing
+measurable → **UNKNOWN**. Collapsing both into one verdict throws away the
+distinction between "broken" and "unmeasured", which is the distinction the
+whole design turns on.
 
 ### The nine checks
 
@@ -128,18 +153,32 @@ jobs already produced, and grades *how old that is* as its own signal.
 | # | Check | Reads | Verdict rule | Basis |
 |---|---|---|---|---|
 | 1 | launchd jobs | `launchctl list` | job absent → BAD; nonzero exit → **WARN, never BAD** | see below |
-| 2 | Nightly run | `daily_update_<run_date>.log` `SUMMARY_JSON` | `failed` non-empty → BAD; `degraded` non-empty → WARN; no log → BAD; log without SUMMARY_JSON → UNKNOWN | existing `failed`/`degraded` fields |
-| 3 | Intraday phases | `intraday_catchup_<run_date>.log` | same rule as #2 | same |
+| 2 | Nightly run | `daily_update_<run_date>.log` `SUMMARY_JSON` | `resolve_exit_code` says systemic → BAD; other errors → WARN; **log absent → BAD**; log present without SUMMARY_JSON → UNKNOWN | `daily_outcomes.resolve_exit_code` |
+| 3 | Intraday phases | `intraday_catchup_<run_date>.log` | `failed` non-empty → BAD; `degraded` non-empty → WARN; same absent-vs-malformed split | existing `failed`/`degraded` fields |
 | 4 | Coverage | newest `coverage_*.log` | **any** tracked timeframe below `MDW_COVERAGE_ALERT_THRESHOLD` (0.95) → BAD; log age > 3 days → BAD | **reuses existing constants** |
 | 5 | Silver | Silver `SUMMARY_JSON` + the previous run's | `window_regressions` > 0 → WARN; `failed` **increased** → WARN | see below |
-| 6 | DuckDB catalog | table mtime + `max(last_date)` | lag > 1 session → WARN; > 3 sessions → BAD | 3 = `_COVERAGE_STALE_DAYS` |
-| 7 | Disk | both volumes | free < 2×`MDW_FLATFILE_MIN_FREE_GB` → WARN; < 1× → BAD | **reuses existing constant** |
-| 8 | Undelivered alerts | `quality_alerts_undelivered/` | count > 0 → WARN | judgement, see below |
+| 6 | DuckDB catalog | the **oldest** `max(last_date)` across views | lag > 1 **session** → WARN; > 3 → BAD | `_CATALOG_STALE_SESSIONS`, invented — see above |
+| 7 | Disk | both volumes | free < 2×`MDW_FLATFILE_MIN_FREE_GB` → WARN; < 1× → BAD | reuses the number; the < 1× verdict is new |
+| 8 | Undelivered alerts | **both** queues (`quality_alerts_undelivered/`, `alerts_undelivered/`) | count > 0 → WARN | judgement, see below |
 | 9 | Quality jobs | `WARNING: … failed:` lines | any → WARN | existing parser |
 
-Checks 4, 7 and 9 reuse thresholds that already exist in the codebase; adopting
-them introduces no new judgement. Checks 1, 5, 6 and 8 need new rules, and each
-is stated below with what it rests on.
+Be precise about what "reuses" means here, because it is the difference between
+a measured rule and an invented one:
+
+- **Check 2/3 reuse a whole decision rule.** `daily_outcomes.resolve_exit_code`
+  already encodes systemic failure — zero updates with any error, or errors over
+  `max(50, 5% of processed)`. Grading every nonzero `errors` as `WARN` would
+  render `updated=0, errors=13311` at the same severity as one flaky warrant,
+  which is this report's own disease reproduced inside its cure.
+- **Checks 4 and 7 reuse a number, not a verdict.** `MDW_COVERAGE_ALERT_THRESHOLD`
+  and `MDW_FLATFILE_MIN_FREE_GB` are the real knobs. But the disk rule below 1×
+  reserve is a **new interpretation** — today the digest prints ⚠ below 2× and
+  says nothing at all below 1×.
+- **Check 6's thresholds are invented.** `_CATALOG_STALE_SESSIONS = 3` has no
+  measured basis; it is the same digit as the coverage staleness rule, and
+  matching digits is not evidence. It is a starting value to be revised the
+  first time it fires wrongly.
+- **Checks 1, 5 and 8 need new rules**, each stated below with what it rests on.
 
 ### Check 1 — `launchctl` exit codes carry no timestamp
 
@@ -177,8 +216,24 @@ When no previous run is available the verdict is UNKNOWN, not OK.
 test is what keeps DuckDB a query layer instead of a second warehouse.
 
 So `clients/duckdb_catalog.py` gains one small read-only function returning per
-view its symbol count and `max(last_date)`; `status.py` calls it. The database
-file's mtime is a plain `Path.stat()` and needs nothing from DuckDB.
+view its symbol count and `max(last_date)`; `status.py` calls it.
+
+The database file's **mtime is deliberately not read**. "Rebuilt today but the
+data still ends 2026-08-07" and "not rebuilt since 2026-08-07" produce the same
+reading, carry the same fix (`duckdb build`), and if bronze itself is behind the
+coverage check already says so. Two signals that cannot disagree are one signal.
+
+Staleness is counted in **trading sessions, not calendar days**. Friday against
+Monday is one session behind but three days, and a calendar rule would flag
+every Monday morning.
+
+The verdict grades the **oldest** view, not the newest. Taking `max` over the
+per-view dates would let one current view render the whole check green while
+`bronze_equity_1d` sat frozen — the detail lines would still print the stale
+view, under an OK headline carrying no fix. That is precisely the
+"states a fact, never judges it" shape this design exists to remove, so
+returning per-view dates and then aggregating away the bad one defeats the
+point of returning them.
 
 `status.py` must wrap that import in `try/except ImportError` and report the
 check as UNKNOWN when DuckDB is unavailable. This is not defensive
@@ -186,13 +241,25 @@ programming for its own sake: `~/market-warehouse/.venv` genuinely lacks
 `duckdb` today, and a status command that cannot start in one of the three real
 environments is worthless.
 
-### Check 8 — the undelivered backlog
+### Check 8 — the undelivered backlog, both queues
 
 Any file present → WARN, printing the count and the newest timestamp. No
 severity ladder by age: 4,408 files with a newest date of 2026-08-02 is a
 historic pile-up, one file from an hour ago is an active failure, and a rule
 that tries to tell them apart would be guessing. The line names both numbers and
 lets the reader judge.
+
+The repo keeps **two** queues, deliberately: `MDW_UNDELIVERED_DIR` (default
+`quality_alerts_undelivered`, holding the 4,408 per-flag alerts) and
+`<log_dir>/alerts_undelivered`, which `run_daily_update_job.undelivered_dir`
+uses for scheduled-job failure pages and whose docstring states the split is
+intentional. The second is empty on disk today, which is the whole reason it is
+easy to miss — and it is the one holding *job failure* pages. A section named
+"Undelivered alerts" that counts one queue is misnamed.
+
+The fix line must actually diagnose: read one file to learn *why* delivery
+failed, then clear the batch. `ls | head` neither diagnoses nor clears, and a
+fix that overpromises is one the reader stops trusting.
 
 There is deliberately **no dead-man's switch** in this design. The operator's
 decision: surfacing the backlog in `status` is enough for now. An external
