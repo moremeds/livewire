@@ -19,11 +19,11 @@ if str(REPO_ROOT) not in sys.path:  # pragma: no cover - direct script bootstrap
 from livewire_scripts.daily_outcomes import parse_all_summary_json
 from livewire_scripts.run_daily_update_job import (
     ASSET_CLASSES,
+    JOB_COMPLETE_MARKER,
     AlertRequest,
     RunnerConfig,
     append_log,
     build_config,
-    JOB_COMPLETE_MARKER,
     completed_scopes,
     job_tail_complete,
     log_has_completion_marker,
