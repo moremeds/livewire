@@ -95,14 +95,38 @@ def test_interior_gaps_no_gap():
     assert detect_interior_gaps(bars, trading_calendar=None) is None
 
 
-def test_interior_gaps_single_missing_trading_day():
+def test_interior_gaps_single_missing_trading_day_is_info_not_warning():
+    """One absent interior day is detected, recorded, and NOT paged.
+
+    `MDW_ALERT_SEVERITY_THRESHOLD` defaults to `warning`, so grading a single
+    missing day `warning` emailed every symbol that had one. On 2026-07-19
+    that sent ~150 emails in 20 minutes (SAAQW, SBCWW, SLND.WS, WENC.U,
+    TDACU, XRPNU …) and left 4,408 undelivered. The per-key rate limiter
+    cannot damp it: the key is (source, ticker, category) and a universe sweep
+    never repeats a ticker.
+
+    One absent day on an illiquid warrant is a no-trade day — the coverage
+    pipeline already refuses to count "absent from the day's raw traded set"
+    as missing. `info` keeps the flag in the sidecar and the audit JSONL; it
+    only stops being a page.
+    """
     # Apr 1, 2, 3, [missing Apr 6], 7; Apr 4,5 = weekend
     bars = [_Bar(f"2026-04-{day:02d}") for day in [1, 2, 3, 7]]
     flag = detect_interior_gaps(bars, trading_calendar=None)
     assert flag is not None
     assert flag.category == "interior_gaps"
-    assert flag.severity in {"warning", "critical"}
-    assert flag.detail["missing_days_count"] >= 1
+    assert flag.severity == "info"
+    assert flag.detail["missing_days_count"] == 1
+
+
+def test_interior_gaps_two_missing_days_still_warns():
+    """The threshold is `> 1`, so the second missing day restores the warning."""
+    # Apr 1, 2, 3, [missing Apr 6, 7], 8; Apr 4,5 = weekend
+    bars = [_Bar(f"2026-04-{day:02d}") for day in [1, 2, 3, 8]]
+    flag = detect_interior_gaps(bars, trading_calendar=None)
+    assert flag is not None
+    assert flag.severity == "warning"
+    assert flag.detail["missing_days_count"] == 2
 
 
 def test_interior_gaps_consecutive_critical():

@@ -272,6 +272,64 @@ class TestTheDigestFindsCoverageOnAnySchedule:
     def test_no_coverage_logs_at_all_still_says_not_found(self, tmp_path):
         assert "  (not found)" in _coverage_section("2026-08-09", tmp_path).lines
 
+    def test_the_last_run_in_an_appended_log_wins_not_the_first(self, tmp_path):
+        """Verbatim `coverage_2026-08-14.log` as the real job left it.
+
+        Coverage opens its log in append mode, so a day it ran twice holds both
+        runs and the FIRST is the older. Here the first run aborted before
+        enumerating anything and wrote 0/0 for every timeframe; the real run
+        below it measured 99.93%. Reading the first line reported a fabricated
+        `1d=0/0 (100.00%)` and graded it OK — the dead-detector shape this
+        command exists to cure, reproduced inside the cure.
+        """
+        (tmp_path / "coverage_2026-08-14.log").write_text(
+            "2026-08-14 coverage: 1d=0/0 (100.00%) 1m=0/0 (100.00%) 1h=0/0 (100.00%) "
+            "5m=0/0 (100.00%) 30m=0/0 (100.00%)\n"
+            "2026-08-14 non-equity 1d: volatility=0/0 futures=0/0 rates=0/0\n"
+            "MISSING_JSON {}\n"
+            "2026-08-14 coverage: 1d=13375/13385 (99.93%) 1m=11749/11749 (100.00%) "
+            "1h=11749/11749 (100.00%) 5m=11749/11749 (100.00%) 30m=11749/11749 (100.00%)\n"
+            "  1d missing: BKHAU, CTAA, DTSQU, KTTAW, LNZAW, MOGU, MWG, NOEMW, QETAR, SPEGR\n"
+            "2026-08-14 non-equity 1d: volatility=42/43 futures=8/14 rates=0/4\n"
+            'MISSING_JSON {"1d":["BKHAU"]}\n',
+            encoding="utf-8",
+        )
+
+        section = _coverage_section("2026-08-14", tmp_path)
+
+        body = "\n".join(section.lines)
+        assert "13375/13385" in body, "must report the real measurement"
+        assert "1d=0/0" not in body, "must not report the aborted stub"
+        # The `1d missing:` and `MISSING_JSON` detail lines are not measurements.
+        assert "MISSING_JSON" not in body
+        assert section.verdict is Verdict.OK
+
+    def test_every_timeframe_at_zero_over_zero_is_unknown_not_ok(self, tmp_path):
+        """0/0 across the board is a failure to measure, not 100% coverage.
+
+        Per-timeframe, 0/0 → 1.0 is correct (an asset class with no files is
+        not a gap). Across *every* timeframe it means the run enumerated
+        nothing, and rendering that as `(100.00%)` + OK is precisely how a
+        dead detector stays green.
+        """
+        (tmp_path / "coverage_2026-08-14.log").write_text(
+            "2026-08-14 coverage: 1d=0/0 (100.00%) 1m=0/0 (100.00%) 1h=0/0 (100.00%) "
+            "5m=0/0 (100.00%) 30m=0/0 (100.00%)\n",
+            encoding="utf-8",
+        )
+
+        assert _coverage_section("2026-08-14", tmp_path).verdict is Verdict.UNKNOWN
+
+    def test_one_empty_timeframe_beside_real_ones_is_still_ok(self, tmp_path):
+        """Guard the other half: 0/0 for a single tf must stay benign."""
+        (tmp_path / "coverage_2026-08-14.log").write_text(
+            "2026-08-14 coverage: 1d=13375/13385 (99.93%) 1m=11749/11749 (100.00%) "
+            "1h=11749/11749 (100.00%) 5m=11749/11749 (100.00%) 30m=0/0 (100.00%)\n",
+            encoding="utf-8",
+        )
+
+        assert _coverage_section("2026-08-14", tmp_path).verdict is Verdict.OK
+
     def test_an_empty_coverage_log_is_skipped_for_the_next_newest(self, tmp_path):
         """A crashed run leaves a stub; it must not mask a real measurement."""
         (tmp_path / "coverage_2026-08-06.log").write_text(

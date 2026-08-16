@@ -135,8 +135,24 @@ def detect_interior_gaps(
         return None
     if max_consecutive >= _INTERIOR_GAPS_CRITICAL_CONSECUTIVE or len(missing) >= _INTERIOR_GAPS_CRITICAL_TOTAL:
         severity = "critical"
-    else:
+    elif len(missing) > _INTERIOR_GAPS_WARNING_DAYS:
         severity = "warning"
+    else:
+        # `_INTERIOR_GAPS_WARNING_DAYS` was declared here from the start and
+        # never read, so a SINGLE missing interior day scored `warning` — and
+        # `MDW_ALERT_SEVERITY_THRESHOLD` defaults to `warning`, so every such
+        # symbol emailed. On 2026-07-19 that sent ~150 emails in 20 minutes
+        # (SAAQW, SBCWW, SLND.WS, WENC.U, TDACU, XRPNU …), all with
+        # missing_days_count 1 or 2, and left 4,408 more undelivered. The
+        # rate limiter cannot help: its key is (source, ticker, category), so
+        # a sweep across ~13K distinct tickers never repeats a key.
+        #
+        # One absent day on an illiquid warrant is a no-trade day, which the
+        # coverage pipeline already refuses to count as missing ("absent from
+        # the day's raw traded set" is not a gap). Grading it `info` keeps the
+        # flag in the parquet sidecar and the audit JSONL — nothing stops
+        # being *detected* — it stops being paged.
+        severity = "info"
     return QualityFlag(
         category="interior_gaps",
         severity=severity,

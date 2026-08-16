@@ -624,8 +624,19 @@ def backfill_ticker(
         console.print(f"  [yellow]No backfill data for {ticker}[/yellow]")
         return 0
 
-    if expected_start is None:
-        expected_start = IB_EARLIEST_DATE.date()
+    # No default expected_start. `IB_EARLIEST_DATE` (1993-01-29) is the floor of
+    # what IB *can* serve, never a claim about when a given instrument listed —
+    # substituting one for the other asserts every ticker should have 33 years of
+    # history. On 2026-07-27 that fired `CRITICAL range_shortfall` with
+    # expected_start=1993-01-29 for BIL (listed 2007), GLD (2004), IEF (2002),
+    # TLT (2002), EEM (2003), EFA (2001) and MDY (1995) — 7 instruments, 100% false,
+    # and it will fire for every instrument younger than 1993 that reaches this
+    # path without an ib_head_timestamp to excuse it.
+    #
+    # `_run_quality_detection` already skips the detector when expected_start is
+    # None (quality_detector.py: `if expected_start is not None and bars`), which
+    # is the correct behaviour: no known inception means no expectation to test.
+    # Callers that DO know one still pass it and are unaffected.
     parquet_path = _bronze_parquet_path(ticker, bronze)
     _run_quality_detection(
         ticker=ticker,

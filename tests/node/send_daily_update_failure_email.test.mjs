@@ -202,6 +202,66 @@ test("sendFailureAlert can render with nodemailer stream transport", async () =>
   assert.equal(info.messageId.startsWith("<"), true);
 });
 
+test("digest metrics survive the wire — no quoted-printable reinterpretation of '='", async () => {
+  // Verbatim line 33 of logs/nightly_digest_2026-08-16.txt. Delivered as
+  // quoted-printable it arrived as
+  //   revision(  rebuilt\x10  unchanged\x13135  trimmed%6  failed$0
+  // because `=28`, `=10`, `=13`, `=25` and `=24` are all valid QP escapes.
+  // `updated=9` survived only because "9 " is not a hex pair — silent,
+  // selective corruption of exactly the numbers the digest exists to report.
+  //
+  // The em-dash and ⚠ are load-bearing, not decoration: nodemailer sends a
+  // pure-ASCII body as 7bit and never consults textEncoding at all. A real
+  // digest always carries them, which is what forces an encoding choice — and
+  // for a mostly-ASCII body quoted-printable is the shorter of the two, so it
+  // is what the default picks.
+  const body = [
+    "Livewire nightly digest — 2026-08-16",
+    "  revision=28  rebuilt=10  unchanged=13135  trimmed=256  failed=240",
+    "  ⚠ 43 symbol(s) withheld",
+    "  bronze_equity_1d  13,385 symbols  last=2026-08-14",
+  ].join("\n");
+
+  const info = await sendFailureAlert({
+    transportOptions: { streamTransport: true, buffer: true },
+    message: {
+      from: "from@example.com",
+      to: "to@example.com",
+      subject: "subject",
+      text: body,
+    },
+  });
+
+  const raw = info.message.toString("utf8");
+  // The invariant is "never quoted-printable", not "always base64": 7bit is
+  // equally safe (it is sent verbatim). Only QP gives `=` a second meaning.
+  assert.doesNotMatch(raw, /Content-Transfer-Encoding: quoted-printable/i);
+  assert.match(raw, /Content-Transfer-Encoding: base64/i);
+
+  // Decode what a receiver would actually decode, and require it byte-identical.
+  const encoded = raw.split(/\r?\n\r?\n/).slice(1).join("").trim();
+  assert.equal(Buffer.from(encoded, "base64").toString("utf8").trim(), body.trim());
+});
+
+test("the digest builder's own output goes out un-reinterpretable", async () => {
+  // End-to-end through buildDigestMessage, so a future change to how the body
+  // is attached cannot quietly reintroduce quoted-printable.
+  const body = "Livewire nightly digest — 2026-08-16\n  revision=28  failed=240\n";
+  const info = await sendFailureAlert({
+    transportOptions: { streamTransport: true, buffer: true },
+    message: {
+      from: "from@example.com",
+      to: "to@example.com",
+      ...buildDigestMessage({ runDate: "2026-08-16", body }),
+    },
+  });
+
+  const raw = info.message.toString("utf8");
+  assert.doesNotMatch(raw, /Content-Transfer-Encoding: quoted-printable/i);
+  // Both alternatives carry the body; neither may be QP-encoded.
+  assert.equal((raw.match(/Content-Transfer-Encoding: base64/gi) || []).length, 2);
+});
+
 test("runFailureAlert wires static report, report writing, and send function together", async () => {
   let received;
   let reportWrite;

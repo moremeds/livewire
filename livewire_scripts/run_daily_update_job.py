@@ -107,6 +107,25 @@ def build_log_file(log_dir: Path, now: datetime | None = None) -> Path:
     return log_dir / f"daily_update_{current:%Y-%m-%d}.log"
 
 
+#: Written once, as the very last act of `run_post_success_quality`. Deliberately
+#: NOT of the form `=== Done <scope> ===`: `completed_scopes` matches that prefix
+#: and would gain a phantom scope named "complete".
+JOB_COMPLETE_MARKER = "=== Job complete"
+
+
+def job_tail_complete(log_file: Path) -> bool:
+    """Did the run get all the way past the post-success quality tail?
+
+    The tail runs after the job's own deadline and is unbudgeted, so "the
+    quality marker is not there" and "the job is still working" are different
+    states that looked identical to the watchdog for four separate pages.
+    """
+    try:
+        return JOB_COMPLETE_MARKER in log_file.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+
+
 def append_log(log_file: Path, message: str) -> None:
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with log_file.open("a", encoding="utf-8") as handle:
@@ -607,6 +626,19 @@ def run_post_success_quality(
         timeout=600,
         script=OPS_SCRIPT,
     )
+
+    # The tail is unbounded and the watchdog is not. Lanes must finish inside
+    # MDW_DAILY_JOB_DEADLINE_SECONDS (06:00 + 4h = 10:00 UTC), but everything
+    # above runs AFTER that deadline with budgets of its own — the Sunday
+    # interior gap scan alone may take 3600s. The watchdog checks at 10:30 for
+    # a quality marker the digest writes at the very end of this tail, so a
+    # slow-but-healthy tail read as a failed run and paged: 2026-07-29,
+    # 2026-08-04, 2026-08-06 and 2026-08-16, four false alarms, each one an
+    # email whose only content was "the marker isn't there yet".
+    #
+    # This line is what tells the two apart. Absent marker + absent this =
+    # still working. Absent marker + this present = the digest really failed.
+    append_log(log_file, f"{JOB_COMPLETE_MARKER} {datetime.now(UTC):%Y-%m-%dT%H:%M:%SZ} ===")
 
 
 def _is_sunday(run_date: str) -> bool:

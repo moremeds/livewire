@@ -438,6 +438,71 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
   is log-derived text; on 2026-08-08 it began with `--- Runbook: ...` and the
   page was never sent — the watchdog caught it 5.5h later. All five Python call
   sites now emit the single-token form; the two-token form still parses.
+- ⚠️ **Never send a body as quoted-printable — `=` is the payload here.** Every
+  body this repo mails is `key=value` telemetry, and QP reads `=NN` as the byte
+  `0xNN`. Audited 2026-08-16 against the delivered mail: the on-disk digest read
+  `revision=28 rebuilt=10 unchanged=13135 trimmed=256 failed=240 no_trade=972`
+  and what arrived read `revision( rebuilt\x10 unchanged\x13135 trimmed%6
+  failed$0 no_trade\x972`, in **both** the text and html parts. `last=2026-08-14`
+  became `last 26-08-14` (`=20` is a space). A value survived only when its
+  first two characters were not valid hex, so `updated=9` looked fine and
+  `revision=28` did not — selective corruption of exactly the numbers the digest
+  exists to report, and it never looked like an error. `sendFailureAlert` now
+  sets `textEncoding: "base64"` for every mode. The invariant the test asserts
+  is **"never quoted-printable"**, not "always base64": nodemailer sends a
+  pure-ASCII body as `7bit` and only consults `textEncoding` when the content
+  forces a choice, which for a real digest is the `—`/`⚠` it always carries.
+- ⚠️ **A single missing interior day was a `warning`, and `warning` is the email
+  threshold.** `_INTERIOR_GAPS_WARNING_DAYS = 1` sat in `quality_detector.py`
+  declared and never read, so one absent day scored `warning` and mailed. On
+  2026-07-19 that sent ~150 emails in 20 minutes (SAAQW, SBCWW, SLND.WS,
+  WENC.U, TDACU, XRPNU …), all `missing_days_count` 1–2, and left **4,408**
+  undelivered. The rate limiter cannot damp a universe sweep: its key is
+  `(source, ticker, category)` and 13K tickers never repeat one. One absent day
+  on an illiquid warrant is a no-trade day — coverage already refuses to count
+  "absent from the day's raw traded set" as missing. It is now `info`: still
+  detected, still in the sidecar and the audit JSONL, no longer paged.
+- ⚠️ **`IB_EARLIEST_DATE` is IB's floor, never an instrument's inception.**
+  `backfill_ticker` defaulted `expected_start` to it, asserting every ticker
+  should carry history back to 1993-01-29. On 2026-07-27 that mailed CRITICAL
+  `range_shortfall` for BIL (listed 2007), GLD (2004), IEF (2002), TLT (2002),
+  EEM (2003), EFA (2001) and MDY (1995) — seven instruments, all false, and it
+  would fire for every instrument younger than 1993 reaching that path without
+  an `ib_head_timestamp` to excuse it. There is now no default: `detect_all`
+  already skips the detector when `expected_start` is None, which is correct —
+  no known inception means no expectation to test.
+- ⚠️ **The watchdog's quality-marker check raced the tail it was checking.**
+  Lanes must finish inside `MDW_DAILY_JOB_DEADLINE_SECONDS` (06:00 + 4h = 10:00
+  UTC), but `run_post_success_quality` runs *after* that with budgets of its own
+  — the Sunday interior gap scan alone is 3600s — and the digest, which writes
+  `quality_summary_<date>.marker`, is second-to-last in it. The watchdog checks
+  at 10:30. Measured 2026-08-16: check 10:30:00Z, marker 10:36:49Z. Same on
+  2026-07-29, 2026-08-04 (digest 10:49Z) and 2026-08-06 (digest 10:39Z) — four
+  pages whose entire content was "not yet". `run_post_success_quality` now logs
+  `=== Job complete <ts> ===` as its last act and the watchdog treats an absent
+  marker as failure only once that line exists. The marker is deliberately not
+  of the form `=== Done <scope> ===`, which `completed_scopes` would read as a
+  phantom lane. A tail that never finishes is logged, not paged — `status`
+  grades digest and coverage freshness independently and owns that case.
+- ⚠️ **`no_trade` must never make a run look failed, including in the watchdog.**
+  `stale_equity_summary` fired on `updated == 0 and (errors or no_trade)`. The
+  job runs at 06:00 UTC *daily*, so the UTC-Sunday and UTC-Monday runs target
+  the same Friday the UTC-Saturday run already published: `updated=0` with a
+  full `no_trade` sweep and `errors=0` is the **correct** outcome. It paged on
+  2026-07-26, 2026-07-27 and 2026-08-03 and would page every quiet weekend. The
+  condition is now `updated == 0 and errors`. The case it was written for — a
+  day genuinely absent from the lake — is measured by the coverage job against
+  real parquet, not guessed from a counter.
+- ⚠️ **Coverage logs are append-mode, so the FIRST line is the OLDEST run.**
+  `status._coverage_section` took the first non-blank line. On 2026-08-14 that
+  file held an aborted run writing `1d=0/0 (100.00%)` for every timeframe and,
+  three lines below, the real `1d=13375/13385 (99.93%)`. It reported the 0/0 —
+  and `_coverage_ratios` maps `0/0 → 1.0`, so it graded **OK**. Per-timeframe
+  that mapping is right (an asset class with no files is not a gap); across
+  *every* timeframe it means the run enumerated nothing, which is now UNKNOWN.
+  Selection is the last line matching `coverage:` — the `1d missing:` and
+  `MISSING_JSON` detail lines are not measurements, and the `non-equity 1d:`
+  line matches the timeframe regex but is not one either.
 - ⚠️ **Coverage has its own job because every budget guessed for it expired.**
   600s (from 2026-07-07), then 1800s (5 of 6 nights after PR #78). Both numbers
   came from warm-cache measurements; a cold full pass measured **2858s** on
