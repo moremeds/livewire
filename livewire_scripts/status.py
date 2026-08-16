@@ -433,11 +433,14 @@ def _interior_gaps_section(run_date: str, log_dir: Path) -> Section:
         text = _read_text(path)
         if not text:
             continue
-        measurements = [ln.strip() for ln in text.splitlines() if _INTERIOR_GAPS_LINE_RE.search(ln)]
-        if not measurements:
+        # Keep the Match, not the string: searching again below would hand the
+        # type checker a `Match | None` it cannot prove non-None, and re-parsing
+        # a line already known to match is work for nothing.
+        matches = [m for m in (_INTERIOR_GAPS_LINE_RE.search(ln) for ln in text.splitlines()) if m]
+        if not matches:
             continue
-        measurement = measurements[-1]
-        lines.append("  " + measurement)
+        match = matches[-1]
+        lines.append("  " + match.string.strip())
 
         measured = path.stem.removeprefix("interior_gaps_")
         try:
@@ -458,8 +461,7 @@ def _interior_gaps_section(run_date: str, log_dir: Path) -> Section:
                 fix="launchctl start com.livewire.interior-gap-scan",
             )
 
-        m = _INTERIOR_GAPS_LINE_RE.search(measurement)
-        scanned = int(m["scanned"].replace(",", ""))
+        scanned = int(match["scanned"].replace(",", ""))
         if scanned == 0:
             # Nothing enumerated is a failure to measure, not a clean lake —
             # the same trap as coverage grading 0/0 as 100%.
@@ -469,12 +471,12 @@ def _interior_gaps_section(run_date: str, log_dir: Path) -> Section:
                 lines,
                 fix="python scripts/livewire_quality.py health --intraday --timeframe 5m",
             )
-        with_gaps = int(m["with_gaps"].replace(",", ""))
+        with_gaps = int(match["with_gaps"].replace(",", ""))
         if with_gaps:
             # WARN, never BAD: an interior gap is a real finding but repair is
             # a per-symbol operator action, and a standing nonzero count that
             # grades BAD every week is how a surface becomes ignorable.
-            lines.append(f"  {with_gaps}/{scanned} symbols carry interior gaps at {m['tf']}")
+            lines.append(f"  {with_gaps}/{scanned} symbols carry interior gaps at {match['tf']}")
             return Section(
                 "Interior gaps",
                 Verdict.WARN,
