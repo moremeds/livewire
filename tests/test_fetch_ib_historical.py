@@ -1462,9 +1462,7 @@ class TestQualityHookIntegration:
         assert m_audit.call_count == 1
         assert m_alert.call_count == 1
         _, kwargs = m_detect.call_args
-        assert kwargs["metadata"]["expected_start"] is None, (
-            "no caller-supplied inception means no expectation to test"
-        )
+        assert kwargs["metadata"]["expected_start"] is None, "no caller-supplied inception means no expectation to test"
 
     def test_backfill_does_not_invent_a_1993_inception_for_a_2007_etf(self):
         """`IB_EARLIEST_DATE` is IB's floor, never an instrument's listing date.
@@ -1507,9 +1505,7 @@ class TestQualityHookIntegration:
             patch("livewire_scripts.fetch_ib_historical.append_audit", return_value=True),
             patch("livewire_scripts.fetch_ib_historical.alert_on_flag", return_value=True),
         ):
-            backfill_ticker(
-                "BIL", bars, bronze, asset_class="equity", expected_start=date(2007, 5, 30)
-            )
+            backfill_ticker("BIL", bars, bronze, asset_class="equity", expected_start=date(2007, 5, 30))
 
         _, kwargs = m_detect.call_args
         assert kwargs["metadata"]["expected_start"] == date(2007, 5, 30)
