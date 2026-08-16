@@ -90,7 +90,12 @@ def download_dates(
             raise RuntimeError(f"Massive flat-file inspection retries exhausted for {day}")
         state.record("raw_started", date=day.isoformat())
         try:
-            with tempfile.TemporaryDirectory() as td:
+            # dir= pins the download beside the staged output instead of $TMPDIR.
+            # $TMPDIR is /var/folders on the internal volume, while raw_root lives on
+            # the external lake — so a whole-market gz per worker was landing on the
+            # smaller filesystem the capacity planner does not measure.
+            store.raw_root.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=store.raw_root) as td:
                 gzip_path = Path(td) / f"{day}.csv.gz"
                 client.download_date_to_path(day, gzip_path)
                 result = store.stage_gzip(day, gzip_path, replace=replace)

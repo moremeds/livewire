@@ -36,12 +36,32 @@ def date_from_key(key: str) -> date:
     return datetime.strptime(Path(key).name.removesuffix(".csv.gz"), "%Y-%m-%d").date()
 
 
+def capacity_path(warehouse_dir: Path) -> Path:
+    """The directory whose filesystem actually receives the raw flat files.
+
+    `data-lake` is a symlink to the external volume in production
+    (`/Volumes/DATA_LAKE/...`), so measuring `warehouse_dir` reports the internal
+    disk — a filesystem the raw files never touch. Measured 2026-08-16: the
+    warehouse root had 38 GiB free against the lake's 6.6 TiB, and the planner
+    logged the former every night while writing to the latter.
+
+    Both stores put their raw tree under `data-lake/raw`, so one path covers
+    `minute_aggs_v1` and `day_aggs_v1` alike. Walks up to the nearest existing
+    ancestor because `disk_usage` needs a path that exists.
+    """
+    target = warehouse_dir / "data-lake" / "raw"
+    for candidate in (target, *target.parents):
+        if candidate.exists():
+            return candidate
+    return warehouse_dir
+
+
 def discover_plan(client: MassiveFlatfileClient, warehouse_dir: Path) -> FlatfilePlan:
     objects = client.list_objects()
     dated = sorted((date_from_key(obj["Key"]), int(obj["Size"])) for obj in objects if obj["Key"].endswith(".csv.gz"))
     if not dated:
         raise RuntimeError("Massive minute flat-file listing returned no objects")
-    usage = shutil.disk_usage(warehouse_dir if warehouse_dir.exists() else warehouse_dir.parent)
+    usage = shutil.disk_usage(capacity_path(warehouse_dir))
     compressed_bytes = sum(size for _, size in dated)
     multiplier = float(os.getenv("MDW_FLATFILE_STORAGE_MULTIPLIER", "8"))
     minimum_free_bytes = int(float(os.getenv("MDW_FLATFILE_MIN_FREE_GB", "25")) * 1024**3)
