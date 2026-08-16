@@ -592,19 +592,14 @@ def run_post_success_quality(
     _spawn_post_success_quality(runner, log_file, ["weekly"], "weekly quality report")
     run_date = log_file.stem.removeprefix("daily_update_")
 
-    # Coverage only ever compares the target day against each file's max date,
-    # so an interior hole three months back is arithmetically invisible to it.
-    # `health` is the only scheduled detector of interior gaps — it was
-    # reachable by hand only, so nothing in production ever scanned for one.
-    # Weekly because a full scan reads whole columns across the universe.
-    if _is_sunday(run_date):
-        _spawn_post_success_quality(
-            runner,
-            log_file,
-            ["health", "--intraday", "--timeframe", "5m"],
-            "interior gap scan",
-            timeout=3600,
-        )
+    # The interior gap scan runs as com.livewire.interior-gap-scan, not here.
+    # It was given 3600s; measured 2026-08-16 against the real lake it needs
+    # ~3115s BEFORE the cold penalty — 302s for the cold glob alone, then
+    # 191.5 ms per symbol across 14,687 symbols (133.1 ms reading whole
+    # bar_timestamp columns, 58.4 ms detecting gaps). It has run exactly once,
+    # on 2026-08-16, and that once it was killed at the budget. Same disease as
+    # coverage: a guessed timeout around work whose runtime is dominated by
+    # cold I/O on an external volume. Its own job, and no budget at all.
 
     _spawn_post_success_quality(
         runner,
@@ -639,13 +634,6 @@ def run_post_success_quality(
     # This line is what tells the two apart. Absent marker + absent this =
     # still working. Absent marker + this present = the digest really failed.
     append_log(log_file, f"{JOB_COMPLETE_MARKER} {datetime.now(UTC):%Y-%m-%dT%H:%M:%SZ} ===")
-
-
-def _is_sunday(run_date: str) -> bool:
-    try:
-        return datetime.strptime(run_date, "%Y-%m-%d").weekday() == 6
-    except ValueError:
-        return False
 
 
 def undelivered_dir(config: RunnerConfig) -> Path:

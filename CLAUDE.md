@@ -503,6 +503,38 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
   Selection is the last line matching `coverage:` — the `1d missing:` and
   `MISSING_JSON` detail lines are not measurements, and the `non-equity 1d:`
   line matches the timeframe regex but is not one either.
+- ⚠️ **The interior gap scan has its own job for the same reason coverage does.**
+  It sat in the daily job's post-success tail behind a 3600s timeout, gated on
+  Sunday in Python. Measured 2026-08-16 against the real lake: **302.0s** for the
+  cold glob alone, then **133.1 ms/symbol** reading whole `bar_timestamp`
+  columns and **58.4 ms/symbol** detecting gaps, across **14,687** 5m symbols —
+  `302 + 191.5ms × 14687 ≈ 3115s`, with the read half already largely warm when
+  measured. It does not fit, and it had run **exactly once** (2026-08-16), that
+  once killed at the budget. The six earlier Sundays never reached it because
+  the tail only runs after a *successful* job — so "it always times out" was
+  never observed and must not be claimed. `com.livewire.interior-gap-scan` runs
+  **13:00 UTC Sunday**, after coverage at 11:00 UTC so the two never walk the
+  same cold volume at once, with **no timeout**. The Sunday gate is the plist's
+  `Weekday` key, not a Python date check that could disagree with the schedule;
+  `_is_sunday` is gone.
+- **The scan writes `interior_gaps_<date>.log`, and `status` grades its age.**
+  It previously printed and persisted nothing, which was survivable only while
+  the WARNING landed in the daily log. On its own schedule that is the exact
+  silence the coverage split bought back: a job that stops firing leaves a
+  frozen artifact that reads healthy forever. `_interior_gaps_section` is
+  therefore stale-graded at **16 days** — two weekly cycles plus slack,
+  deliberately *not* `_COVERAGE_STALE_DAYS`, whose 3 is calibrated for a daily
+  job and would flag every healthy week. Symbols with gaps grade **WARN, never
+  BAD**: repair is a per-symbol operator action and a standing nonzero count at
+  BAD every week is how a surface becomes ignorable. `scanned == 0` is UNKNOWN,
+  the same 0/0 trap as coverage. A `--symbol`-scoped run writes **nothing** —
+  an ad-hoc query must not overwrite the scheduled scan's artifact, or `status`
+  would grade one symbol as the whole lake.
+- **`livewire_quality.py` loads the scheduled env for `health` too**, alongside
+  `watchdog` and `coverage`. It used to inherit the daily job's env as a child;
+  launchd now starts it cold, and without this `MDW_DATA_LAKE_DIR`/`MDW_LOG_DIR`
+  resolve to defaults that may not be this warehouse — it would scan the wrong
+  tree and write its artifact where nothing reads it.
 - ⚠️ **Coverage has its own job because every budget guessed for it expired.**
   600s (from 2026-07-07), then 1800s (5 of 6 nights after PR #78). Both numbers
   came from warm-cache measurements; a cold full pass measured **2858s** on
@@ -917,13 +949,13 @@ python scripts/livewire_ingest.py daily --asset-class futures             # Dail
 # The four warehouse jobs run the immutable release, so they take the WAREHOUSE path.
 # The promoter is the one job that reads the repo — it is what builds the release.
 WAREHOUSE=~/market-warehouse
-for L in daily-update daily-update-watchdog intraday-catchup coverage; do
+for L in daily-update daily-update-watchdog intraday-catchup coverage interior-gap-scan; do
   sed "s|/path/to/warehouse|$WAREHOUSE|g" "launchd/com.livewire.$L.plist.example" \
     > ~/Library/LaunchAgents/com.livewire.$L.plist
 done
 sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.release-promote.plist.example \
   > ~/Library/LaunchAgents/com.livewire.release-promote.plist
-for L in daily-update daily-update-watchdog intraday-catchup coverage release-promote; do
+for L in daily-update daily-update-watchdog intraday-catchup coverage interior-gap-scan release-promote; do
   launchctl load ~/Library/LaunchAgents/com.livewire.$L.plist
 done
 ```
@@ -1161,10 +1193,10 @@ Output: `~/market-warehouse/logs/quality_weekly_YYYY-WW.md` with a coverage tren
 
 ### Health check (intraday)
 
-`scripts/livewire_quality.py health --intraday --timeframe {1h,5m}` performs interior gap detection for the intraday parquet, with optional suspected-halt annotation (contiguous gap < 30 min surrounded by normal bars). Default behaviour is **report-only**. When `--symbol`, `--since`, and `--timeframe` are all set, the command implicitly repairs that narrow window by shelling out to `scripts/livewire_ingest.py intraday-backfill` (no separate `--repair` flag — full scope means repair).
+`scripts/livewire_quality.py health --intraday --timeframe {1h,5m}` performs interior gap detection for the intraday parquet, with optional suspected-halt annotation (contiguous gap < 30 min surrounded by normal bars). Default behaviour is **report-only**. The unfiltered scan runs weekly as its own launchd job, `com.livewire.interior-gap-scan` at 13:00 UTC Sunday with no timeout, and appends its summary to `~/market-warehouse/logs/interior_gaps_YYYY-MM-DD.log`; a `--symbol`-scoped run writes no log. When `--symbol`, `--since`, and `--timeframe` are all set, the command implicitly repairs that narrow window by shelling out to `scripts/livewire_ingest.py intraday-backfill` (no separate `--repair` flag — full scope means repair).
 
 ```bash
-python scripts/livewire_quality.py health --intraday --timeframe 5m                       # Scan all symbols
+python scripts/livewire_quality.py health --intraday --timeframe 5m                       # Scan all symbols (~3115s)
 python scripts/livewire_quality.py health --intraday --timeframe 5m --symbol AAPL         # Scan one symbol
 python scripts/livewire_quality.py health --intraday --timeframe 5m --symbol AAPL --since 2026-04-01  # Repair window
 ```

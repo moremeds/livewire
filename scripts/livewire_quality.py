@@ -53,11 +53,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     args = parser.parse_args(argv[:1])
     rest = argv[1:]
-    if args.command in {"watchdog", "coverage"}:
-        # Both of these are launched cold by launchd; the remaining quality
+    if args.command in {"watchdog", "coverage", "health"}:
+        # All three are launched cold by launchd; the remaining quality
         # commands inherit env from a scheduled parent job. Without this,
         # coverage resolves MASSIVE_API_KEY and the SMTP credentials to nothing
         # — it would measure the gap and then be unable to recover it or say so.
+        # `health` joined the list when the interior gap scan left the daily
+        # job's tail for com.livewire.interior-gap-scan: it used to inherit the
+        # scheduled parent's env and now has no parent, so MDW_DATA_LAKE_DIR /
+        # MDW_LOG_DIR would resolve to defaults that may not be this warehouse.
         load_scheduled_env(REPO_ROOT)
     return _dispatch_module(COMMANDS[args.command], rest, f"livewire_quality.py {args.command}")
 

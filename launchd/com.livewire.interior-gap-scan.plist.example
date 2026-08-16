@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Weekly interior-gap scan over equity 5m bronze. Split out of the daily job's
+  post-success tail for the same reason coverage was: it was given a 3600s
+  budget and the work does not fit in it.
+
+  Measured 2026-08-16 against the real lake:
+    cold glob enumeration            302.0s
+    read whole bar_timestamp column  133.1 ms/symbol
+    detect gaps                       58.4 ms/symbol
+    symbols at 5m                    14,687
+    => 302 + 191.5ms * 14687        ~3115s, and the read half was already
+                                     largely warm when measured, so a genuine
+                                     cold pass is higher still.
+
+  It had run exactly once, on 2026-08-16, and that once it was killed at the
+  budget. So this job has NO timeout — the same conclusion coverage reached
+  after 600s and 1800s both expired. The runtime is dominated by cold I/O on
+  the external exFAT volume; the number was never the bug, putting a guessed
+  number around it was.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.livewire.interior-gap-scan</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <!-- Replace /path/to/warehouse with your actual warehouse path. Runs the
+             immutable release `current` points at, like the other warehouse jobs. -->
+        <string>cd /path/to/warehouse/current &amp;&amp; .venv/bin/python scripts/livewire_quality.py health --intraday --timeframe 5m</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <!-- Target: 13:00 UTC on Sunday. -->
+        <!-- Weekly, not nightly: a full pass reads whole columns across the -->
+        <!-- universe, and interior gaps do not appear faster than that. -->
+        <!-- The Sunday gate lives HERE, not in Python: the job simply does -->
+        <!-- not fire on other days, so there is no in-process date check to -->
+        <!-- disagree with the schedule. -->
+        <!-- 13:00 UTC sits after com.livewire.coverage (11:00 UTC, itself -->
+        <!-- 1400-2860s) so the two never walk the same cold volume at once. -->
+        <!-- launchd has no TimeZone key, so Hour/Minute are Mac-local: -->
+        <!--   Asia/Hong_Kong:      Hour=21 Minute=0 -->
+        <!--   America/New_York:    Hour=9  Minute=0 -->
+        <!--   Europe/London:       Hour=14 Minute=0 -->
+        <!--   UTC:                 Hour=13 Minute=0 -->
+        <!-- Defaults below assume Asia/Hong_Kong. -->
+        <!-- Weekday 0 is Sunday. Note this is the MAC-LOCAL weekday: if your -->
+        <!-- Mac's timezone makes 13:00 UTC fall on Saturday locally, set -->
+        <!-- Weekday to 6 instead. Asia/Hong_Kong 21:00 Sunday = 13:00 UTC -->
+        <!-- Sunday, so 0 is correct here. -->
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>21</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/com.livewire.interior-gap-scan.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/com.livewire.interior-gap-scan.stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- /opt/homebrew/bin is load-bearing for the same reason as coverage:
+             any alert path shells out to the Nodemailer CLI, and launchd's
+             minimal PATH cannot find `node`. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

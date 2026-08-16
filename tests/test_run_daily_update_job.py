@@ -1410,6 +1410,56 @@ class TestTheDailyJobNoLongerRunsCoverage:
         assert ["weekly"] in subcommands, "weekly still runs here"
         assert any(sub[:1] == ["digest"] for sub in subcommands), "the digest still runs here"
 
+    def test_no_interior_gap_scan_is_spawned_even_on_a_sunday(self, tmp_path):
+        """2026-08-16 is a Sunday — the only day the scan used to fire.
+
+        It had a 3600s budget against ~3115s of measured work (302s cold glob
+        + 191.5 ms x 14,687 symbols), ran exactly once, and was killed at the
+        budget. It has its own launchd job now, with no budget at all, so this
+        tail must not spawn it.
+        """
+        commands: list[list[str]] = []
+
+        def fake_runner(command, **kwargs):
+            commands.append(list(command))
+            return CompletedProcess(command, 0, stdout="", stderr="")
+
+        run_post_success_quality(
+            _config(tmp_path),
+            tmp_path / "daily_update_2026-08-16.log",
+            runner=fake_runner,
+        )
+
+        assert not any("health" in c for c in commands), "the interior gap scan has its own job now"
+        # And nothing else regressed on the day it used to fire.
+        subcommands = [c[2:] for c in commands]
+        assert ["weekly"] in subcommands
+        assert any(sub[:1] == ["digest"] for sub in subcommands)
+
+
+class TestTheInteriorGapScanLaunchdTemplate:
+    def test_plist_exists_and_carries_its_invariants(self):
+        plist = Path(__file__).resolve().parent.parent / "launchd" / "com.livewire.interior-gap-scan.plist.example"
+        assert plist.exists(), f"missing plist template at {plist}"
+
+        text = plist.read_text(encoding="utf-8")
+        assert "<string>com.livewire.interior-gap-scan</string>" in text
+        # Runs the immutable release, not the checkout.
+        assert "/path/to/warehouse/current" in text
+        assert ".venv/bin/python scripts/livewire_quality.py health --intraday --timeframe 5m" in text
+        assert "/path/to/repo" not in text
+        # The Sunday gate lives in the schedule, not in Python: Weekday 0.
+        assert "<key>Weekday</key>" in text
+        assert "<integer>0</integer>" in text
+        # 13:00 UTC = 21:00 on this Mac (Asia/Hong_Kong), after coverage at 11:00
+        # UTC so the two never walk the same cold volume at once.
+        assert "<integer>21</integer>" in text
+        assert "/opt/homebrew/bin" in text
+        # A budget is exactly what this job exists to not have.
+        assert "TimeOut" not in text
+        # RunAtLoad would fire a full ~3115s cold pass on every reload.
+        assert "RunAtLoad" not in text
+
 
 class TestTheCoverageLaunchdTemplate:
     def test_plist_exists_and_carries_its_invariants(self):
