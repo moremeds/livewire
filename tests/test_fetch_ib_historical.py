@@ -1462,7 +1462,57 @@ class TestQualityHookIntegration:
         assert m_audit.call_count == 1
         assert m_alert.call_count == 1
         _, kwargs = m_detect.call_args
-        assert kwargs["metadata"]["expected_start"] == IB_EARLIEST_DATE.date()
+        assert kwargs["metadata"]["expected_start"] is None, (
+            "no caller-supplied inception means no expectation to test"
+        )
+
+    def test_backfill_does_not_invent_a_1993_inception_for_a_2007_etf(self):
+        """`IB_EARLIEST_DATE` is IB's floor, never an instrument's listing date.
+
+        Defaulting one to the other asserted every ticker should carry 33 years
+        of history. On 2026-07-27 it emailed CRITICAL range_shortfall with
+        expected_start=1993-01-29 for BIL, GLD, IEF, TLT, EEM, EFA and MDY —
+        every one of them listed after 1993, so every one of them false.
+
+        BIL (SPDR Bloomberg 1-3 Month T-Bill ETF) first traded 2007-05-30.
+        `detect_range_shortfall` fires on `actual_start > expected_start`, so
+        the 1993 default guarantees a flag; with no default the detector is
+        skipped and BIL's real first bar is simply its first bar.
+        """
+        bars = [_make_bar(date="2007-05-30")]
+        bronze = MagicMock()
+        bronze.get_symbol_id.return_value = 42
+
+        with (
+            patch("livewire_scripts.fetch_ib_historical.detect_all", return_value=[]) as m_detect,
+            patch("livewire_scripts.fetch_ib_historical.write_sidecar", return_value=True),
+            patch("livewire_scripts.fetch_ib_historical.append_audit", return_value=True),
+            patch("livewire_scripts.fetch_ib_historical.alert_on_flag", return_value=True),
+        ):
+            backfill_ticker("BIL", bars, bronze, asset_class="equity")
+
+        _, kwargs = m_detect.call_args
+        assert kwargs["metadata"]["expected_start"] != IB_EARLIEST_DATE.date()
+        assert kwargs["metadata"]["expected_start"] is None
+
+    def test_an_explicit_expected_start_is_still_honoured(self):
+        """Callers that DO know an inception keep the detector."""
+        bars = [_make_bar(date="2007-05-30")]
+        bronze = MagicMock()
+        bronze.get_symbol_id.return_value = 42
+
+        with (
+            patch("livewire_scripts.fetch_ib_historical.detect_all", return_value=[]) as m_detect,
+            patch("livewire_scripts.fetch_ib_historical.write_sidecar", return_value=True),
+            patch("livewire_scripts.fetch_ib_historical.append_audit", return_value=True),
+            patch("livewire_scripts.fetch_ib_historical.alert_on_flag", return_value=True),
+        ):
+            backfill_ticker(
+                "BIL", bars, bronze, asset_class="equity", expected_start=date(2007, 5, 30)
+            )
+
+        _, kwargs = m_detect.call_args
+        assert kwargs["metadata"]["expected_start"] == date(2007, 5, 30)
 
     def test_clean_fetch_produces_no_sidecar(self):
         """detect_all returns [] -> no emit calls."""

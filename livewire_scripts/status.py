@@ -292,6 +292,10 @@ def _quality_jobs_section(run_date: str, log_dir: Path) -> Section:
 
 #: Matches one timeframe in `format_one_liner`'s output, e.g. "1d=0/13311 (0.00%)".
 _COVERAGE_TF_RE = re.compile(r"(?P<tf>\w+)=(?P<present>\d+)/(?P<total>\d+)")
+#: Identifies a measurement line inside a coverage log. The log also carries
+#: `  1d missing: …` and `MISSING_JSON …` detail lines per run, so "the last
+#: non-blank line" is not the last measurement.
+_COVERAGE_LINE_RE = re.compile(r"\bcoverage:\s")
 #: The same knob coverage_report.py already uses; adopting it adds no new judgement.
 _THRESHOLD = float(os.getenv("MDW_COVERAGE_ALERT_THRESHOLD", "0.95"))
 
@@ -324,11 +328,22 @@ def _coverage_section(run_date: str, log_dir: Path) -> Section:
         text = _read_text(path)
         if not text:
             continue
-        # First NON-BLANK line, not first line. A partially-flushed write whose
-        # first line is empty would otherwise print a bare "  " and return —
-        # a blank line that reads as "coverage ran fine" while saying nothing,
-        # and it would mask the older log that does carry a measurement.
-        measurement = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        # LAST measurement line, not the first. The log is opened in append
+        # mode, so a day on which coverage ran twice holds both runs — and the
+        # first is the OLDER one. Measured 2026-08-16: an aborted run wrote
+        # `1d=0/0 (100.00%)`, the real run two lines below wrote 99.93%, and
+        # this section reported the 0/0. Selecting on the `coverage:` marker
+        # rather than "non-blank" also skips the `1d missing:`/`MISSING_JSON`
+        # detail lines that follow each measurement.
+        measurements = [ln.strip() for ln in text.splitlines() if _COVERAGE_LINE_RE.search(ln)]
+        if measurements:
+            measurement = measurements[-1]
+        else:
+            # Nothing recognisable as a measurement. Fall back to the first
+            # non-blank line so a log that says only "coverage run aborted"
+            # is still SHOWN and still grades UNKNOWN below, rather than being
+            # skipped in favour of an older log that looks healthier.
+            measurement = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
         if not measurement:
             continue
         lines.append("  " + measurement)
@@ -354,6 +369,20 @@ def _coverage_section(run_date: str, log_dir: Path) -> Section:
         ratios = _coverage_ratios(measurement)
         if not ratios:
             return Section("Coverage", Verdict.UNKNOWN, lines, fix=f"head -1 {path}   # coverage line did not parse")
+        if all(int(m["total"]) == 0 for m in _COVERAGE_TF_RE.finditer(measurement)):
+            # Every timeframe 0/0 means the run enumerated no files at all, not
+            # that the warehouse is perfectly covered. `_coverage_ratios` maps
+            # 0/0 to 1.0 to match CoverageResult, which is right per-timeframe
+            # (an asset class with no files is not a gap) and catastrophic
+            # across all of them: it renders `(100.00%)` for a run that
+            # measured nothing. UNKNOWN is the honest grade for a failure to
+            # measure — the whole point of this command.
+            return Section(
+                "Coverage",
+                Verdict.UNKNOWN,
+                lines,
+                fix=f"python scripts/livewire_quality.py coverage --target-date {measured}",
+            )
         below = {tf: ratio for tf, ratio in ratios.items() if ratio < _THRESHOLD}
         if below:
             lines.append(

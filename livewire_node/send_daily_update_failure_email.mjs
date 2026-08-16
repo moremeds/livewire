@@ -565,7 +565,21 @@ async function runDigest(options, env = process.env, deps = {}) {
 export async function sendFailureAlert({ transportOptions, message }) {
   const { default: nodemailer } = await import("nodemailer");
   const transport = nodemailer.createTransport(transportOptions);
-  return transport.sendMail(message);
+  // base64, not the quoted-printable default. Every body this file sends is
+  // `key=value` telemetry, and QP gives `=` a second meaning: `=NN` is an
+  // escape for the byte 0xNN. Measured on the 2026-08-16 digest, where the
+  // on-disk body read `revision=28 rebuilt=10 unchanged=13135 trimmed=256
+  // failed=240 no_trade=972` and the DELIVERED body read
+  // `revision( rebuilt\x10 unchanged\x13135 trimmed%6 failed$0 no_trade\x972`
+  // — one decode too many somewhere on the relay path, in BOTH the text and
+  // html parts. `last=2026-08-14` became `last 26-08-14` the same way (=20 is
+  // a space). A value survived only when its first two characters happened
+  // not to be valid hex, so `updated=9` looked fine and `revision=28` did not:
+  // silent, selective corruption of exactly the numbers the digest exists to
+  // report. base64 has no in-band escape character, so no `=` in the payload
+  // can be reinterpreted. Set here rather than per-builder so every mode
+  // (failure, digest, flag-alert, daily-summary) is covered by one line.
+  return transport.sendMail({ textEncoding: "base64", ...message });
 }
 
 async function runFlagAlert(options, env = process.env, deps = {}) {

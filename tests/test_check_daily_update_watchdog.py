@@ -21,7 +21,13 @@ from livewire_scripts.check_daily_update_watchdog import (
     record_alert_marker,
     run_watchdog,
 )
-from livewire_scripts.run_daily_update_job import ASSET_CLASSES, RunnerConfig
+from livewire_scripts.run_daily_update_job import (
+    ASSET_CLASSES,
+    JOB_COMPLETE_MARKER,
+    RunnerConfig,
+    completed_scopes,
+    job_tail_complete,
+)
 
 
 def _config(tmp_path: Path, *, node_bin: str = "/opt/homebrew/bin/node") -> RunnerConfig:
@@ -123,6 +129,75 @@ class TestRunWatchdog:
         summary = (
             'SUMMARY_JSON {"job":"daily_update","asset_class":"equity","source":"ib",'
             '"target_date":"2026-03-11","updated":0,"no_trade":0,"partial":0,"errors":2500,'
+            '"bars_inserted":0,"validation_issues":0,"top_errors":[]}\n'
+        )
+        _healthy_run(config, daily_log_extra=summary)
+
+        assert run_watchdog(config, run_date="2026-03-11", env={}) != 0
+        watchdog_log = (config.log_dir / "daily_update_watchdog_2026-03-11.log").read_text(encoding="utf-8")
+        assert "published nothing" in watchdog_log
+
+    def test_a_tail_still_in_flight_does_not_page_for_the_missing_marker(self, tmp_path):
+        """Reproduces 2026-08-16: watchdog 10:30:00Z, marker written 10:36:49Z.
+
+        All lanes are done, but the post-success tail — which runs after the
+        job's own 4h deadline and whose Sunday interior gap scan alone is
+        3600s — has not reached the digest yet, so the marker legitimately
+        does not exist. Same shape on 2026-07-29, 2026-08-04 and 2026-08-06:
+        four pages whose entire content was "not yet".
+        """
+        config = _config(tmp_path)
+        _healthy_run(config)
+        (config.log_dir / "quality_summary_2026-03-11.marker").unlink()
+
+        assert run_watchdog(config, run_date="2026-03-11", env={}) == 0
+        watchdog_log = (config.log_dir / "daily_update_watchdog_2026-03-11.log").read_text(encoding="utf-8")
+        assert "still in flight" in watchdog_log, "silence here would hide a permanently stuck tail"
+
+    def test_a_finished_tail_with_no_marker_still_pages(self, tmp_path):
+        """The other half: once the job logs completion, an absent marker is real."""
+        config = _config(tmp_path)
+        _healthy_run(config, daily_log_extra=f"{JOB_COMPLETE_MARKER} 2026-03-11T10:41:02Z ===\n")
+        (config.log_dir / "quality_summary_2026-03-11.marker").unlink()
+
+        assert run_watchdog(config, run_date="2026-03-11", env={}) != 0
+        watchdog_log = (config.log_dir / "daily_update_watchdog_2026-03-11.log").read_text(encoding="utf-8")
+        assert "quality" in watchdog_log and "marker is missing" in watchdog_log
+
+    def test_the_completion_marker_is_not_mistaken_for_a_scope(self, tmp_path):
+        """`=== Job complete` must not enter `completed_scopes` as a phantom lane."""
+        log_file = tmp_path / "daily.log"
+        log_file.write_text(
+            f"=== Done equity 2026-03-11T07:38:17Z ===\n{JOB_COMPLETE_MARKER} 2026-03-11T10:41:02Z ===\n",
+            encoding="utf-8",
+        )
+        assert completed_scopes(log_file) == {"equity"}
+        assert job_tail_complete(log_file) is True
+
+    def test_a_quiet_weekend_equity_run_does_not_page(self, tmp_path):
+        """Verbatim SUMMARY_JSON from 2026-08-03, which paged and should not have.
+
+        The job runs at 06:00 UTC every day, so the UTC-Monday run targets the
+        same Friday the UTC-Saturday run already published. updated=0 with a
+        full no_trade sweep and errors=0 is the correct outcome, not a
+        failure. This fired on 2026-07-26, 2026-07-27 and 2026-08-03.
+        """
+        config = _config(tmp_path)
+        summary = (
+            'SUMMARY_JSON {"job":"daily_update","asset_class":"equity","source":"massive",'
+            '"target_date":"2026-03-11","updated":0,"no_trade":877,"partial":0,"errors":0,'
+            '"bars_inserted":0,"validation_issues":0,"top_errors":[]}\n'
+        )
+        _healthy_run(config, daily_log_extra=summary)
+
+        assert run_watchdog(config, run_date="2026-03-11", env={}) == 0
+
+    def test_zero_updates_with_errors_still_pages(self, tmp_path):
+        """The other half: a lane where everything errored is still a failure."""
+        config = _config(tmp_path)
+        summary = (
+            'SUMMARY_JSON {"job":"daily_update","asset_class":"equity","source":"ib",'
+            '"target_date":"2026-03-11","updated":0,"no_trade":877,"partial":0,"errors":13311,'
             '"bars_inserted":0,"validation_issues":0,"top_errors":[]}\n'
         )
         _healthy_run(config, daily_log_extra=summary)

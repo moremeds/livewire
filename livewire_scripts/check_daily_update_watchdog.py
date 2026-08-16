@@ -23,7 +23,9 @@ from livewire_scripts.run_daily_update_job import (
     RunnerConfig,
     append_log,
     build_config,
+    JOB_COMPLETE_MARKER,
     completed_scopes,
+    job_tail_complete,
     log_has_completion_marker,
     send_failure_alert,
     skipped_scopes,
@@ -59,7 +61,20 @@ def stale_equity_summary(log_file: Path) -> str | None:
     latest = equity[-1]
     updated = latest.get("updated", 0)
     errors = latest.get("errors", 0)
-    if updated == 0 and (errors or latest.get("no_trade", 0)):
+    # `no_trade` used to satisfy this too, which made the check fire on every
+    # run whose target trading day was already fully ingested. The job runs at
+    # 06:00 UTC daily, so the UTC-Sunday and UTC-Monday runs both target the
+    # same Friday that the UTC-Saturday run already published: updated=0 with
+    # a full no_trade sweep is the CORRECT outcome there. It paged anyway on
+    # 2026-07-26, 2026-07-27 and 2026-08-03 — three false alarms, and it would
+    # have paged on every quiet weekend from now on.
+    #
+    # `no_trade` is documented as "the instrument didn't trade, not a failure"
+    # and never fails a run in `resolve_exit_code`; honouring that here costs
+    # nothing, because the case this check was written for — a day genuinely
+    # missing from the lake — is measured by the coverage job against the
+    # actual parquet, not guessed from a counter.
+    if updated == 0 and errors:
         return (
             f"Equity lane completed but published nothing: updated=0, "
             f"errors={errors}, no_trade={latest.get('no_trade', 0)}."
@@ -147,7 +162,15 @@ def run_watchdog(
     degraded_scopes = sorted(skipped_scopes(daily_log_file))
     missing_daily_scopes = sorted(REQUIRED_DAILY_SCOPES - daily_scopes - set(degraded_scopes))
     daily_complete = ("*" in daily_scopes) or not missing_daily_scopes
-    quality_complete = quality_marker.exists()
+    # A missing quality marker only means "failed" once the run is past its
+    # post-success tail. That tail runs after the job's 4h deadline with
+    # budgets of its own (the Sunday interior gap scan alone is 3600s), and
+    # the digest — which writes this marker — is second-to-last in it.
+    # Measured 2026-08-16: watchdog checked at 10:30:00Z, marker written at
+    # 10:36:49Z. Same shape on 2026-08-04 (digest 10:49Z) and 2026-08-06
+    # (digest 10:39Z). Four pages whose entire content was "not yet".
+    tail_pending = not quality_marker.exists() and not job_tail_complete(daily_log_file)
+    quality_complete = quality_marker.exists() or tail_pending
     intraday_complete = log_has_completion_marker(intraday_log_file)
     stale_reason = stale_equity_summary(daily_log_file)
     undelivered = undelivered_alert_count(config)
@@ -160,6 +183,17 @@ def run_watchdog(
         and stale_reason is None
         and undelivered == 0
     ):
+        if tail_pending:
+            # Not a page, but not nothing either: a tail that never finishes
+            # would otherwise be invisible here forever. `status` grades the
+            # digest and coverage freshness independently, which is what
+            # catches the permanent case.
+            append_log(
+                watchdog_log_file,
+                f"=== Daily Update Watchdog {run_date} ===\n"
+                f"Quality marker absent but the run has not logged "
+                f"'{JOB_COMPLETE_MARKER}' — post-success tail still in flight, not alerting.",
+            )
         return 0
 
     reasons: list[str] = []
