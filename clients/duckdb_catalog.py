@@ -41,6 +41,7 @@ import os
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import duckdb
@@ -308,6 +309,33 @@ def build_coverage(
 
     os.replace(staging, dest)
     return counts
+
+
+def coverage_headline(database: Path | str | None = None) -> dict[str, tuple[int, date | None]]:
+    """Per-view symbol count and newest ``last_date`` from the coverage table.
+
+    The one read `status` is allowed: `tests/test_duckdb_containment.py` permits
+    only this module and the catalog CLI to import duckdb, and that test is what
+    keeps DuckDB a query layer rather than a second warehouse.
+
+    Raises FileNotFoundError when the catalog has never been built — including
+    the case where the FILE exists but holds no `coverage` table, which is what
+    an interrupted `duckdb build` leaves behind. The caller cannot distinguish
+    them itself: catching DuckDB's CatalogException would mean importing duckdb,
+    which is exactly what the containment test forbids it from doing. Translate
+    here, where duckdb is allowed.
+    """
+    path = Path(database) if database is not None else default_database()
+    if not path.exists():
+        raise FileNotFoundError(path)
+    with open_catalog(path) as con:
+        try:
+            rows = con.execute(
+                "SELECT view_name, count(*), max(last_date) FROM coverage GROUP BY view_name ORDER BY view_name"
+            ).fetchall()
+        except duckdb.CatalogException as exc:
+            raise FileNotFoundError(f"{path}: no coverage table") from exc
+    return {str(name): (int(count), last) for name, count, last in rows}
 
 
 @contextmanager

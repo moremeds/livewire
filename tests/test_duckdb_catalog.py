@@ -309,3 +309,36 @@ def test_read_symbols_resolves_an_encoded_symbol(tmp_path: Path) -> None:
         con.close()
     # hive_partitioning unescapes on the way back, so the symbol reads as ALLpI.
     assert rows == [("ALLpI", date(2021, 6, 11), 27.46), ("ALLpI", date(2021, 6, 14), 27.62)]
+
+
+def test_coverage_headline_reports_symbols_and_newest_date(tmp_path: Path, lake: Path, silver: Path) -> None:
+    from clients.duckdb_catalog import coverage_headline
+
+    database = tmp_path / "analytics.duckdb"
+    build_coverage(database, lake_root=lake, silver_root=silver)
+    headline = coverage_headline(database)
+
+    assert "bronze_equity_1d" in headline
+    symbols, last = headline["bronze_equity_1d"]
+    assert symbols > 0
+    assert last is not None
+
+
+def test_coverage_headline_raises_when_the_catalog_was_never_built(tmp_path: Path) -> None:
+    from clients.duckdb_catalog import coverage_headline
+
+    with pytest.raises(FileNotFoundError):
+        coverage_headline(tmp_path / "absent.duckdb")
+
+
+def test_coverage_headline_raises_when_the_file_holds_no_coverage_table(tmp_path: Path) -> None:
+    """What an interrupted `duckdb build` leaves behind. The caller cannot
+    catch DuckDB's own exception — importing duckdb is what the containment
+    test forbids it — so the translation has to happen here."""
+    from clients.duckdb_catalog import connect, coverage_headline
+
+    database = tmp_path / "empty.duckdb"
+    connect(database, read_only=False).close()
+
+    with pytest.raises(FileNotFoundError):
+        coverage_headline(database)

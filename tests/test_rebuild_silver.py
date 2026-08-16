@@ -134,7 +134,7 @@ def test_summary_line_is_visible_to_the_nightly_digest(tmp_path, capsys):
     nights the rebuild had in fact succeeded — rev-19 withheld 41 symbols and
     the 2026-08-01 digest reported no Silver rebuild at all.
     """
-    from livewire_scripts import nightly_digest
+    from livewire_scripts.status import _silver_section
 
     _bronze(tmp_path, "NVDA")
     _split(tmp_path)
@@ -144,7 +144,7 @@ def test_summary_line_is_visible_to_the_nightly_digest(tmp_path, capsys):
     log_dir.mkdir()
     (log_dir / "daily_update_2026-07-02.log").write_text(capsys.readouterr().out, encoding="utf-8")
 
-    section = "\n".join(nightly_digest._silver_section("2026-07-02", log_dir))
+    section = "\n".join(_silver_section("2026-07-02", log_dir).lines)
     assert "(not found)" not in section
     assert "revision=1" in section
 
