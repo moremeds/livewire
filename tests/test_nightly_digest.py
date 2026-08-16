@@ -134,7 +134,8 @@ def test_coverage_from_an_earlier_session_reaches_the_digest(tmp_path):
 def test_build_digest_missing_inputs_render_not_found(tmp_path):
     out = build_digest(date(2026, 7, 2), tmp_path / "empty_logs", tmp_path)
     assert isinstance(out, str)
-    assert out.count("(not found)") == 4  # outcomes, phases, silver, coverage
+    # outcomes, phases, silver, coverage, interior gaps
+    assert out.count("(not found)") == 5
     assert "Disk:" in out
 
 

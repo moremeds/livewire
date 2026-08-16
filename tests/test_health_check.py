@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import date
 from pathlib import Path
@@ -14,6 +15,7 @@ import pytest
 
 from clients.bronze_client import BronzeClient
 from livewire_scripts.health_check import (
+    INTERIOR_GAPS_JSON_PREFIX,
     _resolve_bronze_dir,
     _send_alert,
     compute_range_duration,
@@ -22,6 +24,7 @@ from livewire_scripts.health_check import (
     generate_expected_intraday_timestamps,
     get_all_trade_dates,
     group_contiguous_dates,
+    interior_gaps_log_path,
     main,
     repair_intraday_window,
     report_intraday_health,
@@ -970,12 +973,15 @@ class TestFindIntradayGaps:
 
 
 class TestReportIntradayHealth:
+    """Every case passes `logs_dir`: a full scan now writes an artifact, and a
+    test that omitted it would append to the operator's real warehouse log."""
+
     def test_clean_symbol_no_gaps(self, tmp_path):
         bronze_dir = tmp_path / "bronze"
         d = date(2026, 4, 6)
         full = sorted(generate_expected_intraday_timestamps([d], "5m"))
         _write_intraday_parquet(bronze_dir, "AAPL", "5m", full)
-        summary = report_intraday_health("5m", bronze_dir)
+        summary = report_intraday_health("5m", bronze_dir, logs_dir=tmp_path)
         assert summary["symbols_scanned"] == 1
         assert summary["symbols_with_gaps"] == 0
 
@@ -985,7 +991,7 @@ class TestReportIntradayHealth:
         full = sorted(generate_expected_intraday_timestamps([d], "5m"))
         full.pop(40)
         _write_intraday_parquet(bronze_dir, "AAPL", "5m", full)
-        summary = report_intraday_health("5m", bronze_dir)
+        summary = report_intraday_health("5m", bronze_dir, logs_dir=tmp_path)
         assert summary["symbols_with_gaps"] == 1
         assert summary["total_missing"] == 1
         assert "AAPL" in summary["by_symbol"]
@@ -996,7 +1002,7 @@ class TestReportIntradayHealth:
         full = sorted(generate_expected_intraday_timestamps([d], "5m"))
         _write_intraday_parquet(bronze_dir, "AAPL", "5m", full[:-2])
         _write_intraday_parquet(bronze_dir, "MSFT", "5m", full[:-2])
-        summary = report_intraday_health("5m", bronze_dir, symbol_filter="AAPL")
+        summary = report_intraday_health("5m", bronze_dir, symbol_filter="AAPL", logs_dir=tmp_path)
         assert summary["symbols_scanned"] == 1
         assert "AAPL" in summary["by_symbol"]
         assert "MSFT" not in summary["by_symbol"]
@@ -1004,8 +1010,60 @@ class TestReportIntradayHealth:
     def test_empty_bronze(self, tmp_path):
         bronze_dir = tmp_path / "bronze"
         bronze_dir.mkdir()
-        summary = report_intraday_health("5m", bronze_dir)
+        summary = report_intraday_health("5m", bronze_dir, logs_dir=tmp_path)
         assert summary["symbols_scanned"] == 0
+
+
+class TestTheScanLeavesAnArtifact:
+    """Splitting the scan onto its own schedule removes the 3600s budget and
+    buys back a silence: nothing in the daily log records it any more. The
+    artifact is what `status` grades, so a job that stops firing is visible."""
+
+    def test_a_full_scan_writes_a_dated_summary_log(self, tmp_path):
+        bronze_dir = tmp_path / "bronze"
+        d = date(2026, 4, 6)
+        full = sorted(generate_expected_intraday_timestamps([d], "5m"))
+        full.pop(40)
+        _write_intraday_parquet(bronze_dir, "AAPL", "5m", full)
+        _write_intraday_parquet(bronze_dir, "MSFT", "5m", full)
+
+        report_intraday_health("5m", bronze_dir, logs_dir=tmp_path)
+
+        path = interior_gaps_log_path(date.today(), tmp_path)
+        assert path.exists(), "a scheduled scan that leaves no trace cannot be monitored"
+        text = path.read_text(encoding="utf-8")
+        assert "interior gaps 5m: 2/2 symbols with gaps" in text
+        assert "worst: " in text
+        assert INTERIOR_GAPS_JSON_PREFIX in text
+        payload = json.loads(text.split(INTERIOR_GAPS_JSON_PREFIX, 1)[1].splitlines()[0])
+        assert payload["symbols_scanned"] == 2
+        assert payload["by_symbol"]["AAPL"]["missing"] == 1
+
+    def test_a_symbol_scoped_scan_writes_nothing(self, tmp_path):
+        """An ad-hoc single-symbol query must not overwrite the scheduled
+        scan's artifact — `status` would then grade one symbol as the lake."""
+        bronze_dir = tmp_path / "bronze"
+        d = date(2026, 4, 6)
+        full = sorted(generate_expected_intraday_timestamps([d], "5m"))
+        _write_intraday_parquet(bronze_dir, "AAPL", "5m", full)
+
+        report_intraday_health("5m", bronze_dir, symbol_filter="AAPL", logs_dir=tmp_path)
+
+        assert not interior_gaps_log_path(date.today(), tmp_path).exists()
+
+    def test_an_unwritable_log_dir_does_not_kill_the_scan(self, tmp_path):
+        """~3115s of work must not be discarded because a log could not be
+        written. The summary is still returned to the caller."""
+        bronze_dir = tmp_path / "bronze"
+        d = date(2026, 4, 6)
+        full = sorted(generate_expected_intraday_timestamps([d], "5m"))
+        _write_intraday_parquet(bronze_dir, "AAPL", "5m", full)
+        blocked = tmp_path / "blocked"
+        blocked.write_text("not a directory", encoding="utf-8")
+
+        summary = report_intraday_health("5m", bronze_dir, logs_dir=blocked)
+
+        assert summary["symbols_scanned"] == 1
 
 
 # ── repair_intraday_window ────────────────────────────────────────────────────

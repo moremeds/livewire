@@ -404,6 +404,99 @@ def _coverage_section(run_date: str, log_dir: Path) -> Section:
     return Section("Coverage", Verdict.UNKNOWN, lines, fix="launchctl start com.livewire.coverage")
 
 
+#: The scan is weekly, so "3 days old" is normal and only a missed *cycle*
+#: is a signal. Two cycles plus slack — deliberately not reusing
+#: _COVERAGE_STALE_DAYS, whose 3 is calibrated for a daily job.
+_INTERIOR_GAPS_STALE_DAYS = 16
+
+_INTERIOR_GAPS_LINE_RE = re.compile(r"interior gaps (?P<tf>\S+): (?P<with_gaps>[\d,]+)/(?P<scanned>[\d,]+) symbols")
+
+
+def _interior_gaps_section(run_date: str, log_dir: Path) -> Section:
+    """Report the newest interior-gap scan.
+
+    The scan moved to com.livewire.interior-gap-scan because a 3600s budget
+    could not hold ~3115s of measured work. Decoupling it from the daily job
+    removes the budget, and buys back exactly the silence coverage bought:
+    nothing in the daily log says the scan did or did not happen any more. So
+    this reads the artifact and grades its AGE — a job that stops firing leaves
+    a frozen log, which is indistinguishable from a healthy one unless someone
+    looks at the date.
+
+    Newest-log-wins rather than exact-filename, and last-measurement-wins
+    within it, for the same two reasons as `_coverage_section`: the scan will
+    rarely have run on `run_date` (it is weekly), and its log is append-mode.
+    """
+    lines = ["Interior gaps:"]
+    logs = sorted(log_dir.glob("interior_gaps_*.log"))
+    for path in reversed(logs):
+        text = _read_text(path)
+        if not text:
+            continue
+        # Keep the Match, not the string: searching again below would hand the
+        # type checker a `Match | None` it cannot prove non-None, and re-parsing
+        # a line already known to match is work for nothing.
+        matches = [m for m in (_INTERIOR_GAPS_LINE_RE.search(ln) for ln in text.splitlines()) if m]
+        if not matches:
+            continue
+        match = matches[-1]
+        lines.append("  " + match.string.strip())
+
+        measured = path.stem.removeprefix("interior_gaps_")
+        try:
+            age = (date.fromisoformat(run_date) - date.fromisoformat(measured)).days
+        except ValueError:
+            return Section(
+                "Interior gaps",
+                Verdict.UNKNOWN,
+                lines,
+                fix=f"ls -l {path}   # log name carries no parseable date",
+            )
+        if age > _INTERIOR_GAPS_STALE_DAYS:
+            lines.append(f"  ⚠ newest interior-gap scan is {age} days old — has the weekly job run?")
+            return Section(
+                "Interior gaps",
+                Verdict.BAD,
+                lines,
+                fix="launchctl start com.livewire.interior-gap-scan",
+            )
+
+        scanned = int(match["scanned"].replace(",", ""))
+        if scanned == 0:
+            # Nothing enumerated is a failure to measure, not a clean lake —
+            # the same trap as coverage grading 0/0 as 100%.
+            return Section(
+                "Interior gaps",
+                Verdict.UNKNOWN,
+                lines,
+                fix="python scripts/livewire_quality.py health --intraday --timeframe 5m",
+            )
+        with_gaps = int(match["with_gaps"].replace(",", ""))
+        if with_gaps:
+            # WARN, never BAD: an interior gap is a real finding but repair is
+            # a per-symbol operator action, and a standing nonzero count that
+            # grades BAD every week is how a surface becomes ignorable.
+            lines.append(f"  {with_gaps}/{scanned} symbols carry interior gaps at {match['tf']}")
+            return Section(
+                "Interior gaps",
+                Verdict.WARN,
+                lines,
+                fix=(
+                    "python scripts/livewire_quality.py health --intraday "
+                    "--timeframe 5m --symbol SYMBOL --since YYYY-MM-DD   # repairs that window"
+                ),
+            )
+        return Section("Interior gaps", Verdict.OK, lines)
+
+    lines.append("  (not found)")
+    return Section(
+        "Interior gaps",
+        Verdict.UNKNOWN,
+        lines,
+        fix="launchctl start com.livewire.interior-gap-scan",
+    )
+
+
 def _disk_section(data_lake: Path, warehouse: Path | None = None) -> Section:
     """Report every distinct volume the warehouse depends on.
 
@@ -476,6 +569,7 @@ _LAUNCHD_JOBS: tuple[str, ...] = (
     "com.livewire.daily-update-watchdog",
     "com.livewire.intraday-catchup",
     "com.livewire.coverage",
+    "com.livewire.interior-gap-scan",
     "com.livewire.release-promote",
 )
 
@@ -727,6 +821,7 @@ def collect(
         _safe("Silver rebuild", lambda: _silver_section(run, log_dir)),
         _safe("Quality jobs", lambda: _quality_jobs_section(run, log_dir)),
         _safe("Coverage", lambda: _coverage_section(run, log_dir)),
+        _safe("Interior gaps", lambda: _interior_gaps_section(run, log_dir)),
         _safe("DuckDB catalog", lambda: _duckdb_section(run_date, database)),
         _safe("Disk", lambda: _disk_section(data_lake, log_dir.parent)),
     ]

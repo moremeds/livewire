@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import subprocess
 import sys
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+
+# `time` is already bound to datetime.time above, so the clock has to come in
+# under its own name rather than as the module.
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -229,15 +234,63 @@ def find_intraday_gaps(
     return missing, halts
 
 
+#: One machine-readable line per full scan, mirroring coverage's MISSING_JSON.
+INTERIOR_GAPS_JSON_PREFIX = "INTERIOR_GAPS_JSON"
+
+#: How many worst-offender symbols the human summary line names.
+_WORST_SYMBOLS_REPORTED = 10
+
+
+def interior_gaps_log_path(run_date: date, logs_dir: Path | None = None) -> Path:
+    return (logs_dir or log_dir()) / f"interior_gaps_{run_date:%Y-%m-%d}.log"
+
+
+def _write_interior_gaps_log(summary: dict, elapsed_s: float, logs_dir: Path | None = None) -> Path | None:
+    """Persist a full scan so something outside this process can see it ran.
+
+    The scan printed to stdout and wrote nothing. That was survivable while it
+    lived inside the daily job — the WARNING landed in the daily log — but a
+    detector on its own schedule with no artifact is the coverage failure mode
+    exactly: it stops firing and every downstream surface keeps reporting the
+    last thing it knew, forever. `status` grades this file's age.
+    """
+    by_symbol = summary.get("by_symbol", {})
+    worst = sorted(by_symbol.items(), key=lambda kv: kv[1]["missing"], reverse=True)
+    path = interior_gaps_log_path(date.today(), logs_dir)
+    line = (
+        f"{date.today():%Y-%m-%d} interior gaps {summary['timeframe']}: "
+        f"{summary['symbols_with_gaps']}/{summary['symbols_scanned']} symbols with gaps "
+        f"({summary['total_missing']} missing bars, {summary['total_halts']} halts) "
+        f"in {elapsed_s:.1f}s"
+    )
+    body = [line]
+    if worst:
+        body.append("  worst: " + ", ".join(f"{s}={v['missing']}" for s, v in worst[:_WORST_SYMBOLS_REPORTED]))
+    body.append(f"{INTERIOR_GAPS_JSON_PREFIX} {json.dumps(summary, sort_keys=True)}")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write("\n".join(body) + "\n")
+    except OSError as exc:  # pragma: no cover - unwritable log dir
+        console.print(f"[yellow]could not write {path}: {exc}[/yellow]")
+        return None
+    return path
+
+
 def report_intraday_health(
     timeframe: str,
     bronze_dir: Path,
     symbol_filter: str | None = None,
+    logs_dir: Path | None = None,
 ) -> dict:
     """Scan intraday parquet for *timeframe* and return a summary dict.
 
-    Report-only — never modifies data. Prints a Rich summary table.
+    Report-only — never modifies data. Prints a Rich summary table, and — for
+    a full scan only — appends a dated summary to `interior_gaps_<date>.log`.
+    A `--symbol`-scoped run is an ad-hoc query and must not overwrite the
+    artifact the scheduled scan publishes.
     """
+    started = monotonic()
     intraday = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe=timeframe)
     symbols = intraday.get_existing_symbols()
     if symbol_filter:
@@ -279,6 +332,9 @@ def report_intraday_health(
             f"have interior gaps at {timeframe} "
             f"({summary['total_missing']} missing bars, {summary['total_halts']} halts)[/bold]"
         )
+
+    if symbol_filter is None:
+        _write_interior_gaps_log(summary, monotonic() - started, logs_dir)
 
     return summary
 
