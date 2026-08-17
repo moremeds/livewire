@@ -18,7 +18,6 @@ from livewire_scripts.status import (
     _coverage_section,
     _disk_section,
     _duckdb_section,
-    _interior_gaps_section,
     _launchd_section,
     _outcomes_section,
     _phases_section,
@@ -219,7 +218,7 @@ def test_collect_returns_a_section_per_check(tmp_path: Path) -> None:
     sections = collect(
         date(2026, 8, 10), tmp_path, tmp_path, runner=_fake_launchctl, database=tmp_path / "absent.duckdb"
     )
-    assert len(sections) == 10
+    assert len(sections) == 9
     assert all(isinstance(s, Section) for s in sections)
 
 
@@ -897,106 +896,3 @@ def test_an_installed_but_unloaded_plist_says_launchctl_load(tmp_path: Path, mon
     # command and sees the section still red learns to distrust the surface.
     for label in _LAUNCHD_JOBS[1:]:
         assert label in (section.fix or "")
-
-
-class TestTheInteriorGapSection:
-    """The scan left the daily job for its own schedule because a 3600s budget
-    could not hold ~3115s of measured work. That removes the budget and buys
-    back a silence — nothing in the daily log mentions the scan any more — so
-    this section grades the artifact's age as well as its numbers.
-    """
-
-    @staticmethod
-    def _log(tmp_path, stamp: str, body: str) -> None:
-        (tmp_path / f"interior_gaps_{stamp}.log").write_text(body, encoding="utf-8")
-
-    def test_a_clean_scan_is_ok(self, tmp_path):
-        self._log(
-            tmp_path,
-            "2026-08-16",
-            "2026-08-16 interior gaps 5m: 0/14687 symbols with gaps (0 missing bars, 0 halts) in 3115.4s\n",
-        )
-        section = _interior_gaps_section("2026-08-17", tmp_path)
-        assert section.verdict is Verdict.OK
-        assert any("14687" in line for line in section.lines)
-
-    def test_symbols_with_gaps_warn_rather_than_fail(self, tmp_path):
-        """A standing nonzero count that grades BAD every week is how a
-        surface becomes ignorable. Repair is a per-symbol operator action."""
-        self._log(
-            tmp_path,
-            "2026-08-16",
-            "2026-08-16 interior gaps 5m: 214/14687 symbols with gaps "
-            "(9021 missing bars, 88 halts) in 3115.4s\n"
-            "  worst: AAPL=42, NVDA=31\n",
-        )
-        section = _interior_gaps_section("2026-08-17", tmp_path)
-        assert section.verdict is Verdict.WARN
-        assert "214/14687" in "\n".join(section.lines)
-
-    def test_a_scan_that_enumerated_nothing_is_unknown(self, tmp_path):
-        """0/0 is a failure to measure, not a clean lake — the same trap that
-        let coverage report `1d=0/0 (100.00%)` as OK."""
-        self._log(
-            tmp_path,
-            "2026-08-16",
-            "2026-08-16 interior gaps 5m: 0/0 symbols with gaps (0 missing bars, 0 halts) in 0.4s\n",
-        )
-        assert _interior_gaps_section("2026-08-17", tmp_path).verdict is Verdict.UNKNOWN
-
-    def test_a_missed_cycle_is_bad_even_with_green_numbers(self, tmp_path):
-        """Weekly, so a frozen log is the only evidence the job stopped."""
-        self._log(
-            tmp_path,
-            "2026-06-14",
-            "2026-06-14 interior gaps 5m: 0/14687 symbols with gaps (0 missing bars, 0 halts) in 3115.4s\n",
-        )
-        section = _interior_gaps_section("2026-08-16", tmp_path)
-        assert section.verdict is Verdict.BAD
-        assert any("days old" in line for line in section.lines)
-
-    def test_a_recent_weekly_gap_is_not_stale(self, tmp_path):
-        """8 days between runs is one normal weekly cycle plus slack; the
-        daily-calibrated 3-day threshold would flag every healthy week."""
-        self._log(
-            tmp_path,
-            "2026-08-09",
-            "2026-08-09 interior gaps 5m: 0/14687 symbols with gaps (0 missing bars, 0 halts) in 3115.4s\n",
-        )
-        assert _interior_gaps_section("2026-08-17", tmp_path).verdict is Verdict.OK
-
-    def test_the_last_run_in_an_appended_log_wins(self, tmp_path):
-        """Same append-mode trap as the coverage log."""
-        self._log(
-            tmp_path,
-            "2026-08-16",
-            "2026-08-16 interior gaps 5m: 0/0 symbols with gaps (0 missing bars, 0 halts) in 0.4s\n"
-            "INTERIOR_GAPS_JSON {}\n"
-            "2026-08-16 interior gaps 5m: 214/14687 symbols with gaps "
-            "(9021 missing bars, 88 halts) in 3115.4s\n",
-        )
-        section = _interior_gaps_section("2026-08-17", tmp_path)
-        assert section.verdict is Verdict.WARN, "must not grade the aborted stub"
-        assert "0/0" not in "\n".join(section.lines)
-
-    def test_no_log_at_all_is_unknown_not_ok(self, tmp_path):
-        section = _interior_gaps_section("2026-08-17", tmp_path)
-        assert section.verdict is Verdict.UNKNOWN
-        assert "  (not found)" in section.lines
-
-    def test_the_section_is_collected(self, tmp_path):
-        """A check that reaches `collect()` reaches the digest too."""
-        names = [
-            s.name
-            for s in collect(
-                date(2026, 8, 17),
-                tmp_path,
-                tmp_path,
-                runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout=""),
-                database=tmp_path / "absent.duckdb",
-            )
-        ]
-        assert "Interior gaps" in names
-
-    def test_the_launchd_job_is_watched(self):
-        assert "com.livewire.interior-gap-scan" in _LAUNCHD_JOBS
