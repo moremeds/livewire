@@ -841,6 +841,8 @@ def main():  # pragma: no cover — only exercised by integration tests
                     bars_inserted=total_inserted,
                     validation_issues=len(total_issues),
                     top_errors=error_messages.most_common(3),
+                    scanned=len(latest_dates),
+                    up_to_date=len(up_to_date),
                 )
             )
             return resolve_exit_code(
@@ -1044,6 +1046,8 @@ def main():  # pragma: no cover — only exercised by integration tests
             bars_inserted=total_inserted,
             validation_issues=len(total_issues),
             top_errors=error_messages.most_common(3),
+            scanned=len(latest_dates),
+            up_to_date=len(up_to_date),
         )
     )
     return resolve_exit_code(

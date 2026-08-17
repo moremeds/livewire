@@ -5,6 +5,8 @@ from __future__ import annotations
 import collections
 import inspect
 import json
+import os
+import time
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +39,41 @@ _EQUITY_OK = (
     '"target_date":"2026-08-07","updated":13000,"no_trade":277,"partial":0,'
     '"errors":0,"bars_inserted":13000,"validation_issues":0,"top_errors":[]}'
 )
+
+
+def test_outcomes_print_the_denominator_when_the_run_recorded_it(tmp_path: Path) -> None:
+    """Only gapped symbols are fetched. On 2026-08-17 the real line read
+    `no_trade=974` against a universe of 13,385 of which 12,411 were already
+    current — indistinguishable, without the denominator, from "we looked at 974
+    symbols", which would be a catastrophe rather than a quiet Monday."""
+    payload = {
+        "job": "daily_update",
+        "asset_class": "equity",
+        "source": "massive",
+        "target_date": "2026-08-14",
+        "updated": 0,
+        "no_trade": 974,
+        "partial": 0,
+        "errors": 0,
+        "bars_inserted": 0,
+        "validation_issues": 0,
+        "top_errors": [],
+        "scanned": 13385,
+        "up_to_date": 12411,
+    }
+    (tmp_path / "daily_update_2026-08-10.log").write_text(SUMMARY_PREFIX + json.dumps(payload) + "\n", encoding="utf-8")
+    rendered = "\n".join(_outcomes_section("2026-08-10", tmp_path).lines)
+    assert "13,385 scanned" in rendered
+    assert "12,411 already current" in rendered
+
+
+def test_outcomes_stay_readable_for_logs_written_before_the_denominator_existed(tmp_path: Path) -> None:
+    """Old log lines carry no `scanned` key and the digest still parses them —
+    the baseline lookups read previous nights' logs."""
+    (tmp_path / "daily_update_2026-08-10.log").write_text(_EQUITY_OK, encoding="utf-8")
+    rendered = "\n".join(_outcomes_section("2026-08-10", tmp_path).lines)
+    assert "scanned" not in rendered
+    assert "updated=" in rendered
 
 
 def test_a_missing_run_log_is_bad_not_ok(tmp_path: Path) -> None:
@@ -634,10 +671,12 @@ def test_a_job_that_is_not_loaded_is_bad() -> None:
     assert "com.livewire.coverage" in "\n".join(section.lines)
 
 
-def test_a_nonzero_exit_is_capped_at_warn() -> None:
-    """launchctl reports the LAST exit with no timestamp. Today's watchdog=1 is
-    residue from a run that predates the fix already in production. Calling that
-    BAD is the fastest way to make the whole surface ignorable."""
+def test_a_nonzero_exit_is_printed_but_never_graded() -> None:
+    """launchctl reports the LAST exit with no timestamp, so it cannot be acted
+    on. It used to score WARN, which pinned the nightly digest to yellow every
+    single night — watchdog=1 and coverage=1 are the normal steady state. A
+    grade nobody can clear is worse than silence; the number is still printed,
+    and each job's real outcome is graded from its own artifacts."""
     stdout = "".join(f"-\t0\t{label}\n" for label in _LAUNCHD_JOBS)
     stdout = stdout.replace("-\t0\tcom.livewire.intraday-catchup", "-\t86\tcom.livewire.intraday-catchup")
 
@@ -645,8 +684,10 @@ def test_a_nonzero_exit_is_capped_at_warn() -> None:
         return SimpleNamespace(stdout=stdout, returncode=0)
 
     section = _launchd_section(runner=_runner)
-    assert section.verdict is Verdict.WARN
-    assert "no timestamp" in "\n".join(section.lines)
+    assert section.verdict is Verdict.OK
+    rendered = "\n".join(section.lines)
+    assert "86" in rendered, "the exit code must still be visible as a fact"
+    assert "no timestamp" in rendered
 
 
 def test_all_jobs_green_is_ok() -> None:
@@ -676,6 +717,39 @@ def test_any_undelivered_alert_is_a_warning(tmp_path: Path) -> None:
     assert section.verdict is Verdict.WARN
     assert "1" in "\n".join(section.lines)
     assert section.fix is not None
+
+
+def test_an_old_pile_is_a_backlog_and_does_not_hold_the_report_yellow(tmp_path: Path) -> None:
+    """The 4,408 files from 2026-07-19 kept this section WARN every night for a
+    month. Nothing had failed to send in weeks — every digest since arrived — so
+    the queue was a cleanup chore being re-reported as tonight's incident. A
+    mail that is always yellow is a mail nobody opens."""
+    queue = tmp_path / "quality_alerts_undelivered"
+    queue.mkdir()
+    stale = queue / "2026-07-19T05-54-08Z_ib_SAAQW.html"
+    stale.write_text("<p>x</p>", encoding="utf-8")
+    old = time.time() - 29 * 86400
+    os.utime(stale, (old, old))
+
+    section = _undelivered_section(tmp_path)
+    assert section.verdict is Verdict.OK
+    rendered = "\n".join(section.lines)
+    assert "backlog" in rendered
+    # Still counted, and still tells the operator how to clear it — demoting the
+    # grade must not hide the pile.
+    assert "1" in rendered
+    assert "quality_alerts_undelivered" in rendered
+
+
+def test_a_fresh_failed_send_still_warns(tmp_path: Path) -> None:
+    """The other half of the same rule: a send that failed *tonight* is an
+    active incident. Demoting by age must not silence the live case."""
+    queue = tmp_path / "alerts_undelivered"
+    queue.mkdir()
+    (queue / "today_daily_update.html").write_text("<p>x</p>", encoding="utf-8")
+    section = _undelivered_section(tmp_path)
+    assert section.verdict is Verdict.WARN
+    assert "backlog" not in "\n".join(section.lines)
 
 
 def test_the_scheduled_job_queue_is_counted_too(tmp_path: Path) -> None:
@@ -717,6 +791,37 @@ def test_duckdb_check_is_unknown_when_duckdb_is_not_installed(monkeypatch) -> No
     section = _duckdb_section(date(2026, 8, 10))
     assert section.verdict is Verdict.UNKNOWN
     assert "duckdb" in "\n".join(section.lines).lower()
+
+
+def test_a_stale_view_names_the_lane_that_writes_it(monkeypatch) -> None:
+    """Measured 2026-08-16: `bronze_rates_1d last=2026-08-13` printed
+    `fix: duckdb build`. The table was reporting correctly and FRED was behind,
+    so rebuilding would reproduce the same date — a fix that cannot work teaches
+    the reader the surface lies."""
+    monkeypatch.setattr(
+        "livewire_scripts.status._coverage_headline",
+        lambda _db: {
+            "bronze_equity_1d": (13385, date(2026, 8, 14)),
+            "bronze_rates_1d": (4, date(2026, 8, 3)),
+        },
+    )
+    section = _duckdb_section(date(2026, 8, 14))
+    assert section.verdict is not Verdict.OK
+    assert section.fix is not None
+    assert "fred-rates" in section.fix
+    assert "duckdb build" not in section.fix
+
+
+def test_an_unmapped_view_still_falls_back_to_rebuilding_the_table(monkeypatch) -> None:
+    """When the owning lane is unknown, a stale table is the only thing we can
+    honestly name. A KeyError here would kill the whole report instead."""
+    monkeypatch.setattr(
+        "livewire_scripts.status._coverage_headline",
+        lambda _db: {"bronze_something_new_1d": (7, date(2026, 7, 1))},
+    )
+    section = _duckdb_section(date(2026, 8, 14))
+    assert section.fix is not None
+    assert "duckdb build" in section.fix
 
 
 def test_duckdb_check_is_bad_when_the_table_lags_by_more_than_three_sessions(monkeypatch) -> None:

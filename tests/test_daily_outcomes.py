@@ -38,6 +38,22 @@ def test_build_summary_line_round_trips():
     assert payload["top_errors"] == [["HTTP 500 from Massive", 12]]
 
 
+def test_the_denominator_is_carried_when_the_run_knows_it():
+    """The four counters cover only symbols that HAD a gap. Without `scanned`,
+    `no_trade=974` cannot be told from "we only looked at 974 of 13,385"."""
+    payload = json.loads(_line(scanned=13385, up_to_date=12411)[len(SUMMARY_PREFIX) :])
+    assert payload["scanned"] == 13385
+    assert payload["up_to_date"] == 12411
+
+
+def test_the_denominator_keys_are_absent_rather_than_null_when_unknown():
+    """Optional because they were added late: consumers parse old log lines for
+    baselines, and a null would make every reader special-case the type."""
+    payload = json.loads(_line()[len(SUMMARY_PREFIX) :])
+    assert "scanned" not in payload
+    assert "up_to_date" not in payload
+
+
 def test_parse_last_summary_json_returns_last_line():
     text = "\n".join(["noise", _line(updated=1), "more", _line(updated=2)])
     assert parse_last_summary_json(text)["updated"] == 2

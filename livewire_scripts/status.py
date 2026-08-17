@@ -107,13 +107,23 @@ def _outcomes_section(run_date: str, log_dir: Path) -> Section:
         lines.append("  (not found)")
         return Section("Daily update outcomes", Verdict.UNKNOWN, lines, fix=f"tail -50 {path}")
     for s in summaries:
-        lines.append(
+        line = (
             f"  {s.get('asset_class', '?'):<10} "
             f"updated={s.get('updated', 0)}  "
             f"no_trade={s.get('no_trade', 0)}  "
             f"partial={s.get('partial', 0)}  "
             f"errors={s.get('errors', 0)}"
         )
+        # The denominator, when the producer recorded it. Only gapped symbols
+        # are fetched, so `no_trade=974` alone cannot be told apart from "we
+        # looked at 974 of 13,385". Older log lines have no such keys.
+        scanned, current = s.get("scanned"), s.get("up_to_date")
+        if scanned is not None:
+            line += f"   [of {int(scanned):,} scanned"
+            if current is not None:
+                line += f", {int(current):,} already current"
+            line += "]"
+        lines.append(line)
     # Reuse the repo's own measured rule rather than inventing a second one.
     # Grading every nonzero `errors` as WARN would put updated=0/errors=13311 at
     # the same severity as one flaky warrant — the exact disease this module
@@ -530,9 +540,19 @@ def _launchd_section(runner=subprocess.run) -> Section:
             fix = " && ".join(f"launchctl load {agents}/{label}.plist" for label in installed)
         return Section("launchd jobs", Verdict.BAD, lines, fix=fix)
     if nonzero:
-        lines.append("  note: exit code carries no timestamp — check the matching log before acting")
-        return Section("launchd jobs", Verdict.WARN, lines, fix="ls -lt ~/market-warehouse/logs/ | head")
+        # A FACT, not a grade. The exit code has no timestamp, so this cannot be
+        # acted on — and a WARN nobody can clear is worse than silence: it
+        # pinned every nightly digest to yellow regardless of what happened, and
+        # a mail that is always yellow trains the reader to stop opening it.
+        # The failure this used to stand in for is measured elsewhere, against
+        # real artifacts: each job's own outcome/phase section.
+        lines.append("  note: last exit code, no timestamp — the outcome sections below grade the actual runs")
     return Section("launchd jobs", Verdict.OK, lines)
+
+
+#: Two nightly cycles. A queue with nothing newer than this has been proven
+#: drainable by every send that succeeded since, so it is a chore, not an alert.
+_UNDELIVERED_ACTIVE_DAYS = 2
 
 
 def _undelivered_queues(log_dir: Path) -> list[Path]:
@@ -552,12 +572,19 @@ def _undelivered_queues(log_dir: Path) -> list[Path]:
 
 
 def _undelivered_section(log_dir: Path) -> Section:
-    """Count alerts that could not be sent.
+    """Count alerts that could not be sent, and grade only the ACTIVE ones.
 
-    No severity ladder by age. 4,408 files whose newest is a week old is a
-    historic pile-up; one file from an hour ago is an active failure; a rule
-    that tries to tell them apart would be guessing. Print both numbers and let
-    the reader judge.
+    An earlier version of this docstring claimed telling a pile-up from a live
+    failure "would be guessing". It is not. The queue is written only when a
+    send fails, and the jobs mail nightly — so if nothing has landed in it for
+    two cycles, delivery has demonstrably worked since and what remains is a
+    cleanup chore, not an incident. The 4,408 files from 2026-07-19 held the
+    section at WARN every night for a month, which is how a permanently-yellow
+    mail stops being read at all.
+
+    `_UNDELIVERED_ACTIVE_DAYS` is derived from the job cadence, not guessed at
+    like the coverage budgets this repo retired twice: a daily job either
+    failed to mail within the last two days or it did not.
     """
     lines, total, newest_ts, unreadable = ["Undelivered alerts:"], 0, 0.0, []
     for directory in _undelivered_queues(log_dir):
@@ -584,11 +611,22 @@ def _undelivered_section(log_dir: Path) -> Section:
         return Section("Undelivered alerts", Verdict.UNKNOWN, lines, fix=f"ls -ld {log_dir}")
     if not total:
         return Section("Undelivered alerts", Verdict.OK, ["Undelivered alerts: none"])
+    newest = date.fromtimestamp(newest_ts)
+    stale_days = (date.today() - newest).days
+    active = stale_days <= _UNDELIVERED_ACTIVE_DAYS
+    headline = f"Undelivered alerts: {total:,} across 2 queues, newest {newest.isoformat()}"
+    if not active:
+        # Named as a backlog so the reader is not hunting for tonight's failure.
+        # The cleanup command still prints here, because `render` shows `fix`
+        # only for a non-OK verdict and this one is deliberately OK.
+        headline += f" — backlog, {stale_days}d since the last failed send (not an active incident)"
+        lines = [headline] + lines[1:]
+        lines.append(f"  clear when reviewed: cat $(ls -t {log_dir}/quality_alerts_undelivered/* | head -1)")
+        return Section("Undelivered alerts", Verdict.OK, lines)
     return Section(
         "Undelivered alerts",
         Verdict.WARN,
-        [f"Undelivered alerts: {total:,} across 2 queues, newest {date.fromtimestamp(newest_ts).isoformat()}"]
-        + lines[1:],
+        [headline] + lines[1:],
         # An honest instruction: read one to learn WHY delivery failed, then
         # delete the batch. `ls | head` alone neither diagnoses nor clears, and
         # a fix that overpromises is a fix nobody trusts twice.
@@ -610,6 +648,20 @@ def _coverage_headline(database: Path | None):
 #: the other's meaning. The value itself is a starting guess, not a
 #: measurement — correct it the first time it misfires.
 _CATALOG_STALE_SESSIONS = 3
+
+#: View -> the lane that WRITES it. The catalog only reports; a stale view means
+#: its writer is behind, so the fix has to name the writer. Views are
+#: `bronze_<asset_class>_1d` over `duckdb_catalog._DAILY_ASSET_CLASSES` plus
+#: `silver_equity_1d`; an unmapped name falls back to rebuilding the table.
+_CATALOG_LANE_FIX: dict[str, str] = {
+    "bronze_equity_1d": "python scripts/livewire_ingest.py daily --asset-class equity --source massive",
+    "bronze_futures_1d": "python scripts/livewire_ingest.py daily --asset-class futures",
+    "bronze_cmdty_1d": "python scripts/livewire_ingest.py daily --asset-class cmdty",
+    "bronze_rates_1d": "python scripts/livewire_ingest.py fred-rates",
+    "bronze_volatility_1d": "python scripts/livewire_ingest.py cboe-vol",
+    "bronze_fx_1d": "python scripts/livewire_ingest.py fx --days 7",
+    "silver_equity_1d": "python scripts/livewire_store.py rebuild-silver --full",
+}
 
 
 def _sessions_behind(newest: date, target: date, limit: int = 10) -> int:
@@ -677,10 +729,19 @@ def _duckdb_section(target: date, database: Path | None = None) -> Section:
     ]
     for view_name, (count, last) in sorted(headline.items()):
         lines.append(f"  {view_name:<24} {count:>7,} symbols  last={last}")
+    # The fix must name the lane that OWNS the laggard, not the catalog. This
+    # docstring already says catalog staleness is a symptom of an upstream lane,
+    # and then every branch prescribed `duckdb build` — which on 2026-08-16
+    # meant "rebuild the table" for `bronze_rates_1d last=2026-08-13`, where the
+    # table was reporting correctly and FRED was the one behind. Rebuilding
+    # would reproduce the same date and the reader would conclude the surface
+    # lies. `duckdb build` stays the fallback: when the owner is unknown, a
+    # stale table really is the only thing we can name.
+    fix = _CATALOG_LANE_FIX.get(laggard, "python scripts/livewire_store.py duckdb build")
     if behind > _CATALOG_STALE_SESSIONS:
-        return Section("DuckDB catalog", Verdict.BAD, lines, fix="python scripts/livewire_store.py duckdb build")
+        return Section("DuckDB catalog", Verdict.BAD, lines, fix=fix)
     if behind > 1:
-        return Section("DuckDB catalog", Verdict.WARN, lines, fix="python scripts/livewire_store.py duckdb build")
+        return Section("DuckDB catalog", Verdict.WARN, lines, fix=fix)
     return Section("DuckDB catalog", Verdict.OK, lines)
 
 
