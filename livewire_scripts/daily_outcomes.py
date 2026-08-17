@@ -29,8 +29,18 @@ def build_summary_line(
     bars_inserted: int,
     validation_issues: int,
     top_errors: list[tuple[str, int]],
+    scanned: int | None = None,
+    up_to_date: int | None = None,
 ) -> str:
-    """Build the single machine-readable SUMMARY_JSON line for a run."""
+    """Build the single machine-readable SUMMARY_JSON line for a run.
+
+    `scanned`/`up_to_date` are the DENOMINATOR, and without them the four
+    outcome counters cannot be read. Only symbols with a gap are fetched, so
+    2026-08-17 reported `no_trade=974` for a universe of 13,385 of which 12,411
+    were already current — a reader cannot tell that from "we only looked at
+    974". Optional because they were added later: old log lines lack the keys
+    and every consumer must keep parsing those.
+    """
     payload = {
         "job": job,
         "asset_class": asset_class,
@@ -44,6 +54,10 @@ def build_summary_line(
         "validation_issues": validation_issues,
         "top_errors": [[msg, count] for msg, count in top_errors],
     }
+    if scanned is not None:
+        payload["scanned"] = scanned
+    if up_to_date is not None:
+        payload["up_to_date"] = up_to_date
     return SUMMARY_PREFIX + json.dumps(payload, separators=(",", ":"))
 
 
