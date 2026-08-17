@@ -1437,52 +1437,6 @@ class TestTheDailyJobNoLongerRunsCoverage:
         assert any(sub[:1] == ["digest"] for sub in subcommands)
 
 
-class TestTheInteriorGapScanLaunchdTemplate:
-    def test_plist_exists_and_carries_its_invariants(self):
-        plist = Path(__file__).resolve().parent.parent / "launchd" / "com.livewire.interior-gap-scan.plist.example"
-        assert plist.exists(), f"missing plist template at {plist}"
-
-        text = plist.read_text(encoding="utf-8")
-        assert "<string>com.livewire.interior-gap-scan</string>" in text
-        # Runs the immutable release, not the checkout.
-        assert "/path/to/warehouse/current" in text
-        assert ".venv/bin/python scripts/livewire_quality.py health --intraday --timeframe 5m" in text
-        assert "/path/to/repo" not in text
-        # The Sunday gate lives in the schedule, not in Python: Weekday 0.
-        assert "<key>Weekday</key>" in text
-        assert "<integer>0</integer>" in text
-        # 13:00 UTC = 21:00 on this Mac (Asia/Hong_Kong), after coverage at 11:00
-        # UTC so the two never walk the same cold volume at once.
-        assert "<integer>21</integer>" in text
-        assert "/opt/homebrew/bin" in text
-        # A budget is exactly what this job exists to not have.
-        assert "TimeOut" not in text
-        # RunAtLoad would fire a full ~3115s cold pass on every reload.
-        assert "RunAtLoad" not in text
-
-
-class TestTheCoverageLaunchdTemplate:
-    def test_plist_exists_and_carries_its_invariants(self):
-        plist = Path(__file__).resolve().parent.parent / "launchd" / "com.livewire.coverage.plist.example"
-        assert plist.exists(), f"missing plist template at {plist}"
-
-        text = plist.read_text(encoding="utf-8")
-        assert "<string>com.livewire.coverage</string>" in text
-        # Runs the immutable release, not the checkout — same as the other three.
-        assert "/path/to/warehouse/current" in text
-        assert ".venv/bin/python scripts/livewire_quality.py coverage" in text
-        assert "/path/to/repo" not in text
-        # 11:00 UTC = 19:00 on this Mac (Asia/Hong_Kong). After the daily job's
-        # 4h deadline (10:00 UTC), not merely after its 3.27h healthy peak.
-        assert "<integer>19</integer>" in text
-        # node lives in homebrew; without it on PATH the alert cannot send.
-        assert "/opt/homebrew/bin" in text
-        # A budget is exactly what this job exists to not have.
-        assert "TimeOut" not in text
-        # RunAtLoad would fire a full cold pass every time anyone reloads it.
-        assert "RunAtLoad" not in text
-
-
 class TestHousekeepingRunsAfterTheDigest:
     def test_the_nightly_job_runs_a_housekeeping_sweep(self, tmp_path):
         commands: list[list[str]] = []

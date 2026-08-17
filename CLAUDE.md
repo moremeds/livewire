@@ -503,38 +503,40 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
   Selection is the last line matching `coverage:` — the `1d missing:` and
   `MISSING_JSON` detail lines are not measurements, and the `non-equity 1d:`
   line matches the timeframe regex but is not one either.
-- ⚠️ **The interior gap scan has its own job for the same reason coverage does.**
-  It sat in the daily job's post-success tail behind a 3600s timeout, gated on
-  Sunday in Python. Measured 2026-08-16 against the real lake: **302.0s** for the
-  cold glob alone, then **133.1 ms/symbol** reading whole `bar_timestamp`
-  columns and **58.4 ms/symbol** detecting gaps, across **14,687** 5m symbols —
-  `302 + 191.5ms × 14687 ≈ 3115s`, with the read half already largely warm when
-  measured. It does not fit, and it had run **exactly once** (2026-08-16), that
-  once killed at the budget. The six earlier Sundays never reached it because
-  the tail only runs after a *successful* job — so "it always times out" was
-  never observed and must not be claimed. `com.livewire.interior-gap-scan` runs
-  **13:00 UTC Sunday**, after coverage at 11:00 UTC so the two never walk the
-  same cold volume at once, with **no timeout**. The Sunday gate is the plist's
-  `Weekday` key, not a Python date check that could disagree with the schedule;
-  `_is_sunday` is gone.
-- **The scan writes `interior_gaps_<date>.log`, and `status` grades its age.**
-  It previously printed and persisted nothing, which was survivable only while
-  the WARNING landed in the daily log. On its own schedule that is the exact
-  silence the coverage split bought back: a job that stops firing leaves a
-  frozen artifact that reads healthy forever. `_interior_gaps_section` is
-  therefore stale-graded at **16 days** — two weekly cycles plus slack,
-  deliberately *not* `_COVERAGE_STALE_DAYS`, whose 3 is calibrated for a daily
-  job and would flag every healthy week. Symbols with gaps grade **WARN, never
-  BAD**: repair is a per-symbol operator action and a standing nonzero count at
-  BAD every week is how a surface becomes ignorable. `scanned == 0` is UNKNOWN,
-  the same 0/0 trap as coverage. A `--symbol`-scoped run writes **nothing** —
-  an ad-hoc query must not overwrite the scheduled scan's artifact, or `status`
-  would grade one symbol as the whole lake.
+- ⚠️ **The interior gap scan is NOT scheduled, and the number it produces is
+  not a data-loss signal.** It measures liquidity. Run it once end-to-end on
+  2026-08-17 over the real lake: **14,193 of 14,687 symbols (96.6%)** flagged,
+  **318,059,872** "missing" 5m bars, in **3436.8s**. But **SPY, AAPL, NVDA,
+  MSFT, QQQ and TSLA are all absent from the result entirely** — the six most
+  liquid names have zero gaps, and the flagged 96.6% is the illiquid tail.
+  `generate_expected_intraday_timestamps` expects a bar in every 5-minute RTH
+  window of every trading day between a symbol's first and last bar, but SIP
+  only emits a bar when there was a trade. Within the bar files alone, "no bar"
+  and "no trade" are **indistinguishable** — the question is circular.
+  Redefining the signal as a whole empty session does not rescue it: measured
+  over 120 real symbols, the current rule flags 95.0% and the whole-session
+  rule still flags **86.7%** (median 3 empty sessions), because an illiquid
+  warrant genuinely does not trade for days at a time.
+  The only second source that can separate the two is the day's raw flat-file
+  `_symbols.parquet` traded set — which is exactly what `coverage` already uses
+  and what "absent from the day's raw traded set is not a gap" already states.
+  That is a redesign, not a threshold. **Until it is done the scan is not
+  scheduled, is not in `_LAUNCHD_JOBS`, and `status` does not grade it** — a
+  standing WARN reading `14193/14687` every week is the exact disease the
+  status surface exists to cure. Nothing regressed by turning it off: it has
+  never once produced an actionable result. `report_intraday_health` still
+  writes `interior_gaps_<date>.log` for a manual full run, which is the
+  artifact the redesign builds on.
+  ⚠️ Its cost is real and worth keeping: a full 5m pass is **~3437s** — 302s
+  for the cold glob, then 133.1 ms/symbol reading whole `bar_timestamp`
+  columns and 58.4 ms/symbol detecting gaps, over 14,687 symbols. A 120-symbol
+  sample projected 3115s and **understated the real run by 10.3%**, because the
+  sampled reads were already warm. Never put a guessed timeout around it.
 - **`livewire_quality.py` loads the scheduled env for `health` too**, alongside
-  `watchdog` and `coverage`. It used to inherit the daily job's env as a child;
-  launchd now starts it cold, and without this `MDW_DATA_LAKE_DIR`/`MDW_LOG_DIR`
-  resolve to defaults that may not be this warehouse — it would scan the wrong
-  tree and write its artifact where nothing reads it.
+  `watchdog` and `coverage`. A manual full scan started from a bare shell
+  otherwise resolves `MDW_DATA_LAKE_DIR`/`MDW_LOG_DIR` to defaults that may not
+  be this warehouse — it would scan the wrong tree and write its artifact where
+  nothing reads it.
 - ⚠️ **Coverage has its own job because every budget guessed for it expired.**
   600s (from 2026-07-07), then 1800s (5 of 6 nights after PR #78). Both numbers
   came from warm-cache measurements; a cold full pass measured **2858s** on
@@ -949,13 +951,13 @@ python scripts/livewire_ingest.py daily --asset-class futures             # Dail
 # The four warehouse jobs run the immutable release, so they take the WAREHOUSE path.
 # The promoter is the one job that reads the repo — it is what builds the release.
 WAREHOUSE=~/market-warehouse
-for L in daily-update daily-update-watchdog intraday-catchup coverage interior-gap-scan; do
+for L in daily-update daily-update-watchdog intraday-catchup coverage; do
   sed "s|/path/to/warehouse|$WAREHOUSE|g" "launchd/com.livewire.$L.plist.example" \
     > ~/Library/LaunchAgents/com.livewire.$L.plist
 done
 sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.release-promote.plist.example \
   > ~/Library/LaunchAgents/com.livewire.release-promote.plist
-for L in daily-update daily-update-watchdog intraday-catchup coverage interior-gap-scan release-promote; do
+for L in daily-update daily-update-watchdog intraday-catchup coverage release-promote; do
   launchctl load ~/Library/LaunchAgents/com.livewire.$L.plist
 done
 ```
@@ -1193,7 +1195,7 @@ Output: `~/market-warehouse/logs/quality_weekly_YYYY-WW.md` with a coverage tren
 
 ### Health check (intraday)
 
-`scripts/livewire_quality.py health --intraday --timeframe {1h,5m}` performs interior gap detection for the intraday parquet, with optional suspected-halt annotation (contiguous gap < 30 min surrounded by normal bars). Default behaviour is **report-only**. The unfiltered scan runs weekly as its own launchd job, `com.livewire.interior-gap-scan` at 13:00 UTC Sunday with no timeout, and appends its summary to `~/market-warehouse/logs/interior_gaps_YYYY-MM-DD.log`; a `--symbol`-scoped run writes no log. When `--symbol`, `--since`, and `--timeframe` are all set, the command implicitly repairs that narrow window by shelling out to `scripts/livewire_ingest.py intraday-backfill` (no separate `--repair` flag — full scope means repair).
+`scripts/livewire_quality.py health --intraday --timeframe {1h,5m}` performs interior gap detection for the intraday parquet, with optional suspected-halt annotation (contiguous gap < 30 min surrounded by normal bars). Default behaviour is **report-only**. An unfiltered run appends its summary to `~/market-warehouse/logs/interior_gaps_YYYY-MM-DD.log`; a `--symbol`-scoped run writes no log. It is **not scheduled** — see the invariant above: what it counts is liquidity, not data loss. When `--symbol`, `--since`, and `--timeframe` are all set, the command implicitly repairs that narrow window by shelling out to `scripts/livewire_ingest.py intraday-backfill` (no separate `--repair` flag — full scope means repair).
 
 ```bash
 python scripts/livewire_quality.py health --intraday --timeframe 5m                       # Scan all symbols (~3115s)
