@@ -186,9 +186,7 @@ def test_a_changed_manifest_still_commits_the_reserved_revision(tmp_path):
     first = publisher.publish([_artifact(tmp_path, "a.parquet", b"one")], AFFECTED, ACTIONS_AS_OF)
 
     with publisher.transaction() as transaction:
-        result = transaction.commit(
-            [_artifact(tmp_path, "b.parquet", b"two")], AFFECTED, ACTIONS_AS_OF
-        )
+        result = transaction.commit([_artifact(tmp_path, "b.parquet", b"two")], AFFECTED, ACTIONS_AS_OF)
 
     assert result.revision == transaction.revision == first.revision + 1
 
@@ -202,7 +200,5 @@ def test_a_revision_moved_by_another_writer_is_still_fatal(tmp_path):
             # Another process advanced current.json while we held our reservation.
             # Written through the already-locked path: publish() would re-take the
             # cross-process flock this transaction is holding and deadlock the test.
-            publisher._publish_locked(
-                [_artifact(tmp_path, "b.parquet", b"two")], AFFECTED, ACTIONS_AS_OF
-            )
+            publisher._publish_locked([_artifact(tmp_path, "b.parquet", b"two")], AFFECTED, ACTIONS_AS_OF)
             transaction.commit([_artifact(tmp_path, "c.parquet", b"three")], AFFECTED, ACTIONS_AS_OF)
