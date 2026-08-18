@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A Silver rebuild that produces a byte-identical manifest no longer crashes.
+  The publisher dedupes an unchanged manifest by returning the current revision
+  and writing nothing, which left the transaction's reservation unused and was
+  treated as a failed commit. `rebuild_silver` tried to predict that case before
+  committing, but whether the assembled manifest differs is knowable only after
+  assembling it — so the decision now lives in the publisher, and the caller's
+  check is an optimization that can be incomplete without breaking a run. The
+  2026-08-17 nightly job died this way with `reserved Silver revision was not
+  committed`; the watchdog paged 4.5h later and Silver never rebuilt.
+
 ### Changed
 
 - `rebuild-silver` now publishes the successfully staged symbols instead of
