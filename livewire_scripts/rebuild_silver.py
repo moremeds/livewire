@@ -614,13 +614,14 @@ def run(
                 # revision, and evicting against a manifest that still names the file
                 # would fail apex's sha256 check and reject the WHOLE revision.
                 raise SystemExit("every in-scope symbol failed staging: refusing to publish an empty revision")
-            # Committing an unchanged manifest is not a no-op here — the publisher
-            # dedupes it by returning the CURRENT revision (silver_revision.py:110),
-            # which trips the transaction's reserved-revision guard (:65) and aborts
-            # before the eviction below. That state is reachable: once a run commits a
-            # manifest omitting Q but its eviction fails, every later run assembles
-            # that same manifest and would crash instead of retrying, leaving Q served
-            # forever. Eviction is idempotent, so skip the pointless commit and retry.
+            # Skip a commit that provably cannot change the manifest: _publish_locked
+            # re-hashes every artifact it is handed, which is ~13k files for nothing.
+            # This is an optimization ONLY. It cannot be made exhaustive -- whether the
+            # assembled manifest differs is knowable only after assembling it, which
+            # happens inside the publisher. The publisher therefore owns that call and
+            # treats an identical manifest as a no-op commit, so a condition missed here
+            # costs time, not a crash. It used to be load-bearing, and the 2026-08-17
+            # nightly rebuild died on a path it did not predict. Eviction is idempotent.
             still_manifested = {
                 artifact.path.split("symbol=")[1].split("/")[0]
                 for artifact in (transaction.current.artifacts if transaction.current else ())

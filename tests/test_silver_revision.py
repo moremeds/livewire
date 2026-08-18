@@ -161,3 +161,44 @@ def test_invalid_affected_contract_is_rejected(tmp_path, affected, message):
     with pytest.raises(ValueError, match=message):
         publisher.publish([_artifact(tmp_path, "a.parquet", b"valid")], affected, ACTIONS_AS_OF)
     assert not (tmp_path / "revisions/current.json").exists()
+
+
+def test_an_identical_manifest_commits_as_a_noop_instead_of_crashing(tmp_path):
+    """A quiet night rebuilds byte-identical artifacts. The publisher dedupes that by
+    returning the CURRENT revision, leaving the transaction's reservation unused --
+    which crashed the 2026-08-17 nightly Silver rebuild with
+    ``reserved Silver revision was not committed``."""
+    publisher = SilverRevisionPublisher(tmp_path)
+    artifact = _artifact(tmp_path, "a.parquet", b"same")
+    first = publisher.publish([artifact], AFFECTED, ACTIONS_AS_OF)
+
+    with publisher.transaction() as transaction:
+        assert transaction.revision == first.revision + 1
+        result = transaction.commit([artifact], AFFECTED, ACTIONS_AS_OF)
+
+    assert result.revision == first.revision
+    assert not (tmp_path / f"revisions/revision={first.revision + 1}.json").exists()
+    assert json.loads((tmp_path / "revisions/current.json").read_text())["revision"] == first.revision
+
+
+def test_a_changed_manifest_still_commits_the_reserved_revision(tmp_path):
+    publisher = SilverRevisionPublisher(tmp_path)
+    first = publisher.publish([_artifact(tmp_path, "a.parquet", b"one")], AFFECTED, ACTIONS_AS_OF)
+
+    with publisher.transaction() as transaction:
+        result = transaction.commit([_artifact(tmp_path, "b.parquet", b"two")], AFFECTED, ACTIONS_AS_OF)
+
+    assert result.revision == transaction.revision == first.revision + 1
+
+
+def test_a_revision_moved_by_another_writer_is_still_fatal(tmp_path):
+    publisher = SilverRevisionPublisher(tmp_path)
+    publisher.publish([_artifact(tmp_path, "a.parquet", b"one")], AFFECTED, ACTIONS_AS_OF)
+
+    with pytest.raises(RuntimeError, match="reserved Silver revision was not committed"):
+        with publisher.transaction() as transaction:
+            # Another process advanced current.json while we held our reservation.
+            # Written through the already-locked path: publish() would re-take the
+            # cross-process flock this transaction is holding and deadlock the test.
+            publisher._publish_locked([_artifact(tmp_path, "b.parquet", b"two")], AFFECTED, ACTIONS_AS_OF)
+            transaction.commit([_artifact(tmp_path, "c.parquet", b"three")], AFFECTED, ACTIONS_AS_OF)

@@ -62,7 +62,14 @@ class SilverRevisionTransaction:
         if self._committed:
             raise RuntimeError("Silver revision transaction already committed")
         result = self.publisher._publish_locked(artifacts, affected, actions_as_of)
-        if result.revision != self.revision:
+        # An identical manifest is a no-op: _publish_locked writes nothing and returns
+        # the CURRENT revision, leaving the reservation unused. That is success, not a
+        # failed commit. The caller cannot predict it -- whether the assembled manifest
+        # differs is only knowable here, after it is assembled -- so deciding it there
+        # means adding one more condition every time a new no-change path appears.
+        # Anything that is neither the reserved revision nor the one we read under the
+        # lock still means another writer moved current.json, which is fatal.
+        if result.revision not in (self.revision, self.current.revision if self.current else self.revision):
             raise RuntimeError("reserved Silver revision was not committed")
         self._committed = True
         return result
