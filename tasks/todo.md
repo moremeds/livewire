@@ -2,6 +2,76 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Livewire Shepherd execution (2026-08-31)
+
+Goal: periodically verify current S&P 500 and Nasdaq-100 market-data coverage,
+preserve point-in-time evidence, investigate ambiguous gaps without a global
+blocker, and permit only exact reversible repairs. Parquet remains canonical;
+DuckDB remains a verified, rebuildable query surface.
+
+Dependency graph:
+
+```text
+LS-01.4 -> LS-02.1 -> LS-02.2a -> LS-02.2b --+
+                                              +-> LS-02.3 -> LS-03.1 -> LS-03.2
+LS-07.1 -> LS-07.2 ---------------------------+       |          |
+                                                      |          +-> LS-06.1
+                                                      +-> LS-04
+                                                      +-> LS-05.1 -> LS-05.2 -> LS-06.1
+LS-06.1 -> LS-06.2a -> LS-06.2b -> LS-06.2c -> LS-06.3a -> LS-06.3b -> LS-07.3
+                                                   |
+                                                   +-> LS-08.1 -> LS-08.2
+
+LS-01.4 + LS-02.3 + LS-03.2 + LS-05.2 + LS-06.3b + LS-07.3 -> LS-GATE
+LS-04 and LS-08 continue after the first working-system gate.
+```
+
+- [x] **LS-01.4** (`depends_on: []`, Helium): Provide the strict read-only
+  Livewire bridge and standalone Shepherd daemon shell through Helium PR #49.
+- [ ] **LS-02.1** (`depends_on: [LS-01.4]`): Preserve exact source bytes and
+  MediaWiki revision metadata before parsing current index constituents.
+- [ ] **LS-02.2a** (`depends_on: [LS-02.1]`): Freeze the stable-security-identity
+  evidence, priority, and collision policy as executable fixtures.
+- [ ] **LS-02.2b** (`depends_on: [LS-02.2a]`): Add append-only security identity
+  and index-membership events with strict PIT queries.
+- [ ] **LS-07.1** (`depends_on: [LS-01.4]`, Helium): Define Shepherd team
+  manifests, claim contracts, and deterministic verifier boundaries.
+- [ ] **LS-07.2** (`depends_on: [LS-07.1]`, Helium/Argon): Add cost-aware source
+  tools and provider-owned quota recovery without daemon-wide blocking.
+- [ ] **LS-02.3** (`depends_on: [LS-02.2b, LS-07.2]`): Reconcile verified
+  current S&P 500 and Nasdaq-100 membership into the query surface.
+- [ ] **LS-03.1** (`depends_on: [LS-02.3]`): Produce exact current-member daily
+  coverage work units from identity intervals, not discovered files.
+- [ ] **LS-03.2** (`depends_on: [LS-03.1]`): Connect deep daily retrieval while
+  keeping IB 2FA/session failure local and resumable.
+- [ ] **LS-04** (`depends_on: [LS-02.3]`): Expand verified historical membership
+  and PIT Silver daily bars without delaying the current working gate.
+- [ ] **LS-05.1** (`depends_on: [LS-02.3]`): Verify Massive intraday partitions
+  and source completeness from canonical raw evidence.
+- [ ] **LS-05.2** (`depends_on: [LS-05.1]`): Publish verified intraday coverage
+  and DuckDB parity metadata without wide cold-lake scans.
+- [ ] **LS-06.1** (`depends_on: [LS-03.2, LS-05.2]`): Freeze exact targeted
+  repair manifests and mutation receipts on a disposable lake.
+- [ ] **LS-06.2a** (`depends_on: [LS-06.1]`): Characterize existing repair
+  scripts and their rollback/locking boundaries before adaptation.
+- [ ] **LS-06.2b** (`depends_on: [LS-06.2a]`): Add exact scoped repair adapters
+  without introducing a second canonical writer.
+- [ ] **LS-06.2c** (`depends_on: [LS-06.2b]`): Prove crash recovery, rollback,
+  and no wider-than-manifest publication.
+- [ ] **LS-06.3a** (`depends_on: [LS-06.2c]`, Helium): Bind signed authority to
+  the exact Livewire mutation identities and postconditions.
+- [ ] **LS-06.3b** (`depends_on: [LS-06.3a]`): Run controlled autonomous repair
+  and rollback drills with replayable evidence.
+- [ ] **LS-07.3** (`depends_on: [LS-06.3b]`): Add periodic launchd operation,
+  issue lifecycle, deadman observation, and cold-restart verification.
+- [ ] **LS-08.1** (`depends_on: [LS-06.2c]`): Maintain the explicit historical
+  denominator and unresolved PIT intervals.
+- [ ] **LS-08.2** (`depends_on: [LS-08.1]`): Periodically expand and independently
+  verify historical S&P 500/Nasdaq-100 PIT Silver coverage.
+- [ ] **LS-GATE** (`depends_on: [LS-01.4, LS-02.3, LS-03.2, LS-05.2, LS-06.3b, LS-07.3]`):
+  Promote the first unattended working system; seven-day observation is not a
+  prerequisite to start it, while LS-04/LS-08 continue by coverage.
+
 ## Warehouse freshness backfill (2026-07-19)
 
 Dependency graph: `F1 -> F2 -> F3 -> F4 -> F5 -> F6`
