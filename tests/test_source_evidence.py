@@ -56,6 +56,26 @@ def test_duplicate_bytes_and_manifest_row_are_idempotent(tmp_path):
     assert store.list_verified() == [row]
 
 
+def test_later_retrieval_of_same_source_revision_preserves_first_known_time(tmp_path):
+    store = SourceEvidenceStore(tmp_path)
+    artifact = store.persist_raw(b"same revision")
+    first = evidence(artifact.ref, artifact.sha256)
+    later = SourceEvidence(**{**first.__dict__, "retrieved_at": datetime(2026, 8, 31, 2, 0, tzinfo=UTC)})
+    store.record(first)
+    store.record(later)
+    assert store.list_verified() == [first]
+
+
+def test_same_source_revision_cannot_be_backdated(tmp_path):
+    store = SourceEvidenceStore(tmp_path)
+    artifact = store.persist_raw(b"same revision")
+    first = evidence(artifact.ref, artifact.sha256)
+    earlier = SourceEvidence(**{**first.__dict__, "retrieved_at": datetime(2026, 8, 31, 0, 0, tzinfo=UTC)})
+    store.record(first)
+    with pytest.raises(ValueError, match="backdated"):
+        store.record(earlier)
+
+
 def test_conflicting_metadata_for_the_same_artifact_is_rejected(tmp_path):
     store = SourceEvidenceStore(tmp_path)
     artifact = store.persist_raw(b"same artifact")

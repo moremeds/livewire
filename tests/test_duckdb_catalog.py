@@ -16,8 +16,10 @@ import pytest
 
 from clients.duckdb_catalog import (
     COVERAGE_SOURCES,
+    ShepherdCoverageRow,
     build_coverage,
     connect,
+    ensure_shepherd_metadata_view,
     ensure_view,
     read_symbols,
     symbol_files,
@@ -132,6 +134,32 @@ def test_connect_registers_no_views_by_default(lake: Path, silver: Path) -> None
         con.close()
 
 
+def test_shepherd_metadata_views_are_on_demand_and_read_parquet_without_copy(tmp_path: Path) -> None:
+    source = tmp_path / "security_master" / "events.parquet"
+    source.parent.mkdir(parents=True)
+    pq.write_table(pa.table({"security_id": ["sec_01"], "symbol": ["AAPL"]}), source)
+    con = connect()
+    try:
+        with pytest.raises(duckdb.CatalogException):
+            con.sql("SELECT * FROM security_master")
+        ensure_shepherd_metadata_view(con, "security_master", data_lake_root=tmp_path)
+        assert con.sql("SELECT security_id, symbol FROM security_master").fetchall() == [("sec_01", "AAPL")]
+    finally:
+        con.close()
+    assert list(tmp_path.rglob("*.duckdb")) == []
+
+
+def test_shepherd_metadata_view_rejects_unknown_name_and_missing_parquet(tmp_path: Path) -> None:
+    con = connect()
+    try:
+        with pytest.raises(KeyError):
+            ensure_shepherd_metadata_view(con, "security_master; DROP TABLE coverage", data_lake_root=tmp_path)
+        with pytest.raises(FileNotFoundError):
+            ensure_shepherd_metadata_view(con, "index_membership_sp500", data_lake_root=tmp_path)
+    finally:
+        con.close()
+
+
 def test_connect_registers_only_named_views(lake: Path, silver: Path) -> None:
     con = connect(views=["bronze_equity_1d"], lake_root=lake, silver_root=silver)
     try:
@@ -205,6 +233,55 @@ def test_build_coverage_publishes_expected_rows(tmp_path: Path, lake: Path, silv
         ("bronze_equity_1d", "NVDA", 2, date(2026, 7, 30), date(2026, 7, 31)),
         ("silver_equity_1d", "NVDA", 2, date(2026, 7, 30), date(2026, 7, 31)),
     ]
+
+
+def test_build_coverage_publishes_shepherd_scope_evidence_in_same_atomic_database(
+    tmp_path: Path, lake: Path, silver: Path
+) -> None:
+    dest = tmp_path / "analytics.duckdb"
+    row = ShepherdCoverageRow(
+        scope_hash="sha256:" + "1" * 64,
+        dimension="current-membership",
+        state="VERIFIED",
+        evidence_hash="2" * 64,
+    )
+    build_coverage(dest, lake_root=lake, silver_root=silver, shepherd_rows=[row])
+
+    con = connect(dest, read_only=True)
+    try:
+        assert con.sql("SELECT scope_hash, dimension, state, evidence_hash FROM shepherd_coverage").fetchall() == [
+            (row.scope_hash, row.dimension, row.state, row.evidence_hash)
+        ]
+    finally:
+        con.close()
+    con = connect(dest)
+    try:
+        with pytest.raises(duckdb.ConstraintException):
+            con.execute(
+                "INSERT INTO shepherd_coverage VALUES (?, ?, ?, ?)",
+                [row.scope_hash, row.dimension, row.state, row.evidence_hash],
+            )
+    finally:
+        con.close()
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        ShepherdCoverageRow("not-a-scope", "membership", "VERIFIED", "1" * 64),
+        ShepherdCoverageRow("sha256:" + "1" * 64, "", "VERIFIED", "1" * 64),
+        ShepherdCoverageRow("sha256:" + "1" * 64, "membership", "verified", "1" * 64),
+        ShepherdCoverageRow("sha256:" + "1" * 64, "membership", "VERIFIED", "bad"),
+    ],
+)
+def test_build_coverage_rejects_invalid_shepherd_rows_before_publish(
+    tmp_path: Path, lake: Path, silver: Path, row: ShepherdCoverageRow
+) -> None:
+    dest = tmp_path / "analytics.duckdb"
+    with pytest.raises(ValueError):
+        build_coverage(dest, lake_root=lake, silver_root=silver, shepherd_rows=[row])
+    assert not dest.exists()
+    assert not dest.with_name(dest.name + ".building").exists()
 
 
 def test_build_coverage_surfaces_symbol_absent_from_silver(tmp_path: Path, lake: Path, silver: Path) -> None:

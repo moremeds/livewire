@@ -133,8 +133,18 @@ class SourceEvidenceStore:
             serialized = asdict(evidence)
             matching = [row for row in rows if row["ref"] == evidence.ref]
             if matching:
-                if matching != [serialized]:
+                if len(matching) != 1:
+                    raise ValueError("evidence ref has ambiguous metadata")
+                existing = matching[0]
+                immutable_existing = {key: value for key, value in existing.items() if key != "retrieved_at"}
+                immutable_new = {key: value for key, value in serialized.items() if key != "retrieved_at"}
+                if immutable_existing != immutable_new:
                     raise ValueError("evidence ref already has different metadata")
+                existing_retrieved_at = existing["retrieved_at"]
+                if not isinstance(existing_retrieved_at, datetime):
+                    raise ValueError("evidence ref has invalid retrieval metadata")
+                if evidence.retrieved_at < existing_retrieved_at:
+                    raise ValueError("evidence ref cannot be backdated before its first retrieval")
                 return
             rows.append(serialized)
             self._publish_manifest(rows)

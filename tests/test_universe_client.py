@@ -157,6 +157,27 @@ class TestFetchNDX100:
         assert result == {"AAPL", "NVDA"}
 
     @responses.activate
+    def test_ignores_unrelated_wikitables_before_semantic_constituent_table(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
+        content = NDX100_HTML.replace(
+            '<table id="constituents">',
+            """<table class="wikitable"><tbody><tr><th>Category</th><th>All-Time Highs</th></tr>
+            <tr><td>Closing</td><td>30,000</td></tr></tbody></table>
+            <table class="wikitable">""",
+        )
+        responses.add(
+            responses.GET,
+            mediawiki_url("Nasdaq-100"),
+            body=mediawiki_payload(
+                content,
+                title="Nasdaq-100",
+                canonical_url="https://en.wikipedia.org/wiki/Nasdaq-100",
+            ),
+            status=200,
+        )
+        assert fetch_ndx100() == {"AAPL", "NVDA"}
+
+    @responses.activate
     def test_http_error_raises(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
         responses.add(

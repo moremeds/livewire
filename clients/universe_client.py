@@ -64,25 +64,35 @@ def _data_lake_root() -> Path:
     return Path(os.environ.get("MDW_DATA_LAKE", Path.home() / "market-warehouse" / "data-lake")).expanduser()
 
 
-def _parse_constituent_table(content: str, label: str) -> set[str]:
+def parse_constituent_table(content: str, label: str) -> set[str]:
     tree = html.fromstring(content)
-    table = tree.cssselect("table#constituents")
-    if not table:
-        tables = tree.cssselect("table.wikitable")
-        if not tables:
-            raise UniverseFetchError(f"{label}: no constituent table found")
-        table = [tables[0]]
-    rows = table[0].cssselect("tbody tr")
-    symbols: set[str] = set()
-    for row in rows:
-        cells = row.cssselect("td")
-        if cells:
-            text = cells[0].text_content().strip()
-            if text:
-                symbols.add(text)
-    if not symbols:
+    candidates = [*tree.cssselect("table#constituents"), *tree.cssselect("table.wikitable")]
+    seen: set[int] = set()
+    for table in candidates:
+        if id(table) in seen:
+            continue
+        seen.add(id(table))
+        first_row = table.cssselect("tr")[:1]
+        if not first_row:
+            continue
+        headers = [" ".join(cell.text_content().split()).casefold() for cell in first_row[0].cssselect("th")]
+        symbol_columns = [index for index, value in enumerate(headers) if value in {"symbol", "ticker"}]
+        has_company = any(value in {"security", "company"} for value in headers)
+        if len(symbol_columns) != 1 or not has_company:
+            continue
+        symbol_column = symbol_columns[0]
+        symbols = {
+            cells[symbol_column].text_content().strip()
+            for row in table.cssselect("tbody tr")
+            if len(cells := row.cssselect("td")) > symbol_column and cells[symbol_column].text_content().strip()
+        }
+        if symbols:
+            return symbols
         raise UniverseFetchError(f"{label}: constituent table is empty")
-    return symbols
+    raise UniverseFetchError(f"{label}: no constituent table found")
+
+
+_parse_constituent_table = parse_constituent_table
 
 
 def _fetch_wikipedia_universe(title: str, label: str) -> set[str]:
@@ -90,7 +100,7 @@ def _fetch_wikipedia_universe(title: str, label: str) -> set[str]:
         snapshot = MediaWikiClient(SourceEvidenceStore(_data_lake_root()), timeout=_TIMEOUT).snapshot(title)
     except MediaWikiFetchError as exc:
         raise UniverseFetchError(f"Failed to fetch {label}: {exc}") from exc
-    return _parse_constituent_table(snapshot.content, label)
+    return parse_constituent_table(snapshot.content, label)
 
 
 def fetch_sp500() -> set[str]:

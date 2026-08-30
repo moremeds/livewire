@@ -26,6 +26,7 @@ COMMANDS = {
     "flatfile-ingest-daily": "livewire_scripts.ingest_daily_flatfiles",
     "universe": "livewire_scripts.universe_screener",
     "universe-sync": "livewire_scripts.universe_sync",
+    "shepherd-universe": "livewire_scripts.shepherd_universe",
 }
 
 # Commands that talk to IB Gateway. cboe-vol uses CBOE's public API; fx uses
