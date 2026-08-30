@@ -48,12 +48,14 @@ LS-04 and LS-08 continue after the first working-system gate.
   returns typed exit 75 without full-bounce or command-level retry. Helium
   accepts that wait only with `AWAITING_USER` and continues other ready units;
   mutating receipts remain handoffs until LS-06's certified action boundary.
-- [ ] **LS-04** (`depends_on: [LS-02.3]`): Expand verified historical membership
-  and PIT Silver daily bars without delaying the current working gate.
-- [ ] **LS-05.1** (`depends_on: [LS-02.3]`): Verify Massive intraday partitions
-  and source completeness from canonical raw evidence.
-- [ ] **LS-05.2** (`depends_on: [LS-05.1]`): Publish verified intraday coverage
-  and DuckDB parity metadata without wide cold-lake scans.
+- [ ] **LS-04** (`depends_on: [LS-02.3]`): Verify the Massive flat-file
+  current-member intraday slice and deterministic 1m-to-5m/30m/1h parity
+  without rescanning the cold external lake.
+- [ ] **LS-05.1** (`depends_on: [LS-02.3]`): Export replayable Massive
+  corporate-action revisions and keep optional UW evidence local/non-blocking.
+- [ ] **LS-05.2** (`depends_on: [LS-03.1, LS-05.1]`): Bind verified membership,
+  identity, daily Silver, and corporate-action evidence into PIT Silver
+  revisions and DuckDB views.
 - [ ] **LS-06.1** (`depends_on: [LS-03.2, LS-05.2]`): Freeze exact targeted
   repair manifests and mutation receipts on a disposable lake.
 - [ ] **LS-06.2a** (`depends_on: [LS-06.1]`): Characterize existing repair
@@ -68,9 +70,11 @@ LS-04 and LS-08 continue after the first working-system gate.
   and rollback drills with replayable evidence.
 - [ ] **LS-07.3** (`depends_on: [LS-06.3b]`): Add periodic launchd operation,
   issue lifecycle, deadman observation, and cold-restart verification.
-- [ ] **LS-08.1** (`depends_on: [LS-06.2c]`): Maintain the explicit historical
-  denominator and unresolved PIT intervals.
-- [ ] **LS-08.2** (`depends_on: [LS-08.1]`): Periodically expand and independently
+- [ ] **LS-08.1** (`depends_on: [LS-06.2c]`): Parse historical Wikipedia index
+  events as evidence-backed candidates while retaining the explicit unresolved
+  denominator.
+- [ ] **LS-08.2** (`depends_on: [LS-08.1]`): Periodically expand removed,
+  delisted, renamed, acquired, and ticker-reuse intervals and independently
   verify historical S&P 500/Nasdaq-100 PIT Silver coverage.
 - [ ] **LS-GATE** (`depends_on: [LS-01.4, LS-02.3, LS-03.2, LS-05.2, LS-06.3b, LS-07.3]`):
   Promote the first unattended working system; seven-day observation is not a
