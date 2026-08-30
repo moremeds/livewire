@@ -32,7 +32,7 @@ LS-04 and LS-08 continue after the first working-system gate.
   MediaWiki revision metadata before parsing current index constituents.
 - [x] **LS-02.2a** (`depends_on: [LS-02.1]`): Freeze the stable-security-identity
   evidence, priority, and collision policy as executable fixtures.
-- [ ] **LS-02.2b** (`depends_on: [LS-02.2a]`): Add append-only security identity
+- [x] **LS-02.2b** (`depends_on: [LS-02.2a]`): Add append-only security identity
   and index-membership events with strict PIT queries.
 - [ ] **LS-07.1** (`depends_on: [LS-01.4]`, Helium): Define Shepherd team
   manifests, claim contracts, and deterministic verifier boundaries.
