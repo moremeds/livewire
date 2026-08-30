@@ -51,8 +51,12 @@ LS-04 and LS-08 continue after the first working-system gate.
 - [ ] **LS-04** (`depends_on: [LS-02.3]`): Verify the Massive flat-file
   current-member intraday slice and deterministic 1m-to-5m/30m/1h parity
   without rescanning the cold external lake.
-- [ ] **LS-05.1** (`depends_on: [LS-02.3]`): Export replayable Massive
+- [x] **LS-05.1** (`depends_on: [LS-02.3]`): Export replayable Massive
   corporate-action revisions and keep optional UW evidence local/non-blocking.
+  Existing endpoints remain usable: every page is stored as exact bytes with
+  cursor identity, event lineage binds back to raw payloads, zero-result
+  split/dividend fetches retain negative evidence, and corrupt/missing evidence
+  is isolated per symbol rather than becoming a global blocker.
 - [ ] **LS-05.2** (`depends_on: [LS-03.1, LS-05.1]`): Bind verified membership,
   identity, daily Silver, and corporate-action evidence into PIT Silver
   revisions and DuckDB views.
