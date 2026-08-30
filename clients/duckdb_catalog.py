@@ -199,6 +199,12 @@ def _shepherd_metadata_paths(data_lake_root: Path | None = None) -> dict[str, Pa
     }
 
 
+def shepherd_metadata_view_names() -> list[str]:
+    """Return the bounded names accepted by the metadata-view registrar."""
+
+    return list(_shepherd_metadata_paths())
+
+
 def ensure_shepherd_metadata_view(
     con: duckdb.DuckDBPyConnection,
     name: str,

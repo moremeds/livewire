@@ -40,7 +40,7 @@ LS-04 and LS-08 continue after the first working-system gate.
   tools and provider-owned quota recovery without daemon-wide blocking.
 - [x] **LS-02.3** (`depends_on: [LS-02.2b, LS-07.2]`): Reconcile verified
   current S&P 500 and Nasdaq-100 membership into the query surface.
-- [ ] **LS-03.1** (`depends_on: [LS-02.3]`): Produce exact current-member daily
+- [x] **LS-03.1** (`depends_on: [LS-02.3]`): Produce exact current-member daily
   coverage work units from identity intervals, not discovered files.
 - [ ] **LS-03.2** (`depends_on: [LS-03.1]`): Connect deep daily retrieval while
   keeping IB 2FA/session failure local and resumable.

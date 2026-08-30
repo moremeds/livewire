@@ -24,6 +24,7 @@ COMMANDS = {
     "rollback-legacy-basis": "livewire_scripts.rollback_legacy_basis",
     "archive-otc": "livewire_scripts.archive_otc_symbols",
     "rebuild-silver": "livewire_scripts.rebuild_silver",
+    "shepherd-daily": "livewire_scripts.shepherd_daily",
 }
 
 

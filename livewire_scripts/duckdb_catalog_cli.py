@@ -16,7 +16,9 @@ from clients.duckdb_catalog import (
     build_coverage,
     connect,
     default_database,
+    ensure_shepherd_metadata_view,
     read_symbols,
+    shepherd_metadata_view_names,
     view_names,
     view_specs,
 )
@@ -54,6 +56,9 @@ def _cmd_sql(args: argparse.Namespace) -> int:
         print(f"-- binding views: {', '.join(needed)} (enumerates their files)", file=sys.stderr)
     con = connect(database, read_only=bool(database), views=needed)
     try:
+        for name in shepherd_metadata_view_names():
+            if name in args.query:
+                ensure_shepherd_metadata_view(con, name)
         result = con.sql(args.query)
         if result is not None:
             print(result)
