@@ -57,9 +57,14 @@ LS-04 and LS-08 continue after the first working-system gate.
   cursor identity, event lineage binds back to raw payloads, zero-result
   split/dividend fetches retain negative evidence, and corrupt/missing evidence
   is isolated per symbol rather than becoming a global blocker.
-- [ ] **LS-05.2** (`depends_on: [LS-03.1, LS-05.1]`): Bind verified membership,
+- [x] **LS-05.2** (`depends_on: [LS-03.1, LS-05.1]`): Bind verified membership,
   identity, daily Silver, and corporate-action evidence into PIT Silver
-  revisions and DuckDB views.
+  revisions and DuckDB views. Immutable manifests now freeze append-prefix
+  membership/identity inputs, exact historical Silver revision, locally
+  replayed action evidence, XNYS session mapping, and derived coverage evidence;
+  DuckDB accepts only independently verified `PROVEN` bytes. Crash-complete
+  orphan revisions are adopted, malformed remnants are quarantined, and later
+  normal source revisions do not invalidate an older frozen PIT revision.
 - [ ] **LS-06.1** (`depends_on: [LS-03.2, LS-05.2]`): Freeze exact targeted
   repair manifests and mutation receipts on a disposable lake.
 - [ ] **LS-06.2a** (`depends_on: [LS-06.1]`): Characterize existing repair
