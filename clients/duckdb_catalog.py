@@ -37,6 +37,8 @@ Intraday is deliberately view-only. Equity ``1m`` alone is 23.57 GB against
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 from collections.abc import Iterable, Iterator
@@ -220,6 +222,110 @@ def ensure_shepherd_metadata_view(
     if not path.is_file():
         raise FileNotFoundError(path)
     con.execute(_SHEPHERD_VIEW_SQL.format(name=name, path=str(path)))
+
+
+def ensure_pit_views(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    data_lake_root: Path | None = None,
+    manifest_path: Path | None = None,
+) -> None:
+    """Register verified PIT membership and daily Silver views on demand."""
+    from clients.pit_silver_revision import PitSilverRevisionPublisher
+
+    root = Path(data_lake_root) if data_lake_root is not None else data_lake_dir()
+    publisher = PitSilverRevisionPublisher(root)
+    verified = publisher.verify(manifest_path)
+    if verified["status"] != "PROVEN":
+        raise ValueError("PIT Silver views require a PROVEN manifest")
+    path = Path(verified["manifestPath"])
+    manifest_bytes = path.read_bytes()
+    if "sha256:" + hashlib.sha256(manifest_bytes).hexdigest() != verified["manifestHash"]:
+        raise ValueError("verified PIT Silver manifest changed before use")
+    manifest = json.loads(manifest_bytes)
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE _pit_index_intervals (
+            index_id VARCHAR, security_id VARCHAR, symbol VARCHAR,
+            effective_from TIMESTAMPTZ, effective_to TIMESTAMPTZ,
+            session_from DATE, session_to DATE
+        )
+        """
+    )
+    con.executemany(
+        "INSERT INTO _pit_index_intervals VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                manifest["index_id"],
+                item["security_id"],
+                item["symbol"],
+                item["effective_from"],
+                item["effective_to"],
+                item["session_from"],
+                item["session_to"],
+            )
+            for item in manifest["members"]
+        ],
+    )
+    con.execute("CREATE OR REPLACE TEMP VIEW pit_index_membership AS SELECT * FROM _pit_index_intervals")
+    files = [
+        str((root / "silver" / item["path"]).resolve())
+        for item in manifest["inputs"]["silver_artifacts"]
+        if str(item["path"]).endswith("/1d.parquet")
+    ]
+    if not files:
+        raise FileNotFoundError("PIT Silver manifest has no daily artifacts")
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP VIEW pit_equity_daily AS
+        SELECT bars.*, intervals.index_id, intervals.security_id
+        FROM read_parquet({files!r}, hive_partitioning=1) bars
+        JOIN _pit_index_intervals intervals
+          ON CAST(bars.symbol AS VARCHAR) = intervals.symbol
+         AND CAST(bars.trade_date AS DATE) >= intervals.session_from
+         AND (intervals.session_to IS NULL
+              OR CAST(bars.trade_date AS DATE) < intervals.session_to)
+         AND CAST(bars.trade_date AS DATE) <= CAST({manifest["daily_bar_cutoff"]!r} AS DATE)
+        """
+    )
+    evidence_rows = [
+        (manifest["input_hash"], "membership", "VERIFIED", manifest["inputs"]["membership"]["sha256"]),
+        (
+            manifest["input_hash"],
+            "security-identity",
+            "VERIFIED",
+            manifest["inputs"]["security_master"]["sha256"],
+        ),
+        (
+            manifest["input_hash"],
+            "daily-silver",
+            "VERIFIED",
+            manifest["inputs"]["silver_manifest"]["sha256"],
+        ),
+        (
+            manifest["input_hash"],
+            "corporate-actions",
+            "VERIFIED",
+            manifest["inputs"]["corporate_action_receipt"]["sha256"],
+        ),
+        (
+            manifest["input_hash"],
+            "pit-lineage",
+            "VERIFIED",
+            verified["manifestHash"].removeprefix("sha256:"),
+        ),
+    ]
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE _pit_verification_coverage (
+            scope_hash VARCHAR, dimension VARCHAR, state VARCHAR, evidence_hash VARCHAR
+        )
+        """
+    )
+    con.executemany("INSERT INTO _pit_verification_coverage VALUES (?, ?, ?, ?)", evidence_rows)
+    con.execute(
+        "CREATE OR REPLACE TEMP VIEW shepherd_verification_coverage AS SELECT * FROM _pit_verification_coverage"
+    )
 
 
 def symbol_files(

@@ -26,6 +26,7 @@ COMMANDS = {
     "rebuild-silver": "livewire_scripts.rebuild_silver",
     "shepherd-daily": "livewire_scripts.shepherd_daily",
     "shepherd-actions": "livewire_scripts.shepherd_actions",
+    "shepherd-silver": "livewire_scripts.shepherd_silver",
 }
 
 

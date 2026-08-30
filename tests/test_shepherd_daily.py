@@ -24,6 +24,7 @@ def _seed(
     *,
     security_id: str = SECURITY,
     known_at: datetime = KNOWN,
+    membership_effective: datetime | None = None,
 ) -> None:
     evidence_store = SourceEvidenceStore(root)
     artifact = evidence_store.persist_raw(b"verified identity and membership source")
@@ -78,7 +79,7 @@ def _seed(
             security_id=security_id,
             action="add",
             announced_at=known_at,
-            effective_at=intervals[-1][1],
+            effective_at=membership_effective or intervals[-1][1],
             known_at=known_at,
             source_refs=(artifact.ref,),
             source_hashes=(artifact.sha256,),

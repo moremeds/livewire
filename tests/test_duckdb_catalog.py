@@ -6,7 +6,9 @@ Fixtures are real bars for real tickers, captured from the warehouse on
 
 from __future__ import annotations
 
-from datetime import date
+import hashlib
+import json
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import duckdb
@@ -19,6 +21,7 @@ from clients.duckdb_catalog import (
     ShepherdCoverageRow,
     build_coverage,
     connect,
+    ensure_pit_views,
     ensure_shepherd_metadata_view,
     ensure_view,
     read_symbols,
@@ -27,7 +30,14 @@ from clients.duckdb_catalog import (
     view_spec,
     view_specs,
 )
+from clients.pit_silver_revision import PitSilverRevisionPublisher
+from clients.silver_client import PublishedArtifact
+from clients.silver_revision import AffectedSymbol, SilverRevisionPublisher
 from clients.symbol_paths import canonical_symbol, encode_symbol
+from livewire_scripts.shepherd_actions import export_actions
+from livewire_scripts.shepherd_silver import publish_pit
+from tests.test_shepherd_actions import AT, _verified_empty_fetch
+from tests.test_shepherd_daily import _seed
 
 # Frozen snapshot of real bronze rows (source=massive, price_basis=raw),
 # captured 2026-08-02 from ~/market-warehouse.
@@ -419,3 +429,239 @@ def test_coverage_headline_raises_when_the_file_holds_no_coverage_table(tmp_path
 
     with pytest.raises(FileNotFoundError):
         coverage_headline(database)
+
+
+def test_pit_views_join_verified_identity_intervals_to_existing_silver_bytes(tmp_path: Path) -> None:
+    known = datetime(2026, 8, 31, 1, 0, tzinfo=UTC)
+    _seed(
+        tmp_path,
+        [("NVDA", datetime(2020, 1, 1, tzinfo=UTC), None)],
+        known_at=known,
+        membership_effective=datetime(2026, 7, 31, tzinfo=UTC),
+    )
+    silver_root = tmp_path / "silver"
+    artifact = _write_symbol(silver_root / "asset_class=equity", "NVDA")
+    SilverRevisionPublisher(silver_root).publish(
+        [PublishedArtifact(artifact, hashlib.sha256(artifact.read_bytes()).hexdigest(), 2)],
+        [AffectedSymbol("NVDA", date(2020, 1, 1), ("1d",))],
+        known,
+    )
+    _verified_empty_fetch(tmp_path, "NVDA")
+    publish_pit("sp500", 1, datetime(2026, 8, 31, 23, 59, tzinfo=UTC), data_lake_root=tmp_path)
+
+    con = connect()
+    try:
+        ensure_pit_views(con, data_lake_root=tmp_path)
+        members = con.execute("SELECT index_id, symbol FROM pit_index_membership").fetchall()
+        bars = con.execute(
+            "SELECT index_id, security_id, symbol, count(*) FROM pit_equity_daily GROUP BY ALL"
+        ).fetchall()
+        coverage = con.execute("SELECT count(*) FROM shepherd_verification_coverage").fetchone()[0]
+    finally:
+        con.close()
+
+    assert members == [("sp500", "NVDA")]
+    assert bars == [("sp500", "sec_00000000000000000000000000000001", "NVDA", 1)]
+    assert coverage == 5
+
+
+def test_pit_daily_view_excludes_the_still_open_same_day_session(tmp_path: Path) -> None:
+    as_of = datetime(2026, 9, 1, 17, 1, tzinfo=UTC)  # 13:01 New York
+    _seed(tmp_path, [("NVDA", datetime(2020, 1, 1, tzinfo=UTC), None)])
+    silver_root = tmp_path / "silver"
+    artifact = silver_root / "asset_class=equity/symbol=NVDA/1d.parquet"
+    artifact.parent.mkdir(parents=True)
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "trade_date": date(2026, 9, 1),
+                    "symbol_id": 1,
+                    "open": 10.0,
+                    "high": 12.0,
+                    "low": 9.0,
+                    "close": 11.0,
+                    "adj_close": 11.0,
+                    "volume": 100,
+                    "source": "massive",
+                    "price_basis": "raw",
+                }
+            ],
+            schema=_SCHEMA,
+        ),
+        artifact,
+    )
+    SilverRevisionPublisher(silver_root).publish(
+        [PublishedArtifact(artifact, hashlib.sha256(artifact.read_bytes()).hexdigest(), 1)],
+        [AffectedSymbol("NVDA", date(2020, 1, 1), ("1d",))],
+        AT,
+    )
+    _verified_empty_fetch(tmp_path, "NVDA")
+    PitSilverRevisionPublisher(tmp_path).publish(
+        index_id="sp500",
+        membership_revision=1,
+        as_of=as_of,
+        actions_receipt=export_actions(["NVDA"], AT, data_lake_root=tmp_path),
+    )
+
+    con = connect()
+    try:
+        ensure_pit_views(con, data_lake_root=tmp_path)
+        rows = con.execute("SELECT trade_date FROM pit_equity_daily").fetchall()
+    finally:
+        con.close()
+    assert rows == []
+
+
+def test_membership_effective_after_close_starts_with_the_next_session_in_every_timezone(tmp_path: Path) -> None:
+    as_of = datetime(2026, 9, 1, 23, 59, tzinfo=UTC)
+    _seed(
+        tmp_path,
+        [("NVDA", datetime(2020, 1, 1, tzinfo=UTC), None)],
+        membership_effective=datetime(2026, 9, 1, 21, 0, tzinfo=UTC),
+    )
+    silver_root = tmp_path / "silver"
+    artifact = silver_root / "asset_class=equity/symbol=NVDA/1d.parquet"
+    artifact.parent.mkdir(parents=True)
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "trade_date": date(2026, 9, 1),
+                    "symbol_id": 1,
+                    "open": 10.0,
+                    "high": 12.0,
+                    "low": 9.0,
+                    "close": 11.0,
+                    "adj_close": 11.0,
+                    "volume": 100,
+                    "source": "massive",
+                    "price_basis": "raw",
+                }
+            ],
+            schema=_SCHEMA,
+        ),
+        artifact,
+    )
+    SilverRevisionPublisher(silver_root).publish(
+        [PublishedArtifact(artifact, hashlib.sha256(artifact.read_bytes()).hexdigest(), 1)],
+        [AffectedSymbol("NVDA", date(2020, 1, 1), ("1d",))],
+        AT,
+    )
+    _verified_empty_fetch(tmp_path, "NVDA")
+    PitSilverRevisionPublisher(tmp_path).publish(
+        index_id="sp500",
+        membership_revision=1,
+        as_of=as_of,
+        actions_receipt=export_actions(["NVDA"], AT, data_lake_root=tmp_path),
+    )
+
+    con = connect()
+    try:
+        con.execute("SET TimeZone='UTC'")
+        ensure_pit_views(con, data_lake_root=tmp_path)
+        utc_rows = con.execute("SELECT trade_date FROM pit_equity_daily").fetchall()
+        con.execute("SET TimeZone='Asia/Hong_Kong'")
+        hk_rows = con.execute("SELECT trade_date FROM pit_equity_daily").fetchall()
+    finally:
+        con.close()
+    assert utc_rows == hk_rows == []
+
+
+def test_pit_views_reject_a_replayable_but_partial_manifest(tmp_path: Path) -> None:
+    _seed(tmp_path, [("NVDA", datetime(2020, 1, 1, tzinfo=UTC), None)])
+    silver_root = tmp_path / "silver"
+    artifact = _write_symbol(silver_root / "asset_class=equity", "NVDA")
+    SilverRevisionPublisher(silver_root).publish(
+        [PublishedArtifact(artifact, hashlib.sha256(artifact.read_bytes()).hexdigest(), 2)],
+        [AffectedSymbol("NVDA", date(2020, 1, 1), ("1d",))],
+        AT,
+    )
+    partial = PitSilverRevisionPublisher(tmp_path).publish(
+        index_id="sp500",
+        membership_revision=1,
+        as_of=datetime(2026, 8, 31, 23, 59, tzinfo=UTC),
+        actions_receipt=export_actions(["NVDA"], AT, data_lake_root=tmp_path),
+    )
+    assert partial.status == "PARTIAL"
+
+    con = connect()
+    try:
+        with pytest.raises(ValueError, match="PROVEN"):
+            ensure_pit_views(con, data_lake_root=tmp_path)
+    finally:
+        con.close()
+
+
+def test_pit_views_use_the_exact_manifest_bytes_returned_by_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    known = datetime(2026, 8, 31, 1, 0, tzinfo=UTC)
+    _seed(tmp_path, [("NVDA", datetime(2020, 1, 1, tzinfo=UTC), None)], known_at=known)
+    silver_root = tmp_path / "silver"
+    artifact = _write_symbol(silver_root / "asset_class=equity", "NVDA")
+    SilverRevisionPublisher(silver_root).publish(
+        [PublishedArtifact(artifact, hashlib.sha256(artifact.read_bytes()).hexdigest(), 2)],
+        [AffectedSymbol("NVDA", date(2020, 1, 1), ("1d",))],
+        AT,
+    )
+    _verified_empty_fetch(tmp_path, "NVDA")
+    publish_pit("sp500", 1, datetime(2026, 8, 31, 23, 59, tzinfo=UTC), data_lake_root=tmp_path)
+    real_verify = PitSilverRevisionPublisher.verify
+
+    def verify_then_replace(self, manifest_path=None):
+        receipt = real_verify(self, manifest_path)
+        self.current.write_text("{}")
+        return receipt
+
+    monkeypatch.setattr(PitSilverRevisionPublisher, "verify", verify_then_replace)
+    con = connect()
+    try:
+        ensure_pit_views(con, data_lake_root=tmp_path)
+        assert con.execute("SELECT DISTINCT symbol FROM pit_equity_daily").fetchall() == [("NVDA",)]
+    finally:
+        con.close()
+
+
+def test_pit_coverage_view_is_bound_to_the_manifest_input_hash(tmp_path: Path) -> None:
+    known = datetime(2026, 8, 31, 1, 0, tzinfo=UTC)
+    _seed(tmp_path, [("NVDA", datetime(2020, 1, 1, tzinfo=UTC), None)], known_at=known)
+    silver_root = tmp_path / "silver"
+    artifact = _write_symbol(silver_root / "asset_class=equity", "NVDA")
+    SilverRevisionPublisher(silver_root).publish(
+        [PublishedArtifact(artifact, hashlib.sha256(artifact.read_bytes()).hexdigest(), 2)],
+        [AffectedSymbol("NVDA", date(2020, 1, 1), ("1d",))],
+        AT,
+    )
+    _verified_empty_fetch(tmp_path, "NVDA")
+    publish_pit("sp500", 1, datetime(2026, 8, 31, 23, 59, tzinfo=UTC), data_lake_root=tmp_path)
+    manifest = json.loads((tmp_path / "silver/pit-revisions/current.json").read_text())
+
+    con = connect()
+    try:
+        con.execute(
+            "CREATE TABLE shepherd_coverage(scope_hash VARCHAR, dimension VARCHAR, state VARCHAR, evidence_hash VARCHAR)"
+        )
+        con.executemany(
+            "INSERT INTO shepherd_coverage VALUES (?, ?, ?, ?)",
+            [
+                (manifest["input_hash"], "daily", "VERIFIED", "1" * 64),
+                ("sha256:" + "f" * 64, "daily", "VERIFIED", "2" * 64),
+                (manifest["input_hash"], "daily", "UNRESOLVED", "3" * 64),
+            ],
+        )
+        ensure_pit_views(con, data_lake_root=tmp_path)
+        rows = con.execute(
+            "SELECT scope_hash, dimension, state, evidence_hash FROM shepherd_verification_coverage ORDER BY dimension"
+        ).fetchall()
+    finally:
+        con.close()
+    assert {row[1] for row in rows} == {
+        "membership",
+        "security-identity",
+        "daily-silver",
+        "corporate-actions",
+        "pit-lineage",
+    }
+    assert all(row[0] == manifest["input_hash"] and row[2] == "VERIFIED" for row in rows)
+    assert not {"1" * 64, "2" * 64, "3" * 64} & {row[3] for row in rows}
