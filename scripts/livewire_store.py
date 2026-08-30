@@ -25,6 +25,7 @@ COMMANDS = {
     "archive-otc": "livewire_scripts.archive_otc_symbols",
     "rebuild-silver": "livewire_scripts.rebuild_silver",
     "shepherd-daily": "livewire_scripts.shepherd_daily",
+    "shepherd-actions": "livewire_scripts.shepherd_actions",
 }
 
 

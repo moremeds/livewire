@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -455,6 +456,49 @@ def test_get_splits_follows_same_origin_pagination_and_preserves_auth():
     assert splits[0].split_to == Decimal("10")
     assert all(call.request.headers["Authorization"] == "Bearer test-token" for call in responses.calls)
     assert "apiKey" not in responses.calls[1].request.url
+
+
+@responses.activate
+def test_corporate_action_rows_bind_exact_response_evidence_and_sanitized_cursor():
+    captured = []
+
+    def record(capture):
+        captured.append(capture)
+        return SimpleNamespace(ref="artifact://massive/page-1", sha256="a" * 64)
+
+    responses.add(
+        responses.GET,
+        _url("/v3/reference/splits"),
+        body=b'{"status":"OK","results":[{"id":"split-1","ticker":"NVDA","execution_date":"2024-06-10","split_from":1,"split_to":10}]}',
+        status=200,
+        content_type="application/json",
+    )
+
+    with _make_client(response_evidence_recorder=record) as client:
+        split = client.get_splits("NVDA")[0]
+
+    assert captured[0].body.startswith(b'{"status":"OK"')
+    assert "apiKey" not in captured[0].source_url
+    assert captured[0].cursor_identity.startswith("sha256:")
+    assert split.source_ref == "artifact://massive/page-1"
+    assert split.source_hash == "a" * 64
+    assert split.source_fetched_at == captured[0].fetched_at
+    assert split.source_cursor_identity == captured[0].cursor_identity
+
+
+@responses.activate
+def test_corporate_action_empty_result_requires_a_well_formed_provider_envelope():
+    responses.add(
+        responses.GET,
+        _url("/v3/reference/splits"),
+        body=b"not-json",
+        status=200,
+        content_type="application/json",
+    )
+
+    with _make_client() as client:
+        with pytest.raises(MassiveAPIError, match="response envelope"):
+            client.get_splits("NVDA")
 
 
 @responses.activate

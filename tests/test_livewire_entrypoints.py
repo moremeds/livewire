@@ -99,6 +99,19 @@ def test_store_dispatches_shepherd_daily(monkeypatch) -> None:
     assert calls == [("livewire_scripts.shepherd_daily", argv)]
 
 
+def test_store_dispatches_shepherd_actions(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_store.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+
+    argv = ["export", "--symbols", "AAPL", "--as-of", "2026-08-31T01:00:00+00:00"]
+    assert livewire_store.main(["shepherd-actions", *argv]) == 7
+    assert calls == [("livewire_scripts.shepherd_actions", argv)]
+
+
 def test_store_dispatches_price_basis_migration(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(
