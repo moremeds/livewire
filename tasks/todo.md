@@ -38,10 +38,8 @@ LS-04 and LS-08 continue after the first working-system gate.
   manifests, claim contracts, and deterministic verifier boundaries.
 - [x] **LS-07.2** (`depends_on: [LS-07.1]`, Helium/Argon): Add cost-aware source
   tools and provider-owned quota recovery without daemon-wide blocking.
-- [ ] **LS-02.3** (`depends_on: [LS-02.2b, LS-07.2]`): Reconcile verified
-  current S&P 500 and Nasdaq-100 membership into the query surface. The
-  evidence-first scan/import/verify path is implemented; a real verifier-bound
-  decision and import remain before this task can close.
+- [x] **LS-02.3** (`depends_on: [LS-02.2b, LS-07.2]`): Reconcile verified
+  current S&P 500 and Nasdaq-100 membership into the query surface.
 - [ ] **LS-03.1** (`depends_on: [LS-02.3]`): Produce exact current-member daily
   coverage work units from identity intervals, not discovered files.
 - [ ] **LS-03.2** (`depends_on: [LS-03.1]`): Connect deep daily retrieval while
