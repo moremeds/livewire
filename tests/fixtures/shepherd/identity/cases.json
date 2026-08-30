@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "case_id": "ID-001-meta-ticker-reuse",
+      "scenario": "same_ticker_different_issuer",
+      "is_sanitized_counterfactual": false,
+      "evidence_refs": ["sec-roundhill-meta-metv-20220114", "meta-fb-meta-20220531", "massive-meta-6dc9d038"],
+      "continuity_keys": ["issuer", "cik", "share_class_figi", "responsible_publisher_action"],
+      "observations": [
+        {"symbol": "META", "issuer": "Roundhill Ball Metaverse ETF", "cik": "0001683471", "effective_from": "2021-06-30", "effective_to": "2022-01-31"},
+        {"symbol": "META", "issuer": "Meta Platforms, Inc.", "cik": "0001326801", "share_class_figi": "BBG001SQCQC5", "effective_from": "2022-06-09", "effective_to": null}
+      ],
+      "expected": {
+        "identity_disposition": "distinct_identities",
+        "publication_state": "verified",
+        "pit_silver_allowed": true,
+        "reason": "the same ticker is attached to different issuers and security types in disjoint intervals"
+      }
+    },
+    {
+      "case_id": "ID-002-fb-meta-rename",
+      "scenario": "symbol_rename_same_security",
+      "is_sanitized_counterfactual": false,
+      "evidence_refs": ["meta-fb-meta-20220531", "sec-submission-meta-2c11151e", "massive-meta-6dc9d038"],
+      "continuity_keys": ["unchanged_cusip", "cik", "issuer", "responsible_publisher_action"],
+      "observations": [
+        {"symbol": "FB", "issuer": "Meta Platforms, Inc.", "cik": "0001326801", "effective_to": "2022-06-09"},
+        {"symbol": "META", "issuer": "Meta Platforms, Inc.", "cik": "0001326801", "share_class_figi": "BBG001SQCQC5", "effective_from": "2022-06-09"}
+      ],
+      "expected": {
+        "identity_disposition": "retain_identity",
+        "publication_state": "verified",
+        "pit_silver_allowed": true,
+        "reason": "the responsible issuer says the same Class A security and CUSIP continue under a new symbol"
+      }
+    },
+    {
+      "case_id": "ID-003-berkshire-share-classes",
+      "scenario": "share_classes",
+      "is_sanitized_counterfactual": false,
+      "evidence_refs": ["sec-company-tickers-bf83a6d3", "massive-brka-98f73cad", "massive-brkb-910e5240"],
+      "continuity_keys": ["share_class_figi", "composite_figi", "class_terms"],
+      "observations": [
+        {"symbol": "BRK.A", "cik": "0001067983", "composite_figi": "BBG000DWCFL4", "share_class_figi": "BBG001S902J2"},
+        {"symbol": "BRK.B", "cik": "0001067983", "composite_figi": "BBG000DWG505", "share_class_figi": "BBG001S90346"}
+      ],
+      "expected": {
+        "identity_disposition": "distinct_identities",
+        "publication_state": "verified",
+        "pit_silver_allowed": true,
+        "reason": "CIK identifies the issuer while distinct FIGIs and class terms identify distinct securities"
+      }
+    },
+    {
+      "case_id": "ID-004-merger-terminal",
+      "scenario": "merger",
+      "is_sanitized_counterfactual": true,
+      "evidence_refs": ["sec-company-tickers-bf83a6d3"],
+      "continuity_keys": ["surviving_legal_entity", "consideration", "responsible_publisher_action"],
+      "observations": [
+        {"symbol": "TARGET", "cik": "0000000101", "event": "cash_and_stock_merger", "effective_at": "2024-03-01"},
+        {"symbol": "BUYER", "cik": "0000000202", "event": "surviving_issuer", "effective_at": "2024-03-01"}
+      ],
+      "expected": {
+        "identity_disposition": "terminal_and_distinct_successor",
+        "publication_state": "candidate",
+        "pit_silver_allowed": false,
+        "reason": "a merger terminates the acquired security; consideration does not splice its bars into the buyer"
+      }
+    },
+    {
+      "case_id": "ID-005-ge-gehc-spinoff",
+      "scenario": "spinoff",
+      "is_sanitized_counterfactual": false,
+      "evidence_refs": ["ge-gehc-spinoff-20230104", "massive-ge-ba9e0d06", "massive-gehc-bdfd3fd9"],
+      "continuity_keys": ["cik", "share_class_figi", "responsible_publisher_action"],
+      "observations": [
+        {"symbol": "GE", "cik": "0000040545", "share_class_figi": "BBG001S5PVD5", "continues": true},
+        {"symbol": "GEHC", "cik": "0001932393", "share_class_figi": "BBG01BFR8YW0", "effective_from": "2023-01-04"}
+      ],
+      "expected": {
+        "identity_disposition": "parent_retained_child_distinct",
+        "publication_state": "verified",
+        "pit_silver_allowed": true,
+        "reason": "the parent continues while the distributed child is a separately registered security"
+      }
+    },
+    {
+      "case_id": "ID-006-missing-identifiers",
+      "scenario": "missing_cik_and_figi",
+      "is_sanitized_counterfactual": true,
+      "evidence_refs": ["wiki-sp500-1370105675"],
+      "continuity_keys": ["exchange_mic", "issuer_history", "responsible_publisher_action"],
+      "observations": [
+        {"symbol": "MISSING", "issuer": "Example Holdings", "cik": null, "composite_figi": null, "share_class_figi": null}
+      ],
+      "expected": {
+        "identity_disposition": "candidate_only",
+        "publication_state": "candidate",
+        "pit_silver_allowed": false,
+        "reason": "a ticker and issuer label without stable identifiers or decisive issuer evidence are insufficient"
+      }
+    },
+    {
+      "case_id": "ID-007-provider-disagreement",
+      "scenario": "provider_disagreement",
+      "is_sanitized_counterfactual": true,
+      "evidence_refs": ["sec-company-tickers-bf83a6d3", "massive-meta-6dc9d038"],
+      "continuity_keys": ["share_class_figi", "cik", "issuer_history", "responsible_publisher_action"],
+      "observations": [
+        {"provider": "regulator_fixture", "symbol": "CONFLICT", "cik": "0000000303"},
+        {"provider": "market_data_fixture", "symbol": "CONFLICT", "cik": "0000000404", "share_class_figi": "BBG000000001"}
+      ],
+      "expected": {
+        "identity_disposition": "preserve_conflict",
+        "publication_state": "unresolved",
+        "pit_silver_allowed": false,
+        "reason": "conflicting issuer identities are retained as separate claims until independently adjudicated"
+      }
+    },
+    {
+      "case_id": "ID-008-retrospective-change",
+      "scenario": "retrospective_identifier_change",
+      "is_sanitized_counterfactual": true,
+      "evidence_refs": ["massive-meta-6dc9d038", "sec-submission-meta-2c11151e"],
+      "continuity_keys": ["provider_revision", "known_at", "share_class_figi", "responsible_publisher_action"],
+      "observations": [
+        {"provider_revision": 1, "known_at": "2024-01-02T00:00:00+00:00", "symbol": "REVISED", "share_class_figi": "BBG000000010"},
+        {"provider_revision": 2, "known_at": "2024-03-05T00:00:00+00:00", "symbol": "REVISED", "share_class_figi": "BBG000000011"}
+      ],
+      "expected": {
+        "identity_disposition": "append_correction",
+        "publication_state": "unresolved",
+        "pit_silver_allowed": false,
+        "rewrite_prior_known_at": false,
+        "reason": "a later provider correction appends a new claim and cannot leak into earlier as-of queries"
+      }
+    }
+  ]
+}
