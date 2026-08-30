@@ -42,8 +42,12 @@ LS-04 and LS-08 continue after the first working-system gate.
   current S&P 500 and Nasdaq-100 membership into the query surface.
 - [x] **LS-03.1** (`depends_on: [LS-02.3]`): Produce exact current-member daily
   coverage work units from identity intervals, not discovered files.
-- [ ] **LS-03.2** (`depends_on: [LS-03.1]`): Connect deep daily retrieval while
-  keeping IB 2FA/session failure local and resumable.
+- [x] **LS-03.2** (`depends_on: [LS-03.1]`): Connect deep daily retrieval while
+  keeping IB 2FA/session failure local and resumable. The manifest-bound
+  command performs one forced-IB attempt, verifies the resulting Parquet, and
+  returns typed exit 75 without full-bounce or command-level retry. Helium
+  accepts that wait only with `AWAITING_USER` and continues other ready units;
+  mutating receipts remain handoffs until LS-06's certified action boundary.
 - [ ] **LS-04** (`depends_on: [LS-02.3]`): Expand verified historical membership
   and PIT Silver daily bars without delaying the current working gate.
 - [ ] **LS-05.1** (`depends_on: [LS-02.3]`): Verify Massive intraday partitions
