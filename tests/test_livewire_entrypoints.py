@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from clients import ib_gateway_preflight
+from clients.ib_client import IBConnectionError
 from scripts import livewire_ingest, livewire_ops, livewire_quality, livewire_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +44,22 @@ def test_ingest_dispatches_module_commands(monkeypatch) -> None:
     assert livewire_ingest.main(["daily", "--force"]) == 0
     assert calls == [("livewire_scripts.daily_update", [])]
     assert preflight_calls == [True]
+
+
+def test_ingest_maps_midrun_ib_session_loss_to_typed_gateway_state(monkeypatch) -> None:
+    monkeypatch.setattr(ib_gateway_preflight, "assert_gateway_up", lambda: None)
+
+    def failed_module(name):
+        def main():
+            raise IBConnectionError("session lost")
+
+        return SimpleNamespace(main=main)
+
+    monkeypatch.setattr(livewire_ingest.importlib, "import_module", failed_module)
+
+    assert livewire_ingest.main(["historical", "--tickers", "AAPL", "--source", "ib"]) == (
+        ib_gateway_preflight.GATEWAY_DOWN_EXIT_CODE
+    )
 
 
 def test_quality_dispatches_warehouse_report(monkeypatch) -> None:

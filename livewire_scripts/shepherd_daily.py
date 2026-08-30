@@ -21,6 +21,12 @@ from clients.security_master import SecurityIdentityEvent, SecurityMaster
 from clients.source_evidence import SourceEvidenceStore
 from clients.trading_calendar import trading_dates_in_range
 from livewire_scripts.paths import data_lake_dir
+from livewire_scripts.run_ib_fetch_robust import (
+    OutcomeCategory,
+    TickerOutcome,
+    _bronze_path_for,
+    run_one_ticker,
+)
 
 
 def _canonical(value: object) -> bytes:
@@ -301,7 +307,7 @@ def plan_daily(index_id: str, revision: int, as_of: date, *, data_lake_root: Pat
     }
 
 
-def verify_daily_work_unit(unit: dict[str, Any], *, data_lake_root: Path) -> dict[str, Any]:
+def _validate_daily_work_unit_scope(unit: dict[str, Any], *, data_lake_root: Path) -> dict[str, Any]:
     required = {
         "indexId",
         "membershipRevision",
@@ -342,6 +348,13 @@ def verify_daily_work_unit(unit: dict[str, Any], *, data_lake_root: Path) -> dic
         break
     if not registered:
         raise ValueError("daily work unit does not match a registered identity interval")
+    return target
+
+
+def verify_daily_work_unit(unit: dict[str, Any], *, data_lake_root: Path) -> dict[str, Any]:
+    target = _validate_daily_work_unit_scope(unit, data_lake_root=data_lake_root)
+    expected_scope = unit["scopeHash"]
+    root = Path(data_lake_root).expanduser()
     evaluation = _evaluate(
         target,
         data_lake_root=root,
@@ -359,6 +372,87 @@ def verify_daily_work_unit(unit: dict[str, Any], *, data_lake_root: Path) -> dic
     return receipt
 
 
+def fetch_daily_work_unit(
+    unit: dict[str, Any],
+    *,
+    data_lake_root: Path,
+    operation_id: str,
+    runner=run_one_ticker,
+) -> tuple[dict[str, Any], int]:
+    """Run exactly one manifest-bound deep-history attempt.
+
+    This is a mutation receipt for the later certified action boundary, not a
+    read-only Shepherd probe receipt.  It deliberately does not restart IB or
+    retry a user/session-gated Gateway state.
+    """
+    if not operation_id or len(operation_id) > 200:
+        raise ValueError("operation id must be between 1 and 200 characters")
+    target = _validate_daily_work_unit_scope(unit, data_lake_root=data_lake_root)
+    if unit.get("nextOperation", {}).get("kind") != "fetch-deep-history":
+        raise ValueError("daily fetch accepts only a planned deep-history work unit")
+    root = Path(data_lake_root).expanduser()
+    expected_path = _bronze_path_for(root / "bronze", "equity", target["symbol"])
+    before_hash = _digest(expected_path.read_bytes()) if expected_path.exists() else None
+    outcome: TickerOutcome = runner(
+        ticker=target["symbol"],
+        mode="seed",
+        asset_class="equity",
+        bronze_dir=root / "bronze",
+        timeout=300,
+        max_attempts=1,
+        cooldown=0,
+        source="ib",
+    )
+    summary: dict[str, Any] = {
+        "deepHistoryAuthority": "ib",
+        "challengeSources": ["massive", "yahoo"],
+        "requestedInterval": {"start": target["startDate"], "end": target["endDate"]},
+        "attemptsUsed": outcome.attempts_used,
+        "runnerOutcome": outcome.code.value,
+        "reasonCode": outcome.note or outcome.code.value,
+    }
+    if outcome.code == OutcomeCategory.TEMPORARY_UNAVAILABLE:
+        after_hash = _digest(expected_path.read_bytes()) if expected_path.exists() else None
+        changed = before_hash != after_hash
+        receipt: dict[str, Any] = {
+            "version": 1,
+            "operation": "shepherd-daily-fetch",
+            "operationId": operation_id,
+            "workUnitId": unit["workUnitId"],
+            "scopeHash": unit["scopeHash"],
+            "outcome": "unsafe" if changed else "temporary-unavailable",
+            "stateHint": "QUARANTINED" if changed else "AWAITING_USER",
+            "evidence": ([] if after_hash is None else [{"ref": str(expected_path), "sha256": after_hash}]),
+            "changedPaths": [str(expected_path)] if changed else [],
+            "summary": summary,
+        }
+        if changed:
+            receipt["summary"]["reasonCode"] = "partial-write-before-ib-wait"
+        receipt["receiptHash"] = f"sha256:{_digest(_canonical(receipt))}"
+        return receipt, 1 if changed else 75
+
+    evaluation = _evaluate(target, data_lake_root=root)
+    summary["postFetchCoverageState"] = evaluation["coverageState"]
+    parquet_path = evaluation.get("parquetPath")
+    completed = (
+        outcome.code in {OutcomeCategory.OK, OutcomeCategory.OK_NOOP} and evaluation["coverageState"] == "VERIFIED"
+    )
+    receipt = {
+        "version": 1,
+        "operation": "shepherd-daily-fetch",
+        "operationId": operation_id,
+        "workUnitId": unit["workUnitId"],
+        "scopeHash": unit["scopeHash"],
+        "outcome": "completed" if completed else "failed",
+        "stateHint": "EVIDENCE_PENDING" if completed else "UNRESOLVED",
+        "evidence": ([] if parquet_path is None else [{"ref": parquet_path, "sha256": evaluation["parquetHash"]}]),
+        "changedPaths": [] if parquet_path is None else [parquet_path],
+        "summary": summary,
+    }
+    receipt["receiptHash"] = f"sha256:{_digest(_canonical(receipt))}"
+    return receipt, 0 if completed else 1
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-lake-root", type=Path, default=data_lake_dir())
@@ -369,6 +463,9 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--as-of", type=date.fromisoformat, required=True)
     verify = sub.add_parser("verify")
     verify.add_argument("--manifest", type=Path, required=True)
+    fetch = sub.add_parser("fetch")
+    fetch.add_argument("--manifest", type=Path, required=True)
+    fetch.add_argument("--operation-id", required=True)
     return parser
 
 
@@ -376,10 +473,20 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "plan":
         result = plan_daily(args.index, args.membership_revision, args.as_of, data_lake_root=args.data_lake_root)
-    else:
+    elif args.command == "verify":
         if not args.manifest.is_absolute():
             raise ValueError("daily work-unit manifest path must be absolute")
         result = verify_daily_work_unit(json.loads(args.manifest.read_bytes()), data_lake_root=args.data_lake_root)
+    else:
+        if not args.manifest.is_absolute():
+            raise ValueError("daily work-unit manifest path must be absolute")
+        result, exit_code = fetch_daily_work_unit(
+            json.loads(args.manifest.read_bytes()),
+            data_lake_root=args.data_lake_root,
+            operation_id=args.operation_id,
+        )
+        print(json.dumps(result, sort_keys=True))
+        return exit_code
     print(json.dumps(result, sort_keys=True))
     return 0
 

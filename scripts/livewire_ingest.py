@@ -122,7 +122,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _dispatch_backfill_all(rest)
     if args.command == "daily-backfill":
         return _dispatch_daily_backfill(rest)
-    return _dispatch_module(COMMANDS[args.command], rest, f"livewire_ingest.py {args.command}")
+    try:
+        return _dispatch_module(COMMANDS[args.command], rest, f"livewire_ingest.py {args.command}")
+    except Exception as exc:
+        # Keep the structured IB availability boundary below the human CLI.
+        # The robust orchestrator must not scrape stderr to recognize a mobile
+        # login, 2FA wait, client-session loss, or exhausted client-id window.
+        from clients.ib_client import IBConnectionError
+        from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
+
+        if isinstance(exc, IBConnectionError) and _requires_ib_preflight(args.command, rest):
+            return GATEWAY_DOWN_EXIT_CODE
+        raise
 
 
 if __name__ == "__main__":  # pragma: no cover
