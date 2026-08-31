@@ -89,3 +89,9 @@ def test_partially_unresolved_finding_keeps_its_other_sessions(tmp_path):
     findings = classify(_series(), present=set(), massive_floor=FLOOR)
     kept = suppress_unresolved(findings, load_unresolved(ledger))
     assert kept and kept[0].sessions == (date(2026, 8, 26), date(2026, 8, 28))
+
+
+def test_absent_ledger_is_empty_not_an_error(tmp_path):
+    """The first scheduled run points --unresolved at a file that does not
+    exist yet; that must read as 'nothing suppressed', not blow up."""
+    assert load_unresolved(tmp_path / "never-written.json") == set()
