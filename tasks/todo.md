@@ -81,8 +81,11 @@ LS-04 and LS-08 continue after the first working-system gate.
   to evidence-backed private manifests and the shared Ops transaction. The
   runner persists exact scope/input hashes, revalidates bytes immediately
   before intent/spawn, and permits only the derived `--manifest ABS` argv.
-- [ ] **LS-06.3a** (`depends_on: [LS-06.2c]`, Helium): Bind signed authority to
-  the exact Livewire mutation identities and postconditions.
+- [x] **LS-06.3a** (`depends_on: [LS-06.2c]`, Helium): Commissioned automatic
+  Ops authority only as one signed exact capability. The promotion digest binds
+  the component, SOP, executor identity, check definitions, concrete argv, and
+  postcondition set; runtime validation rejects any widened or substituted
+  capability. The real Livewire package and autonomous drills remain LS-06.3b.
 - [ ] **LS-06.3b** (`depends_on: [LS-06.3a]`): Run controlled autonomous repair
   and rollback drills with replayable evidence.
 - [ ] **LS-06.4** (`depends_on: [LS-06.3b]`): Add separate exact manifests and
