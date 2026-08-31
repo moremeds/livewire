@@ -74,9 +74,9 @@ LS-04 and LS-08 continue after the first working-system gate.
   proven Ops transaction boundary: controller probes, lease and OS lock,
   baseline, write-ahead intent, spawn, receipt, grace verification, evidence,
   terminal projection, crash-prefix replay, and nonzero-command uncertainty.
-- [ ] **LS-06.2b** (`depends_on: [LS-06.2a]`): Add exact scoped repair adapters
-  by extracting the certified Ops action transaction without changing its
-  event or recovery semantics.
+- [x] **LS-06.2b** (`depends_on: [LS-06.2a]`): Extracted the reusable
+  `CertifiedActionRunner` with a bounded generic scope while keeping existing
+  Ops event, recovery, lease, lock, and restart contracts green.
 - [ ] **LS-06.2c** (`depends_on: [LS-06.2b]`): Prove crash recovery, rollback,
   and no wider-than-manifest publication when a Shepherd work unit uses that
   shared action transaction.
