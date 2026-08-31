@@ -2,12 +2,41 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+import responses
 
-from clients.massive_client import MassiveAuthError
+from clients.corporate_action_store import CorporateActionStore
+from clients.massive_client import MassiveAuthError, MassiveResponseCapture
+from clients.source_evidence import SourceEvidenceStore
 from livewire_scripts import sync_corporate_actions
+
+
+@responses.activate
+def test_default_client_persists_negative_fetch_evidence_end_to_end(tmp_path, monkeypatch):
+    monkeypatch.setenv("MASSIVE_API_KEY", "fixture-token")
+    for resource in ("splits", "dividends"):
+        responses.add(
+            responses.GET,
+            f"https://api.massive.com/v3/reference/{resource}",
+            json={"status": "OK", "results": []},
+            status=200,
+        )
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", "AAPL", "--workers", "1"],
+            data_lake_root=tmp_path,
+        )
+        == 0
+    )
+
+    fetch = CorporateActionStore(tmp_path).fetch_history("AAPL")[0]
+    assert set(fetch.resources) == {"splits", "dividends"}
+    assert len(fetch.source_refs) == 2
+    assert all(SourceEvidenceStore(tmp_path).read(ref) for ref in fetch.source_refs)
 
 
 class _Client:
@@ -24,6 +53,23 @@ class _Client:
     def get_dividends(self, ticker):
         self.calls.append(("dividends", ticker))
         return [SimpleNamespace(provider_event_id=f"{ticker}-div")]
+
+
+def test_response_recorder_persists_exact_bytes_without_request_credentials(tmp_path):
+    capture = MassiveResponseCapture(
+        body=b'{"status":"OK","results":[]}',
+        source_url="https://api.massive.com/v3/reference/splits?ticker=AAPL",
+        fetched_at=datetime(2026, 8, 31, 1, 0, tzinfo=UTC),
+        content_type="application/json",
+        cursor_identity="sha256:" + "b" * 64,
+    )
+
+    artifact = sync_corporate_actions._response_evidence_recorder(tmp_path)(capture)
+
+    assert SourceEvidenceStore(tmp_path).read(artifact.ref) == capture.body
+    row = SourceEvidenceStore(tmp_path).list_verified()[0]
+    assert row.source_url == f"massive-response://sha256/{artifact.sha256}"
+    assert "AAPL" not in row.source_url
 
 
 class _Store:

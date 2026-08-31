@@ -7,12 +7,12 @@ import json
 import math
 import os
 import time
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 from requests.exceptions import (
@@ -31,6 +31,7 @@ _DEFAULT_MAX_RETRIES = 3
 _DEFAULT_BACKOFF_FACTOR = 1.0
 _USER_AGENT = "livewire/1.0"
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_RESPONSE_EVIDENCE_KEY = "__livewire_response_evidence"
 
 
 class MassiveAPIError(Exception):
@@ -80,6 +81,24 @@ class MassiveMalformedIndicatorError(MassiveAPIError):
 
 
 @dataclass(frozen=True)
+class MassiveResponseCapture:
+    body: bytes
+    source_url: str
+    fetched_at: datetime
+    content_type: str
+    cursor_identity: str
+
+
+@dataclass(frozen=True)
+class MassivePageEvidence:
+    resource: str
+    ref: str
+    sha256: str
+    fetched_at: datetime
+    cursor_identity: str
+
+
+@dataclass(frozen=True)
 class MassiveDailyBar:
     """Normalized Massive daily bar."""
 
@@ -126,6 +145,10 @@ class MassiveSplit:
     split_from: Decimal
     split_to: Decimal
     payload_hash: str
+    source_ref: str | None = None
+    source_hash: str | None = None
+    source_fetched_at: datetime | None = None
+    source_cursor_identity: str | None = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +163,10 @@ class MassiveDividend:
     pay_date: date | None
     payload_hash: str
     historical_adjustment_factor: Decimal | None = None
+    source_ref: str | None = None
+    source_hash: str | None = None
+    source_fetched_at: datetime | None = None
+    source_cursor_identity: str | None = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +187,7 @@ class MassiveClient:
         backoff_factor: float = _DEFAULT_BACKOFF_FACTOR,
         telemetry: Any = None,
         min_interval_seconds: float = 0.0,
+        response_evidence_recorder: Callable[[MassiveResponseCapture], Any] | None = None,
     ):
         self._token = token or os.environ.get("MASSIVE_API_KEY")
         if not self._token:
@@ -177,6 +205,7 @@ class MassiveClient:
         self._min_interval_seconds = min_interval_seconds
         self._last_request_at: float | None = None
         self._telemetry = telemetry
+        self._response_evidence_recorder = response_evidence_recorder
         self._session = requests.Session()
         self._session.headers.update(
             {
@@ -259,12 +288,42 @@ class MassiveClient:
         return {bar.ticker or "": bar for bar in bars}
 
     def get_splits(self, ticker: str) -> list[MassiveSplit]:
-        rows = self._get_paginated("/v3/reference/splits", {"ticker": canonical_symbol(ticker), "limit": 1000})
-        return [self.normalize_split(row) for row in rows]
+        events, _ = self.get_splits_evidenced(ticker)
+        return events
+
+    def get_splits_evidenced(self, ticker: str) -> tuple[list[MassiveSplit], list[MassivePageEvidence]]:
+        return self._get_corporate_actions(
+            "/v3/reference/splits",
+            canonical_symbol(ticker),
+            "splits",
+            self.normalize_split,
+        )
 
     def get_dividends(self, ticker: str) -> list[MassiveDividend]:
-        rows = self._get_paginated("/v3/reference/dividends", {"ticker": canonical_symbol(ticker), "limit": 1000})
-        return [self.normalize_dividend(row) for row in rows]
+        events, _ = self.get_dividends_evidenced(ticker)
+        return events
+
+    def get_dividends_evidenced(self, ticker: str) -> tuple[list[MassiveDividend], list[MassivePageEvidence]]:
+        return self._get_corporate_actions(
+            "/v3/reference/dividends",
+            canonical_symbol(ticker),
+            "dividends",
+            self.normalize_dividend,
+        )
+
+    def _get_corporate_actions(self, endpoint: str, ticker: str, resource: str, normalizer):
+        events = []
+        pages = []
+        for payload in self._iter_payloads(endpoint, {"ticker": ticker, "limit": 1000}):
+            if payload.get("status") not in {"OK", "DELAYED"} or not isinstance(payload.get("results"), list):
+                raise MassiveAPIError("corporate-action response envelope is missing status/results")
+            page = self._page_evidence(payload, resource)
+            if page is not None:
+                pages.append(page)
+            events.extend(
+                self._bind_response_evidence(normalizer(row), payload) for row in self._extract_results(payload)
+            )
+        return events, pages
 
     def get_sma(
         self,
@@ -327,7 +386,26 @@ class MassiveClient:
             self._record_rate_limit(resp)
 
             if resp.status_code == 200:
-                return self._safe_json(resp)
+                payload = self._safe_json(resp)
+                if self._response_evidence_recorder is not None:
+                    fetched_at = datetime.now(UTC)
+                    source_url = self._sanitized_url(resp.url)
+                    capture = MassiveResponseCapture(
+                        body=bytes(resp.content),
+                        source_url=source_url,
+                        fetched_at=fetched_at,
+                        content_type=resp.headers.get("Content-Type", "application/json").split(";", 1)[0],
+                        cursor_identity=f"sha256:{hashlib.sha256(source_url.encode()).hexdigest()}",
+                    )
+                    artifact = self._response_evidence_recorder(capture)
+                    payload = dict(payload)
+                    payload[_RESPONSE_EVIDENCE_KEY] = {
+                        "ref": artifact.ref,
+                        "sha256": artifact.sha256,
+                        "fetched_at": fetched_at,
+                        "cursor_identity": capture.cursor_identity,
+                    }
+                return payload
 
             body = self._safe_json(resp)
             msg = body.get("message", "") or body.get("error", "") or resp.reason or f"HTTP {resp.status_code}"
@@ -348,6 +426,38 @@ class MassiveClient:
         except Exception:
             return {}
         return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _sanitized_url(value: str) -> str:
+        parsed = urlparse(value)
+        query = urlencode([(key, item) for key, item in parse_qsl(parsed.query) if key.casefold() != "apikey"])
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, query, ""))
+
+    @staticmethod
+    def _bind_response_evidence(event, payload: dict):
+        evidence = payload.get(_RESPONSE_EVIDENCE_KEY)
+        if not isinstance(evidence, dict):
+            return event
+        return replace(
+            event,
+            source_ref=evidence["ref"],
+            source_hash=evidence["sha256"],
+            source_fetched_at=evidence["fetched_at"],
+            source_cursor_identity=evidence["cursor_identity"],
+        )
+
+    @staticmethod
+    def _page_evidence(payload: dict, resource: str) -> MassivePageEvidence | None:
+        evidence = payload.get(_RESPONSE_EVIDENCE_KEY)
+        if not isinstance(evidence, dict):
+            return None
+        return MassivePageEvidence(
+            resource=resource,
+            ref=evidence["ref"],
+            sha256=evidence["sha256"],
+            fetched_at=evidence["fetched_at"],
+            cursor_identity=evidence["cursor_identity"],
+        )
 
     @staticmethod
     def _exception_for_status(status: int, msg: str, body: dict) -> MassiveAPIError:

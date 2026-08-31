@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from livewire_scripts.duckdb_catalog_cli import main
@@ -127,6 +129,15 @@ def test_sql_without_a_known_view_binds_nothing(wired: Path, capsys: pytest.Capt
     assert main(["sql", "SELECT 1 AS one"]) == 0
     captured = capsys.readouterr()
     assert "binding views" not in captured.err
+
+
+def test_sql_registers_shepherd_metadata_only_when_named(wired: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = wired / "data-lake" / "security_master" / "events.parquet"
+    path.parent.mkdir(parents=True)
+    pq.write_table(pa.table({"security_id": ["sec_01"], "symbol": ["AAPL"]}), path)
+
+    assert main(["sql", "SELECT symbol FROM security_master"]) == 0
+    assert "AAPL" in capsys.readouterr().out
 
 
 def test_target_date_defaults_to_the_last_trading_day(wired: Path, capsys: pytest.CaptureFixture[str]) -> None:

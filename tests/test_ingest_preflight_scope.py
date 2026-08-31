@@ -7,7 +7,7 @@ all failed to run because of a dependency none of them have. Friday 2026-08-07
 is absent from bronze warehouse-wide as a result.
 """
 
-from scripts.livewire_ingest import _requires_ib_preflight
+from scripts.livewire_ingest import _requires_ib_preflight, main
 
 
 class TestOrchestratorsDoNotGateOnIB:
@@ -16,6 +16,25 @@ class TestOrchestratorsDoNotGateOnIB:
 
     def test_backfill_all_does_not_require_preflight(self):
         assert _requires_ib_preflight("backfill-all", []) is False
+
+    def test_shepherd_universe_does_not_require_preflight(self):
+        assert _requires_ib_preflight("shepherd-universe", ["scan", "--index", "sp500"]) is False
+
+
+def test_shepherd_universe_dispatches_without_gateway(monkeypatch):
+    captured = {}
+
+    def fake_dispatch(module_name, argv, display_name):
+        captured.update(module=module_name, argv=argv, display=display_name)
+        return 0
+
+    monkeypatch.setattr("scripts.livewire_ingest._dispatch_module", fake_dispatch)
+    assert main(["shepherd-universe", "scan", "--index", "sp500"]) == 0
+    assert captured == {
+        "module": "livewire_scripts.shepherd_universe",
+        "argv": ["scan", "--index", "sp500"],
+        "display": "livewire_ingest.py shepherd-universe",
+    }
 
 
 class TestTheIBPhasesStillGate:

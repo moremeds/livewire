@@ -16,7 +16,8 @@ from threading import Event
 
 from clients.corporate_action_store import CorporateActionStore, ProviderEvent
 from clients.ingestion_common import load_preset
-from clients.massive_client import MassiveAuthError, MassiveClient
+from clients.massive_client import MassiveAuthError, MassiveClient, MassivePageEvidence
+from clients.source_evidence import SourceEvidence, SourceEvidenceStore
 from clients.symbol_paths import canonical_symbol, decode_symbol
 from livewire_scripts.corporate_action_cursor import build_identity, default_cursor_path, open_cursor
 from livewire_scripts.paths import data_lake_dir
@@ -25,10 +26,36 @@ from livewire_scripts.paths import data_lake_dir
 FAILURE_RATE_TOLERANCE = 0.05
 
 
+def _response_evidence_recorder(root: Path):
+    evidence_store = SourceEvidenceStore(root)
+
+    def record(capture):
+        artifact = evidence_store.persist_raw(capture.body)
+        evidence_store.record(
+            SourceEvidence(
+                ref=artifact.ref,
+                sha256=artifact.sha256,
+                # Exact bytes are globally content-addressed. Request/cursor
+                # identity remains on each normalized provider event so the
+                # same empty response body can safely support many symbols.
+                source_url=f"massive-response://sha256/{artifact.sha256}",
+                retrieved_at=capture.fetched_at,
+                publication_time=None,
+                mediawiki_revision_id=None,
+                mediawiki_revision_time=None,
+                content_type=capture.content_type,
+            )
+        )
+        return artifact
+
+    return record
+
+
 @dataclass(frozen=True)
 class _FetchResult:
     ticker: str | None
     events: list[ProviderEvent] | None = None
+    pages: list[MassivePageEvidence] | None = None
     error: Exception | None = None
 
 
@@ -76,14 +103,19 @@ def _resolve_tickers(args: argparse.Namespace, root: Path) -> list[str]:
     return normalized
 
 
-def _fetch_events(client: MassiveClient, ticker: str) -> list[ProviderEvent]:
-    return [*client.get_splits(ticker), *client.get_dividends(ticker)]
+def _fetch_events(client: MassiveClient, ticker: str) -> tuple[list[ProviderEvent], list[MassivePageEvidence]]:
+    if hasattr(client, "get_splits_evidenced") and hasattr(client, "get_dividends_evidenced"):
+        splits, split_pages = client.get_splits_evidenced(ticker)
+        dividends, dividend_pages = client.get_dividends_evidenced(ticker)
+        return [*splits, *dividends], [*split_pages, *dividend_pages]
+    return [*client.get_splits(ticker), *client.get_dividends(ticker)], []
 
 
 def _fetch_sequential(client: MassiveClient, tickers: list[str]) -> Iterator[_FetchResult]:
     for ticker in tickers:
         try:
-            yield _FetchResult(ticker=ticker, events=_fetch_events(client, ticker))
+            events, pages = _fetch_events(client, ticker)
+            yield _FetchResult(ticker=ticker, events=events, pages=pages)
         except Exception as exc:
             yield _FetchResult(ticker=ticker, error=exc)
             if isinstance(exc, MassiveAuthError):
@@ -123,13 +155,13 @@ def _fetch_parallel(
                 except Empty:
                     return
                 try:
-                    events = _fetch_events(client, ticker)
+                    events, pages = _fetch_events(client, ticker)
                 except Exception as exc:
                     if isinstance(exc, MassiveAuthError):
                         stop.set()
                     results.put(_FetchResult(ticker=ticker, error=exc))
                 else:
-                    results.put(_FetchResult(ticker=ticker, events=events))
+                    results.put(_FetchResult(ticker=ticker, events=events, pages=pages))
         finally:
             try:
                 client.close()
@@ -182,6 +214,10 @@ def run(
     if client is not None and client_factory is not None:
         raise ValueError("client and client_factory are mutually exclusive")
     action_store = store or CorporateActionStore(root)
+
+    def default_client_factory() -> MassiveClient:
+        return MassiveClient(response_evidence_recorder=_response_evidence_recorder(root))
+
     identity = build_identity(
         root,
         tickers,
@@ -206,7 +242,7 @@ def run(
         massive = client
         if massive is None:
             try:
-                owned_client = (client_factory or MassiveClient)()
+                owned_client = (client_factory or default_client_factory)()
             except Exception as exc:
                 fetches = iter((_FetchResult(ticker=None, error=exc),))
             else:
@@ -218,7 +254,7 @@ def run(
         fetches = _fetch_parallel(
             pending_tickers,
             workers=active_workers,
-            client_factory=client_factory or MassiveClient,
+            client_factory=client_factory or default_client_factory,
         )
 
     try:
@@ -234,13 +270,22 @@ def run(
                 print(f"{ticker}: {fetched.error}", file=sys.stderr)
                 continue
             try:
+                fetched_at = datetime.now(UTC)
                 result = action_store.reconcile(
                     ticker,
                     fetched.events or [],
-                    datetime.now(UTC),
+                    fetched_at,
                     full_reconcile=args.full_reconcile,
                     dry_run=args.dry_run,
                 )
+                if hasattr(action_store, "record_fetch"):
+                    action_store.record_fetch(
+                        ticker,
+                        fetched.pages or [],
+                        fetched_at,
+                        full_reconcile=args.full_reconcile,
+                        dry_run=args.dry_run,
+                    )
             except Exception as exc:
                 counters["failed"] += 1
                 print(f"{ticker}: {exc}", file=sys.stderr)

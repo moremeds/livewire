@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
+from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts.paths import data_lake_dir, log_dir
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -109,6 +110,7 @@ class OutcomeCategory(StrEnum):
     SKIP = "skip"
     FAIL = "fail"
     TIMEOUT = "timeout"
+    TEMPORARY_UNAVAILABLE = "temporary-unavailable"
 
 
 @dataclass
@@ -223,6 +225,16 @@ def run_one_ticker(
                 rows_after,
                 note="exit 0 but no bronze written",
             )
+        if result.returncode == GATEWAY_DOWN_EXIT_CODE:
+            return TickerOutcome(
+                ticker,
+                OutcomeCategory.TEMPORARY_UNAVAILABLE,
+                attempts,
+                time.monotonic() - start,
+                rows_before,
+                rows_before,
+                note="ib-gateway-unavailable",
+            )
         _logger.warning("[%s] attempt %d exit=%d", ticker, attempts, result.returncode)
         if attempts < max_attempts:
             time.sleep(cooldown)
@@ -292,7 +304,11 @@ def main(argv: list[str] | None = None) -> int:
     print(summary, flush=True)
     with summary_log.open("a", encoding="utf-8") as fh:
         fh.write(summary + "\n")
-    failed_categories = {OutcomeCategory.FAIL, OutcomeCategory.TIMEOUT}
+    failed_categories = {
+        OutcomeCategory.FAIL,
+        OutcomeCategory.TIMEOUT,
+        OutcomeCategory.TEMPORARY_UNAVAILABLE,
+    }
     return 0 if all(o.code not in failed_categories for o in outcomes) else 1
 
 

@@ -12,7 +12,7 @@ from typing import Literal
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from clients.massive_client import MassiveDividend, MassiveSplit
+from clients.massive_client import MassiveDividend, MassivePageEvidence, MassiveSplit
 from clients.parquet_io import publish_parquet, symbol_lock
 from clients.symbol_paths import canonical_symbol, encode_symbol
 
@@ -45,6 +45,22 @@ class CorporateAction:
     status: ActionStatus
     fetched_at: datetime
     payload_hash: str
+    source_ref: str | None = None
+    source_hash: str | None = None
+    source_fetched_at: datetime | None = None
+    source_cursor_identity: str | None = None
+
+
+@dataclass(frozen=True)
+class CorporateActionFetch:
+    fetch_id: str
+    symbol: str
+    fetched_at: datetime
+    full_reconcile: bool
+    resources: tuple[str, ...]
+    source_refs: tuple[str, ...]
+    source_hashes: tuple[str, ...]
+    cursor_identities: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -103,6 +119,22 @@ class CorporateActionStore:
             pa.field("status", pa.string(), nullable=False),
             pa.field("fetched_at", pa.timestamp("us", tz="UTC"), nullable=False),
             pa.field("payload_hash", pa.string(), nullable=False),
+            pa.field("source_ref", pa.string()),
+            pa.field("source_hash", pa.string()),
+            pa.field("source_fetched_at", pa.timestamp("us", tz="UTC")),
+            pa.field("source_cursor_identity", pa.string()),
+        ]
+    )
+    fetch_schema = pa.schema(
+        [
+            pa.field("fetch_id", pa.string(), nullable=False),
+            pa.field("symbol", pa.string(), nullable=False),
+            pa.field("fetched_at", pa.timestamp("us", tz="UTC"), nullable=False),
+            pa.field("full_reconcile", pa.bool_(), nullable=False),
+            pa.field("resources", pa.list_(pa.string()), nullable=False),
+            pa.field("source_refs", pa.list_(pa.string()), nullable=False),
+            pa.field("source_hashes", pa.list_(pa.string()), nullable=False),
+            pa.field("cursor_identities", pa.list_(pa.string()), nullable=False),
         ]
     )
 
@@ -118,6 +150,56 @@ class CorporateActionStore:
             / f"symbol={encode_symbol(symbol)}"
             / "events.parquet"
         )
+
+    def fetch_path_for(self, symbol: str) -> Path:
+        symbol = canonical_symbol(symbol)
+        return (
+            self._root
+            / "bronze"
+            / "asset_class=corporate_action_fetch"
+            / f"symbol={encode_symbol(symbol)}"
+            / "fetches.parquet"
+        )
+
+    def record_fetch(
+        self,
+        symbol: str,
+        pages: list[MassivePageEvidence],
+        fetched_at: datetime,
+        *,
+        full_reconcile: bool,
+        dry_run: bool = False,
+    ) -> CorporateActionFetch:
+        symbol = canonical_symbol(symbol)
+        ordered = sorted(pages, key=lambda page: (page.resource, page.cursor_identity, page.ref))
+        identity = "|".join(
+            [symbol, fetched_at.isoformat(), str(full_reconcile)]
+            + [f"{page.resource}:{page.cursor_identity}:{page.sha256}" for page in ordered]
+        )
+        receipt = CorporateActionFetch(
+            fetch_id=hashlib.blake2b(identity.encode(), digest_size=16).hexdigest(),
+            symbol=symbol,
+            fetched_at=fetched_at,
+            full_reconcile=full_reconcile,
+            resources=tuple(page.resource for page in ordered),
+            source_refs=tuple(page.ref for page in ordered),
+            source_hashes=tuple(page.sha256 for page in ordered),
+            cursor_identities=tuple(page.cursor_identity for page in ordered),
+        )
+        if dry_run:
+            return receipt
+        path = self.fetch_path_for(symbol)
+        with symbol_lock(path):
+            rows = self._read_fetches(path)
+            if all(row.fetch_id != receipt.fetch_id for row in rows):
+                rows.append(receipt)
+                rows.sort(key=lambda row: row.fetch_id)
+                table = pa.Table.from_pylist([asdict(row) for row in rows], schema=self.fetch_schema)
+                publish_parquet(path, table, sort_column="fetch_id")
+        return receipt
+
+    def fetch_history(self, symbol: str) -> list[CorporateActionFetch]:
+        return sorted(self._read_fetches(self.fetch_path_for(symbol)), key=lambda row: (row.fetched_at, row.fetch_id))
 
     def reconcile(
         self,
@@ -293,10 +375,22 @@ class CorporateActionStore:
             key=lambda row: (row.ex_date, row.action_type, row.action_id),
         )
 
+    def history(self, symbol: str) -> list[CorporateAction]:
+        return sorted(
+            self._read(self.path_for(canonical_symbol(symbol))),
+            key=lambda row: (row.provider_event_id, row.event_revision, row.action_id),
+        )
+
     def _read(self, path: Path) -> list[CorporateAction]:
         if not path.exists():
             return []
         return [CorporateAction(**row) for row in pq.ParquetFile(path).read().to_pylist()]
+
+    @staticmethod
+    def _read_fetches(path: Path) -> list[CorporateActionFetch]:
+        if not path.exists():
+            return []
+        return [CorporateActionFetch(**row) for row in pq.ParquetFile(path).read().to_pylist()]
 
     @staticmethod
     def _latest_by_provider_id(rows: list[CorporateAction]) -> dict[str, CorporateAction]:
@@ -336,6 +430,10 @@ class CorporateActionStore:
             status="active",
             fetched_at=fetched_at,
             payload_hash=event.payload_hash,
+            source_ref=event.source_ref,
+            source_hash=event.source_hash,
+            source_fetched_at=event.source_fetched_at,
+            source_cursor_identity=event.source_cursor_identity,
         )
 
     @staticmethod

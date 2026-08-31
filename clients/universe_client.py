@@ -11,17 +11,19 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import requests
 from lxml import html
+
+from clients.mediawiki_client import MediaWikiClient, MediaWikiFetchError
+from clients.source_evidence import SourceEvidenceStore
 
 log = logging.getLogger(__name__)
 
 _TIMEOUT = 30
 _USER_AGENT = "livewire/1.0 (market-data-warehouse)"
 
-_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-_NDX100_URL = "https://en.wikipedia.org/wiki/Nasdaq-100"
 _R2K_URL = "https://www.slickcharts.com/russell2000"
 
 _POLYGON_BASE = "https://api.polygon.io"
@@ -58,42 +60,59 @@ def _get_html(url: str, label: str, browser_ua: bool = False) -> html.HtmlElemen
     return html.fromstring(resp.content)
 
 
+def _data_lake_root() -> Path:
+    return Path(os.environ.get("MDW_DATA_LAKE", Path.home() / "market-warehouse" / "data-lake")).expanduser()
+
+
+def parse_constituent_table(content: str, label: str) -> set[str]:
+    tree = html.fromstring(content)
+    candidates = [*tree.cssselect("table#constituents"), *tree.cssselect("table.wikitable")]
+    seen: set[int] = set()
+    for table in candidates:
+        if id(table) in seen:
+            continue
+        seen.add(id(table))
+        first_row = table.cssselect("tr")[:1]
+        if not first_row:
+            continue
+        headers = [" ".join(cell.text_content().split()).casefold() for cell in first_row[0].cssselect("th")]
+        symbol_columns = [index for index, value in enumerate(headers) if value in {"symbol", "ticker"}]
+        has_company = any(value in {"security", "company"} for value in headers)
+        if len(symbol_columns) != 1 or not has_company:
+            continue
+        symbol_column = symbol_columns[0]
+        symbols = {
+            cells[symbol_column].text_content().strip()
+            for row in table.cssselect("tbody tr")
+            if len(cells := row.cssselect("td")) > symbol_column and cells[symbol_column].text_content().strip()
+        }
+        if symbols:
+            return symbols
+        raise UniverseFetchError(f"{label}: constituent table is empty")
+    raise UniverseFetchError(f"{label}: no constituent table found")
+
+
+_parse_constituent_table = parse_constituent_table
+
+
+def _fetch_wikipedia_universe(title: str, label: str) -> set[str]:
+    try:
+        snapshot = MediaWikiClient(SourceEvidenceStore(_data_lake_root()), timeout=_TIMEOUT).snapshot(title)
+    except MediaWikiFetchError as exc:
+        raise UniverseFetchError(f"Failed to fetch {label}: {exc}") from exc
+    return parse_constituent_table(snapshot.content, label)
+
+
 def fetch_sp500() -> set[str]:
-    tree = _get_html(_SP500_URL, "S&P 500")
-    table = tree.cssselect("table#constituents")
-    if not table:
-        tables = tree.cssselect("table.wikitable")
-        if not tables:
-            raise UniverseFetchError("S&P 500: no constituent table found")
-        table = [tables[0]]
-    rows = table[0].cssselect("tbody tr")
-    symbols: set[str] = set()
-    for row in rows:
-        cells = row.cssselect("td")
-        if cells:
-            text = cells[0].text_content().strip()
-            if text:
-                symbols.add(text)
-    return symbols
+    """Fetch current S&P 500 members from one revision-bound snapshot."""
+
+    return _fetch_wikipedia_universe("List of S&P 500 companies", "S&P 500")
 
 
 def fetch_ndx100() -> set[str]:
-    tree = _get_html(_NDX100_URL, "Nasdaq-100")
-    table = tree.cssselect("table#constituents")
-    if not table:
-        tables = tree.cssselect("table.wikitable")
-        if not tables:
-            raise UniverseFetchError("Nasdaq-100: no constituent table found")
-        table = [tables[0]]
-    rows = table[0].cssselect("tbody tr")
-    symbols: set[str] = set()
-    for row in rows:
-        cells = row.cssselect("td")
-        if cells:
-            text = cells[0].text_content().strip()
-            if text:
-                symbols.add(text)
-    return symbols
+    """Fetch current Nasdaq-100 members from one revision-bound snapshot."""
+
+    return _fetch_wikipedia_universe("Nasdaq-100", "Nasdaq-100")
 
 
 def fetch_r2k() -> set[str]:

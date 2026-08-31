@@ -2,13 +2,40 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, time, timedelta
+
+XNYS_SESSION_POLICY = "XNYS-close-and-early-close-v2"
 
 # One-off NYSE closures that the rule-based calendar can't derive.
 # Add new entries here when the Exchange declares an unscheduled closure
 # (presidential funerals, national days of mourning, weather, etc.).
 SPECIAL_CLOSURES: frozenset[date] = frozenset(
     {
+        date(1954, 12, 24),  # Christmas Eve special closure
+        date(1956, 12, 24),
+        date(1958, 12, 26),  # Day after Christmas
+        date(1961, 5, 29),  # Day before Decoration Day
+        date(1963, 11, 25),  # President Kennedy funeral
+        date(1965, 12, 24),
+        date(1968, 4, 9),  # Martin Luther King Jr. day of mourning
+        date(1968, 7, 5),  # Day after Independence Day
+        date(1969, 2, 10),  # Heavy snow
+        date(1969, 3, 31),  # President Eisenhower funeral
+        date(1969, 7, 21),  # National Day of Participation
+        date(1972, 12, 28),  # President Truman funeral
+        date(1973, 1, 25),  # President Johnson funeral
+        date(1977, 7, 14),  # New York City blackout
+        date(1985, 9, 27),  # Hurricane Gloria
+        date(1994, 4, 27),  # President Nixon funeral
+        date(2001, 9, 11),  # September 11 market closure
+        date(2001, 9, 12),
+        date(2001, 9, 13),
+        date(2001, 9, 14),
+        date(2004, 6, 11),  # President Reagan funeral
+        date(2007, 1, 2),  # President Ford funeral
+        date(2012, 10, 29),  # Hurricane Sandy
+        date(2012, 10, 30),
+        date(2018, 12, 5),  # President George H.W. Bush funeral
         date(2025, 1, 9),  # National Day of Mourning for President Carter
     }
 )
@@ -31,28 +58,34 @@ def get_nyse_holidays(year: int) -> set[date]:
             return d + timedelta(days=1)
         return d
 
-    # New Year's Day
-    holidays.add(_observed(date(year, 1, 1)))
+    # New Year's Day. XNYS observes Sunday on Monday but does not move a
+    # Saturday New Year to the preceding Friday.
+    new_year = date(year, 1, 1)
+    holidays.add(new_year + timedelta(days=1) if new_year.weekday() == 6 else new_year)
 
-    # MLK Day — 3rd Monday of January
-    jan1 = date(year, 1, 1)
-    first_monday = jan1 + timedelta(days=(7 - jan1.weekday()) % 7)
-    mlk = first_monday + timedelta(weeks=2)
-    holidays.add(mlk)
+    # MLK Day — XNYS began observing it in 1998.
+    if year >= 1998:
+        jan1 = date(year, 1, 1)
+        first_monday = jan1 + timedelta(days=(7 - jan1.weekday()) % 7)
+        holidays.add(first_monday + timedelta(weeks=2))
 
-    # Presidents Day — 3rd Monday of February
-    feb1 = date(year, 2, 1)
-    first_monday_feb = feb1 + timedelta(days=(7 - feb1.weekday()) % 7)
-    presidents = first_monday_feb + timedelta(weeks=2)
-    holidays.add(presidents)
+    # Washington's Birthday changed from February 22 to the third Monday in 1971.
+    if year >= 1971:
+        feb1 = date(year, 2, 1)
+        first_monday_feb = feb1 + timedelta(days=(7 - feb1.weekday()) % 7)
+        holidays.add(first_monday_feb + timedelta(weeks=2))
+    else:
+        holidays.add(_observed(date(year, 2, 22)))
 
     # Good Friday — 2 days before Easter Sunday
     holidays.add(_easter(year) - timedelta(days=2))
 
-    # Memorial Day — last Monday of May
-    may31 = date(year, 5, 31)
-    memorial = may31 - timedelta(days=(may31.weekday()) % 7)
-    holidays.add(memorial)
+    # Memorial Day changed from May 30 to the last Monday in May in 1971.
+    if year >= 1971:
+        may31 = date(year, 5, 31)
+        holidays.add(may31 - timedelta(days=may31.weekday()))
+    else:
+        holidays.add(_observed(date(year, 5, 30)))
 
     # Juneteenth — a FEDERAL holiday from 2021, but a MARKET holiday only from 2022.
     # The law was signed 2021-06-17, too late for the exchanges to close for the
@@ -78,6 +111,21 @@ def get_nyse_holidays(year: int) -> set[date]:
 
     # Christmas
     holidays.add(_observed(date(year, 12, 25)))
+
+    # XNYS closed for presidential elections through 1968 and in leap-year
+    # elections through 1980.
+    if year <= 1968 or (year <= 1980 and year % 4 == 0):
+        nov1 = date(year, 11, 1)
+        holidays.add(nov1 + timedelta(days=(1 - nov1.weekday()) % 7))
+
+    # From June 12 through year-end 1968, the paperwork crisis closed XNYS on
+    # Wednesdays to clear the settlement backlog.
+    if year == 1968:
+        current = date(1968, 6, 12)
+        while current.year == 1968:
+            if current.weekday() == 2:
+                holidays.add(current)
+            current += timedelta(days=1)
 
     # Special one-off NYSE closures for this year.
     holidays.update(d for d in SPECIAL_CLOSURES if d.year == year)
@@ -105,6 +153,20 @@ def is_trading_day(d: date) -> bool:
     if d.weekday() >= 5:
         return False
     return d not in get_nyse_holidays(d.year)
+
+
+def session_close_time(day: date) -> time:
+    """Return the scheduled XNYS close under the versioned daily policy."""
+    nov1 = date(day.year, 11, 1)
+    thanksgiving = nov1 + timedelta(days=(3 - nov1.weekday()) % 7, weeks=3)
+    if day == thanksgiving + timedelta(days=1):
+        return time(13)
+    if (day.month, day.day) == (12, 24) and is_trading_day(day):
+        return time(13)
+    july_4 = date(day.year, 7, 4)
+    if (day.month, day.day) == (7, 3) and july_4.weekday() in (1, 2, 3, 4) and is_trading_day(day):
+        return time(13)
+    return time(16)
 
 
 def previous_trading_day(d: date) -> date:

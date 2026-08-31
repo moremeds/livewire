@@ -8,7 +8,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from clients.corporate_action_store import CorporateActionStore, SplitAddition
-from clients.massive_client import MassiveDividend, MassiveSplit
+from clients.massive_client import MassiveDividend, MassivePageEvidence, MassiveSplit
 
 FETCHED_AT = datetime(2026, 7, 13, 1, 2, 3, tzinfo=UTC)
 
@@ -38,6 +38,40 @@ def _dividend(**changes) -> MassiveDividend:
         payload_hash="div-hash-v1",
     )
     return replace(event, **changes)
+
+
+def test_reconcile_persists_raw_response_lineage(tmp_path):
+    store = CorporateActionStore(tmp_path)
+    event = _split(
+        source_ref="artifact://massive/page-1",
+        source_hash="a" * 64,
+        source_fetched_at=FETCHED_AT,
+        source_cursor_identity="sha256:" + "b" * 64,
+    )
+
+    store.reconcile("NVDA", [event], FETCHED_AT)
+
+    row = store.history("NVDA")[0]
+    assert row.source_ref == event.source_ref
+    assert row.source_hash == event.source_hash
+    assert row.source_fetched_at == FETCHED_AT
+    assert row.source_cursor_identity == event.source_cursor_identity
+
+
+def test_zero_event_fetch_retains_split_and_dividend_negative_evidence(tmp_path):
+    store = CorporateActionStore(tmp_path)
+    pages = [
+        MassivePageEvidence("splits", "artifact://sha256/" + "a" * 64, "a" * 64, FETCHED_AT, "sha256:" + "1" * 64),
+        MassivePageEvidence("dividends", "artifact://sha256/" + "b" * 64, "b" * 64, FETCHED_AT, "sha256:" + "2" * 64),
+    ]
+
+    receipt = store.record_fetch("NVDA", pages, FETCHED_AT, full_reconcile=True)
+
+    assert receipt.resources == ("dividends", "splits")
+    history = store.fetch_history("NVDA")
+    assert len(history) == 1
+    assert set(history[0].resources) == {"splits", "dividends"}
+    assert history[0].full_reconcile is True
 
 
 def test_first_reconcile_inserts_canonical_rows(tmp_path):

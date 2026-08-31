@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-08-30T17:56:00+00:00",
+  "sources": [
+    {
+      "source_id": "wiki-sp500-1370105675",
+      "kind": "wikipedia_revision",
+      "authority": "secondary",
+      "source_url": "https://en.wikipedia.org/w/rest.php/v1/page/List_of_S%26P_500_companies/html",
+      "retrieved_at": "2026-08-30T17:53:37.700056+00:00",
+      "published_at": "2026-08-19T03:43:37+00:00",
+      "source_revision": "mediawiki-revision:1370105675",
+      "raw_sha256": "04d3d527664adba77ac77b685787d976e0f98afe7d28307a8b8acaee46d877bc",
+      "missing_fields": ["composite_figi", "share_class_figi", "exchange_mic"],
+      "selected_records": [
+        {"ticker": "BRK.B", "issuer": "Berkshire Hathaway", "cik": "0001067983"},
+        {"ticker": "META", "issuer": "Meta Platforms", "cik": "0001326801"}
+      ]
+    },
+    {
+      "source_id": "sec-company-tickers-bf83a6d3",
+      "kind": "sec_company_tickers",
+      "authority": "regulator",
+      "source_url": "https://www.sec.gov/files/company_tickers.json",
+      "retrieved_at": "2026-08-30T17:54:44.761420+00:00",
+      "published_at": null,
+      "source_revision": "response-sha256:bf83a6d3c92cfd32211e60521861d7b0fb0ae8cf321284d4e66d01ef295ec051",
+      "raw_sha256": "bf83a6d3c92cfd32211e60521861d7b0fb0ae8cf321284d4e66d01ef295ec051",
+      "missing_fields": ["effective_at", "exchange_mic", "composite_figi", "share_class_figi"],
+      "selected_records": [
+        {"ticker": "META", "issuer": "Meta Platforms, Inc.", "cik": "0001326801"},
+        {"ticker": "BRK-A", "issuer": "BERKSHIRE HATHAWAY INC", "cik": "0001067983"},
+        {"ticker": "BRK-B", "issuer": "BERKSHIRE HATHAWAY INC", "cik": "0001067983"},
+        {"ticker": "GE", "issuer": "GENERAL ELECTRIC CO", "cik": "0000040545"},
+        {"ticker": "GEHC", "issuer": "GE HealthCare Technologies Inc.", "cik": "0001932393"}
+      ]
+    },
+    {
+      "source_id": "sec-submission-meta-2c11151e",
+      "kind": "sec_submission",
+      "authority": "regulator",
+      "source_url": "https://data.sec.gov/submissions/CIK0001326801.json",
+      "retrieved_at": "2026-08-30T17:54:44.852650+00:00",
+      "published_at": null,
+      "source_revision": "response-sha256:2c11151eea83ce390d096daf3245c56c421ab3695af2cc6e1f59a218fbe6e645",
+      "raw_sha256": "2c11151eea83ce390d096daf3245c56c421ab3695af2cc6e1f59a218fbe6e645",
+      "missing_fields": ["effective_at", "composite_figi", "share_class_figi"],
+      "selected_records": [
+        {"ticker": "META", "issuer": "Meta Platforms, Inc.", "cik": "0001326801", "exchange": "Nasdaq", "entity_type": "operating"}
+      ]
+    },
+    {
+      "source_id": "massive-meta-6dc9d038",
+      "kind": "massive_ticker_details",
+      "authority": "provider",
+      "source_url": "https://api.polygon.io/v3/reference/tickers/META",
+      "retrieved_at": "2026-08-30T17:53:38.615495+00:00",
+      "published_at": null,
+      "source_revision": "response-sha256:6dc9d03896c36a5648ff5aaedd062255b0a279269debf55fb23173a4fed3cb6f",
+      "raw_sha256": "6dc9d03896c36a5648ff5aaedd062255b0a279269debf55fb23173a4fed3cb6f",
+      "missing_fields": [],
+      "selected_records": [
+        {"ticker": "META", "issuer": "Meta Platforms, Inc. Class A Common Stock", "cik": "0001326801", "exchange_mic": "XNAS", "composite_figi": "BBG000MM2P62", "share_class_figi": "BBG001SQCQC5", "list_date": "2012-05-18"}
+      ]
+    },
+    {
+      "source_id": "massive-brka-98f73cad",
+      "kind": "massive_ticker_details",
+      "authority": "provider",
+      "source_url": "https://api.polygon.io/v3/reference/tickers/BRK.A",
+      "retrieved_at": "2026-08-30T17:53:39.533359+00:00",
+      "published_at": null,
+      "source_revision": "response-sha256:98f73cad3a574d5bdf97ad4423656a2e34f69c5ef09fcfc7b8a313cd99e98db3",
+      "raw_sha256": "98f73cad3a574d5bdf97ad4423656a2e34f69c5ef09fcfc7b8a313cd99e98db3",
+      "missing_fields": [],
+      "selected_records": [
+        {"ticker": "BRK.A", "cik": "0001067983", "exchange_mic": "XNYS", "composite_figi": "BBG000DWCFL4", "share_class_figi": "BBG001S902J2"}
+      ]
+    },
+    {
+      "source_id": "massive-brkb-910e5240",
+      "kind": "massive_ticker_details",
+      "authority": "provider",
+      "source_url": "https://api.polygon.io/v3/reference/tickers/BRK.B",
+      "retrieved_at": "2026-08-30T17:53:40.461332+00:00",
+      "published_at": null,
+      "source_revision": "response-sha256:910e52408f898c534d7e15ae6cab32983adb46f54bad11c986aec073b48eaf6b",
+      "raw_sha256": "910e52408f898c534d7e15ae6cab32983adb46f54bad11c986aec073b48eaf6b",
+      "missing_fields": [],
+      "selected_records": [
+        {"ticker": "BRK.B", "cik": "0001067983", "exchange_mic": "XNYS", "composite_figi": "BBG000DWG505", "share_class_figi": "BBG001S90346"}
+      ]
+    },
+    {
+      "source_id": "massive-ge-ba9e0d06",
+      "kind": "massive_ticker_details",
+      "authority": "provider",
+      "source_url": "https://api.polygon.io/v3/reference/tickers/GE",
+      "retrieved_at": "2026-08-30T17:53:41.375312+00:00",
+      "published_at": null,
+      "source_revision": "response-sha256:ba9e0d06aae297ea01c77793fb664c248cdd55f65bd4ce3bec63d853bb9b915f",
+      "raw_sha256": "ba9e0d06aae297ea01c77793fb664c248cdd55f65bd4ce3bec63d853bb9b915f",
+      "missing_fields": [],
+      "selected_records": [
+        {"ticker": "GE", "issuer": "GE Aerospace", "cik": "0000040545", "exchange_mic": "XNYS", "composite_figi": "BBG000BK6MB5", "share_class_figi": "BBG001S5PVD5"}
+      ]
+    },
+    {
+      "source_id": "massive-gehc-bdfd3fd9",
+      "kind": "massive_ticker_details",
+      "authority": "provider",
+      "source_url": "https://api.polygon.io/v3/reference/tickers/GEHC",
+      "retrieved_at": "2026-08-30T17:53:42.448984+00:00",
+      "published_at": null,
+      "source_revision": "response-sha256:bdfd3fd98e60a19bbc6e916cbdd641d08000752f3e452bc00e469476bdec4364",
+      "raw_sha256": "bdfd3fd98e60a19bbc6e916cbdd641d08000752f3e452bc00e469476bdec4364",
+      "missing_fields": [],
+      "selected_records": [
+        {"ticker": "GEHC", "issuer": "GE HealthCare Technologies Inc. Common Stock", "cik": "0001932393", "exchange_mic": "XNAS", "composite_figi": "BBG01BFR8YV1", "share_class_figi": "BBG01BFR8YW0"}
+      ]
+    },
+    {
+      "source_id": "sec-roundhill-meta-metv-20220114",
+      "kind": "issuer_or_corporate_action",
+      "authority": "regulator_filing",
+      "source_url": "https://www.sec.gov/Archives/edgar/data/1683471/000089418922000256/meta497etickerchange.htm",
+      "retrieved_at": "2026-08-30T17:55:31.179005+00:00",
+      "published_at": "2022-01-14T00:00:00+00:00",
+      "source_revision": "sec-accession:0000894189-22-000256",
+      "raw_sha256": "852dc16441f8ff6df1d46d52eeb9a5b5fe26b8c8428e949faf825074fa8f6cd6",
+      "missing_fields": ["composite_figi", "share_class_figi"],
+      "selected_records": [
+        {"issuer": "Roundhill Ball Metaverse ETF", "old_ticker": "META", "new_ticker": "METV", "effective_at": "2022-01-31", "cik": "0001683471"}
+      ]
+    },
+    {
+      "source_id": "meta-fb-meta-20220531",
+      "kind": "issuer_or_corporate_action",
+      "authority": "responsible_issuer",
+      "source_url": "https://investor.atmeta.com/investor-news/press-release-details/2022/Meta-Platforms-Inc.-to-Change-Ticker-Symbol-to-META-on-June-9/default.aspx",
+      "retrieved_at": "2026-08-30T17:55:21.824586+00:00",
+      "published_at": "2022-05-31T00:00:00+00:00",
+      "source_revision": "response-sha256:0041813a550c7b5c88e8025150541a2d5844aaa2ec0de18be6db9879acb1ae87",
+      "raw_sha256": "0041813a550c7b5c88e8025150541a2d5844aaa2ec0de18be6db9879acb1ae87",
+      "missing_fields": ["composite_figi", "share_class_figi"],
+      "selected_records": [
+        {"issuer": "Meta Platforms, Inc.", "old_ticker": "FB", "new_ticker": "META", "exchange": "NASDAQ", "effective_at": "2022-06-09", "cusip_continues": true}
+      ]
+    },
+    {
+      "source_id": "ge-gehc-spinoff-20230104",
+      "kind": "issuer_or_corporate_action",
+      "authority": "responsible_issuer",
+      "source_url": "https://www.ge.com/news/press-releases/ge-completes-separation-of-ge-healthcare",
+      "retrieved_at": "2026-08-30T17:55:31.797496+00:00",
+      "published_at": "2023-01-04T00:00:00+00:00",
+      "source_revision": "response-sha256:43e59f874d701e253b37c0d2ceff54203f32d16e168548244bb4dadab51bc3df",
+      "raw_sha256": "43e59f874d701e253b37c0d2ceff54203f32d16e168548244bb4dadab51bc3df",
+      "missing_fields": ["distribution_ratio"],
+      "selected_records": [
+        {"parent_ticker": "GE", "child_ticker": "GEHC", "event": "spinoff", "effective_at": "2023-01-04", "parent_continues": true}
+      ]
+    }
+  ],
+  "observed_collisions": [
+    {
+      "collision": "one CIK maps to multiple listed share classes",
+      "example": "CIK 0001067983 maps to BRK.A and BRK.B with distinct composite and share-class FIGIs",
+      "policy_effect": "CIK is issuer evidence and cannot merge share classes"
+    },
+    {
+      "collision": "provider symbol punctuation differs",
+      "example": "SEC uses BRK-B while Wikipedia and Massive use BRK.B",
+      "policy_effect": "provider symbols are versioned locators, not identity keys"
+    },
+    {
+      "collision": "ticker reused by another issuer",
+      "example": "META identified the Roundhill ETF before Meta Platforms adopted META",
+      "policy_effect": "non-overlapping symbol intervals remain attached to distinct identities"
+    },
+    {
+      "collision": "spinoff shares issuer history but creates a new registrant",
+      "example": "GE and GEHC have different CIK and FIGI values after separation",
+      "policy_effect": "the parent continues and the child receives a distinct identity"
+    }
+  ]
+}

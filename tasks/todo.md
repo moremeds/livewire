@@ -2,6 +2,107 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Livewire Shepherd execution (2026-08-31)
+
+Goal: periodically verify current S&P 500 and Nasdaq-100 market-data coverage,
+preserve point-in-time evidence, investigate ambiguous gaps without a global
+blocker, and permit only exact reversible repairs. Parquet remains canonical;
+DuckDB remains a verified, rebuildable query surface.
+
+Dependency graph:
+
+```text
+LS-01.4 -> LS-02.1 -> LS-02.2a -> LS-02.2b --+
+                                              +-> LS-02.3 -> LS-03.1 -> LS-03.2
+LS-07.1 -> LS-07.2 ---------------------------+       |          |
+                                                      |          +-> LS-06.1
+                                                      +-> LS-04
+                                                      +-> LS-05.1 -> LS-05.2 -> LS-06.1
+LS-06.1 -> LS-06.2a -> LS-06.2b -> LS-06.2c -> LS-06.3a -> LS-06.3b -> LS-07.3
+                                                   |
+                                                   +-> LS-08.1 -> LS-08.2
+
+LS-01.4 + LS-02.3 + LS-03.2 + LS-05.2 + LS-06.3b + LS-07.3 -> LS-GATE
+LS-04 and LS-08 continue after the first working-system gate.
+```
+
+- [x] **LS-01.4** (`depends_on: []`, Helium): Provide the strict read-only
+  Livewire bridge and standalone Shepherd daemon shell through Helium PR #49.
+- [x] **LS-02.1** (`depends_on: [LS-01.4]`): Preserve exact source bytes and
+  MediaWiki revision metadata before parsing current index constituents.
+- [x] **LS-02.2a** (`depends_on: [LS-02.1]`): Freeze the stable-security-identity
+  evidence, priority, and collision policy as executable fixtures.
+- [x] **LS-02.2b** (`depends_on: [LS-02.2a]`): Add append-only security identity
+  and index-membership events with strict PIT queries.
+- [x] **LS-07.1** (`depends_on: [LS-01.4]`, Helium): Define Shepherd team
+  manifests, claim contracts, and deterministic verifier boundaries.
+- [x] **LS-07.2** (`depends_on: [LS-07.1]`, Helium/Argon): Add cost-aware source
+  tools and provider-owned quota recovery without daemon-wide blocking.
+- [x] **LS-02.3** (`depends_on: [LS-02.2b, LS-07.2]`): Reconcile verified
+  current S&P 500 and Nasdaq-100 membership into the query surface.
+- [x] **LS-03.1** (`depends_on: [LS-02.3]`): Produce exact current-member daily
+  coverage work units from identity intervals, not discovered files.
+- [x] **LS-03.2** (`depends_on: [LS-03.1]`): Connect deep daily retrieval while
+  keeping IB 2FA/session failure local and resumable. The manifest-bound
+  command performs one forced-IB attempt, verifies the resulting Parquet, and
+  returns typed exit 75 without full-bounce or command-level retry. Helium
+  accepts that wait only with `AWAITING_USER` and continues other ready units;
+  mutating receipts remain handoffs until LS-06's certified action boundary.
+- [ ] **LS-04** (`depends_on: [LS-02.3]`): Verify the Massive flat-file
+  current-member intraday slice and deterministic 1m-to-5m/30m/1h parity
+  without rescanning the cold external lake.
+- [x] **LS-05.1** (`depends_on: [LS-02.3]`): Export replayable Massive
+  corporate-action revisions and keep optional UW evidence local/non-blocking.
+  Existing endpoints remain usable: every page is stored as exact bytes with
+  cursor identity, event lineage binds back to raw payloads, zero-result
+  split/dividend fetches retain negative evidence, and corrupt/missing evidence
+  is isolated per symbol rather than becoming a global blocker.
+- [x] **LS-05.2** (`depends_on: [LS-03.1, LS-05.1]`): Bind verified membership,
+  identity, daily Silver, and corporate-action evidence into PIT Silver
+  revisions and DuckDB views. Immutable manifests now freeze append-prefix
+  membership/identity inputs, exact historical Silver revision, locally
+  replayed action evidence, XNYS session mapping, and derived coverage evidence;
+  DuckDB accepts only independently verified `PROVEN` bytes. Crash-complete
+  orphan revisions are adopted, malformed remnants are quarantined, and later
+  normal source revisions do not invalidate an older frozen PIT revision.
+- [x] **LS-06.1** (`depends_on: [LS-03.2, LS-05.2]`): Froze the exact
+  current-member daily Bronze repair transaction on a disposable lake: full
+  Helium scope hash, append-prefix identity evidence, versioned XNYS sessions,
+  staged publish, independent postconditions, crash resume, and byte-exact
+  rollback. Wider multi-artifact operations remain explicit LS-06.4 work.
+- [x] **LS-06.2a** (`depends_on: [LS-06.1]`): Characterized and froze the
+  proven Ops transaction boundary: controller probes, lease and OS lock,
+  baseline, write-ahead intent, spawn, receipt, grace verification, evidence,
+  terminal projection, crash-prefix replay, and nonzero-command uncertainty.
+- [x] **LS-06.2b** (`depends_on: [LS-06.2a]`): Extracted the reusable
+  `CertifiedActionRunner` with a bounded generic scope while keeping existing
+  Ops event, recovery, lease, lock, and restart contracts green.
+- [x] **LS-06.2c** (`depends_on: [LS-06.2b]`): Bound `REPAIR_READY` work units
+  to evidence-backed private manifests and the shared Ops transaction. The
+  runner persists exact scope/input hashes, revalidates bytes immediately
+  before intent/spawn, and permits only the derived `--manifest ABS` argv.
+- [x] **LS-06.3a** (`depends_on: [LS-06.2c]`, Helium): Commissioned automatic
+  Ops authority only as one signed exact capability. The promotion digest binds
+  the component, SOP, executor identity, check definitions, concrete argv, and
+  postcondition set; runtime validation rejects any widened or substituted
+  capability. The real Livewire package and autonomous drills remain LS-06.3b.
+- [ ] **LS-06.3b** (`depends_on: [LS-06.3a]`): Run controlled autonomous repair
+  and rollback drills with replayable evidence.
+- [ ] **LS-06.4** (`depends_on: [LS-06.3b]`): Add separate exact manifests and
+  crash matrices for flat-file date, Silver revision, and DuckDB query rebuilds;
+  do not widen the single-file `daily-merge` v1 contract.
+- [ ] **LS-07.3** (`depends_on: [LS-06.3b]`): Add periodic launchd operation,
+  issue lifecycle, deadman observation, and cold-restart verification.
+- [ ] **LS-08.1** (`depends_on: [LS-06.2c]`): Parse historical Wikipedia index
+  events as evidence-backed candidates while retaining the explicit unresolved
+  denominator.
+- [ ] **LS-08.2** (`depends_on: [LS-08.1]`): Periodically expand removed,
+  delisted, renamed, acquired, and ticker-reuse intervals and independently
+  verify historical S&P 500/Nasdaq-100 PIT Silver coverage.
+- [ ] **LS-GATE** (`depends_on: [LS-01.4, LS-02.3, LS-03.2, LS-05.2, LS-06.3b, LS-07.3]`):
+  Promote the first unattended working system; seven-day observation is not a
+  prerequisite to start it, while LS-04/LS-08 continue by coverage.
+
 ## Warehouse freshness backfill (2026-07-19)
 
 Dependency graph: `F1 -> F2 -> F3 -> F4 -> F5 -> F6`

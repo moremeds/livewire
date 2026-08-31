@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import pytest
 import responses
 
@@ -53,31 +55,58 @@ R2K_HTML = """
 </body></html>
 """
 
+MEDIAWIKI_ROOT = "https://en.wikipedia.org/w/rest.php/v1/page"
+
+
+def mediawiki_url(title: str) -> str:
+    return f"{MEDIAWIKI_ROOT}/{quote(title.replace(' ', '_'), safe='')}/html"
+
+
+def mediawiki_payload(
+    content: str,
+    *,
+    title: str = "List of S&P 500 companies",
+    canonical_url: str = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+) -> bytes:
+    return f"""<!DOCTYPE html>
+    <html about="//en.wikipedia.org/wiki/Special:Redirect/revision/123">
+      <head>
+        <meta property="dc:modified" content="2026-08-30T12:00:00Z" />
+        <link rel="dc:isVersionOf" href="{canonical_url}" />
+        <title>{title}</title>
+      </head>
+      <body>{content}</body>
+    </html>""".encode()
+
 
 class TestFetchSP500:
     @responses.activate
-    def test_parses_wikipedia_table(self):
+    def test_parses_wikipedia_table(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
         responses.add(
             responses.GET,
-            "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-            body=SP500_HTML,
+            mediawiki_url("List of S&P 500 companies"),
+            body=mediawiki_payload(SP500_HTML),
             status=200,
         )
         result = fetch_sp500()
         assert result == {"AAPL", "MSFT", "BRK.B"}
+        assert list((tmp_path / "raw" / "shepherd" / "sha256").glob("[0-9a-f]" * 64))
 
     @responses.activate
-    def test_http_error_raises(self):
+    def test_http_error_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
         responses.add(
             responses.GET,
-            "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+            mediawiki_url("List of S&P 500 companies"),
             status=500,
         )
         with pytest.raises(UniverseFetchError, match="S&P 500"):
             fetch_sp500()
 
     @responses.activate
-    def test_fallback_to_wikitable_class(self):
+    def test_fallback_to_wikitable_class(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
         fallback_html = """
         <html><body>
         <table class="wikitable sortable">
@@ -90,19 +119,20 @@ class TestFetchSP500:
         """
         responses.add(
             responses.GET,
-            "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-            body=fallback_html,
+            mediawiki_url("List of S&P 500 companies"),
+            body=mediawiki_payload(fallback_html),
             status=200,
         )
         result = fetch_sp500()
         assert result == {"GOOG"}
 
     @responses.activate
-    def test_no_table_raises(self):
+    def test_no_table_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
         responses.add(
             responses.GET,
-            "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-            body="<html><body><p>No tables here</p></body></html>",
+            mediawiki_url("List of S&P 500 companies"),
+            body=mediawiki_payload("<p>No tables here</p>"),
             status=200,
         )
         with pytest.raises(UniverseFetchError, match="no constituent table"):
@@ -111,32 +141,64 @@ class TestFetchSP500:
 
 class TestFetchNDX100:
     @responses.activate
-    def test_parses_wikipedia_table(self):
+    def test_parses_wikipedia_table(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
         responses.add(
             responses.GET,
-            "https://en.wikipedia.org/wiki/Nasdaq-100",
-            body=NDX100_HTML,
+            mediawiki_url("Nasdaq-100"),
+            body=mediawiki_payload(
+                NDX100_HTML,
+                title="Nasdaq-100",
+                canonical_url="https://en.wikipedia.org/wiki/Nasdaq-100",
+            ),
             status=200,
         )
         result = fetch_ndx100()
         assert result == {"AAPL", "NVDA"}
 
     @responses.activate
-    def test_http_error_raises(self):
+    def test_ignores_unrelated_wikitables_before_semantic_constituent_table(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
+        content = NDX100_HTML.replace(
+            '<table id="constituents">',
+            """<table class="wikitable"><tbody><tr><th>Category</th><th>All-Time Highs</th></tr>
+            <tr><td>Closing</td><td>30,000</td></tr></tbody></table>
+            <table class="wikitable">""",
+        )
         responses.add(
             responses.GET,
-            "https://en.wikipedia.org/wiki/Nasdaq-100",
+            mediawiki_url("Nasdaq-100"),
+            body=mediawiki_payload(
+                content,
+                title="Nasdaq-100",
+                canonical_url="https://en.wikipedia.org/wiki/Nasdaq-100",
+            ),
+            status=200,
+        )
+        assert fetch_ndx100() == {"AAPL", "NVDA"}
+
+    @responses.activate
+    def test_http_error_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
+        responses.add(
+            responses.GET,
+            mediawiki_url("Nasdaq-100"),
             status=404,
         )
         with pytest.raises(UniverseFetchError, match="Nasdaq-100"):
             fetch_ndx100()
 
     @responses.activate
-    def test_no_table_raises(self):
+    def test_no_table_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
         responses.add(
             responses.GET,
-            "https://en.wikipedia.org/wiki/Nasdaq-100",
-            body="<html><body></body></html>",
+            mediawiki_url("Nasdaq-100"),
+            body=mediawiki_payload(
+                "<p>No table</p>",
+                title="Nasdaq-100",
+                canonical_url="https://en.wikipedia.org/wiki/Nasdaq-100",
+            ),
             status=200,
         )
         with pytest.raises(UniverseFetchError, match="no constituent table"):
@@ -179,7 +241,8 @@ class TestFetchR2K:
 
 class TestFetchNDX100Fallback:
     @responses.activate
-    def test_fallback_to_wikitable_class(self):
+    def test_fallback_to_wikitable_class(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
         fallback_html = """
         <html><body>
         <table class="wikitable sortable">
@@ -192,8 +255,12 @@ class TestFetchNDX100Fallback:
         """
         responses.add(
             responses.GET,
-            "https://en.wikipedia.org/wiki/Nasdaq-100",
-            body=fallback_html,
+            mediawiki_url("Nasdaq-100"),
+            body=mediawiki_payload(
+                fallback_html,
+                title="Nasdaq-100",
+                canonical_url="https://en.wikipedia.org/wiki/Nasdaq-100",
+            ),
             status=200,
         )
         result = fetch_ndx100()

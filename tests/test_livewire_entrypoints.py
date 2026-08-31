@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from clients import ib_gateway_preflight
+from clients.ib_client import IBConnectionError
 from scripts import livewire_ingest, livewire_ops, livewire_quality, livewire_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +46,22 @@ def test_ingest_dispatches_module_commands(monkeypatch) -> None:
     assert preflight_calls == [True]
 
 
+def test_ingest_maps_midrun_ib_session_loss_to_typed_gateway_state(monkeypatch) -> None:
+    monkeypatch.setattr(ib_gateway_preflight, "assert_gateway_up", lambda: None)
+
+    def failed_module(name):
+        def main():
+            raise IBConnectionError("session lost")
+
+        return SimpleNamespace(main=main)
+
+    monkeypatch.setattr(livewire_ingest.importlib, "import_module", failed_module)
+
+    assert livewire_ingest.main(["historical", "--tickers", "AAPL", "--source", "ib"]) == (
+        ib_gateway_preflight.GATEWAY_DOWN_EXIT_CODE
+    )
+
+
 def test_quality_dispatches_warehouse_report(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(
@@ -67,6 +84,58 @@ def test_store_dispatches_rebuild_silver(monkeypatch) -> None:
 
     assert livewire_store.main(["rebuild-silver", "--tickers", "NVDA"]) == 7
     assert calls == [("livewire_scripts.rebuild_silver", ["--tickers", "NVDA"])]
+
+
+def test_store_dispatches_shepherd_daily(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_store.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+
+    argv = ["plan", "--index", "sp500", "--membership-revision", "1", "--as-of", "2026-08-31"]
+    assert livewire_store.main(["shepherd-daily", *argv]) == 7
+    assert calls == [("livewire_scripts.shepherd_daily", argv)]
+
+
+def test_store_dispatches_shepherd_actions(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_store.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+
+    argv = ["export", "--symbols", "AAPL", "--as-of", "2026-08-31T01:00:00+00:00"]
+    assert livewire_store.main(["shepherd-actions", *argv]) == 7
+    assert calls == [("livewire_scripts.shepherd_actions", argv)]
+
+
+def test_store_dispatches_shepherd_silver(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_store.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+
+    argv = ["publish", "--index", "sp500", "--membership-revision", "1", "--as-of", "2026-08-31T23:59:00+00:00"]
+    assert livewire_store.main(["shepherd-silver", *argv]) == 7
+    assert calls == [("livewire_scripts.shepherd_silver", argv)]
+
+
+def test_store_dispatches_shepherd_repair(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_store.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+
+    argv = ["preflight", "--manifest", "/tmp/repair.json"]
+    assert livewire_store.main(["shepherd-repair", *argv]) == 7
+    assert calls == [("livewire_scripts.shepherd_repair", argv)]
 
 
 def test_store_dispatches_price_basis_migration(monkeypatch) -> None:

@@ -2,6 +2,7 @@ import json
 import subprocess
 from unittest.mock import MagicMock
 
+from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts.run_ib_fetch_robust import (
     OutcomeCategory,
     TickerOutcome,
@@ -230,6 +231,37 @@ def test_non_zero_exit_retried(tmp_path, monkeypatch):
         cooldown=0,
     )
     assert outcome.code == OutcomeCategory.OK
+
+
+def test_gateway_unavailable_is_typed_and_never_retried(tmp_path, monkeypatch):
+    calls = 0
+
+    def fake_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return MagicMock(returncode=GATEWAY_DOWN_EXIT_CODE)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "time.sleep",
+        lambda seconds: (_ for _ in ()).throw(AssertionError("gateway state must not cool down or retry")),
+    )
+
+    outcome = run_one_ticker(
+        ticker="AAPL",
+        mode="seed",
+        asset_class="equity",
+        bronze_dir=tmp_path,
+        timeout=10,
+        max_attempts=3,
+        cooldown=60,
+        source="ib",
+    )
+
+    assert calls == 1
+    assert outcome.code == OutcomeCategory.TEMPORARY_UNAVAILABLE
+    assert outcome.attempts_used == 1
+    assert outcome.note == "ib-gateway-unavailable"
 
 
 def test_cooldown_sleeps_between_attempts(tmp_path, monkeypatch):

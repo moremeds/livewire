@@ -876,6 +876,11 @@ def _mock_massive_instance(ticker_bars=None):
 
 
 class TestMain:
+    @pytest.fixture(autouse=True)
+    def _isolate_live_massive_credentials(self, monkeypatch):
+        """Unit/integration fixtures must opt into Massive with an explicit mock."""
+        monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+
     @pytest.mark.integration
     def test_fetch_massive_bars_skips_missing_client_or_dates(self):
         assert fetch_massive_bars("AAPL", [], None) == ([], [])

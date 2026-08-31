@@ -37,7 +37,10 @@ Intraday is deliberately view-only. Equity ``1m`` alone is 23.57 GB against
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import re
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -53,6 +56,7 @@ from livewire_scripts.paths import data_lake_dir, silver_dir, warehouse_dir
 # CREATE VIEW in the database but can create temporary ones, so this single
 # form works for in-memory, read-write and read_only alike.
 _VIEW_SQL = "CREATE OR REPLACE TEMP VIEW {name} AS SELECT * FROM read_parquet({glob!r}, hive_partitioning=1)"
+_SHEPHERD_VIEW_SQL = "CREATE OR REPLACE TEMP VIEW {name} AS SELECT * FROM read_parquet({path!r})"
 
 _EQUITY_INTRADAY = ("1m", "5m", "30m", "1h")
 _DAILY_ASSET_CLASSES = ("equity", "volatility", "futures", "rates", "fx", "cmdty")
@@ -87,6 +91,16 @@ class ViewSpec:
         """
         partition = encode_symbol(canonical_symbol(symbol))
         return str(Path(self.directory) / f"symbol={partition}" / self.filename)
+
+
+@dataclass(frozen=True)
+class ShepherdCoverageRow:
+    """One evidence-bound coverage conclusion for a Shepherd scope."""
+
+    scope_hash: str
+    dimension: str
+    state: str
+    evidence_hash: str
 
 
 def view_specs(
@@ -178,6 +192,142 @@ def ensure_view(
     con.execute(_VIEW_SQL.format(name=spec.name, glob=spec.glob))
 
 
+def _shepherd_metadata_paths(data_lake_root: Path | None = None) -> dict[str, Path]:
+    root = Path(data_lake_root) if data_lake_root is not None else data_lake_dir()
+    return {
+        "security_master": root / "security_master" / "events.parquet",
+        "index_membership_sp500": root / "index_membership" / "sp500" / "events.parquet",
+        "index_membership_ndx100": root / "index_membership" / "ndx100" / "events.parquet",
+    }
+
+
+def shepherd_metadata_view_names() -> list[str]:
+    """Return the bounded names accepted by the metadata-view registrar."""
+
+    return list(_shepherd_metadata_paths())
+
+
+def ensure_shepherd_metadata_view(
+    con: duckdb.DuckDBPyConnection,
+    name: str,
+    *,
+    data_lake_root: Path | None = None,
+) -> None:
+    """Register one append-only Shepherd metadata log as a temporary view."""
+
+    paths = _shepherd_metadata_paths(data_lake_root)
+    if name not in paths:
+        raise KeyError(f"unknown Shepherd metadata view {name!r}")
+    path = paths[name]
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    con.execute(_SHEPHERD_VIEW_SQL.format(name=name, path=str(path)))
+
+
+def ensure_pit_views(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    data_lake_root: Path | None = None,
+    manifest_path: Path | None = None,
+) -> None:
+    """Register verified PIT membership and daily Silver views on demand."""
+    from clients.pit_silver_revision import PitSilverRevisionPublisher
+
+    root = Path(data_lake_root) if data_lake_root is not None else data_lake_dir()
+    publisher = PitSilverRevisionPublisher(root)
+    verified = publisher.verify(manifest_path)
+    if verified["status"] != "PROVEN":
+        raise ValueError("PIT Silver views require a PROVEN manifest")
+    path = Path(verified["manifestPath"])
+    manifest_bytes = path.read_bytes()
+    if "sha256:" + hashlib.sha256(manifest_bytes).hexdigest() != verified["manifestHash"]:
+        raise ValueError("verified PIT Silver manifest changed before use")
+    manifest = json.loads(manifest_bytes)
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE _pit_index_intervals (
+            index_id VARCHAR, security_id VARCHAR, symbol VARCHAR,
+            effective_from TIMESTAMPTZ, effective_to TIMESTAMPTZ,
+            session_from DATE, session_to DATE
+        )
+        """
+    )
+    con.executemany(
+        "INSERT INTO _pit_index_intervals VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                manifest["index_id"],
+                item["security_id"],
+                item["symbol"],
+                item["effective_from"],
+                item["effective_to"],
+                item["session_from"],
+                item["session_to"],
+            )
+            for item in manifest["members"]
+        ],
+    )
+    con.execute("CREATE OR REPLACE TEMP VIEW pit_index_membership AS SELECT * FROM _pit_index_intervals")
+    files = [
+        str((root / "silver" / item["path"]).resolve())
+        for item in manifest["inputs"]["silver_artifacts"]
+        if str(item["path"]).endswith("/1d.parquet")
+    ]
+    if not files:
+        raise FileNotFoundError("PIT Silver manifest has no daily artifacts")
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP VIEW pit_equity_daily AS
+        SELECT bars.*, intervals.index_id, intervals.security_id
+        FROM read_parquet({files!r}, hive_partitioning=1) bars
+        JOIN _pit_index_intervals intervals
+          ON CAST(bars.symbol AS VARCHAR) = intervals.symbol
+         AND CAST(bars.trade_date AS DATE) >= intervals.session_from
+         AND (intervals.session_to IS NULL
+              OR CAST(bars.trade_date AS DATE) < intervals.session_to)
+         AND CAST(bars.trade_date AS DATE) <= CAST({manifest["daily_bar_cutoff"]!r} AS DATE)
+        """
+    )
+    evidence_rows = [
+        (manifest["input_hash"], "membership", "VERIFIED", manifest["inputs"]["membership"]["sha256"]),
+        (
+            manifest["input_hash"],
+            "security-identity",
+            "VERIFIED",
+            manifest["inputs"]["security_master"]["sha256"],
+        ),
+        (
+            manifest["input_hash"],
+            "daily-silver",
+            "VERIFIED",
+            manifest["inputs"]["silver_manifest"]["sha256"],
+        ),
+        (
+            manifest["input_hash"],
+            "corporate-actions",
+            "VERIFIED",
+            manifest["inputs"]["corporate_action_receipt"]["sha256"],
+        ),
+        (
+            manifest["input_hash"],
+            "pit-lineage",
+            "VERIFIED",
+            verified["manifestHash"].removeprefix("sha256:"),
+        ),
+    ]
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE _pit_verification_coverage (
+            scope_hash VARCHAR, dimension VARCHAR, state VARCHAR, evidence_hash VARCHAR
+        )
+        """
+    )
+    con.executemany("INSERT INTO _pit_verification_coverage VALUES (?, ?, ?, ?)", evidence_rows)
+    con.execute(
+        "CREATE OR REPLACE TEMP VIEW shepherd_verification_coverage AS SELECT * FROM _pit_verification_coverage"
+    )
+
+
 def symbol_files(
     view_name: str,
     symbols: Iterable[str],
@@ -240,6 +390,39 @@ CREATE TABLE coverage (
 )
 """
 
+_SHEPHERD_COVERAGE_DDL = """
+CREATE TABLE shepherd_coverage (
+    scope_hash    VARCHAR NOT NULL,
+    dimension     VARCHAR NOT NULL,
+    state         VARCHAR NOT NULL,
+    evidence_hash VARCHAR NOT NULL,
+    PRIMARY KEY (scope_hash, dimension, state, evidence_hash)
+)
+"""
+
+_SCOPE_HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+_DIMENSION = re.compile(r"^[a-z][a-z0-9._-]{0,127}$")
+_STATE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+_EVIDENCE_HASH = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _validate_shepherd_rows(rows: Iterable[ShepherdCoverageRow]) -> list[ShepherdCoverageRow]:
+    values = list(rows)
+    for row in values:
+        if not isinstance(row, ShepherdCoverageRow):
+            raise ValueError("Shepherd coverage rows must use ShepherdCoverageRow")
+        if _SCOPE_HASH.fullmatch(row.scope_hash) is None:
+            raise ValueError("invalid Shepherd scope hash")
+        if _DIMENSION.fullmatch(row.dimension) is None:
+            raise ValueError("invalid Shepherd coverage dimension")
+        if _STATE.fullmatch(row.state) is None:
+            raise ValueError("invalid Shepherd coverage state")
+        if _EVIDENCE_HASH.fullmatch(row.evidence_hash) is None:
+            raise ValueError("invalid Shepherd evidence hash")
+    if len({(row.scope_hash, row.dimension, row.state, row.evidence_hash) for row in values}) != len(values):
+        raise ValueError("duplicate Shepherd coverage row")
+    return values
+
 
 def _coverage_insert(view_name: str, date_column: str) -> str:
     return f"""
@@ -260,6 +443,7 @@ def build_coverage(
     sources: tuple[tuple[str, str], ...] = COVERAGE_SOURCES,
     lake_root: Path | None = None,
     silver_root: Path | None = None,
+    shepherd_rows: Iterable[ShepherdCoverageRow] = (),
 ) -> dict[str, int]:
     """Rebuild the coverage table and publish it atomically.
 
@@ -276,6 +460,7 @@ def build_coverage(
 
     Returns row counts per source view.
     """
+    verified_shepherd_rows = _validate_shepherd_rows(shepherd_rows)
     dest = Path(database) if database is not None else default_database()
     dest.parent.mkdir(parents=True, exist_ok=True)
     staging = dest.with_name(f"{dest.name}.building")
@@ -286,6 +471,12 @@ def build_coverage(
     con = connect(staging, lake_root=lake_root, silver_root=silver_root)
     try:
         con.execute(_COVERAGE_DDL)
+        con.execute(_SHEPHERD_COVERAGE_DDL)
+        if verified_shepherd_rows:
+            con.executemany(
+                "INSERT INTO shepherd_coverage VALUES (?, ?, ?, ?)",
+                [(row.scope_hash, row.dimension, row.state, row.evidence_hash) for row in verified_shepherd_rows],
+            )
         for view_name, date_column in sources:
             try:
                 ensure_view(con, view_name, lake_root=lake_root, silver_root=silver_root)
