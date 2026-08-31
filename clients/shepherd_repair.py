@@ -134,6 +134,66 @@ class ShepherdRepair:
             }
         )
 
+    def transaction(self, manifest_path: Path, *, now: datetime | None = None) -> dict[str, Any]:
+        """Run or resume the one bounded repair and roll back a failed verification.
+
+        Every durable step remains independently replayable.  This method only
+        supplies the fixed orchestration that an unattended executor needs; it
+        does not weaken any manifest, source, identity, or postcondition check.
+        """
+        loaded = self._load_manifest(
+            manifest_path,
+            now=now,
+            enforce_expiry=False,
+            check_prior=False,
+            check_source=False,
+        )
+        state = self._state_dir(loaded.manifest)
+        rollback_path = state / "rollback-receipt.json"
+        if rollback_path.exists():
+            rolled_back = self._load_receipt(
+                rollback_path,
+                loaded,
+                "shepherd-repair-rollback",
+            )
+            return {
+                "version": 1,
+                "operation": "shepherd-repair-transaction",
+                "state": "ROLLED_BACK",
+                "error": "repair was previously rolled back",
+                "rollbackReceipt": rolled_back,
+            }
+
+        preflight: dict[str, Any] | None = None
+        stage_path = state / "stage-receipt.json"
+        if not stage_path.exists():
+            preflight = self.preflight(manifest_path, now=now)
+            staged = self.stage(manifest_path, now=now)
+            stage_path = Path(staged["receiptPath"])
+        published = self.publish(manifest_path, stage_path, now=now)
+        publish_path = Path(published["receiptPath"])
+        try:
+            verified = self.verify(manifest_path, publish_path, now=now)
+        except Exception as error:
+            rolled_back = self.rollback(manifest_path, publish_path)
+            return {
+                "version": 1,
+                "operation": "shepherd-repair-transaction",
+                "state": "ROLLED_BACK",
+                "error": str(error),
+                "publishReceipt": published,
+                "rollbackReceipt": rolled_back,
+                **({} if preflight is None else {"preflightReceipt": preflight}),
+            }
+        return {
+            "version": 1,
+            "operation": "shepherd-repair-transaction",
+            "state": "VERIFIED",
+            "publishReceipt": published,
+            "verifyReceipt": verified,
+            **({} if preflight is None else {"preflightReceipt": preflight}),
+        }
+
     def stage(self, manifest_path: Path, *, now: datetime | None = None) -> dict[str, Any]:
         loaded = self._load_manifest(manifest_path, now=now, enforce_expiry=True, check_prior=True, check_source=True)
         self._verify_identity(loaded.manifest)

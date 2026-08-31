@@ -599,3 +599,33 @@ def test_rollback_does_not_depend_on_source_evidence_after_publish(tmp_path: Pat
 
     assert rolled_back["state"] == "ROLLED_BACK"
     assert target.read_bytes() == original
+
+
+def test_transaction_verifies_success_and_is_idempotent(tmp_path: Path) -> None:
+    manifest = _fixture(tmp_path)
+    repair = ShepherdRepair(tmp_path)
+
+    first = repair.transaction(manifest, now=VERIFY_AT)
+    second = repair.transaction(manifest, now=VERIFY_AT)
+
+    assert first["state"] == "VERIFIED"
+    assert second["state"] == "VERIFIED"
+    assert first["verifyReceipt"]["receiptHash"] == second["verifyReceipt"]["receiptHash"]
+
+
+def test_transaction_rolls_back_when_independent_verification_fails(tmp_path: Path, monkeypatch) -> None:
+    manifest = _fixture(tmp_path)
+    target = tmp_path / "bronze/asset_class=equity/symbol=AAPL/1d.parquet"
+    original = target.read_bytes()
+    repair = ShepherdRepair(tmp_path)
+
+    def fail_verify(*_args, **_kwargs):
+        raise ValueError("forced independent postcondition failure")
+
+    monkeypatch.setattr(repair, "verify", fail_verify)
+    result = repair.transaction(manifest, now=VERIFY_AT)
+
+    assert result["state"] == "ROLLED_BACK"
+    assert result["error"] == "forced independent postcondition failure"
+    assert result["rollbackReceipt"]["state"] == "ROLLED_BACK"
+    assert target.read_bytes() == original
