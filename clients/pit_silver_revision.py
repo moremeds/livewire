@@ -9,7 +9,6 @@ import os
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
-from datetime import time as dt_time
 from pathlib import Path
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -17,7 +16,12 @@ from zoneinfo import ZoneInfo
 from clients.index_membership_store import IndexMembershipStore
 from clients.security_master import SecurityMaster
 from clients.source_evidence import SourceEvidenceStore
-from clients.trading_calendar import is_trading_day, previous_trading_day
+from clients.trading_calendar import (
+    XNYS_SESSION_POLICY,
+    is_trading_day,
+    previous_trading_day,
+    session_close_time,
+)
 
 
 def _canonical(value: object) -> bytes:
@@ -46,19 +50,6 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _session_close(day: date) -> dt_time:
-    nov1 = date(day.year, 11, 1)
-    thanksgiving = nov1 + timedelta(days=(3 - nov1.weekday()) % 7, weeks=3)
-    if day == thanksgiving + timedelta(days=1):
-        return dt_time(13)
-    if (day.month, day.day) == (12, 24) and is_trading_day(day):
-        return dt_time(13)
-    july_4 = date(day.year, 7, 4)
-    if (day.month, day.day) == (7, 3) and july_4.weekday() in (1, 2, 3, 4) and is_trading_day(day):
-        return dt_time(13)
-    return dt_time(16)
-
-
 def daily_bar_cutoff(as_of: datetime) -> date:
     """Return the latest conservatively closed US equity daily session."""
     if as_of.tzinfo is None or as_of.utcoffset() is None:
@@ -66,7 +57,7 @@ def daily_bar_cutoff(as_of: datetime) -> date:
     local = as_of.astimezone(ZoneInfo("America/New_York"))
     if not is_trading_day(local.date()):
         return previous_trading_day(local.date() + timedelta(days=1))
-    if local.time() < _session_close(local.date()):
+    if local.time() < session_close_time(local.date()):
         return previous_trading_day(local.date())
     return local.date()
 
@@ -75,7 +66,7 @@ def _membership_session_date(value: datetime) -> date:
     """Map an effective instant to the first XNYS daily session it governs."""
     local = value.astimezone(ZoneInfo("America/New_York"))
     candidate = local.date()
-    if local.time() >= _session_close(candidate):
+    if local.time() >= session_close_time(candidate):
         candidate += timedelta(days=1)
     while not is_trading_day(candidate):
         candidate += timedelta(days=1)
@@ -432,7 +423,7 @@ class PitSilverRevisionPublisher:
             "policy_version": "pit-silver-v1",
             "as_of": as_of.isoformat(),
             "daily_bar_cutoff": daily_bar_cutoff(as_of).isoformat(),
-            "session_policy": "XNYS-close-and-early-close-v1",
+            "session_policy": XNYS_SESSION_POLICY,
             "index_id": index_id,
             "membership_revision": membership_revision,
             "silver_revision": silver_revision,
