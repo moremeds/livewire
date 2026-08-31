@@ -125,6 +125,19 @@ def test_store_dispatches_shepherd_silver(monkeypatch) -> None:
     assert calls == [("livewire_scripts.shepherd_silver", argv)]
 
 
+def test_store_dispatches_shepherd_repair(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_store.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+
+    argv = ["preflight", "--manifest", "/tmp/repair.json"]
+    assert livewire_store.main(["shepherd-repair", *argv]) == 7
+    assert calls == [("livewire_scripts.shepherd_repair", argv)]
+
+
 def test_store_dispatches_price_basis_migration(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(
