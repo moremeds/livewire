@@ -77,9 +77,10 @@ LS-04 and LS-08 continue after the first working-system gate.
 - [x] **LS-06.2b** (`depends_on: [LS-06.2a]`): Extracted the reusable
   `CertifiedActionRunner` with a bounded generic scope while keeping existing
   Ops event, recovery, lease, lock, and restart contracts green.
-- [ ] **LS-06.2c** (`depends_on: [LS-06.2b]`): Prove crash recovery, rollback,
-  and no wider-than-manifest publication when a Shepherd work unit uses that
-  shared action transaction.
+- [x] **LS-06.2c** (`depends_on: [LS-06.2b]`): Bound `REPAIR_READY` work units
+  to evidence-backed private manifests and the shared Ops transaction. The
+  runner persists exact scope/input hashes, revalidates bytes immediately
+  before intent/spawn, and permits only the derived `--manifest ABS` argv.
 - [ ] **LS-06.3a** (`depends_on: [LS-06.2c]`, Helium): Bind signed authority to
   the exact Livewire mutation identities and postconditions.
 - [ ] **LS-06.3b** (`depends_on: [LS-06.3a]`): Run controlled autonomous repair
