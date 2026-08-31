@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 
@@ -79,3 +80,41 @@ def classify(
     if interior:
         findings.append(_finding(series, "G2", interior, massive_floor))
     return findings
+
+
+def load_unresolved(path: Path) -> set[tuple[str, date]]:
+    if not Path(path).exists():
+        return set()
+    entries = json.loads(Path(path).read_text())
+    return {(entry["symbol"], date.fromisoformat(entry["session"])) for entry in entries}
+
+
+def record_unresolved(
+    path: Path, symbol: str, session: date, reason: str, as_of: date
+) -> None:
+    """Record a permanently unsourceable session so it is never retried again."""
+    path = Path(path)
+    entries = json.loads(path.read_text()) if path.exists() else []
+    entry = {
+        "symbol": symbol,
+        "session": session.isoformat(),
+        "reason": reason,
+        "as_of": as_of.isoformat(),
+    }
+    if entry not in entries:
+        entries.append(entry)
+    path.write_text(json.dumps(entries, indent=2, sort_keys=True))
+
+
+def suppress_unresolved(
+    findings: list[Finding], unresolved: set[tuple[str, date]]
+) -> list[Finding]:
+    """Drop sessions already recorded unresolved; drop findings left with none."""
+    kept: list[Finding] = []
+    for finding in findings:
+        sessions = tuple(
+            s for s in finding.sessions if (finding.symbol, s) not in unresolved
+        )
+        if sessions:
+            kept.append(replace(finding, sessions=sessions))
+    return kept

@@ -1,7 +1,12 @@
 from datetime import date
 
 from clients.coverage_denominator import ExpectedSeries
-from clients.gap_engine import classify
+from clients.gap_engine import (
+    classify,
+    load_unresolved,
+    record_unresolved,
+    suppress_unresolved,
+)
 
 SESSIONS = (date(2026, 8, 26), date(2026, 8, 27), date(2026, 8, 28))
 FLOOR = date(2021, 7, 12)  # measured Massive entitlement floor, docs/audits/2026-07-11
@@ -56,3 +61,31 @@ def test_tier_follows_the_massive_window():
     old = ExpectedSeries("MUNJ", "equity", "1d", (date(2019, 3, 1),))
     below = classify(old, present=set(), massive_floor=FLOOR)
     assert below[0].tier == "B", "pre-floor gaps must not claim unattended repair"
+
+
+def test_unresolved_sessions_are_not_re_reported(tmp_path):
+    """Cause 5: the same unsourceable symbols must not be re-litigated every round."""
+    ledger = tmp_path / "unresolved.json"
+    record_unresolved(
+        ledger, "MUNJ", date(2026, 8, 27), reason="delisted, no source", as_of=date(2026, 8, 31)
+    )
+    findings = classify(_series(), present={date(2026, 8, 26), date(2026, 8, 28)}, massive_floor=FLOOR)
+    kept = suppress_unresolved(findings, load_unresolved(ledger))
+    assert kept == [], "a recorded unresolved session must not re-report"
+
+
+def test_unresolved_ledger_keeps_the_reason(tmp_path):
+    ledger = tmp_path / "unresolved.json"
+    record_unresolved(
+        ledger, "MUNJ", date(2026, 8, 27), reason="delisted, no source", as_of=date(2026, 8, 31)
+    )
+    assert ("MUNJ", date(2026, 8, 27)) in load_unresolved(ledger)
+    assert "delisted, no source" in ledger.read_text()
+
+
+def test_partially_unresolved_finding_keeps_its_other_sessions(tmp_path):
+    ledger = tmp_path / "unresolved.json"
+    record_unresolved(ledger, "MUNJ", date(2026, 8, 27), reason="x", as_of=date(2026, 8, 31))
+    findings = classify(_series(), present=set(), massive_floor=FLOOR)
+    kept = suppress_unresolved(findings, load_unresolved(ledger))
+    assert kept and kept[0].sessions == (date(2026, 8, 26), date(2026, 8, 28))
