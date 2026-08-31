@@ -70,9 +70,10 @@ LS-04 and LS-08 continue after the first working-system gate.
   Helium scope hash, append-prefix identity evidence, versioned XNYS sessions,
   staged publish, independent postconditions, crash resume, and byte-exact
   rollback. Wider multi-artifact operations remain explicit LS-06.4 work.
-- [ ] **LS-06.2a** (`depends_on: [LS-06.1]`): Characterize existing repair
-  action ordering, recovery evidence, and projections at the proven Ops
-  transaction boundary before extraction.
+- [x] **LS-06.2a** (`depends_on: [LS-06.1]`): Characterized and froze the
+  proven Ops transaction boundary: controller probes, lease and OS lock,
+  baseline, write-ahead intent, spawn, receipt, grace verification, evidence,
+  terminal projection, crash-prefix replay, and nonzero-command uncertainty.
 - [ ] **LS-06.2b** (`depends_on: [LS-06.2a]`): Add exact scoped repair adapters
   by extracting the certified Ops action transaction without changing its
   event or recovery semantics.
