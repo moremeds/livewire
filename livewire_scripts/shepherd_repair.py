@@ -15,7 +15,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-lake-root", type=Path, default=data_lake_dir())
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("preflight", "stage", "transaction"):
+    for name in ("preflight", "stage", "transaction", "postcondition"):
         command = commands.add_parser(name)
         command.add_argument("--manifest", type=Path, required=True)
     for name in ("publish", "verify", "rollback"):
@@ -40,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
         result = repair.stage(args.manifest)
     elif args.command == "transaction":
         result = repair.transaction(args.manifest)
+    elif args.command == "postcondition":
+        result = repair.postcondition(args.manifest)
     elif args.command == "publish":
         result = repair.publish(args.manifest, args.staged_receipt)
     elif args.command == "verify":
@@ -47,6 +49,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         result = repair.rollback(args.manifest, args.publish_receipt)
     print(json.dumps(result, sort_keys=True))
+    if args.command == "postcondition":
+        return 0 if result.get("state") == "VERIFIED" else 1
     return 0 if result.get("state") != "ROLLED_BACK" else 1
 
 

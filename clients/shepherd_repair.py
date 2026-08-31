@@ -194,6 +194,43 @@ class ShepherdRepair:
             **({} if preflight is None else {"preflightReceipt": preflight}),
         }
 
+    def postcondition(self, manifest_path: Path, *, now: datetime | None = None) -> dict[str, Any]:
+        """Recheck an already-terminal transaction without initiating repair work."""
+        loaded = self._load_manifest(
+            manifest_path,
+            now=now,
+            enforce_expiry=False,
+            check_prior=False,
+            check_source=False,
+        )
+        state = self._state_dir(loaded.manifest)
+        base = {
+            "version": 1,
+            "operation": "shepherd-repair-postcondition",
+            "operationId": loaded.manifest.operation_id,
+            "workUnitId": loaded.manifest.work_unit_id,
+            "scopeHash": loaded.manifest.scope_hash,
+            "manifestHash": f"sha256:{loaded.sha256}",
+        }
+        rollback_path = state / "rollback-receipt.json"
+        if rollback_path.exists():
+            rollback = self._load_receipt(rollback_path, loaded, "shepherd-repair-rollback")
+            return {**base, "state": "NOT_VERIFIED", "reason": "repair rolled back", "receipt": rollback}
+        publish_path = state / "publish-receipt.json"
+        verify_path = state / "verify-receipt.json"
+        if not publish_path.exists() or not verify_path.exists():
+            return {**base, "state": "NOT_VERIFIED", "reason": "terminal verification receipt is absent"}
+        try:
+            verified = self.verify(manifest_path, publish_path, now=now)
+        except Exception as error:
+            return {**base, "state": "FAILED", "reason": str(error)}
+        return {
+            **base,
+            "state": "VERIFIED",
+            "receiptHash": verified["receiptHash"],
+            "postconditions": verified["postconditions"],
+        }
+
     def stage(self, manifest_path: Path, *, now: datetime | None = None) -> dict[str, Any]:
         loaded = self._load_manifest(manifest_path, now=now, enforce_expiry=True, check_prior=True, check_source=True)
         self._verify_identity(loaded.manifest)

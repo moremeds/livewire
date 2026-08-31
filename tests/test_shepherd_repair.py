@@ -613,6 +613,28 @@ def test_transaction_verifies_success_and_is_idempotent(tmp_path: Path) -> None:
     assert first["verifyReceipt"]["receiptHash"] == second["verifyReceipt"]["receiptHash"]
 
 
+def test_postcondition_is_read_only_before_action_and_rechecks_the_exact_terminal_transaction(tmp_path: Path) -> None:
+    manifest = _fixture(tmp_path)
+    repair = ShepherdRepair(tmp_path)
+    state_root = tmp_path / "operations/shepherd-repairs/repair-aapl-20260831"
+
+    before = repair.postcondition(manifest, now=VERIFY_AT)
+
+    assert before["state"] == "NOT_VERIFIED"
+    assert not state_root.exists()
+
+    repair.transaction(manifest, now=VERIFY_AT)
+    verified = repair.postcondition(manifest, now=VERIFY_AT)
+    assert verified["state"] == "VERIFIED"
+    assert verified["workUnitId"] == json.loads(manifest.read_text())["workUnitId"]
+
+    target = tmp_path / "bronze/asset_class=equity/symbol=AAPL/1d.parquet"
+    target.write_bytes(b"tampered after terminal verification")
+    failed = repair.postcondition(manifest, now=VERIFY_AT)
+    assert failed["state"] == "FAILED"
+    assert "published target hash" in failed["reason"]
+
+
 def test_transaction_rolls_back_when_independent_verification_fails(tmp_path: Path, monkeypatch) -> None:
     manifest = _fixture(tmp_path)
     target = tmp_path / "bronze/asset_class=equity/symbol=AAPL/1d.parquet"
