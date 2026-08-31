@@ -11,13 +11,31 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-VALID_GAPS = {f"G{n}" for n in range(1, 13)}
+# G1..G12 are the spec taxonomy. G13 (head gap: sessions before a series' first
+# ever bar) was added by this engine because routine backfill shortfall and a
+# session written-then-lost were indistinguishable as G2. The spec row is owed
+# on the docs/gap-autoheal-design branch, which does not carry this code yet.
+VALID_GAPS = {f"G{n}" for n in range(1, 14)}
 VALID_TIERS = {"A", "B"}
 # Only checks the engine actually dispatches. `scan` runs denominator_diff for
 # every row regardless of this field, so a row naming anything else would
 # silently produce G1/G2/G3 while claiming to run some other detector. Adding a
 # check must be an explicit act here, paired with real dispatch.
 VALID_CHECKS = {"denominator_diff"}
+# The denominator uses trading_calendar.trading_dates_in_range, which is XNYS.
+# FX trades ~24/5, CME futures keep their own sessions and FRED publishes on its
+# own schedule, so for those a bar expected on an XNYS holiday is not expected at
+# all and its absence is invisible. That is a KNOWN, DEFERRED limitation --
+# recorded here so a new asset class cannot inherit the blind spot silently. Add
+# to this set only together with a calendar that is actually right for it.
+XNYS_CALENDAR_ASSET_CLASSES = {
+    "equity",
+    "volatility",
+    "rates",
+    "fx",
+    "cmdty",
+    "futures",
+}
 REQUIRED_FIELDS = (
     "id",
     "gap",
@@ -64,6 +82,12 @@ def load_registry(path: Path) -> list[RegistryRow]:
             raise RegistryError(f"row {row_id}: unknown tier {raw['tier']!r}")
         if raw["check"] not in VALID_CHECKS:
             raise RegistryError(f"row {row_id}: unknown check {raw['check']!r}")
+        if raw["asset_class"] not in XNYS_CALENDAR_ASSET_CLASSES:
+            raise RegistryError(
+                f"row {row_id}: asset_class {raw['asset_class']!r} has no calendar "
+                "mapping; the denominator is XNYS-only, so add a real calendar "
+                "before adding this asset class"
+            )
         rows.append(
             RegistryRow(
                 id=raw["id"],

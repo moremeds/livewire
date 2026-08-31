@@ -19,12 +19,18 @@ from clients.gap_engine import (
     actual_sessions,
     classify,
     load_unresolved,
+    massive_floor_for,
     suppress_unresolved,
 )
 from clients.gap_registry import RegistryError, load_registry
 
-# measured, docs/audits/2026-07-11-daily-bronze-repair.md:58
-MASSIVE_FLOOR = date(2021, 7, 12)
+
+def _urgency(finding: Finding) -> tuple[int, int]:
+    """Sort key. `heal_by_days` is None when the repair source has no rolling
+    window, i.e. nothing expires -- those sort last, never first."""
+    if finding.heal_by_days is None:
+        return (1, 0)
+    return (0, finding.heal_by_days)
 
 
 def scan(
@@ -34,9 +40,12 @@ def scan(
     start: date,
     end: date,
     as_of: date,
-    massive_floor: date = MASSIVE_FLOOR,
+    massive_floor: date | None = None,
     unresolved_path: Path | None = None,
 ) -> list[Finding]:
+    # The Massive window rolls, so the floor is derived from the scan date
+    # unless an operator pins it.
+    massive_floor = massive_floor or massive_floor_for(as_of)
     unresolved = load_unresolved(unresolved_path) if unresolved_path else set()
     findings: list[Finding] = []
     for row in load_registry(registry_path):
@@ -55,9 +64,7 @@ def scan(
         for series in expected:
             present = actual_sessions(bronze_root, series)
             findings.extend(classify(series, present, massive_floor))
-    return sorted(
-        suppress_unresolved(findings, unresolved), key=lambda f: f.heal_by_days
-    )
+    return sorted(suppress_unresolved(findings, unresolved), key=_urgency)
 
 
 def _entry(finding: Finding) -> dict:
@@ -68,6 +75,7 @@ def _entry(finding: Finding) -> dict:
         "gap": finding.gap,
         "sessions": [session.isoformat() for session in finding.sessions],
         "heal_by_days": finding.heal_by_days,
+        "source": finding.source,
     }
 
 
@@ -75,9 +83,7 @@ def write_tier_a_manifest(findings: list[Finding], path: Path) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     repairs = [
         _entry(f)
-        for f in sorted(
-            (f for f in findings if f.tier == "A"), key=lambda f: f.heal_by_days
-        )
+        for f in sorted((f for f in findings if f.tier == "A"), key=_urgency)
     ]
     Path(path).write_text(json.dumps({"repairs": repairs}, indent=2))
 

@@ -19,6 +19,7 @@ def _finding(symbol: str, session: date, tier: str = "A") -> Finding:
         sessions=(session,),
         heal_by_days=(session - FLOOR).days,
         tier=tier,
+        source="massive",
     )
 
 
@@ -45,3 +46,19 @@ def test_tier_b_findings_never_enter_the_repair_manifest(tmp_path):
     path = tmp_path / "manifest.json"
     write_tier_a_manifest([_finding("MUNJ", date(2026, 8, 27), tier="B")], path)
     assert json.loads(path.read_text())["repairs"] == []
+
+
+def test_a_finding_with_no_expiry_sorts_last_not_first(tmp_path):
+    """heal_by_days is None when the repair source has no rolling window.
+    Sorting None first would put the never-expiring repairs at the top of the
+    urgency queue, which is exactly backwards."""
+    expiring = _finding("MUNJ", date(2021, 8, 2))
+    never = Finding(
+        symbol="DGS10", asset_class="rates", timeframe="1d", gap="G1",
+        sessions=(date(2026, 8, 27),), heal_by_days=None, tier="A", source="fred",
+    )
+    path = tmp_path / "manifest.json"
+    write_tier_a_manifest([never, expiring], path)
+    assert [e["symbol"] for e in json.loads(path.read_text())["repairs"]] == [
+        "MUNJ", "DGS10",
+    ]

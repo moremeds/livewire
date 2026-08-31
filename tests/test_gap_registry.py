@@ -61,3 +61,20 @@ def test_undispatched_check_is_rejected(tmp_path):
     path.write_text(json.dumps([row]))
     with pytest.raises(RegistryError, match="unknown check"):
         load_registry(path)
+
+
+def test_asset_class_without_a_calendar_is_rejected(tmp_path):
+    """The denominator is XNYS-only. A new asset class must not inherit that
+    blind spot silently."""
+    row = dict(VALID_ROW, asset_class="crypto")
+    path = tmp_path / "gaps.json"
+    path.write_text(json.dumps([row]))
+    with pytest.raises(RegistryError, match="no calendar mapping"):
+        load_registry(path)
+
+
+def test_g13_is_a_valid_gap_id(tmp_path):
+    row = dict(VALID_ROW, gap=["G13"])
+    path = tmp_path / "gaps.json"
+    path.write_text(json.dumps([row]))
+    assert load_registry(path)[0].gap == ("G13",)

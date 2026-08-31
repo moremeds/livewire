@@ -951,12 +951,16 @@ python scripts/livewire_ingest.py daily --asset-class futures             # Dail
 # The six warehouse jobs run the immutable release, so they take the WAREHOUSE path.
 # The promoter is the one job that reads the repo — it is what builds the release.
 WAREHOUSE=~/market-warehouse
-for L in daily-update daily-update-watchdog intraday-catchup coverage gap-scan universe-refresh; do
+for L in daily-update daily-update-watchdog intraday-catchup coverage gap-scan; do
   sed "s|/path/to/warehouse|$WAREHOUSE|g" "launchd/com.livewire.$L.plist.example" \
     > ~/Library/LaunchAgents/com.livewire.$L.plist
 done
-sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.release-promote.plist.example \
-  > ~/Library/LaunchAgents/com.livewire.release-promote.plist
+# release-promote and universe-refresh both read the repo: one builds the
+# release, the other writes presets/ (which a frozen release forbids).
+for L in release-promote universe-refresh; do
+  sed -e "s|/path/to/repo|$(pwd)|g" -e "s|/path/to/warehouse|$WAREHOUSE|g" \
+    "launchd/com.livewire.$L.plist.example" > ~/Library/LaunchAgents/com.livewire.$L.plist
+done
 for L in daily-update daily-update-watchdog intraday-catchup coverage gap-scan universe-refresh release-promote; do
   launchctl load ~/Library/LaunchAgents/com.livewire.$L.plist
 done
@@ -1205,15 +1209,47 @@ python scripts/livewire_quality.py gap-scan \
 ```
 
 - **Gap classes.** `G3` = nothing on disk for the series; `G1` = missing the
-  newest sessions (tail); `G2` = missing interior sessions. One series can emit
-  both G1 and G2.
-- **Tier follows the Massive window, not severity.** `heal_by_days =
-  earliest_missing_session − MASSIVE_FLOOR` (measured `2021-07-12`). Non-negative
-  → Tier A, repairable unattended from Massive. Negative → Tier B: below the
-  rolling floor the only source is IB, which is 2FA-gated and never auto-retries,
-  so it is a *decision*, not an automatic repair. The manifest is sorted ascending
-  by `heal_by_days` because the floor rolls forward one day per day — the sessions
-  nearest it lose the cheap repair path first.
+  newest sessions (tail); `G2` = missing interior sessions; `G13` = sessions
+  before the series' *first-ever* bar. One series can emit several.
+  ⚠️ **`G13` exists because head and interior gaps are different events.**
+  Backfill not having reached that far back is routine; a session written and
+  then lost is an incident. Both landed in `G2`, which made the incident
+  unfindable in the noise. `present` is every session in the file, not just the
+  window, so `min(present)` is genuinely the first-ever bar. `G13` is not in the
+  spec taxonomy yet — that row is owed on `docs/gap-autoheal-design`.
+- ⚠️ **Tier follows the repair SOURCE, not the severity of the gap.** Tier A
+  means *repairable unattended*, which is a property of where the bar comes from:
+
+  | Asset class | Source | Tier | Floor |
+  |---|---|---|---|
+  | equity | Massive | A inside the window, B below | rolling |
+  | fx | Yahoo | A | none (deep history) |
+  | volatility | CBOE | A | none |
+  | rates | FRED | A | none |
+  | futures, cmdty | **IB** | **always B** | n/a |
+
+  IB-sourced lanes are **never** Tier A no matter how recent the gap: IB is
+  2FA-gated and never auto-retries. Deriving tier from the equity Massive floor
+  for every asset class put 76 non-equity findings in the Tier A manifest
+  claiming an unattended Massive repair that does not exist for them.
+  An unmapped asset class raises rather than defaulting — `repair_source` fails
+  closed.
+- **`heal_by_days` is `None` when the source has no rolling window**, and those
+  sort *last*: nothing expires, so they are never the most urgent. For equity it
+  is `earliest_missing_session − massive_floor`, and the manifest sorts ascending
+  because the floor rolls forward one day per day — the sessions nearest it lose
+  the cheap repair path first.
+- ⚠️ **The Massive floor is derived from the scan date, not hardcoded.**
+  `massive_floor_for(as_of) = as_of − 1827 days` (measured 2026-07-29:
+  `2021-07-27` → 403, `2021-07-28` → OK, exactly 5.00 years). A constant here
+  rots one day per day and silently mis-tiers. `--massive-floor` still pins it.
+- ⚠️ **The denominator is XNYS-only, and that is a known blind spot.**
+  `trading_calendar.trading_dates_in_range` is the NYSE calendar, but FX trades
+  ~24/5, CME futures keep their own sessions and FRED publishes on its own
+  schedule — so for those a bar expected on an XNYS holiday is not expected at
+  all, and its absence is invisible. `load_registry` rejects any `asset_class`
+  outside `XNYS_CALENDAR_ASSET_CLASSES` so a new one cannot inherit the blind
+  spot silently. Fixing it means real per-asset-class calendars.
 - ⚠️ **Phase 1 is read-only.** `gap-scan` writes exactly two artifacts and
   mutates nothing. The Tier A manifest is **not** fed to `shepherd_repair` yet;
   no unattended mutation is scheduled until the denominator has been observed
@@ -1225,15 +1261,40 @@ python scripts/livewire_quality.py gap-scan \
   permanently unsourceable `(symbol, session)` pairs with a reason, so a delisted
   name with no provider is not re-reported every night. Suppression is
   per-session: a finding whose other sessions are still open keeps them.
-- ⚠️ **`presets/interests.json` is empty (`"tickers": []`), so the shipped
-  `g1-g2-g3-rates-daily` registry row currently expects nothing.** The row loads
-  and validates — the loader checks structure, not whether the resolved universe
-  is non-empty — so this is a silent zero-denominator of exactly the kind the
-  engine exists to remove. FRED rates are `DGS3/DGS5/DGS10/DGS30`; either
-  populate the preset or point the row at a real rates universe.
+- ⚠️ **A row that resolves to no symbols fails the run.** The rates row
+  originally pointed at `presets/interests.json`, which is empty, so it reported
+  all-green for a reason that had nothing to do with the data — the disk-glob
+  failure this engine replaces, reintroduced from the registry side. It now
+  points at `presets/rates.json` (`DGS3/DGS5/DGS10/DGS30`, the documented FRED
+  series), and `scan` raises on any zero denominator.
+- ⚠️ **Presets overlap, so the denominator deduplicates.** `sp500 ∩ ndx100` is
+  87 symbols. Emitting one `ExpectedSeries` per occurrence put every gap those
+  87 had into the Tier A manifest **twice** — and once that manifest feeds
+  `shepherd_repair`, two repair instructions against one parquet path is a
+  concurrent write. `shepherd_repair.py:905` holds an `fcntl.flock`, but the
+  fix is not to manufacture the situation the lock exists to survive.
+- **Futures expiry is judged against the scan window, not `as_of`.** Otherwise
+  the same window yields a different denominator depending on when you scanned
+  it: a May 2026 range scanned in August silently dropped `ES/NQ/RTY/YM_202606`,
+  contracts that were live throughout it.
+- **The unresolved ledger is keyed on `(symbol, asset_class, timeframe,
+  session)`.** Keyed on symbol alone, marking `1d` unresolved also silenced
+  `1h`. An entry missing those fields is rejected, never defaulted — defaulting
+  recreates the over-broad suppression. Writes take an `fcntl.flock`.
+- ⚠️ **`shepherd_repair` requires `source_evidence` (a `HashedRef`) in its
+  manifest — it is a transactional applier, not a fetcher.** The Tier A manifest
+  this engine writes is therefore *not* yet in its input format; follow-on 1 has
+  to acquire and hash the evidence first. Tier is a claim about which fetch path
+  can supply that evidence.
 
-**`com.livewire.universe-refresh` exists because nothing refreshed the
-denominator.** `livewire_scripts/universe_sync.py` and
+⚠️ **`com.livewire.universe-refresh` runs from the REPO, not from the release.**
+It is the one warehouse job that cannot use `current`: `release.freeze()` does
+`chmod -R a-w` over the release tree and `universe_sync` writes
+`presets/*.json` on every run, so from `current` it fails with `PermissionError`
+every week. It also needs `shepherd-universe`'s required subcommand and index —
+without them the job exited argparse status 2 every week.
+
+**It exists because nothing refreshed the denominator.** `livewire_scripts/universe_sync.py` and
 `livewire_scripts/shepherd_universe.py` both existed and **neither was
 scheduled**, so index membership changes never reached `presets/*`. An
 unrefreshed preset is wrong in both directions: a delisted name is expected
