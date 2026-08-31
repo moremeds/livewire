@@ -10,9 +10,9 @@
   runs after the daily job's deadline: a lane still publishing while this walks
   bronze produces a mixed-time snapshot and false "missing" counts.
 
-  The --start/--end window together with this StartCalendarInterval is how the
-  freshness SLA is expressed. There is no separate SLA evaluator; one would
-  duplicate the scheduler.
+  The start/end window arguments together with this StartCalendarInterval are
+  how the freshness SLA is expressed. There is no separate SLA evaluator; one
+  would duplicate the scheduler.
 -->
 <plist version="1.0">
 <dict>
@@ -25,8 +25,8 @@
         <string>-c</string>
         <!-- Replace /path/to/warehouse with your actual warehouse path. Runs the
              immutable release `current` points at, like the other warehouse jobs.
-             --start is a 30-day trailing window: wide enough to catch a lane that
-             has been silently dead for weeks, narrow enough to stay cheap. -->
+             The start argument is a 30-day trailing window: wide enough to catch a
+             lane silently dead for weeks, narrow enough to stay cheap. -->
         <string>cd /path/to/warehouse/current &amp;&amp; .venv/bin/python scripts/livewire_quality.py gap-scan --bronze-root /path/to/warehouse/data-lake/bronze --start $(date -u -v-30d +%Y-%m-%d) --end $(date -u -v-1d +%Y-%m-%d) --unresolved /path/to/warehouse/data-lake/repairs/gaps/unresolved.json --manifest-out /path/to/warehouse/data-lake/repairs/gaps/manifest.json --decisions-out /path/to/warehouse/data-lake/repairs/gaps/decisions.json</string>
     </array>
 
