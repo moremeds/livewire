@@ -51,3 +51,13 @@ def test_unknown_tier_is_rejected(tmp_path):
     path.write_text(json.dumps([row]))
     with pytest.raises(RegistryError, match="tier"):
         load_registry(path)
+
+
+def test_undispatched_check_is_rejected(tmp_path):
+    """scan() runs denominator_diff for every row regardless of this field, so a
+    row naming another check would silently emit G1/G2/G3 under a false name."""
+    row = dict(VALID_ROW, check="adjusted_deviation_bps")
+    path = tmp_path / "gaps.json"
+    path.write_text(json.dumps([row]))
+    with pytest.raises(RegistryError, match="unknown check"):
+        load_registry(path)

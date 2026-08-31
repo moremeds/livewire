@@ -47,3 +47,32 @@ def test_expired_futures_contract_is_not_expected():
     expired = {s for s in symbols if s.endswith("_202606")}
     assert not expired, f"expired contracts still expected: {expired}"
     assert any(s.endswith("_202609") for s in symbols), "live contracts were dropped"
+
+
+def test_overlapping_presets_yield_each_symbol_once():
+    """sp500 and ndx100 overlap by 87 real symbols. Emitting a series per
+    occurrence puts every gap for those 87 into the repair manifest twice —
+    two repair instructions against one parquet path."""
+    series = build_denominator(
+        [PRESETS / "sp500.json", PRESETS / "ndx100.json"],
+        asset_class="equity",
+        timeframe="1d",
+        start=date(2026, 8, 26),
+        end=date(2026, 8, 28),
+        as_of=date(2026, 8, 31),
+    )
+    symbols = [s.symbol for s in series]
+    assert len(symbols) == len(set(symbols)), "duplicate expected series"
+
+
+def test_a_session_not_yet_closed_is_not_expected():
+    """An --end in the future must not manufacture phantom missing sessions."""
+    series = build_denominator(
+        [PRESETS / "volatility.json"],
+        asset_class="volatility",
+        timeframe="1d",
+        start=date(2026, 8, 26),
+        end=date(2026, 9, 30),
+        as_of=date(2026, 8, 28),
+    )
+    assert max(s.sessions[-1] for s in series) < date(2026, 8, 28)

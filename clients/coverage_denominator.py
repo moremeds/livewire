@@ -39,14 +39,27 @@ def build_denominator(
     end: date,
     as_of: date,
 ) -> list[ExpectedSeries]:
-    sessions = tuple(trading_dates_in_range(start, end))
-    current_month = as_of.replace(day=1)
+    # A session at or after `as_of` has not closed yet, so it cannot be missing.
+    # Without this an `--end` in the future manufactures phantom G1 findings.
+    sessions = tuple(d for d in trading_dates_in_range(start, end) if d < as_of)
+    # Expiry is judged against the WINDOW, not against `as_of`: a contract that
+    # was live during the scanned range belongs in that range's denominator even
+    # if it has expired by today. Judging against `as_of` made the same window
+    # yield a different denominator depending on when you scanned it.
+    window_month = end.replace(day=1)
     out: list[ExpectedSeries] = []
+    seen: set[str] = set()
     for preset_path in preset_paths:
         _name, tickers, _exchange_map = load_preset(preset_path)
         for ticker in tickers:
+            # Presets overlap (sp500 n ndx100 = 87 symbols). Without this the
+            # symbol is scanned twice and every gap it has lands in the Tier A
+            # manifest twice — two repair instructions for one parquet path.
+            if ticker in seen:
+                continue
+            seen.add(ticker)
             expiry = _contract_expiry(ticker)
-            if expiry is not None and expiry < current_month:
+            if expiry is not None and expiry < window_month:
                 continue
             out.append(ExpectedSeries(ticker, asset_class, timeframe, sessions))
     return out

@@ -21,7 +21,7 @@ from clients.gap_engine import (
     load_unresolved,
     suppress_unresolved,
 )
-from clients.gap_registry import load_registry
+from clients.gap_registry import RegistryError, load_registry
 
 # measured, docs/audits/2026-07-11-daily-bronze-repair.md:58
 MASSIVE_FLOOR = date(2021, 7, 12)
@@ -41,9 +41,18 @@ def scan(
     findings: list[Finding] = []
     for row in load_registry(registry_path):
         preset_paths = [presets_dir / f"{name}.json" for name in row.universe]
-        for series in build_denominator(
+        expected = build_denominator(
             preset_paths, row.asset_class, row.timeframe, start, end, as_of
-        ):
+        )
+        # A row that resolves to no symbols is a zero denominator: it reports
+        # all-green for a reason that has nothing to do with the data. That is
+        # exactly the disk-glob failure this engine replaces, reintroduced from
+        # the registry side, so it fails the run rather than scoring perfect.
+        if not expected:
+            raise RegistryError(
+                f"row {row.id}: universe {list(row.universe)} resolves to no symbols"
+            )
+        for series in expected:
             present = actual_sessions(bronze_root, series)
             findings.extend(classify(series, present, massive_floor))
     return sorted(
@@ -63,6 +72,7 @@ def _entry(finding: Finding) -> dict:
 
 
 def write_tier_a_manifest(findings: list[Finding], path: Path) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     repairs = [
         _entry(f)
         for f in sorted(
@@ -74,6 +84,7 @@ def write_tier_a_manifest(findings: list[Finding], path: Path) -> None:
 
 def write_decision_requests(findings: list[Finding], path: Path) -> None:
     """Tier B queue. Verdict vocabulary is triage_breaks.py's, not a new one."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     requests = [
         dict(_entry(f), verdict="inconclusive") for f in findings if f.tier == "B"
     ]

@@ -13,6 +13,11 @@ from typing import Any
 
 VALID_GAPS = {f"G{n}" for n in range(1, 13)}
 VALID_TIERS = {"A", "B"}
+# Only checks the engine actually dispatches. `scan` runs denominator_diff for
+# every row regardless of this field, so a row naming anything else would
+# silently produce G1/G2/G3 while claiming to run some other detector. Adding a
+# check must be an explicit act here, paired with real dispatch.
+VALID_CHECKS = {"denominator_diff"}
 REQUIRED_FIELDS = (
     "id",
     "gap",
@@ -57,6 +62,8 @@ def load_registry(path: Path) -> list[RegistryRow]:
                 raise RegistryError(f"row {row_id}: unknown gap id {gap_id!r}")
         if raw["tier"] not in VALID_TIERS:
             raise RegistryError(f"row {row_id}: unknown tier {raw['tier']!r}")
+        if raw["check"] not in VALID_CHECKS:
+            raise RegistryError(f"row {row_id}: unknown check {raw['check']!r}")
         rows.append(
             RegistryRow(
                 id=raw["id"],

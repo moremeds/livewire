@@ -79,7 +79,7 @@ def test_unresolved_ledger_keeps_the_reason(tmp_path):
     record_unresolved(
         ledger, "MUNJ", date(2026, 8, 27), reason="delisted, no source", as_of=date(2026, 8, 31)
     )
-    assert ("MUNJ", date(2026, 8, 27)) in load_unresolved(ledger)
+    assert ("MUNJ", "equity", "1d", date(2026, 8, 27)) in load_unresolved(ledger)
     assert "delisted, no source" in ledger.read_text()
 
 
@@ -95,3 +95,15 @@ def test_absent_ledger_is_empty_not_an_error(tmp_path):
     """The first scheduled run points --unresolved at a file that does not
     exist yet; that must read as 'nothing suppressed', not blow up."""
     assert load_unresolved(tmp_path / "never-written.json") == set()
+
+
+def test_unresolved_is_scoped_to_one_timeframe(tmp_path):
+    """Keyed on (symbol, session) alone, marking 1d unresolved also silenced 1h."""
+    ledger = tmp_path / "unresolved.json"
+    record_unresolved(
+        ledger, "MUNJ", date(2026, 8, 27), reason="x", as_of=date(2026, 8, 31),
+        asset_class="equity", timeframe="1d",
+    )
+    hourly = ExpectedSeries("MUNJ", "equity", "1h", (date(2026, 8, 27),))
+    findings = classify(hourly, present=set(), massive_floor=FLOOR)
+    assert suppress_unresolved(findings, load_unresolved(ledger)) == findings

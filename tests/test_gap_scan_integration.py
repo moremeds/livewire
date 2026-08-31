@@ -13,9 +13,11 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from clients.coverage_denominator import ExpectedSeries
-from clients.gap_engine import actual_sessions
+from clients.gap_engine import actual_sessions, load_unresolved
+from clients.gap_registry import RegistryError
 from livewire_scripts.gap_scan import main, scan
 
 # (trade_date, open, high, low, close, adj_close, volume) — frozen real AAPL
@@ -132,6 +134,8 @@ def test_scan_honours_the_unresolved_ledger(tmp_path):
             [
                 {
                     "symbol": "BF.B",
+                    "asset_class": "equity",
+                    "timeframe": "1d",
                     "session": s.isoformat(),
                     "reason": "no source",
                     "as_of": "2026-09-01",
@@ -217,3 +221,26 @@ def test_main_routes_a_pre_floor_gap_to_the_decision_queue(tmp_path, capsys):
     assert queued[0]["symbol"] == "BF.B"
     assert queued[0]["verdict"] == "inconclusive"
     assert queued[0]["heal_by_days"] < 0
+
+
+def test_an_underspecified_ledger_entry_is_rejected_not_defaulted(tmp_path):
+    """Defaulting a missing timeframe would silence every timeframe at once."""
+    ledger = tmp_path / "unresolved.json"
+    ledger.write_text(json.dumps([{"symbol": "BF.B", "session": "2026-08-27"}]))
+    with pytest.raises(ValueError, match="asset_class"):
+        load_unresolved(ledger)
+
+
+def test_a_row_resolving_to_no_symbols_fails_the_run(tmp_path):
+    """A zero denominator reports all-green for a reason unrelated to the data —
+    the same failure mode as the disk-glob detector, from the registry side."""
+    registry, presets = _registry_and_presets(tmp_path, [])
+    with pytest.raises(RegistryError, match="resolves to no symbols"):
+        scan(
+            tmp_path / "bronze",
+            registry,
+            presets,
+            start=SESSIONS[0],
+            end=SESSIONS[-1],
+            as_of=date(2026, 9, 1),
+        )

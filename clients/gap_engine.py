@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 from dataclasses import dataclass, replace
 from datetime import date
@@ -82,38 +83,92 @@ def classify(
     return findings
 
 
-def load_unresolved(path: Path) -> set[tuple[str, date]]:
+UnresolvedKey = tuple[str, str, str, date]
+
+
+def _unresolved_key(
+    symbol: str, asset_class: str, timeframe: str, session: date
+) -> UnresolvedKey:
+    """Ledger identity is the full series, not just (symbol, session).
+
+    Keyed on the symbol alone, marking one timeframe unresolved silently
+    suppressed every other timeframe for that symbol.
+    """
+    return (symbol, asset_class, timeframe, session)
+
+
+def load_unresolved(path: Path) -> set[UnresolvedKey]:
     if not Path(path).exists():
         return set()
     entries = json.loads(Path(path).read_text())
-    return {(entry["symbol"], date.fromisoformat(entry["session"])) for entry in entries}
+    keys: set[UnresolvedKey] = set()
+    for entry in entries:
+        # Deliberately strict. Defaulting a missing asset_class/timeframe would
+        # suppress every timeframe for the symbol — the exact over-broad
+        # suppression this key was widened to prevent.
+        missing = [f for f in ("symbol", "asset_class", "timeframe", "session") if f not in entry]
+        if missing:
+            raise ValueError(f"unresolved ledger entry {entry!r} is missing {missing}")
+        keys.add(
+            _unresolved_key(
+                entry["symbol"],
+                entry["asset_class"],
+                entry["timeframe"],
+                date.fromisoformat(entry["session"]),
+            )
+        )
+    return keys
 
 
 def record_unresolved(
-    path: Path, symbol: str, session: date, reason: str, as_of: date
+    path: Path,
+    symbol: str,
+    session: date,
+    reason: str,
+    as_of: date,
+    asset_class: str = "equity",
+    timeframe: str = "1d",
 ) -> None:
-    """Record a permanently unsourceable session so it is never retried again."""
+    """Record a permanently unsourceable session so it is never retried again.
+
+    Serialized with flock: this is a read-modify-write on a file the scheduled
+    scan and an operator can both touch, and the repo already settles that
+    question the same way in shepherd_repair.py.
+    """
     path = Path(path)
-    entries = json.loads(path.read_text()) if path.exists() else []
+    path.parent.mkdir(parents=True, exist_ok=True)
     entry = {
         "symbol": symbol,
+        "asset_class": asset_class,
+        "timeframe": timeframe,
         "session": session.isoformat(),
         "reason": reason,
         "as_of": as_of.isoformat(),
     }
-    if entry not in entries:
-        entries.append(entry)
-    path.write_text(json.dumps(entries, indent=2, sort_keys=True))
+    with open(path.with_suffix(path.suffix + ".lock"), "w") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            entries = json.loads(path.read_text()) if path.exists() else []
+            if entry not in entries:
+                entries.append(entry)
+            path.write_text(json.dumps(entries, indent=2, sort_keys=True))
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def suppress_unresolved(
-    findings: list[Finding], unresolved: set[tuple[str, date]]
+    findings: list[Finding], unresolved: set[UnresolvedKey]
 ) -> list[Finding]:
     """Drop sessions already recorded unresolved; drop findings left with none."""
     kept: list[Finding] = []
     for finding in findings:
         sessions = tuple(
-            s for s in finding.sessions if (finding.symbol, s) not in unresolved
+            s
+            for s in finding.sessions
+            if _unresolved_key(
+                finding.symbol, finding.asset_class, finding.timeframe, s
+            )
+            not in unresolved
         )
         if sessions:
             kept.append(replace(finding, sessions=sessions))

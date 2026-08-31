@@ -1,10 +1,17 @@
 [
   {
     "id": "g1-g2-g3-equity-daily",
-    "gap": ["G1", "G2", "G3"],
+    "gap": [
+      "G1",
+      "G2",
+      "G3"
+    ],
     "asset_class": "equity",
     "timeframe": "1d",
-    "universe": ["sp500", "ndx100"],
+    "universe": [
+      "sp500",
+      "ndx100"
+    ],
     "check": "denominator_diff",
     "params": {},
     "tier": "A",
@@ -13,10 +20,16 @@
   },
   {
     "id": "g1-g2-g3-rates-daily",
-    "gap": ["G1", "G2", "G3"],
+    "gap": [
+      "G1",
+      "G2",
+      "G3"
+    ],
     "asset_class": "rates",
     "timeframe": "1d",
-    "universe": ["interests"],
+    "universe": [
+      "rates"
+    ],
     "check": "denominator_diff",
     "params": {},
     "tier": "A",
@@ -25,10 +38,16 @@
   },
   {
     "id": "g1-g2-g3-fx-daily",
-    "gap": ["G1", "G2", "G3"],
+    "gap": [
+      "G1",
+      "G2",
+      "G3"
+    ],
     "asset_class": "fx",
     "timeframe": "1d",
-    "universe": ["fx-pairs"],
+    "universe": [
+      "fx-pairs"
+    ],
     "check": "denominator_diff",
     "params": {},
     "tier": "A",
@@ -37,10 +56,16 @@
   },
   {
     "id": "g1-g2-g3-cmdty-daily",
-    "gap": ["G1", "G2", "G3"],
+    "gap": [
+      "G1",
+      "G2",
+      "G3"
+    ],
     "asset_class": "cmdty",
     "timeframe": "1d",
-    "universe": ["cmdty-metals"],
+    "universe": [
+      "cmdty-metals"
+    ],
     "check": "denominator_diff",
     "params": {},
     "tier": "A",
@@ -49,10 +74,16 @@
   },
   {
     "id": "g1-g2-g3-volatility-daily",
-    "gap": ["G1", "G2", "G3"],
+    "gap": [
+      "G1",
+      "G2",
+      "G3"
+    ],
     "asset_class": "volatility",
     "timeframe": "1d",
-    "universe": ["volatility"],
+    "universe": [
+      "volatility"
+    ],
     "check": "denominator_diff",
     "params": {},
     "tier": "A",
@@ -61,10 +92,16 @@
   },
   {
     "id": "g1-g2-g3-futures-daily",
-    "gap": ["G1", "G2", "G3"],
+    "gap": [
+      "G1",
+      "G2",
+      "G3"
+    ],
     "asset_class": "futures",
     "timeframe": "1d",
-    "universe": ["futures-active"],
+    "universe": [
+      "futures-active"
+    ],
     "check": "denominator_diff",
     "params": {},
     "tier": "A",

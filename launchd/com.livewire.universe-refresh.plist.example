@@ -29,9 +29,15 @@
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <!-- Replace /path/to/warehouse with your actual warehouse path. Runs the
-             immutable release `current` points at, like the other warehouse jobs. -->
-        <string>cd /path/to/warehouse/current &amp;&amp; .venv/bin/python scripts/livewire_ingest.py universe-sync &amp;&amp; .venv/bin/python scripts/livewire_ingest.py shepherd-universe</string>
+        <!-- This job is the ONE exception to "warehouse jobs run the immutable
+             release": release.freeze() does chmod -R a-w over the release tree,
+             and universe_sync writes PROJECT_ROOT/presets/*.json on every run,
+             so running it from `current` fails with PermissionError. It runs
+             from the repo checkout (like release-promote, the other job that
+             cannot use a frozen tree) and borrows the warehouse venv.
+             shepherd-universe takes a required subcommand plus an index
+             argument; without them it exits argparse status 2 every week. -->
+        <string>cd /path/to/repo &amp;&amp; /path/to/warehouse/.venv/bin/python scripts/livewire_ingest.py universe-sync &amp;&amp; /path/to/warehouse/.venv/bin/python scripts/livewire_ingest.py shepherd-universe scan --index sp500 &amp;&amp; /path/to/warehouse/.venv/bin/python scripts/livewire_ingest.py shepherd-universe scan --index ndx100</string>
     </array>
 
     <key>StartCalendarInterval</key>
