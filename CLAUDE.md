@@ -948,20 +948,20 @@ python scripts/livewire_ingest.py daily --asset-class futures             # Dail
 
 **Scheduling with launchd** (macOS):
 ```bash
-# The four warehouse jobs run the immutable release, so they take the WAREHOUSE path.
+# The six warehouse jobs run the immutable release, so they take the WAREHOUSE path.
 # The promoter is the one job that reads the repo — it is what builds the release.
 WAREHOUSE=~/market-warehouse
-for L in daily-update daily-update-watchdog intraday-catchup coverage; do
+for L in daily-update daily-update-watchdog intraday-catchup coverage gap-scan universe-refresh; do
   sed "s|/path/to/warehouse|$WAREHOUSE|g" "launchd/com.livewire.$L.plist.example" \
     > ~/Library/LaunchAgents/com.livewire.$L.plist
 done
 sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.release-promote.plist.example \
   > ~/Library/LaunchAgents/com.livewire.release-promote.plist
-for L in daily-update daily-update-watchdog intraday-catchup coverage release-promote; do
+for L in daily-update daily-update-watchdog intraday-catchup coverage gap-scan universe-refresh release-promote; do
   launchctl load ~/Library/LaunchAgents/com.livewire.$L.plist
 done
 ```
-`scripts/livewire_ops.py run-daily-job` loads `~/.secrets`, repo `.env`, and `~/market-warehouse/.env` before invoking the retrying scheduled runner. The runner automatically syncs equities, futures, and cmdty via IB, then all volatility indices via CBOE's public API and DXY/FX via Yahoo+Massive, in a single invocation; pass `--asset-class <name>` to run only one IB asset class (skips both the CBOE volatility and fx syncs). After a successful run it also spawns the weekly quality report, sends the nightly digest email, and runs the housekeeping retention sweep last. Coverage is **not** here — it has its own job, `com.livewire.coverage` at 11:00 UTC.
+`scripts/livewire_ops.py run-daily-job` loads `~/.secrets`, repo `.env`, and `~/market-warehouse/.env` before invoking the retrying scheduled runner. The runner automatically syncs equities, futures, and cmdty via IB, then all volatility indices via CBOE's public API and DXY/FX via Yahoo+Massive, in a single invocation; pass `--asset-class <name>` to run only one IB asset class (skips both the CBOE volatility and fx syncs). After a successful run it also spawns the weekly quality report, sends the nightly digest email, and runs the housekeeping retention sweep last. Coverage is **not** here — it has its own job, `com.livewire.coverage` at 11:00 UTC. Neither is the gap scan: `com.livewire.gap-scan` runs at 12:00 UTC, after coverage.
 
 A second scheduled job, `com.livewire.intraday-catchup`, runs at 05:00 UTC daily (= 01:00 ET EDT / 00:00 ET EST) and invokes `scripts/livewire_ops.py run-intraday-catchup-job`. This calls the existing `daily-backfill` orchestrator so equity daily + intraday parquet (1m/5m/30m/1h), FRED Treasury rates, CBOE volatility daily, and IB volatility intraday (30m and 5m, with 1h derived locally from 30m) all refresh. Equity intraday requires `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY`; missing credentials fail the orchestrator before any phases run, and there is no REST or IB equity-intraday fallback. The wrapper is single-attempt because `daily-backfill` owns its phase execution and activity-based stall detection; on terminal failure the wrapper sends one alert through the same Nodemailer pipeline as the daily-update wrapper, tagged `--job-name intraday_catchup`. Logs land at `~/market-warehouse/logs/intraday_catchup_YYYY-MM-DD.log` (UTC date). The default 7-day `MDW_DAILY_BACKFILL_INTRADAY_DAYS` lookback absorbs a single missed run; widen via `~/market-warehouse/.env` if you need more headroom. 05:00 UTC is well after Massive's empirical whole-market SIP minute-aggregate publish (file for trade-date D appears shortly after midnight ET on D+1) and gives a 1h15m buffer after IBC's `AutoRestartTime=11:45` ET nightly restart (= 03:45 UTC), which requires 2FA approval before port 4001 is available.
 
@@ -1180,6 +1180,68 @@ python scripts/livewire_ops.py status
 - The nightly digest renders the same `Section` objects — `build_digest` calls
   `status.collect()` and enumerates nothing itself, enforced by a test. A check
   added to `collect()` reaches both surfaces or neither.
+
+### Gap engine — the denominator is not the disk
+
+`scripts/livewire_quality.py gap-scan` computes `expected − actual` where
+**expected comes from `registry/gaps.json` × `presets/*.json` × the trading
+calendar**, never from what is already on disk.
+
+⚠️ **This is the defect it replaces.** `coverage_report.py` builds its
+denominator by globbing `bronze/asset_class=*/symbol=*/`, so numerator and
+denominator are drawn from the same set and **a symbol that never landed cannot
+be counted missing**. Measured 2026-09-01 on the local lake: `gap-scan` returned
+11 `G3` findings for `presets/futures-active.json` because
+`bronze/asset_class=futures/` **does not exist at all** — there is no directory
+for a glob to enumerate, so the disk-glob detector reports nothing wrong.
+`coverage_report.py:363` also omits `fx` and `cmdty` outright; the registry
+carries rows for both.
+
+```bash
+python scripts/livewire_quality.py gap-scan \
+    --bronze-root ~/market-warehouse/data-lake/bronze \
+    --start 2026-08-01 --end 2026-08-28 --as-of 2026-08-31 \
+    --manifest-out /tmp/gap-manifest.json --decisions-out /tmp/gap-decisions.json
+```
+
+- **Gap classes.** `G3` = nothing on disk for the series; `G1` = missing the
+  newest sessions (tail); `G2` = missing interior sessions. One series can emit
+  both G1 and G2.
+- **Tier follows the Massive window, not severity.** `heal_by_days =
+  earliest_missing_session − MASSIVE_FLOOR` (measured `2021-07-12`). Non-negative
+  → Tier A, repairable unattended from Massive. Negative → Tier B: below the
+  rolling floor the only source is IB, which is 2FA-gated and never auto-retries,
+  so it is a *decision*, not an automatic repair. The manifest is sorted ascending
+  by `heal_by_days` because the floor rolls forward one day per day — the sessions
+  nearest it lose the cheap repair path first.
+- ⚠️ **Phase 1 is read-only.** `gap-scan` writes exactly two artifacts and
+  mutates nothing. The Tier A manifest is **not** fed to `shepherd_repair` yet;
+  no unattended mutation is scheduled until the denominator has been observed
+  correct on real data. The Tier B queue has no consumer at all — its depth is
+  the measurement that decides whether building one is worth it.
+- **A row without a `test` is rejected** by `load_registry`. A registry row
+  asserting coverage with nothing executing behind it is a claim, not coverage.
+- **The unresolved ledger stops re-litigation.** `--unresolved <path>` records
+  permanently unsourceable `(symbol, session)` pairs with a reason, so a delisted
+  name with no provider is not re-reported every night. Suppression is
+  per-session: a finding whose other sessions are still open keeps them.
+- ⚠️ **`presets/interests.json` is empty (`"tickers": []`), so the shipped
+  `g1-g2-g3-rates-daily` registry row currently expects nothing.** The row loads
+  and validates — the loader checks structure, not whether the resolved universe
+  is non-empty — so this is a silent zero-denominator of exactly the kind the
+  engine exists to remove. FRED rates are `DGS3/DGS5/DGS10/DGS30`; either
+  populate the preset or point the row at a real rates universe.
+
+**`com.livewire.universe-refresh` exists because nothing refreshed the
+denominator.** `livewire_scripts/universe_sync.py` and
+`livewire_scripts/shepherd_universe.py` both existed and **neither was
+scheduled**, so index membership changes never reached `presets/*`. An
+unrefreshed preset is wrong in both directions: a delisted name is expected
+forever, and a new index member is never expected at all. Detection built on a
+stale denominator measures the past. The job chains the two through the existing
+`scripts/livewire_ingest.py` router (`universe-sync` then `shepherd-universe`,
+with `&&` so a failed sync cannot let the shepherd act on stale input), weekly on
+Sunday after that day's scan.
 
 ### Weekly quality summary
 

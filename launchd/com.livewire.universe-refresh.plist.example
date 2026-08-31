@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Weekly refresh of the universe presets that the gap engine's denominator is
+  computed from.
+
+  This closes the drift mechanism the 2026-08 audit found: livewire_scripts/
+  universe_sync.py and livewire_scripts/shepherd_universe.py both exist and
+  NEITHER was scheduled, so index membership changes never reached presets/*.
+  An unrefreshed preset makes the denominator silently wrong in both
+  directions — a delisted name is expected forever, and a new index member is
+  never expected at all. Detection built on a stale denominator measures the
+  past.
+
+  Both steps run through the existing scripts/livewire_ingest.py router
+  (subcommands `universe-sync` and `shepherd-universe`); this job adds no
+  second invocation path.
+
+  Ordering is load-bearing: universe-sync refreshes membership first, then
+  shepherd-universe reconciles it. Chained with && so a failed sync does not
+  let the shepherd act on stale input.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.livewire.universe-refresh</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <!-- Replace /path/to/warehouse with your actual warehouse path. Runs the
+             immutable release `current` points at, like the other warehouse jobs. -->
+        <string>cd /path/to/warehouse/current &amp;&amp; .venv/bin/python scripts/livewire_ingest.py universe-sync &amp;&amp; .venv/bin/python scripts/livewire_ingest.py shepherd-universe</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <!-- Target: Sunday 13:00 UTC, weekly. After Sunday's gap-scan (12:00 -->
+        <!-- UTC), so a membership change lands for the following week's scans -->
+        <!-- rather than mid-week, and the week's findings are all measured -->
+        <!-- against one denominator. -->
+        <!-- launchd has no TimeZone key, so Hour/Minute are Mac-local. -->
+        <!-- Weekday is UTC-day-dependent too; on a Mac ahead of UTC the local -->
+        <!-- weekday for a Sunday-UTC target may be Monday: -->
+        <!--   Asia/Hong_Kong:      Weekday=0 Hour=21 -->
+        <!--   America/New_York:    Weekday=0 Hour=9 -->
+        <!--   Europe/London:       Weekday=0 Hour=14 -->
+        <!--   UTC:                 Weekday=0 Hour=13 -->
+        <!-- Defaults below assume Asia/Hong_Kong. -->
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>21</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/com.livewire.universe-refresh.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/com.livewire.universe-refresh.stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- /opt/homebrew/bin is load-bearing across the warehouse jobs: the
+             shared alert path shells out to the Nodemailer CLI, and launchd's
+             minimal PATH cannot find `node`. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
