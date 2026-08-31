@@ -21,6 +21,7 @@ COMMANDS = {
     "calibrate-daily-basis": "livewire_scripts.calibrate_daily_basis",
     "health": "livewire_scripts.health_check",
     "coverage": "livewire_scripts.coverage_report",
+    "gap-scan": "livewire_scripts.gap_scan",
     "report": "livewire_scripts.data_quality_report",
     "resolve-split-basis": "livewire_scripts.resolve_split_basis",
     "triage-breaks": "livewire_scripts.triage_breaks",
