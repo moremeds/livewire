@@ -1,0 +1,74 @@
+[
+  {
+    "id": "g1-g2-g3-equity-daily",
+    "gap": ["G1", "G2", "G3"],
+    "asset_class": "equity",
+    "timeframe": "1d",
+    "universe": ["sp500", "ndx100"],
+    "check": "denominator_diff",
+    "params": {},
+    "tier": "A",
+    "since": "2026-08-31",
+    "test": "tests/test_gap_engine.py::test_missing_file_is_g3"
+  },
+  {
+    "id": "g1-g2-g3-rates-daily",
+    "gap": ["G1", "G2", "G3"],
+    "asset_class": "rates",
+    "timeframe": "1d",
+    "universe": ["interests"],
+    "check": "denominator_diff",
+    "params": {},
+    "tier": "A",
+    "since": "2026-08-31",
+    "test": "tests/test_gap_engine.py::test_missing_file_is_g3"
+  },
+  {
+    "id": "g1-g2-g3-fx-daily",
+    "gap": ["G1", "G2", "G3"],
+    "asset_class": "fx",
+    "timeframe": "1d",
+    "universe": ["fx-pairs"],
+    "check": "denominator_diff",
+    "params": {},
+    "tier": "A",
+    "since": "2026-08-31",
+    "test": "tests/test_gap_engine.py::test_missing_file_is_g3"
+  },
+  {
+    "id": "g1-g2-g3-cmdty-daily",
+    "gap": ["G1", "G2", "G3"],
+    "asset_class": "cmdty",
+    "timeframe": "1d",
+    "universe": ["cmdty-metals"],
+    "check": "denominator_diff",
+    "params": {},
+    "tier": "A",
+    "since": "2026-08-31",
+    "test": "tests/test_gap_engine.py::test_missing_file_is_g3"
+  },
+  {
+    "id": "g1-g2-g3-volatility-daily",
+    "gap": ["G1", "G2", "G3"],
+    "asset_class": "volatility",
+    "timeframe": "1d",
+    "universe": ["volatility"],
+    "check": "denominator_diff",
+    "params": {},
+    "tier": "A",
+    "since": "2026-08-31",
+    "test": "tests/test_gap_engine.py::test_missing_file_is_g3"
+  },
+  {
+    "id": "g1-g2-g3-futures-daily",
+    "gap": ["G1", "G2", "G3"],
+    "asset_class": "futures",
+    "timeframe": "1d",
+    "universe": ["futures-active"],
+    "check": "denominator_diff",
+    "params": {},
+    "tier": "A",
+    "since": "2026-08-31",
+    "test": "tests/test_gap_engine.py::test_missing_file_is_g3"
+  }
+]
