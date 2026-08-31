@@ -64,9 +64,13 @@ def test_response_recorder_persists_exact_bytes_without_request_credentials(tmp_
         cursor_identity="sha256:" + "b" * 64,
     )
 
-    artifact = sync_corporate_actions._response_evidence_recorder(tmp_path)(capture)
+    buffer = sync_corporate_actions._EvidenceBuffer(tmp_path)
+    artifact = buffer.recorder()(capture)
 
+    # Exact bytes are durable immediately; the manifest row lands on flush.
     assert SourceEvidenceStore(tmp_path).read(artifact.ref) == capture.body
+    assert SourceEvidenceStore(tmp_path).list_verified() == []
+    buffer.flush()
     row = SourceEvidenceStore(tmp_path).list_verified()[0]
     assert row.source_url == f"massive-response://sha256/{artifact.sha256}"
     assert "AAPL" not in row.source_url
@@ -341,3 +345,110 @@ def test_auth_failure_stops_new_work_and_reports_pending(tmp_path, capsys):
     summary = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert summary["pending"] > 0
     assert summary["requested"] == summary["resumed"] + summary["attempted"] + summary["pending"]
+
+
+def _stub_endpoints(tickers):
+    for _ in tickers:
+        for resource in ("splits", "dividends"):
+            responses.add(
+                responses.GET,
+                f"https://api.massive.com/v3/reference/{resource}",
+                json={"status": "OK", "results": []},
+                status=200,
+            )
+
+
+class TestEvidenceIsCommittedOncePerRun:
+    """The manifest is rewritten whole, so a per-response commit is O(N * manifest)."""
+
+    @responses.activate
+    def test_many_responses_publish_the_manifest_once(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MASSIVE_API_KEY", "fixture-token")
+        tickers = ["AAPL", "MSFT", "NVDA"]
+        _stub_endpoints(tickers)
+        publishes = []
+        real_publish = SourceEvidenceStore._publish_manifest
+        monkeypatch.setattr(
+            SourceEvidenceStore,
+            "_publish_manifest",
+            lambda self, rows: (publishes.append(len(rows)), real_publish(self, rows))[1],
+        )
+
+        assert sync_corporate_actions.run(["--tickers", *tickers, "--workers", "1"], data_lake_root=tmp_path) == 0
+
+        # Six responses, one identical empty body, one commit.
+        assert len(responses.calls) == 2 * len(tickers)
+        assert publishes == [1]
+
+    @responses.activate
+    def test_evidence_survives_a_run_that_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MASSIVE_API_KEY", "fixture-token")
+        _stub_endpoints(["AAPL"])
+
+        class _Exploding(CorporateActionStore):
+            def reconcile(self, *args, **kwargs):
+                raise KeyboardInterrupt("operator stopped the run")
+
+        with pytest.raises(KeyboardInterrupt):
+            sync_corporate_actions.run(
+                ["--tickers", "AAPL", "--workers", "1"],
+                data_lake_root=tmp_path,
+                store=_Exploding(tmp_path),
+            )
+
+        # The bytes were fetched, so they must be in the manifest, not only on disk.
+        assert len(SourceEvidenceStore(tmp_path).list_verified()) == 1
+
+
+class TestEvidenceKillSwitch:
+    @pytest.mark.parametrize("value", ["off", "0", "false", "no", "OFF"])
+    def test_recognized_off_values(self, monkeypatch, value):
+        monkeypatch.setenv("MDW_SOURCE_EVIDENCE", value)
+        assert sync_corporate_actions.evidence_enabled() is False
+
+    @pytest.mark.parametrize("value", ["on", "1", "", "anything"])
+    def test_anything_else_leaves_evidence_on(self, monkeypatch, value):
+        monkeypatch.setenv("MDW_SOURCE_EVIDENCE", value)
+        assert sync_corporate_actions.evidence_enabled() is True
+
+    def test_unset_leaves_evidence_on(self, monkeypatch):
+        monkeypatch.delenv("MDW_SOURCE_EVIDENCE", raising=False)
+        assert sync_corporate_actions.evidence_enabled() is True
+
+    @responses.activate
+    def test_off_writes_no_evidence_and_still_reconciles(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MASSIVE_API_KEY", "fixture-token")
+        monkeypatch.setenv("MDW_SOURCE_EVIDENCE", "off")
+        _stub_endpoints(["AAPL"])
+
+        assert sync_corporate_actions.run(["--tickers", "AAPL", "--workers", "1"], data_lake_root=tmp_path) == 0
+
+        assert not SourceEvidenceStore(tmp_path).manifest_path.exists()
+        assert list(CorporateActionStore(tmp_path).fetch_history("AAPL")[0].source_refs) == []
+
+
+def test_one_buffer_is_shared_by_every_worker(tmp_path):
+    """Workers build their own client, so a per-client buffer would never merge."""
+    buffer = sync_corporate_actions._EvidenceBuffer(tmp_path)
+    barrier = threading.Barrier(4)
+
+    def record(index: int) -> None:
+        barrier.wait()
+        buffer.recorder()(
+            MassiveResponseCapture(
+                body=f"payload-{index}".encode(),
+                source_url="https://api.massive.com/v3/reference/splits",
+                fetched_at=datetime(2026, 8, 31, 1, 0, tzinfo=UTC),
+                content_type="application/json",
+                cursor_identity="sha256:" + "c" * 64,
+            )
+        )
+
+    threads = [threading.Thread(target=record, args=(index,)) for index in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    buffer.flush()
+
+    assert len(SourceEvidenceStore(tmp_path).list_verified()) == 4

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from queue import Empty, Queue
-from threading import Event
+from threading import Event, Lock
 
 from clients.corporate_action_store import CorporateActionStore, ProviderEvent
 from clients.ingestion_common import load_preset
@@ -25,30 +26,62 @@ from livewire_scripts.paths import data_lake_dir
 # Share of attempted symbols that may fail before the run counts as systemic.
 FAILURE_RATE_TOLERANCE = 0.05
 
+# Values of MDW_SOURCE_EVIDENCE that turn response-evidence collection off.
+_EVIDENCE_OFF = frozenset({"0", "off", "false", "no"})
 
-def _response_evidence_recorder(root: Path):
-    evidence_store = SourceEvidenceStore(root)
 
-    def record(capture):
-        artifact = evidence_store.persist_raw(capture.body)
-        evidence_store.record(
-            SourceEvidence(
-                ref=artifact.ref,
-                sha256=artifact.sha256,
-                # Exact bytes are globally content-addressed. Request/cursor
-                # identity remains on each normalized provider event so the
-                # same empty response body can safely support many symbols.
-                source_url=f"massive-response://sha256/{artifact.sha256}",
-                retrieved_at=capture.fetched_at,
-                publication_time=None,
-                mediawiki_revision_id=None,
-                mediawiki_revision_time=None,
-                content_type=capture.content_type,
-            )
-        )
-        return artifact
+def evidence_enabled() -> bool:
+    """Whether response evidence is collected. Off is an operator escape hatch."""
+    return os.environ.get("MDW_SOURCE_EVIDENCE", "on").strip().casefold() not in _EVIDENCE_OFF
 
-    return record
+
+class _EvidenceBuffer:
+    """Persist exact response bytes now; commit the manifest once at the end.
+
+    ``persist_raw`` is content-addressed and takes only a per-artifact lock, so
+    it stays inline -- a provider response that is not written before the run
+    dies cannot be refetched. ``record`` is the expensive half: it rewrites the
+    whole manifest under one global lock, so calling it per response serializes
+    every worker behind an O(manifest) write. The buffer defers it to a single
+    ``flush``.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._store = SourceEvidenceStore(root)
+        self._lock = Lock()
+        # Workers share one buffer; first observation of a ref wins, which is
+        # also what the store does when the ref is already in the manifest.
+        self._pending: dict[str, SourceEvidence] = {}
+
+    def recorder(self):
+        def record(capture):
+            artifact = self._store.persist_raw(capture.body)
+            with self._lock:
+                self._pending.setdefault(
+                    artifact.ref,
+                    SourceEvidence(
+                        ref=artifact.ref,
+                        sha256=artifact.sha256,
+                        # Exact bytes are globally content-addressed. Request/cursor
+                        # identity remains on each normalized provider event so the
+                        # same empty response body can safely support many symbols.
+                        source_url=f"massive-response://sha256/{artifact.sha256}",
+                        retrieved_at=capture.fetched_at,
+                        publication_time=None,
+                        mediawiki_revision_id=None,
+                        mediawiki_revision_time=None,
+                        content_type=capture.content_type,
+                    ),
+                )
+            return artifact
+
+        return record
+
+    def flush(self) -> None:
+        with self._lock:
+            pending = list(self._pending.values())
+            self._pending.clear()
+        self._store.record_many(pending)
 
 
 @dataclass(frozen=True)
@@ -215,8 +248,10 @@ def run(
         raise ValueError("client and client_factory are mutually exclusive")
     action_store = store or CorporateActionStore(root)
 
+    evidence = _EvidenceBuffer(root) if evidence_enabled() else None
+
     def default_client_factory() -> MassiveClient:
-        return MassiveClient(response_evidence_recorder=_response_evidence_recorder(root))
+        return MassiveClient(response_evidence_recorder=None if evidence is None else evidence.recorder())
 
     identity = build_identity(
         root,
@@ -296,6 +331,10 @@ def run(
     finally:
         if owned_client is not None:
             owned_client.close()
+        # Commit whatever was collected even when the run aborted: the bytes are
+        # already on disk and a provider response is not refetchable later.
+        if evidence is not None:
+            evidence.flush()
 
     if len(cursor.completed) == len(tickers) and counters["failed"] == 0:
         cursor.mark_run_completed(now=datetime.now(UTC))
