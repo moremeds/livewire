@@ -65,18 +65,27 @@ LS-04 and LS-08 continue after the first working-system gate.
   DuckDB accepts only independently verified `PROVEN` bytes. Crash-complete
   orphan revisions are adopted, malformed remnants are quarantined, and later
   normal source revisions do not invalidate an older frozen PIT revision.
-- [ ] **LS-06.1** (`depends_on: [LS-03.2, LS-05.2]`): Freeze exact targeted
-  repair manifests and mutation receipts on a disposable lake.
+- [x] **LS-06.1** (`depends_on: [LS-03.2, LS-05.2]`): Froze the exact
+  current-member daily Bronze repair transaction on a disposable lake: full
+  Helium scope hash, append-prefix identity evidence, versioned XNYS sessions,
+  staged publish, independent postconditions, crash resume, and byte-exact
+  rollback. Wider multi-artifact operations remain explicit LS-06.4 work.
 - [ ] **LS-06.2a** (`depends_on: [LS-06.1]`): Characterize existing repair
-  scripts and their rollback/locking boundaries before adaptation.
+  action ordering, recovery evidence, and projections at the proven Ops
+  transaction boundary before extraction.
 - [ ] **LS-06.2b** (`depends_on: [LS-06.2a]`): Add exact scoped repair adapters
-  without introducing a second canonical writer.
+  by extracting the certified Ops action transaction without changing its
+  event or recovery semantics.
 - [ ] **LS-06.2c** (`depends_on: [LS-06.2b]`): Prove crash recovery, rollback,
-  and no wider-than-manifest publication.
+  and no wider-than-manifest publication when a Shepherd work unit uses that
+  shared action transaction.
 - [ ] **LS-06.3a** (`depends_on: [LS-06.2c]`, Helium): Bind signed authority to
   the exact Livewire mutation identities and postconditions.
 - [ ] **LS-06.3b** (`depends_on: [LS-06.3a]`): Run controlled autonomous repair
   and rollback drills with replayable evidence.
+- [ ] **LS-06.4** (`depends_on: [LS-06.3b]`): Add separate exact manifests and
+  crash matrices for flat-file date, Silver revision, and DuckDB query rebuilds;
+  do not widen the single-file `daily-merge` v1 contract.
 - [ ] **LS-07.3** (`depends_on: [LS-06.3b]`): Add periodic launchd operation,
   issue lifecycle, deadman observation, and cold-restart verification.
 - [ ] **LS-08.1** (`depends_on: [LS-06.2c]`): Parse historical Wikipedia index
