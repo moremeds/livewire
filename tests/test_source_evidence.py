@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import multiprocessing
 import os
+from dataclasses import asdict
 from datetime import UTC, datetime
 
 import pyarrow.parquet as pq
@@ -147,3 +148,88 @@ def test_ref_is_the_sha256_of_exact_payload(tmp_path):
     digest = hashlib.sha256(b"alpha").hexdigest()
     assert artifact.sha256 == digest
     assert artifact.ref == f"artifact://sha256/{digest}"
+
+
+class TestBatchedCommit:
+    """One commit per batch is the point: per-response commits cost O(N * manifest)."""
+
+    def test_a_batch_of_many_refs_publishes_the_manifest_once(self, tmp_path, monkeypatch):
+        store = SourceEvidenceStore(tmp_path)
+        batch = []
+        for index in range(25):
+            artifact = store.persist_raw(f"payload-{index}".encode())
+            batch.append(evidence(artifact.ref, artifact.sha256))
+
+        publishes = []
+        real_publish = SourceEvidenceStore._publish_manifest
+        monkeypatch.setattr(
+            SourceEvidenceStore,
+            "_publish_manifest",
+            lambda self, rows: (publishes.append(len(rows)), real_publish(self, rows))[1],
+        )
+        store.record_many(batch)
+
+        assert publishes == [25]
+        assert len(store.list_verified()) == 25
+
+    def test_duplicate_refs_inside_one_batch_collapse(self, tmp_path):
+        store = SourceEvidenceStore(tmp_path)
+        artifact = store.persist_raw(b'{"status":"OK","results":[]}')
+        item = evidence(artifact.ref, artifact.sha256)
+
+        store.record_many([item, item, item])
+
+        assert len(store.list_verified()) == 1
+
+    def test_a_ref_already_in_the_manifest_is_not_appended_again(self, tmp_path):
+        store = SourceEvidenceStore(tmp_path)
+        artifact = store.persist_raw(b"alpha")
+        item = evidence(artifact.ref, artifact.sha256)
+        store.record_many([item])
+
+        store.record_many([item])
+
+        assert len(store.list_verified()) == 1
+
+    def test_an_empty_batch_touches_nothing(self, tmp_path):
+        store = SourceEvidenceStore(tmp_path)
+        store.record_many([])
+        assert not store.manifest_path.exists()
+
+    def test_conflicting_metadata_for_a_known_ref_still_fails_closed(self, tmp_path):
+        store = SourceEvidenceStore(tmp_path)
+        artifact = store.persist_raw(b"alpha")
+        store.record_many([evidence(artifact.ref, artifact.sha256)])
+        conflicting = SourceEvidence(
+            **{**asdict(evidence(artifact.ref, artifact.sha256)), "source_url": "https://example.test/other"}
+        )
+
+        with pytest.raises(ValueError, match="already has different metadata"):
+            store.record_many([conflicting])
+
+    def test_backdating_a_known_ref_still_fails_closed(self, tmp_path):
+        store = SourceEvidenceStore(tmp_path)
+        artifact = store.persist_raw(b"alpha")
+        item = evidence(artifact.ref, artifact.sha256)
+        store.record_many([item])
+        earlier = SourceEvidence(**{**asdict(item), "retrieved_at": datetime(2020, 1, 1, tzinfo=UTC)})
+
+        with pytest.raises(ValueError, match="cannot be backdated"):
+            store.record_many([earlier])
+
+    def test_a_batch_whose_bytes_are_missing_is_rejected_before_the_lock(self, tmp_path):
+        store = SourceEvidenceStore(tmp_path)
+        artifact = store.persist_raw(b"alpha")
+        good = evidence(artifact.ref, artifact.sha256)
+        missing_digest = hashlib.sha256(b"never-persisted").hexdigest()
+        missing = SourceEvidence(
+            **{
+                **asdict(good),
+                "ref": f"artifact://sha256/{missing_digest}",
+                "sha256": missing_digest,
+            }
+        )
+
+        with pytest.raises(ValueError, match="artifact missing"):
+            store.record_many([good, missing])
+        assert not store.manifest_path.exists()
