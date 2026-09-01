@@ -47,3 +47,18 @@ def test_every_row_resolves_to_a_nonempty_universe():
         if not symbols:
             empty.append((row.id, list(row.universe)))
     assert not empty, f"registry rows resolving to no symbols: {empty}"
+
+
+def test_no_row_declares_a_gap_the_engine_no_longer_emits():
+    # classify() emits G1, G3 and G14 and nothing else. A row naming G2 promises
+    # a check that no longer performs.
+    for row in _rows():
+        assert set(row.gap) <= {"G1", "G3", "G14"}, row.id
+
+
+def test_g14_is_declared_only_where_a_tape_exists_to_compute_it():
+    # terminus_of reads the SIP raw traded sets. There is no such tape for rates,
+    # fx, volatility, futures or cmdty, so a G14 there would be a claim with no
+    # check behind it -- the registry-side version of the disk-glob failure.
+    for row in _rows():
+        assert ("G14" in row.gap) == (row.asset_class == "equity"), row.id

@@ -3,8 +3,8 @@
     "id": "g1-g2-g3-equity-daily",
     "gap": [
       "G1",
-      "G2",
-      "G3"
+      "G3",
+      "G14"
     ],
     "asset_class": "equity",
     "timeframe": "1d",
@@ -16,13 +16,12 @@
     "params": {},
     "tier": "A",
     "since": "2026-08-31",
-    "test": "tests/test_gap_engine.py::test_missing_file_is_g3"
+    "test": "tests/test_gap_engine.py::test_a_missing_file_with_no_terminus_is_still_g3_tier_a"
   },
   {
     "id": "g1-g2-g3-rates-daily",
     "gap": [
       "G1",
-      "G2",
       "G3"
     ],
     "asset_class": "rates",
@@ -34,13 +33,12 @@
     "params": {},
     "tier": "A",
     "since": "2026-08-31",
-    "test": "tests/test_gap_engine.py::test_missing_file_is_g3"
+    "test": "tests/test_gap_engine.py::test_a_missing_file_with_no_terminus_is_still_g3_tier_a"
   },
   {
     "id": "g1-g2-g3-fx-daily",
     "gap": [
       "G1",
-      "G2",
       "G3"
     ],
     "asset_class": "fx",
@@ -52,13 +50,12 @@
     "params": {},
     "tier": "A",
     "since": "2026-08-31",
-    "test": "tests/test_gap_engine.py::test_missing_file_is_g3"
+    "test": "tests/test_gap_engine.py::test_a_missing_file_with_no_terminus_is_still_g3_tier_a"
   },
   {
     "id": "g1-g2-g3-cmdty-daily",
     "gap": [
       "G1",
-      "G2",
       "G3"
     ],
     "asset_class": "cmdty",
@@ -70,13 +67,12 @@
     "params": {},
     "tier": "A",
     "since": "2026-08-31",
-    "test": "tests/test_gap_engine.py::test_missing_file_is_g3"
+    "test": "tests/test_gap_engine.py::test_a_missing_file_with_no_terminus_is_still_g3_tier_a"
   },
   {
     "id": "g1-g2-g3-volatility-daily",
     "gap": [
       "G1",
-      "G2",
       "G3"
     ],
     "asset_class": "volatility",
@@ -88,13 +84,12 @@
     "params": {},
     "tier": "A",
     "since": "2026-08-31",
-    "test": "tests/test_gap_engine.py::test_missing_file_is_g3"
+    "test": "tests/test_gap_engine.py::test_a_missing_file_with_no_terminus_is_still_g3_tier_a"
   },
   {
     "id": "g1-g2-g3-futures-daily",
     "gap": [
       "G1",
-      "G2",
       "G3"
     ],
     "asset_class": "futures",
@@ -106,6 +101,6 @@
     "params": {},
     "tier": "A",
     "since": "2026-08-31",
-    "test": "tests/test_gap_engine.py::test_missing_file_is_g3"
+    "test": "tests/test_gap_engine.py::test_a_missing_file_with_no_terminus_is_still_g3_tier_a"
   }
 ]
