@@ -203,20 +203,35 @@ size, and it settles the open question in the follow-on plan: a population that
 large is not adjudicated by hand, so the agent lane is the only path that
 finishes.
 
-Consequence for Phase 1. `build_denominator` still has no delisted branch, but
-the blocker is now named: the branch needs a terminus per archived symbol, and
-`registry.json` supplies none. Writing it against `bronze-delisted/` alone gives
-a membership test with no dates — enough to drop 8,620 symbols out of the live
-denominator, not enough to place them in the frozen-history one (§6). So L4
-splits cleanly in two, and only the first half is cheap:
+**The archive is not authoritative, and must never subtract from the
+denominator.** Cross-checking the 8,620 archived symbols against the presets
+(2026-09-01): **234 of them are still claimed by a preset** — `BK`, a current
+S&P 500 member listed in `sp500.json` and two sector presets; 63 ADRs including
+`ORAN`, `TEF`, `ERJ`, `ABB`, `TTM`, `VEDL`; and 157 ETFs. `KALV` and `MAPS`
+exist in the live tree *and* the archive simultaneously.
 
-1. **Membership** — archived symbols leave the live denominator. Reads a
-   directory listing, no provider, no key. Can ship immediately.
-2. **Terminus** — each archived symbol gets a `delisted_at`, and rename is
-   separated from delisting. Needs `universe_sync` to run for the first time,
-   then adjudication over the residue.
+`BK` decides the question. It has no `1d.parquet` in live bronze, so it is a
+real G3 hole today — the engine reports it precisely because the denominator is
+preset-driven. An archive-driven filter would have removed `BK` from the
+denominator and hidden that hole permanently: the invisible-gap failure this
+whole design exists to remove, reintroduced by the feature meant to improve it.
 
-The boundary definition was never the blocker; 8,620 missing dates is.
+So the earlier split of L4 was wrong. There is no cheap membership half:
+
+1. ~~**Membership** — archived symbols leave the live denominator.~~ **Rejected.**
+   Presets are the universe; subtracting the archive from it deletes 234 live
+   claims, 1 of them S&P 500. Pinned by
+   `tests/test_coverage_denominator.py::test_an_archived_symbol_a_preset_still_claims_stays_expected`,
+   a guard that fails if a subtracting branch is ever added.
+2. **Terminus** — unchanged, and now the *only* half. Each archived symbol needs
+   a `delisted_at`, and rename must be separated from delisting. `universe_sync`
+   has never run, so all 8,620 lack one.
+
+The 234 conflicts are themselves the first tranche of work: two universes
+disagree about them in writing, and one of the two is wrong per symbol. That
+population is small enough to adjudicate and large enough to be worth it, which
+makes it the natural first batch for the agent lane (§9.3) — ahead of the
+remaining 8,386, which no preset contradicts.
 
 ### 4.4 Unresolved denominator (cause 5)
 
