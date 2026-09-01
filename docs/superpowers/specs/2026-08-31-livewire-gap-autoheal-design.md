@@ -98,7 +98,17 @@ Completeness gaps:
 | G4  | Missing class/timeframe | Whole class or timeframe absent                            |
 | G5  | Intraday partial        | Session present, bar count below expected for that session |
 | G13 | Head gap                | Series starts later than the expected history horizon (§13, default 1995-01-01) — distinct from G2, which is bounded by existing bars on both sides |
-| G14 | Terminus                | Symbol absent from the raw traded set for **every** session from date X through the as-of date, with no corporate action explaining it — distinct from a no-trade day, which is bounded by presence on both sides |
+| G14 | Terminus                | Symbol absent from the raw traded set for **every** session from date X through the as-of date — distinct from a no-trade day, which is bounded by presence on both sides |
+
+⚠️ **Amended 2026-09-01.** This row previously read "…with no corporate action
+explaining it". That clause is **not implementable against the store this repo
+has** and is removed rather than left as an unmet requirement.
+`clients/corporate_action_store.py:421` writes exactly two `action_type` values,
+`"split"` and `"cash_dividend"`, and neither removes a ticker from the SIP tape.
+There is no delisting event and no rename event to consult, so a store lookup
+could not explain a terminus even in principle. **G14 is emitted on tape evidence
+alone.** Acquiring a delisting/rename feed and reinstating the clause is a
+separate change with its own measurement; see §11 criterion 8.
 
 G14 is not repairable and does not belong to the same family as G1–G3: the bars
 are absent because the instrument stopped appearing on the tape, and no provider
@@ -307,11 +317,37 @@ Consequences, in order of how much they change the design:
    with presence on both sides is a no-trade day; absent from date X through the
    as-of date with no return is a terminus. Both readings use files coverage
    already opens, and the test costs 20 reads against coverage's ~13,000 footer
-   reads. No threshold to tune — which is the same property that made
-   `classify_seed_boundary` succeed where the blind heuristic failed (`CLAUDE.md`).
+   reads. The *shape* of the test has nothing to tune — it is a suffix, not a
+   severity cutoff, which is the same property that made `classify_seed_boundary`
+   succeed where the blind heuristic failed (`CLAUDE.md`).
+
+   ⚠️ **Amended 2026-09-01: it does carry one calibrated constant, and calling it
+   thresholdless was overstated.** `MIN_TERMINUS_SESSIONS` is the length of the
+   trailing run that counts as a terminus. It is not the "how many missing bars
+   is too many" dial §4.4 rejects — that dial is circular because bar files alone
+   cannot separate "no bar" from "no trade", and this test consults a second
+   source that can. But it is a number measured on a specific population: the
+   2026-09-01 run found runs of 21/19/11/10 sessions against zero for the other
+   511 members, so **anything from 2 to 10 separates the two classes on that
+   sample**, and 5 (one trading week) was chosen inside that band. The constant
+   is only defensible over the population it was measured on — see §11
+   criterion 9 and the scope note in §8.
 3. **Signal-to-noise, measured: 515 members → 4 findings → 0 false positives.**
    The no-trade population the 96.6% disease is made of does not appear, because
    those symbols return to the tape inside the window.
+
+⚠️ **What Phase 1 actually changes, stated plainly.** The equity `1d`
+denominator becomes `on_disk | registry`, **not** `registry`. With the equity row
+at `["sp500", "ndx100"]` that is 515 registry symbols against ~13,270 on disk, so
+roughly 96% of the denominator remains disk-derived after Phase 1. The union buys
+exactly one property, and it is the one that matters here: a registry member with
+**no file at all** — BK — becomes expressible, where a glob cannot express it.
+"Never derived from disk" elsewhere in this section describes the destination,
+not Phase 1. Reaching it means widening the equity row to §8's five presets,
+which is gated on re-running §11 criterion 9's calibration at that scale, because
+a terminus threshold measured on 515 liquid names must not be applied to the
+illiquid tail without measurement — that tail is the population the 96.6% scan
+was made of.
 
 BK is additionally the proof for §4.3's claim that the two delisting producers
 are not one chain: it sits in `bronze-delisted/` **and** in `presets/sp500.json`.
@@ -390,6 +426,19 @@ reusing the existing job deadline rather than introducing a second constant, and
 it is scheduled at 11:00 UTC, after the deadline; anything reading the
 denominator earlier must apply the rule explicitly.
 
+⚠️ **The rule must be fed a real clock, and its test must go through the real
+caller.** Passing `as_of = session_due_at(target_date)` makes the filter
+`session_due_at(d) <= as_of` **tautologically true** whenever the window is the
+single session `start == end == target_date` — which is exactly the shape the
+scheduled coverage run uses. The mechanism would then be inert on the only path
+production takes, while a unit test calling `build_denominator` directly still
+passes. So: `as_of` originates from `datetime.now(UTC)` at the entry point and is
+threaded down, and the regression test exercises the **caller** at 04:21 UTC and
+11:00 UTC, not the helper.
+
+**One clock per run.** The same `as_of` feeds the freshness pass and the windowed
+classifier, so a single run cannot grade two different instants.
+
 ⚠️ **The deadline exists only where a lane wrapper forwards it, and three of the
 seven do not.** Read 2026-09-01 in `livewire_scripts/run_daily_update_job.py`:
 `main()` passes `deadline=deadline` to every lane (`:861`, `:900`, `:904`,
@@ -467,7 +516,7 @@ escalate the decision · **C** = explicit non-goal.
 
 | Class                   | Denominator                             | Source                            | 1d                                                        | Intraday | G6    | G12                     | G7–G11 |
 | ----------------------- | --------------------------------------- | --------------------------------- | --------------------------------------------------------- | -------- | ----- | ----------------------- | ------ |
-| equity (in window)      | `presets/sp500,ndx100,r2k,etfs,adrs`    | Massive                           | **A**                                                     | B        | **A** | **A** detect / B repair | B      |
+| equity (in window)      | `presets/sp500,ndx100,r2k,etfs,adrs` (Phase 1 ships `sp500,ndx100` — see below) | Massive        | **A**                                                     | B        | **A** | **A** detect / B repair | B      |
 | equity (deep)           | same                                    | IB                                | one-time + frozen guard (**A**)                           | C        | **A** | **A** detect / B repair | B      |
 | volatility              | `presets/volatility.json`               | CBOE public API (`CLAUDE.md:964`) | **A** all history                                         | B (IB)   | **A** | —                       | B      |
 | rates                   | FRED DGS3/5/10/30                       | FRED                              | **A** all history                                         | —        | **A** | —                       | B      |
@@ -477,6 +526,14 @@ escalate the decision · **C** = explicit non-goal.
 | corporate_action        | event-based, no calendar                | Massive                           | **A** detect (revision reconciliation + jump cross-check) | —        | —     | —                       | B      |
 | silver                  | bronze revision                         | derived                           | **A** detect (G10)                                        | B        | —     | **A** detect            | B      |
 | options / crypto / tick | —                                       | —                                 | **C**                                                     | **C**    | **C** | **C**                   | **C**  |
+
+⚠️ **The equity row's five presets are the destination, not Phase 1.** The
+registry ships `["sp500", "ndx100"]` (515 symbols) because that is the universe
+§11 criterion 9's zero-false-positive result was measured on. Adding `r2k`,
+`etfs` and `adrs` widens it by roughly an order of magnitude into the illiquid
+tail, where a multi-day absence from the tape is ordinary — so the row widens
+only after criterion 9 is re-run and recorded at the wider scale. §4.4's
+threshold note is the same constraint stated from the other side.
 
 **General rule replacing per-cell reasoning:** _IB-sourced cells cannot be fully
 unattended; all others can._
@@ -638,8 +695,8 @@ Deliverables:
 
    **`livewire_scripts/gap_scan.py` is the violation this clause was written to
    prevent, and it is retired.** Written 2026-08-31 as a standalone subcommand
-   with two `launchd` templates, it stands beside `coverage_report.py` answering
-   the same question with a different denominator, and it carries neither the
+   with a `launchd` template, it stands beside `coverage_report.py` answering a
+   neighbouring question with a different denominator, and it carries neither the
    no-trade exemption (§4.4) nor the ingestion deadline (§5) — so on the full
    14,811-symbol universe it would reproduce the 96.6% interior-scan disease. The
    `sp500` spike did not expose that because every sp500 member is liquid. Its one
@@ -717,6 +774,18 @@ stopped during Phase 1 and returns decision-only in Phase 2.
    duplicates nothing, and BK is the argument for keeping it (in
    `bronze-delisted/` and in `presets/sp500.json` at once, because nothing
    reconciles the two).
+
+   ⚠️ **Convergence means one caller, not zero — added 2026-09-01.** Deletion is
+   half the criterion; the other half is that the deleted script's *function*
+   still runs. `classify()` has exactly one production caller (`gap_scan.py:62`),
+   and coverage as it stands is a one-session freshness job (`latest >=
+   target_date`) that never enumerates which sessions are absent. Deleting
+   `gap_scan` without first moving the windowed classifier into
+   `coverage_report` would retire `Finding`, `heal_by_days`, the tier, G14 and
+   the §10 deliverable 8 decision queue along with it — and that queue's depth is
+   the stated measurement for whether Phase 2 is worth building. The criterion is
+   therefore satisfied only when a test asserts that `classify` is reachable from
+   a scheduled entry point **after** the deletion.
 8. **Producer liveness:** every store this design reads has a non-empty artifact
    at the path the code resolves, or the section reading it states it is
    unpopulated and names the branch that is consequently untestable. Re-checked
@@ -735,12 +804,22 @@ stopped during Phase 1 and returns decision-only in Phase 2.
    by reading the producer's own Done stamp. This is §9.3 rule 2 applied to time:
    an on-disk artifact can exist and still lie.
 
-   The corporate-action store is the case that makes this load-bearing rather
-   than hygienic. It is the second source G14 rests on — §4.4's finding is
-   literally "no corporate action explains the terminus" — and it is written by
-   lane 1, the unbudgeted one that already wedged on 2026-07-28 (`CLAUDE.md`). A
-   frozen store turns every unreconciled delisting into a false G14, so the
-   engine must read the store's freshness before emitting G14 at all.
+   ⚠️ **Amended 2026-09-01 — the corporate-action clause is withdrawn.** This
+   paragraph previously required the engine to read the corporate-action store's
+   freshness before emitting G14, on the premise that the store is "the second
+   source G14 rests on". That premise is wrong: the store carries only `"split"`
+   and `"cash_dividend"` events (`corporate_action_store.py:421`), neither of
+   which removes a ticker from the tape, so a frozen store cannot produce a false
+   G14 and a fresh one cannot prevent one. **G14's second source is the raw
+   traded set, and the two tapes that independently confirm it** (§4.4: the
+   `minute_aggs_v1` and `day_aggs_v1` termini agree for all four symbols). The
+   freshness that G14 *does* depend on is the raw partition's — a stale tape
+   makes every symbol look like a terminus at once — so the criterion now reads:
+   **before emitting any G14, the engine must establish that the newest raw
+   `minute_aggs_v1` partition covers the terminus window.** The general rule
+   above (a producer's completion is established by differencing against an
+   independent later timestamp, never by its own Done stamp) is unchanged and
+   still applies to every store this design reads.
 9. **Terminus separation:** a symbol absent from the raw traded set for a single
    session with presence on both sides is **not** reported; a symbol absent from
    date X through the as-of date is reported as G14, Tier B. Verified against
@@ -805,9 +884,20 @@ live lake (not the dev checkout — §9.3 rule 2):
   lag, 4 terminus, 0 G2, 0 G13. Universe pass: 515 members → 4 findings → 0 false
   positives.
 - Acceptance criterion 2 is **met on the real lake**: BK, an `sp500.json` member
-  with no `1d.parquet`, is reported as G3 in production. This is the case the
-  disk-glob denominator cannot express, and it is the one result that justifies
-  the denominator replacement.
+  with no `1d.parquet`, is reported in production. This is the case the disk-glob
+  denominator cannot express, and it is the one result that justifies changing
+  the denominator.
+
+  ⚠️ **Corrected 2026-09-01: BK is a G14, not a G3.** The first spike classified
+  it G3 ("nothing on disk") because the terminus test did not exist yet. §4.4's
+  measurement then showed BK has been absent from `minute_aggs_v1` for all 43
+  days examined and from `day_aggs_v1` for all 21 — it never landed because it
+  stopped printing, not because ingestion missed it. Under the revised engine it
+  is a terminus: Tier B, decision queue, verdict `terminus`, no `heal_by_days`.
+  A G3/Tier A classification would queue a Massive fetch that returns nothing,
+  forever. The denominator argument is unaffected — the symbol has to be
+  *expressible* before its class can be argued about — but the class in this
+  evidence line was wrong and is corrected here.
 
 ## 15. Appendix — script disposition audit (2026-08-31)
 

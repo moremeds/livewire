@@ -7,23 +7,47 @@
 > forbids it.
 
 **Goal:** Make "a bar we should have is not on disk" answerable by exactly one
-detector, whose denominator comes from the registry rather than from disk, and
-which can tell a no-trade day apart from an instrument that left the tape.
+detector, whose denominator is registry-backed rather than purely disk-derived,
+and which can tell a no-trade day apart from an instrument that left the tape.
 
 **Architecture:** `clients/coverage_denominator.py` already builds
 `presets × trading_calendar × timeframe`. This plan gives it an ingestion-deadline
 rule, adds a pure terminus test over the raw traded sets coverage already reads,
-teaches `clients/gap_engine.py` the terminus class, and rewires
-`livewire_scripts/coverage_report.py` onto both — then deletes
-`livewire_scripts/gap_scan.py`, its two `launchd` templates and its subcommand.
-Net change to the script and job count is negative. No new scheduled job:
-`com.livewire.coverage` at 11:00 UTC already runs after the ingestion deadline.
+teaches `clients/gap_engine.py` the terminus class, then makes
+`livewire_scripts/coverage_report.py` **run the windowed classifier itself** —
+denominator → on-disk diff → `classify` → Tier A manifest + Tier B decision
+queue — and only then deletes `livewire_scripts/gap_scan.py`, its `launchd`
+template and its subcommand.
+
+**Absorption comes before deletion, and that ordering is the correction this
+revision makes.** Coverage as it stands is a *one-session freshness* job: its
+presence test is `latest >= target_date` and it never enumerates *which*
+sessions are absent. `gap_scan` is a *30-day windowed classifier* producing
+`Finding` objects. They are not the same detector. Deleting the second without
+building its replacement would leave `classify`, `Finding`, `heal_by_days`, the
+tier and the decision queue — spec §10 deliverables 5 and 8 — with **no
+production caller at all**, and §10 deliverable 8's queue depth is the stated
+measurement for whether Phase 2 is worth building. Net change to the script and
+job count is still negative. No new scheduled job: `com.livewire.coverage` at
+11:00 UTC already runs after the ingestion deadline.
 
 **Tech Stack:** Python 3.13, `uv` exclusively (`uv run pytest`), `pyarrow.parquet`
 for footer and column reads, stdlib `datetime`/`json`. No new dependencies.
 
 **Spec:** `docs/superpowers/specs/2026-08-31-livewire-gap-autoheal-design.md`
-(revised in `7aac492` and `902ac8f`).
+(revised in `7aac492`, `902ac8f`, `76d1bc2`, and again alongside this plan
+revision).
+
+**Revision note (2026-09-01, post cross-model review):** this plan was rewritten
+after a Codex + Cursor/Grok tribunal found six CRITICAL defects in the first
+draft. The three structural ones: deleting `gap_scan` left `classify` with no
+production caller (now Task 7); the terminus carve-out was a no-op because the
+no-trade exemption still counted those symbols present (now Task 6 step 3); and
+`as_of=session_due_at(target_date)` made the deadline rule tautological on the
+one path production runs (now Task 1's warning and Task 6's `as_of` parameter).
+Two claims in the first draft were asserted without verification and are
+corrected in place: the test fixtures do **not** hold real frozen prices, and
+**nothing** parses the `non-equity 1d:` log line.
 **Measurement this plan is calibrated against:**
 `docs/audits/2026-09-01-terminus-vs-no-trade.md`.
 
@@ -40,9 +64,14 @@ requirements implicitly include this section.
 - **CI runs `ruff check` AND `ruff format --check` as separate jobs.** Passing
   one does not imply the other. Run `uv run ruff format .` before every commit;
   two PRs in this repo have already failed on exactly this.
-- **No synthetic market data.** Test fixtures use real tickers at real frozen
-  values with an as-of date. A `_symbols.parquet` fixture is a list of real
-  tickers and is fine; invented prices are not.
+- **No synthetic market data.** Real tickers only; no invented prices presented
+  as observed. ⚠️ The existing `tests/test_coverage_report.py::_write_daily`
+  (`:74`) writes structural placeholders — `open 1.0, high 2.0, low 0.5,
+  close 1.5, volume 1000` — **not** frozen real prices. An earlier revision of
+  this plan asserted the opposite; that claim was wrong and is corrected here.
+  Reuse the helper as-is (this plan asserts on *dates and membership*, never on
+  a price, so its values are inert), and do not add a new fixture that asserts
+  on a price. A `_symbols.parquet` fixture is a list of real tickers and is fine.
 - **Nothing writes the data lake except through `shepherd_repair`.** Every
   function in this plan is read-only against the lake except the manifest/queue
   writers, which write under `<data-lake>/repairs/`, never under `bronze/`.
@@ -64,17 +93,18 @@ requirements implicitly include this section.
 | `clients/terminus.py` | pure suffix test over per-session traded sets; the raw-partition reader | **create** |
 | `clients/gap_engine.py` | classify a diff into G1/G3/G14; assign tier honestly | modify |
 | `clients/gap_registry.py` | valid gap ids | modify |
-| `registry/gaps.json` | six rows, now G1/G3/G14 | modify |
-| `livewire_scripts/coverage_report.py` | **the one reporting surface**; registry denominator, terminus exclusion, Tier A manifest, Tier B queue | modify |
-| `livewire_scripts/gap_scan.py` | — | **delete** |
+| `registry/gaps.json` | six rows; G14 on the equity row only | modify |
+| `livewire_scripts/coverage_report.py` | **the one detector**; registry denominator, terminus carve-out, the windowed classifier, Tier A manifest, Tier B queue | modify |
+| `livewire_scripts/gap_scan.py` | — | **delete** (Task 8, after Task 7 absorbs it) |
 | `launchd/com.livewire.gap-scan.plist.example` | — | **delete** |
-| `launchd/com.livewire.universe-refresh.plist.example` | — | **delete** |
+| `launchd/com.livewire.universe-refresh.plist.example` | a **producer** (`universe_sync`), spec §10 deliverable 4 | **keep — not touched** |
 | `scripts/livewire_quality.py` | subcommand table | modify (remove one line) |
 | `tests/test_coverage_denominator.py` | due rule | modify |
 | `tests/test_terminus.py` | suffix test | **create** |
 | `tests/test_gap_engine.py` | G14, tier honesty, no G2/G13 | modify |
 | `tests/test_coverage_report.py` | registry universe, terminus exclusion, log surface | modify |
-| `tests/test_gap_scan.py`, `tests/test_gap_scan_integration.py` | — | **delete** |
+| `tests/test_coverage_orchestration.py` | end-to-end: denominator → classify → both artifacts | **create** |
+| `tests/test_gap_scan.py`, `tests/test_gap_scan_integration.py` | — | **delete**, replaced by the above |
 
 ---
 
@@ -92,8 +122,20 @@ fills that session starts at 06:00 UTC on 2026-09-01. Spec §5.
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
 - Produces:
-  - `session_due_at(session: date) -> datetime` (tz-aware UTC)
-  - `build_denominator(preset_paths: list[Path], asset_class: str, timeframe: str, start: date, end: date, as_of: datetime) -> list[ExpectedSeries]` — **`as_of` changes from `date` to `datetime`**; every caller must be updated (Task 6 and the tests here).
+  - `session_due_at(session: date, lag_days: int = 1) -> datetime` (tz-aware UTC).
+    `lag_days` exists for one measured reason: spec §8.1's rates row is **T+2**,
+    because FRED publishes a day behind. A uniform T+1 would manufacture one
+    phantom rates gap every single day.
+  - `build_denominator(preset_paths: list[Path], asset_class: str, timeframe: str, start: date, end: date, as_of: datetime, lag_days: int = 1) -> list[ExpectedSeries]` — **`as_of` changes from `date` to `datetime`**; every caller must be updated (Tasks 5–7 and the tests here).
+
+⚠️ **The due rule must be tested through its real caller, not only through the
+helper.** Passing `as_of=session_due_at(target_date)` into `build_denominator`
+makes the filter `session_due_at(d) <= as_of` **tautologically true** for
+`start == end == target_date` — the mechanism is inert on exactly the path
+production runs. So `compute_coverage` (Tasks 5–7) takes an `as_of: datetime |
+None = None` that defaults to `datetime.now(UTC)` **in `main()`**, and the
+regression test in Task 9 exercises `compute_coverage` at 04:21 UTC and at
+11:00 UTC — not `build_denominator` in isolation.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -176,20 +218,30 @@ JOB_START_UTC = time(6, 0)
 DEFAULT_JOB_DEADLINE_SECONDS = 14400
 
 
-def session_due_at(session: date) -> datetime:
+def session_due_at(session: date, lag_days: int = 1) -> datetime:
     """The instant session *session* is due on disk.
 
     ponytail: reuses MDW_DAILY_JOB_DEADLINE_SECONDS rather than introducing a
     second constant to keep in step. "Closed" is not "delivered" -- the job that
     fills S starts 06:00 UTC on S+1, and a denominator that expects S the moment
     it closes manufactures one tail gap per symbol in the universe.
+
+    lag_days is the number of days after the session that the filling job
+    starts. It is 1 for every lane run by run-daily-job, and 2 for rates: FRED
+    publishes a session behind, which spec section 8.1 already records as
+    T+2. A uniform T+1 there manufactures one phantom gap per series per day.
     """
     seconds = int(os.environ.get("MDW_DAILY_JOB_DEADLINE_SECONDS", DEFAULT_JOB_DEADLINE_SECONDS))
-    start = datetime.combine(session + timedelta(days=1), JOB_START_UTC, tzinfo=UTC)
+    start = datetime.combine(session + timedelta(days=lag_days), JOB_START_UTC, tzinfo=UTC)
     return start + timedelta(seconds=seconds)
+
+
+# Spec section 8.1. Anything not listed is T+1.
+DUE_LAG_DAYS = {"rates": 2}
 ```
 
-Change the signature `as_of: date` to `as_of: datetime` and replace the filter:
+Change the signature `as_of: date` to `as_of: datetime`, add `lag_days: int = 1`,
+and replace the filter:
 
 ```python
     if as_of.tzinfo is None:
@@ -197,7 +249,21 @@ Change the signature `as_of: date` to `as_of: datetime` and replace the filter:
     # A session is expected only once the job that fills it was due to finish.
     # Guarding on `d < as_of.date()` instead would reintroduce the 497 phantoms:
     # closing is not delivery.
-    sessions = tuple(d for d in trading_dates_in_range(start, end) if session_due_at(d) <= as_of)
+    sessions = tuple(
+        d for d in trading_dates_in_range(start, end) if session_due_at(d, lag_days) <= as_of
+    )
+```
+
+Add one more test to Step 1, because the rates lag is the case a uniform rule
+gets wrong every day:
+
+```python
+def test_rates_is_due_a_day_later_than_equity():
+    # Spec section 8.1: FRED publishes a session behind, so the rates row is T+2.
+    # A uniform T+1 expects DGS10 for session S at 10:00 UTC on S+1, when the
+    # series legitimately does not exist yet -- one phantom gap per series, daily.
+    session = date(2026, 8, 28)
+    assert session_due_at(session, lag_days=2) - session_due_at(session) == timedelta(days=1)
 ```
 
 - [ ] **Step 4: Run the tests and verify they pass**
@@ -323,6 +389,11 @@ import pyarrow.parquet as pq
 
 RAW_MINUTE_AGGS = "raw/massive/us_stocks_sip/minute_aggs_v1"
 
+# Spec 4.4 says the terminus test has "no threshold to tune". That was written
+# about the SHAPE of the test -- a suffix, not a severity cutoff -- and it stays
+# true: this is not a "how many missing bars is too many" dial like the 5m scan's,
+# which is the circular question 4.4 rejects. But it IS a calibrated constant,
+# and calling it thresholdless would be dishonest. Spec 4.4 is amended to say so.
 # ponytail: one trading week. A listed instrument that does not print for five
 # consecutive sessions is not having a quiet day. Measured 2026-09-01, the four
 # real termini had runs of 21/19/11/10 sessions and the other 511 members of the
@@ -425,6 +496,18 @@ Three changes to `clients/gap_engine.py`, all from the same measurement:
 3. **Tier honesty.** All four were emitted Tier A `source: massive` when
    Massive's own tape is what lacks them — a repair that fetches nothing,
    forever. Spec §9.3 rule 4.
+
+⚠️ **What G14 does NOT do, and why the spec changes rather than the code.**
+Spec §3 as first written defined G14 as absence "with no corporate action
+explaining it", and §11 criterion 8 demanded the engine read the store's
+freshness before emitting one. Neither is implementable against the store this
+repo has: `clients/corporate_action_store.py:421` writes exactly two
+`action_type` values, `"split"` and `"cash_dividend"`, and **neither removes a
+ticker from the SIP tape**. There is no delisting event and no rename event to
+consult, so a store lookup could never explain a terminus. G14 is therefore
+emitted on **tape evidence alone**, and the spec is amended (§3, §11 criterion
+8) to say so and to record the missing-event-type as the reason. Adding a
+delisting feed is a separate change with its own measurement.
 
 **Files:**
 - Modify: `clients/gap_engine.py`, `clients/gap_registry.py`
@@ -610,8 +693,14 @@ git commit -m "feat(gap): G14 terminus, tier B by construction; retire the unexe
 ### Task 4: The registry rows say what the engine actually emits
 
 Six rows declare `"gap": ["G1","G2","G3"]`. After Task 3 the engine emits
-G1/G3/G14. A row that claims a check it does not run is the registry-side version
-of the disk-glob failure this engine replaces.
+G1/G3 everywhere and G14 **only where a terminus can actually be computed**.
+
+⚠️ **G14 goes on the equity row only.** `terminus_of` reads the SIP raw traded
+sets (`raw/massive/us_stocks_sip/minute_aggs_v1`). There is no equivalent tape
+for rates, fx, volatility, futures or cmdty, and Task 7 computes no terminus for
+them — so a G14 on those five rows would be the registry claiming a check that
+never runs, which is the exact failure `VALID_CHECKS` exists to prevent
+(`clients/gap_registry.py:20-24`).
 
 **Files:**
 - Modify: `registry/gaps.json`
@@ -627,11 +716,19 @@ of the disk-glob failure this engine replaces.
 Append to `tests/test_gap_registry_contract.py`:
 
 ```python
-def test_every_row_declares_exactly_the_gaps_denominator_diff_emits():
-    # denominator_diff emits G1, G3 and G14 and nothing else. A row naming G2
-    # would promise a check that classify() no longer performs.
+def test_no_row_declares_a_gap_the_engine_no_longer_emits():
+    # classify() emits G1, G3 and G14 and nothing else. A row naming G2 promises
+    # a check that no longer performs.
     for row in load_registry(Path("registry/gaps.json")):
-        assert set(row.gap) == {"G1", "G3", "G14"}, row.id
+        assert set(row.gap) <= {"G1", "G3", "G14"}, row.id
+
+
+def test_g14_is_declared_only_where_a_tape_exists_to_compute_it():
+    # terminus_of reads the SIP raw traded sets. There is no such tape for rates,
+    # fx, volatility, futures or cmdty, so a G14 there would be a claim with no
+    # check behind it -- the registry-side version of the disk-glob failure.
+    for row in load_registry(Path("registry/gaps.json")):
+        assert ("G14" in row.gap) == (row.asset_class == "equity"), row.id
 ```
 
 - [ ] **Step 2: Run and verify it fails**
@@ -641,22 +738,19 @@ Expected: FAIL — rows still declare `G2`.
 
 - [ ] **Step 3: Edit the six rows**
 
-In `registry/gaps.json`, for **each of the six rows**, replace the `gap` array
-and the `id` prefix:
+In `registry/gaps.json`, drop `"G2"` from all six `gap` arrays, and add `"G14"`
+to the **equity row only**:
 
 ```json
-    "id": "g1-g3-g14-equity-daily",
-    "gap": [
-      "G1",
-      "G3",
-      "G14"
-    ],
+    "gap": ["G1", "G3", "G14"],     // equity row
+    "gap": ["G1", "G3"],            // the other five
 ```
 
-Row ids in order: `g1-g3-g14-equity-daily`, `g1-g3-g14-rates-daily`,
-`g1-g3-g14-fx-daily`, `g1-g3-g14-cmdty-daily`, `g1-g3-g14-volatility-daily`,
-`g1-g3-g14-futures-daily`. Leave `asset_class`, `timeframe`, `universe`,
-`check`, `params` and `since` untouched. Set every row's `test` to
+**Leave every `id` unchanged.** An earlier revision renamed them
+`g1-g2-g3-*` → `g1-g3-g14-*`; nothing parses an id, the rename touches no
+behaviour, and it would break any queue entry or manifest already keyed on the
+old value. Leave `asset_class`, `timeframe`, `universe`, `check`, `params` and
+`since` untouched too. Set every row's `test` to
 `tests/test_gap_engine.py::test_a_missing_file_with_no_terminus_is_still_g3_tier_a`.
 
 - [ ] **Step 4: Run and verify it passes**
@@ -688,10 +782,26 @@ risk. Do this before the equity path.
 - Test: `tests/test_coverage_report.py`
 
 **Interfaces:**
-- Consumes: `build_denominator` (Task 1), `load_registry` (existing).
-- Produces: `compute_non_equity_coverage(target_date: date, bronze_root: Path | None = None, registry_path: Path | None = None) -> dict[str, CoverageResult]`, keyed by asset class, now including `"fx"` and `"cmdty"`.
+- Consumes: `build_denominator`, `session_due_at`, `DUE_LAG_DAYS` (Task 1); `load_registry` (existing).
+- Produces: `compute_non_equity_coverage(target_date: date, bronze_root: Path | None = None, registry_path: Path | None = None, presets_dir: Path | None = None, as_of: datetime | None = None) -> dict[str, CoverageResult]`, keyed by asset class, now including `"fx"` and `"cmdty"`.
 - `format_non_equity_line` renders the same `<date> non-equity 1d: <ac>=<p>/<t> …`
   shape; only the number of terms changes.
+
+⚠️ **`presets_dir` is a parameter, not a hardcoded `Path("presets")`.** A
+cwd-relative preset directory is a trap this repo has already been bitten by:
+`CLAUDE.md` records that `repair-legacy-basis`'s `--presets-dir` default made
+`--priority-only` "silently repair zero symbols and exit 0" when run from
+anywhere but the repo root. Here the same default would silently produce an
+**empty denominator**, i.e. `14/14 (100.00%)` with a universe of zero.
+
+⚠️ **These asset classes do not trade an XNYS calendar.**
+`clients/gap_registry.py:25-30` records verbatim that fx trades ~24/5, CME
+futures keep their own sessions and FRED publishes on its own schedule, and
+calls this "a KNOWN, DEFERRED limitation … recorded here so a new asset class
+cannot inherit the blind spot silently". This task adds two classes to a
+detector built on that blind spot, so it must carry the limitation forward
+explicitly rather than describing them as "least risk" — which the previous
+revision did, wrongly.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -715,6 +825,29 @@ def test_a_non_equity_symbol_that_never_landed_is_counted_missing(tmp_path):
     (bronze / "asset_class=rates" / "symbol=DGS10").mkdir(parents=True)
     results = compute_non_equity_coverage(date(2026, 8, 28), bronze_root=bronze)
     assert "DGS30" in results["rates"].missing_symbols
+
+
+def test_rates_is_not_expected_until_t_plus_2(tmp_path):
+    # FRED publishes a session behind (spec 8.1). At 11:00 UTC on 2026-08-29 the
+    # 2026-08-28 session is due for equity but NOT for rates, so an empty rates
+    # tree must produce a zero-length denominator rather than 4 phantom gaps.
+    bronze = tmp_path / "bronze"
+    (bronze / "asset_class=rates").mkdir(parents=True)
+    results = compute_non_equity_coverage(
+        date(2026, 8, 28), bronze_root=bronze,
+        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    )
+    assert results["rates"].total == 0
+
+
+def test_every_non_equity_row_is_declared_xnys_or_rejected():
+    # gap_registry.XNYS_CALENDAR_ASSET_CLASSES is the recorded blind spot. This
+    # test does not fix the calendar; it makes adding a sixth asset class an
+    # explicit act rather than a silent inheritance.
+    from clients.gap_registry import XNYS_CALENDAR_ASSET_CLASSES, load_registry
+
+    for row in load_registry(Path("registry/gaps.json")):
+        assert row.asset_class in XNYS_CALENDAR_ASSET_CLASSES, row.id
 ```
 
 - [ ] **Step 2: Run and verify it fails**
@@ -741,15 +874,27 @@ def compute_non_equity_coverage(
     target_date: date,
     bronze_root: Path | None = None,
     registry_path: Path | None = None,
+    presets_dir: Path | None = None,
+    as_of: datetime | None = None,
 ) -> dict[str, CoverageResult]:
     """Return per-asset-class 1d freshness for the non-equity universes.
 
     The denominator is the registry universe, never the files on disk: a symbol
     that never landed has to stay countable. No no-trade exemption -- these are
-    small, continuously-quoted universes and a stale one is a real gap.
+    small universes and a stale one is a real gap.
+
+    ponytail: the calendar is XNYS for every class here, which is WRONG for fx
+    (~24/5), CME futures and FRED -- see gap_registry.XNYS_CALENDAR_ASSET_CLASSES.
+    A bar expected on an XNYS holiday is not expected at all, so its absence is
+    invisible. Known, deferred, and carried forward deliberately; the fix is a
+    per-class calendar, not a tweak here.
     """
     bronze_root = bronze_root or _resolved_data_lake() / "bronze"
-    presets_dir = Path("presets")
+    presets_dir = presets_dir or Path("presets")
+    # Real wall clock, not the session's own due time: passing session_due_at
+    # (target_date) here would make the due filter tautologically true and the
+    # whole deadline rule inert.
+    as_of = as_of or datetime.now(UTC)
     results: dict[str, CoverageResult] = {}
     for row in _non_equity_rows(registry_path):
         expected = build_denominator(
@@ -758,9 +903,12 @@ def compute_non_equity_coverage(
             "1d",
             target_date,
             target_date,
-            as_of=session_due_at(target_date),
+            as_of=as_of,
+            lag_days=DUE_LAG_DAYS.get(row.asset_class, 1),
         )
-        universe = {series.symbol for series in expected}
+        # An empty denominator means the session is not due yet for this class
+        # (rates at T+2). Zero of zero, not N phantom gaps.
+        universe = {series.symbol for series in expected if series.sessions}
         present = set()
         for symbol in universe:
             path = bronze_root / f"asset_class={row.asset_class}" / f"symbol={symbol}" / "1d.parquet"
@@ -776,10 +924,14 @@ def compute_non_equity_coverage(
             missing_symbols=sorted(universe - present),
         )
     return results
-
-
-NON_EQUITY_ASSET_CLASSES: tuple[str, ...] = ("volatility", "futures", "rates", "fx", "cmdty")
 ```
+
+**Delete `NON_EQUITY_ASSET_CLASSES` entirely** rather than widening it. Once the
+universe comes from the registry and `format_non_equity_line` iterates the
+results, nothing reads the constant — keeping a wider copy of a list that is now
+derived is precisely the duplicate-source-of-truth this task removes. Update its
+import in `tests/test_coverage_report.py:21` and its three uses at `:732,738,739`
+to read the registry (or the returned dict's keys) instead.
 
 Change `format_non_equity_line` to iterate the results rather than the constant,
 so a registry row added later renders without a second edit:
@@ -793,16 +945,29 @@ def format_non_equity_line(target_date: date, results: dict[str, CoverageResult]
 Add to the imports at the top of the file:
 
 ```python
-from clients.coverage_denominator import build_denominator, session_due_at
+from datetime import UTC, datetime
+
+from clients.coverage_denominator import DUE_LAG_DAYS, build_denominator, session_due_at
 from clients.gap_registry import load_registry
 ```
 
 - [ ] **Step 4: Run and verify it passes**
 
 Run: `uv run pytest tests/test_coverage_report.py -v`
-Expected: PASS. `status.py` and the digest read the `non-equity 1d:` line by
-prefix and parse `ac=p/t` terms, so two extra terms are additive — confirm with
-`uv run pytest tests/test_status.py tests/test_nightly_digest.py -v`.
+Expected: PASS.
+
+⚠️ **Correction to the previous revision of this plan, which claimed
+"`status.py` and the digest read the `non-equity 1d:` line by prefix and parse
+`ac=p/t` terms". That is false.** Verified 2026-09-01:
+`status.py:308` selects lines with `re.compile(r"\bcoverage:\s")`, which the
+`non-equity 1d:` line does not match; `weekly_quality_summary.py:44-50` requires
+a `coverage:` header followed by `1d=`; and a repo-wide grep finds **no parser
+for that line at all**. The two extra terms are still safe — because nothing
+reads them, not because a parser tolerates them. That is also a gap worth naming:
+the non-equity line is written and graded by nobody. Wiring it into `status`
+is out of scope here (see Out of scope). Still run
+`uv run pytest tests/test_status.py tests/test_nightly_digest.py -v` to confirm
+nothing regressed.
 
 - [ ] **Step 5: Format, lint, commit**
 
@@ -814,19 +979,39 @@ git commit -m "fix(coverage): non-equity denominator comes from the registry, an
 
 ---
 
-### Task 6: Equity 1d — registry denominator, terminus exclusion, one reporting surface
+### Task 6: Equity 1d — a registry-backed denominator and a terminus carve-out
 
 The equity `1d` universe is `on_disk`, so BK — an `sp500.json` member with no
 `1d.parquet` — is undetectable by construction. Union in the registry
-denominator, and route terminus symbols out of `missing` into their own reported
-class so the count stays honest in both directions.
+denominator, and route terminus symbols **out of the denominator entirely** so
+the count stays honest in both directions.
 
 **Do not touch the intraday branch.** `universe = set(traded_today)` for
 intraday is already provider-derived and correct; the footer cache, the thread
 pool and the recovery path stay exactly as they are.
 
+⚠️ **This is a union, not a replacement, and the plan says so.** The registry's
+equity row names `["sp500", "ndx100"]` = 515 symbols; `on_disk` is ~13,270. So
+**~96% of the 1d denominator remains disk-derived after this task**, and the
+"never derived from disk" language in spec §4 describes a destination, not this
+change. What the union buys is precisely one thing, and it is the thing that
+matters: a registry member with **no file at all** becomes expressible. Spec §8
+lists five equity presets (`sp500, ndx100, r2k, etfs, adrs`); widening the row
+to all five is a separate change gated on a calibration run at that scale — see
+the terminus-scope warning below for why.
+
+⚠️ **Terminus is computed over the REGISTRY universe only, never over
+`on_disk`.** The 2026-09-01 measurement that produced zero false positives ran
+over 515 liquid sp500+ndx100 members. `on_disk` is ~13,270 symbols dominated by
+the illiquid tail that `CLAUDE.md` records as legitimately not printing for days
+at a time — the same population that made the 5m interior scan flag 96.6% of the
+universe. Applying a threshold calibrated on the liquid 515 to all 13,270 is a
+category error, and it is the one that would turn this feature into another
+standing WARN nobody reads. Widen the scope only with a measured run at the
+wider scale, recorded in the audit note.
+
 **Files:**
-- Modify: `livewire_scripts/coverage_report.py:240-334`
+- Modify: `livewire_scripts/coverage_report.py:240-334`, and `auto_recover`'s recheck at `:519`
 - Test: `tests/test_coverage_report.py`
 
 **Interfaces:**
@@ -834,58 +1019,124 @@ pool and the recovery path stay exactly as they are.
   `traded_by_session`, `RAW_MINUTE_AGGS` (Task 2).
 - Produces:
   - `CoverageResult` gains `terminus_symbols: tuple[tuple[str, date], ...] = ()` — `(symbol, terminus date)` pairs, so the log line can name the date without a second lookup.
-  - `compute_coverage(target_date, bronze_root=None, cache_path=None, registry_path=None)`.
+  - `compute_coverage(target_date, bronze_root=None, cache_path=None, registry_path=None, presets_dir=None, as_of=None)`.
   - `format_terminus_block(results) -> list[str]` returning at most one
     `  1d terminus: <sym>@<date>, …` line.
+  - **Invariant:** `total == present + len(missing_symbols)`, and a terminus
+    symbol appears in none of the three.
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/test_coverage_report.py`:
+Append to `tests/test_coverage_report.py`. Use the file's existing
+`_write_daily(bronze_root, symbol, dates)` (`:74`) and
+`_write_raw_symbols(bronze_root, target, symbols)` (`:121`) — do **not** add new
+bronze/tape fixtures. Their OHLC values are structural placeholders, which is
+fine here because nothing below asserts on a price.
 
 ```python
 def test_a_preset_member_with_no_parquet_is_counted_missing(tmp_path):
-    # BK, measured 2026-09-01: an sp500 member with no 1d.parquet. The disk-glob
-    # denominator cannot express this symbol at all.
-    bronze = _bronze_with(tmp_path, {"AAPL": date(2026, 8, 28)})
-    _write_tape(bronze.parent / "raw/massive/us_stocks_sip/minute_aggs_v1",
-                date(2026, 8, 28), ["AAPL", "BK"])
-    results = compute_coverage(date(2026, 8, 28), bronze_root=bronze,
-                               registry_path=_registry_for(tmp_path, ["AAPL", "BK"]))
+    # BK, measured 2026-09-01: an sp500 member with no 1d.parquet at all. The
+    # disk-glob denominator cannot express this symbol, which is why it read as
+    # 100% healthy for weeks.
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", [date(2026, 8, 28)])
+    _write_raw_symbols(bronze, date(2026, 8, 28), ["AAPL", "BK"])
+    results = compute_coverage(
+        date(2026, 8, 28), bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL", "BK"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    )
     assert "BK" in results["1d"].missing_symbols
 
 
-def test_a_terminus_symbol_is_reported_separately_and_not_as_missing(tmp_path):
-    # EQR left the tape. Counting it missing puts an unrepairable job in the
-    # recovery path; counting it present is what hid it for weeks. It is neither.
-    bronze = _bronze_with(tmp_path, {"AAPL": date(2026, 8, 28), "EQR": date(2026, 8, 17)})
-    raw = bronze.parent / "raw/massive/us_stocks_sip/minute_aggs_v1"
+def test_a_terminus_symbol_is_in_neither_present_nor_missing(tmp_path):
+    # EQR left the tape 2026-08-18. Counting it missing queues an impossible
+    # repair; counting it present is what hid it. It is in NEITHER, and the
+    # ratio must not be able to read green because of it.
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", [date(2026, 8, 28)])
+    _write_daily(bronze, "EQR", [date(2026, 8, 17)])
     for session in _sessions(date(2026, 8, 18), date(2026, 8, 28)):
-        _write_tape(raw, session, ["AAPL"])
-    results = compute_coverage(date(2026, 8, 28), bronze_root=bronze,
-                               registry_path=_registry_for(tmp_path, ["AAPL", "EQR"]))
-    assert "EQR" not in results["1d"].missing_symbols
-    assert "EQR" in dict(results["1d"].terminus_symbols)
+        _write_raw_symbols(bronze, session, ["AAPL"])
+    results = compute_coverage(
+        date(2026, 8, 28), bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL", "EQR"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    )
+    result = results["1d"]
+    assert "EQR" in dict(result.terminus_symbols)
+    assert "EQR" not in result.missing_symbols
+    # The regression this test exists for: the no-trade exemption also counts an
+    # absent symbol PRESENT, so subtracting terminus from `missing` alone is a
+    # no-op and the ratio still reads 100%.
+    assert result.total == result.present + len(result.missing_symbols)
+    assert result.total == 1
 
 
 def test_a_one_day_absence_is_still_exempted_as_no_trade(tmp_path):
     # The exemption stays load-bearing. Without it the interior scan flags 96.6%
     # of the universe, and this test is the guard on that.
-    bronze = _bronze_with(tmp_path, {"AAPL": date(2026, 8, 28), "SLND": date(2026, 8, 27)})
-    raw = bronze.parent / "raw/massive/us_stocks_sip/minute_aggs_v1"
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", [date(2026, 8, 28)])
+    _write_daily(bronze, "SLND", [date(2026, 8, 27)])
     for session in _sessions(date(2026, 8, 18), date(2026, 8, 27)):
-        _write_tape(raw, session, ["AAPL", "SLND"])
-    _write_tape(raw, date(2026, 8, 28), ["AAPL"])
-    results = compute_coverage(date(2026, 8, 28), bronze_root=bronze,
-                               registry_path=_registry_for(tmp_path, ["AAPL", "SLND"]))
+        _write_raw_symbols(bronze, session, ["AAPL", "SLND"])
+    _write_raw_symbols(bronze, date(2026, 8, 28), ["AAPL"])
+    results = compute_coverage(
+        date(2026, 8, 28), bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL", "SLND"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    )
     assert "SLND" not in results["1d"].missing_symbols
     assert results["1d"].terminus_symbols == ()
-```
 
-`tests/test_coverage_report.py` **already has** `_write_daily(bronze_root,
-symbol, dates)` (`:74`) and `_write_raw_symbols(bronze_root, target, symbols)`
-(`:121`). Use those — do not add `_bronze_with` or `_write_tape`. The tests above
-are written against them; adapt the calls rather than duplicating the fixtures,
-whose frozen closes are real prices at a recorded as-of date.
+
+def test_before_the_deadline_the_session_is_not_expected_at_all(tmp_path):
+    # Spec section 11 criterion 11, exercised through compute_coverage rather
+    # than through build_denominator. Passing as_of=session_due_at(target_date)
+    # would make the due filter tautologically true, so the ONLY test that can
+    # catch a regression here is one that goes through the real caller with a
+    # real clock. 04:21 UTC on 2026-08-29 is before the 10:00 UTC deadline for
+    # session 2026-08-28, so nothing is due and nothing is missing.
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", [date(2026, 8, 27)])
+    _write_raw_symbols(bronze, date(2026, 8, 28), ["AAPL"])
+    early = compute_coverage(
+        date(2026, 8, 28), bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 4, 21, tzinfo=UTC),
+    )
+    assert early["1d"].total == 0
+    late = compute_coverage(
+        date(2026, 8, 28), bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    )
+    assert late["1d"].missing_symbols == ["AAPL"]
+
+
+def test_terminus_is_not_computed_for_symbols_outside_the_registry(tmp_path):
+    # SLND is on disk but not in any preset. The terminus threshold is calibrated
+    # on 515 liquid names; the illiquid on-disk tail genuinely does not print for
+    # days, so applying it there manufactures the 96.6% disease.
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", [date(2026, 8, 28)])
+    _write_daily(bronze, "SLND", [date(2026, 8, 5)])
+    for session in _sessions(date(2026, 8, 6), date(2026, 8, 28)):
+        _write_raw_symbols(bronze, session, ["AAPL"])
+    results = compute_coverage(
+        date(2026, 8, 28), bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    )
+    assert results["1d"].terminus_symbols == ()
+```
 
 Add exactly one new helper, because nothing writes a registry today:
 
@@ -893,16 +1144,15 @@ Add exactly one new helper, because nothing writes a registry today:
 def _registry_for(tmp_path: Path, tickers: list[str]) -> Path:
     """A one-row registry plus the preset it names, both under tmp_path.
 
-    The preset lives in a `presets/` subdirectory because the production code
-    resolves preset paths relative to the repo root; the test passes an absolute
-    registry path and monkeypatches nothing else.
+    Pair it with presets_dir=tmp_path / "presets" at the call site; production
+    resolves preset names against a directory it is GIVEN, never against the CWD.
     """
     presets = tmp_path / "presets"
     presets.mkdir(exist_ok=True)
     (presets / "t.json").write_text(json.dumps({"name": "t", "tickers": tickers}))
     registry = tmp_path / "gaps.json"
     registry.write_text(json.dumps([{
-        "id": "g1-g3-g14-equity-daily",
+        "id": "g1-g2-g3-equity-daily",
         "gap": ["G1", "G3", "G14"],
         "asset_class": "equity",
         "timeframe": "1d",
@@ -914,23 +1164,17 @@ def _registry_for(tmp_path: Path, tickers: list[str]) -> Path:
         "test": "tests/test_gap_engine.py::test_a_missing_file_with_no_terminus_is_still_g3_tier_a",
     }]))
     return registry
-```
 
-`_equity_preset_paths` resolves `presets/<name>.json` relative to the process
-CWD, so for the test to find `tmp_path/presets/t.json` the helper must take the
-presets directory too. Change its signature to
-`_equity_preset_paths(registry_path: Path | None, presets_dir: Path | None = None)`
-and thread `presets_dir` through `compute_coverage`, defaulting to
-`Path("presets")`. Do the same in `compute_non_equity_coverage` from Task 5 —
-its `presets_dir = Path("presets")` is currently a hardcoded local, which makes
-that function untestable outside the repo root, the exact trap
-`repair-legacy-basis` already hit (`CLAUDE.md`: *"--presets-dir defaults to a
-cwd-relative Path("presets"), so --priority-only elsewhere used to silently
-repair zero symbols and exit 0"*).
+
+def _sessions(start: date, end: date) -> list[date]:
+    from clients.trading_calendar import trading_dates_in_range
+
+    return trading_dates_in_range(start, end)
+```
 
 - [ ] **Step 2: Run and verify they fail**
 
-Run: `uv run pytest tests/test_coverage_report.py -k "preset_member or terminus or no_trade" -v`
+Run: `uv run pytest tests/test_coverage_report.py -k "preset_member or terminus or no_trade or deadline" -v`
 Expected: FAIL — `compute_coverage() got an unexpected keyword argument 'registry_path'`.
 
 - [ ] **Step 3: Implement**
@@ -938,61 +1182,101 @@ Expected: FAIL — `compute_coverage() got an unexpected keyword argument 'regis
 Add the field to `CoverageResult`:
 
 ```python
-    # (symbol, terminus date) pairs. Neither missing nor present: no source can
-    # supply bars for an instrument that stopped printing, so counting these
-    # missing queues an impossible repair and counting them present is what hid
-    # BK, EA, AVB and EQR.
+    # (symbol, terminus date) pairs. In NEITHER `present` nor `missing_symbols`,
+    # and NOT in `total`: no source can supply bars for an instrument that
+    # stopped printing, so counting these missing queues an impossible repair and
+    # counting them present is what hid BK, EA, AVB and EQR.
     terminus_symbols: tuple[tuple[str, date], ...] = ()
 ```
 
-In `compute_coverage`, add the parameter and, immediately after `traded_today`
-is computed, build the terminus map once for the whole run:
+Add the parameters to `compute_coverage` and, immediately after `traded_today`
+is computed, build the terminus window once for the whole run:
 
 ```python
-    # One window, read once, shared by every timeframe. The 20-session window is
-    # what the 2026-09-01 measurement used; MIN_TERMINUS_SESSIONS decides inside
-    # it.
-    # 40 calendar days is comfortably more than 20 sessions including holidays;
-    # the slice, not the span, defines the window.
-    window = trading_dates_in_range(target_date - timedelta(days=40), target_date)[-TERMINUS_WINDOW_SESSIONS:]
+def compute_coverage(
+    target_date: date,
+    bronze_root: Path | None = None,
+    cache_path: Path | None = None,
+    registry_path: Path | None = None,
+    presets_dir: Path | None = None,
+    as_of: datetime | None = None,
+) -> dict[str, CoverageResult]:
+    ...
+    # The real clock. NOT session_due_at(target_date): that makes the due filter
+    # `session_due_at(d) <= as_of` tautologically true for a single-session
+    # window, so the entire deadline rule would be inert on the one code path
+    # production runs.
+    as_of = as_of or datetime.now(UTC)
+    presets_dir = presets_dir or Path("presets")
+```
+
+```python
+    # One window, read once, shared by every timeframe. 40 calendar days is
+    # comfortably more than 20 sessions including holidays; the slice, not the
+    # span, defines the window. previous_trading_day(d) takes a single argument
+    # and cannot step back N sessions, which is why this is a slice.
+    window = trading_dates_in_range(
+        target_date - timedelta(days=40), target_date
+    )[-TERMINUS_WINDOW_SESSIONS:]
     tape = traded_by_session(bronze_root.parent / RAW_MINUTE_AGGS, window)
 ```
 
-Replace the `1d` universe line:
+Replace the `1d` universe line and the `present_symbols` / `missing` block
+together — they are one change, and splitting them is exactly how the previous
+revision produced a no-op:
 
 ```python
-        # The registry, not the disk. A symbol that never landed has no file to
-        # glob, which is why BK -- an sp500 member -- read as 100% healthy.
+        registry_universe: set[str] = set()
         if tf == "1d":
             expected = build_denominator(
-                _equity_preset_paths(registry_path),
-                "equity", "1d", target_date, target_date,
-                as_of=session_due_at(target_date),
+                _equity_preset_paths(registry_path, presets_dir),
+                "equity", "1d", target_date, target_date, as_of=as_of,
             )
-            universe = on_disk | {series.symbol for series in expected}
+            # An empty session tuple means the ingestion deadline has not passed
+            # for this session. Zero of zero -- not one phantom tail gap per
+            # symbol, which is what 497 of the first run's 501 findings were.
+            if not any(series.sessions for series in expected):
+                results[tf] = CoverageResult(tf, 0, 0, [], ())
+                continue
+            # The registry, not the disk. A symbol that never landed has no file
+            # to glob, which is why BK -- an sp500 member -- read as 100% healthy.
+            # ponytail: a UNION, so ~96% of this denominator is still disk-derived.
+            # Widening the registry row is a separate, measured change.
+            registry_universe = {series.symbol for series in expected}
+            universe = on_disk | registry_universe
         else:
             universe = on_disk if not traded_today else set(traded_today)
-```
 
-Replace the `present_symbols` / `missing` block:
-
-```python
-        terminus = {}
+        # Scoped to the registry universe deliberately: the threshold is
+        # calibrated on 515 liquid names and the on-disk tail legitimately does
+        # not print for days.
+        terminus: dict[str, date] = {}
         if tf == "1d":
-            terminus = {s: t for s in universe if (t := terminus_of(tape, s)) is not None}
+            terminus = {
+                symbol: when
+                for symbol in registry_universe
+                if (when := terminus_of(tape, symbol)) is not None
+            }
+
+        # A terminus leaves the denominator ENTIRELY. Subtracting it from
+        # `missing` alone is a no-op: the no-trade exemption below already counts
+        # an absent symbol as present, so the symbol simply moves from one
+        # counted bucket to the other and the ratio still reads green.
+        countable = universe - set(terminus)
         present_symbols = {
             symbol
-            for symbol in universe
+            for symbol in countable
             if (latest_by_symbol.get(symbol) or date.min) >= target_date
             or (tf == "1d" and traded_today and symbol not in traded_today)
         }
-        # A terminus is neither present nor missing: it is a decision request.
-        # Leaving it in `missing` would trip the safety cap and hand the recovery
-        # subprocess a symbol no provider carries.
-        missing = sorted(universe - present_symbols - set(terminus))
+        missing = sorted(countable - present_symbols)
+        # ponytail: a plain assert; nothing in this repo runs python -O. It is
+        # here because the two buckets drifting apart silently is the exact
+        # failure mode this task is correcting.
+        assert len(countable) == len(present_symbols) + len(missing)
         results[tf] = CoverageResult(
             timeframe=tf,
-            total=len(universe),
+            total=len(countable),
             present=len(present_symbols),
             missing_symbols=missing,
             terminus_symbols=tuple(sorted(terminus.items())),
@@ -1002,13 +1286,13 @@ Replace the `present_symbols` / `missing` block:
 Add the helper and the log block:
 
 ```python
-def _equity_preset_paths(registry_path: Path | None) -> list[Path]:
+def _equity_preset_paths(registry_path: Path | None, presets_dir: Path) -> list[Path]:
     rows = load_registry(registry_path or Path("registry/gaps.json"))
     names: list[str] = []
     for row in rows:
         if row.asset_class == "equity" and row.timeframe == "1d":
             names.extend(row.universe)
-    return [Path("presets") / f"{name}.json" for name in dict.fromkeys(names)]
+    return [presets_dir / f"{name}.json" for name in dict.fromkeys(names)]
 
 
 def format_terminus_block(results: dict[str, CoverageResult]) -> list[str]:
@@ -1036,69 +1320,288 @@ from `datetime`, and `RAW_MINUTE_AGGS`, `terminus_of`, `traded_by_session` from
 TERMINUS_WINDOW_SESSIONS = 20
 ```
 
-`previous_trading_day(d)` takes a single argument — it cannot step back N
-sessions, which is why the window is sliced rather than computed from it.
-
 Call `format_terminus_block(results)` wherever `format_missing_blocks(results)`
 is already appended to the log, immediately after it.
 
-- [ ] **Step 4: Run the full suite**
+- [ ] **Step 4: Fix the auto-recovery recheck**
+
+`auto_recover` re-runs coverage at `livewire_scripts/coverage_report.py:519`:
+
+```python
+    rechecked = compute_coverage(effective_target, bronze_root=bronze_root)[timeframe]
+```
+
+It drops every new argument, so the recheck runs with the **disk-glob**
+denominator: a registry-only symbol like BK vanishes from `universe` and reads
+as recovered. Thread the arguments through `auto_recover` and pass them:
+
+```python
+    rechecked = compute_coverage(
+        effective_target, bronze_root=bronze_root,
+        registry_path=registry_path, presets_dir=presets_dir, as_of=as_of,
+    )[timeframe]
+```
+
+Add a test asserting a registry-only symbol is still reported after a recovery
+attempt that could not have fetched it.
+
+- [ ] **Step 5: Run the full suite**
 
 Run: `uv run pytest tests/ -v`
-Expected: PASS. Pay attention to `tests/test_status.py`,
-`tests/test_weekly_quality_summary.py` and `tests/test_nightly_digest.py` — all
-three parse this log surface. The `coverage:` and `non-equity 1d:` lines are
-unchanged in shape; only the `1d=<p>/<t>` totals move, which is the intended
-one-time step.
+Expected: PASS **except** `tests/test_gap_scan*.py`, which still exercise
+`gap_scan.py:98`'s `--as-of` as a `date` and now raise `TypeError` against the
+`datetime` filter from Task 1. That is expected and is not fixed here: Task 7
+replaces those tests and Task 8 deletes the module. Run
+`uv run pytest tests/ -v --ignore=tests/test_gap_scan.py --ignore=tests/test_gap_scan_integration.py`
+for a clean signal, and record in the commit message that the two files are
+knowingly red between Tasks 6 and 8.
 
-- [ ] **Step 5: Format, lint, commit**
+The `coverage:` and `non-equity 1d:` line shapes are unchanged; only the
+`1d=<p>/<t>` totals move, which is the intended one-time step.
+
+- [ ] **Step 6: Format, lint, commit**
 
 ```bash
 uv run ruff format . && uv run ruff check .
 git add livewire_scripts/coverage_report.py tests/test_coverage_report.py
-git commit -m "fix(coverage): registry denominator for equity 1d, and a terminus is neither present nor missing"
+git commit -m "fix(coverage): registry-backed 1d denominator; a terminus leaves the denominator entirely"
 ```
 
 ---
 
-### Task 7: Retire the fourth detector
+### Task 7: `coverage_report` runs the classifier — absorb before deleting
 
-Spec §11 criterion 7 is measured by deletion. `gap_scan.py` answers the same
-question as `coverage_report.py` with a different denominator and carries neither
-the no-trade exemption nor the ingestion deadline; on the full 14,811-symbol
-universe it would reproduce the 96.6% interior-scan disease.
+**This task is the one the previous revision was missing, and without it the
+whole plan is a net deletion of function.** `classify()` has exactly one
+production caller: `gap_scan.py:62`. Task 6 builds `CoverageResult` objects and
+never a `Finding`. If `gap_scan` were deleted now, `Finding`, `heal_by_days`,
+the tier logic, the G14 class added in Task 3 and the decision queue would all
+have zero scheduled callers — and spec §10 deliverable 8 names that queue's
+depth as the measurement that decides whether Phase 2 gets built.
 
-Move the two output writers first, delete second — in that order, so the Tier A
-manifest and the Tier B decision queue (spec §10 deliverables 5 and 8) survive
-the deletion.
+Coverage today answers *"is this symbol current as of one session?"*
+(`latest >= target_date`). The classifier answers *"which sessions in a 30-day
+window are absent, and what class and tier is each run of them?"* This task
+makes `coverage_report` answer the second question too — once, over the same
+registry rows and the same tape read Task 6 already performs.
 
 **Files:**
-- Modify: `livewire_scripts/coverage_report.py`, `scripts/livewire_quality.py:24`
-- Delete: `livewire_scripts/gap_scan.py`, `launchd/com.livewire.gap-scan.plist.example`, `tests/test_gap_scan.py`, `tests/test_gap_scan_integration.py`
-- **Keep** `launchd/com.livewire.universe-refresh.plist.example` — see the note below
-- Test: `tests/test_coverage_report.py`
+- Modify: `livewire_scripts/coverage_report.py`
+- Test: `tests/test_coverage_orchestration.py` (**create**)
 
 **Interfaces:**
-- Consumes: `Finding` (Task 3), `CoverageResult` (Task 6).
-- Produces: `write_tier_a_manifest(findings, path)` and
-  `write_decision_requests(findings, path)` on `coverage_report`, with the same
-  JSON shape `gap_scan` wrote, so an existing consumer of those files does not
-  have to change.
+- Consumes: `build_denominator`, `session_due_at`, `DUE_LAG_DAYS` (Task 1);
+  `terminus_of`, `traded_by_session` (Task 2); `actual_sessions`, `classify`,
+  `massive_floor_for`, `load_unresolved`, `suppress_unresolved` (existing in
+  `clients/gap_engine.py`).
+- Produces:
+  - `scan_findings(target_date, *, bronze_root, registry_path=None, presets_dir=None, as_of=None, window_days=30) -> list[Finding]`
+  - `write_tier_a_manifest(findings, path)` and `write_decision_requests(findings, path)`, moved from `gap_scan.py` with the same JSON shape, so an existing consumer does not change.
 
-- [ ] **Step 1: Copy the two writers into `coverage_report.py`**
+- [ ] **Step 1: Move the writers, with their whole dependency**
 
-Copy `write_tier_a_manifest` and `write_decision_requests` verbatim from
-`livewire_scripts/gap_scan.py` into `livewire_scripts/coverage_report.py`,
-together with the `_urgency` sort key. Copy their tests from
-`tests/test_gap_scan.py` into `tests/test_coverage_report.py` unchanged except
-for the import line.
+Move `write_tier_a_manifest`, `write_decision_requests`, `_urgency` **and
+`_entry` (`livewire_scripts/gap_scan.py:66-75`)** into
+`livewire_scripts/coverage_report.py`. `_entry` is what both writers call to
+build a row; the previous revision's copy list omitted it, so the step could not
+have run. Copy their tests from `tests/test_gap_scan.py` into
+`tests/test_coverage_orchestration.py`, changing only the import line.
 
-- [ ] **Step 2: Run the copied tests**
+One behavioural change while moving `write_decision_requests`
+(`gap_scan.py:84-88`), which hardcodes `verdict="inconclusive"`:
 
-Run: `uv run pytest tests/test_coverage_report.py -v`
-Expected: PASS.
+```python
+        # Spec section 10.8 added `terminus` as a fifth verdict precisely because
+        # "we could not tell" and "the instrument stopped printing" are different
+        # answers, and an operator triaging the queue acts differently on each.
+        "verdict": "terminus" if finding.gap == "G14" else "inconclusive",
+```
 
-- [ ] **Step 3: Delete**
+- [ ] **Step 2: Write the failing end-to-end test**
+
+Create `tests/test_coverage_orchestration.py`. This replaces
+`tests/test_gap_scan_integration.py`, which Task 8 deletes — the coverage the
+suite loses there has to be regained here, not merely dropped.
+
+```python
+def test_a_terminus_reaches_the_decision_queue_and_not_the_tier_a_manifest(tmp_path):
+    # The whole chain, end to end: registry -> denominator -> on-disk diff ->
+    # classify -> artifacts. EQR left the tape, so it must land in the Tier B
+    # queue with verdict "terminus" and must NOT land in the Tier A manifest,
+    # where the repair executor would fetch nothing forever.
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", _sessions(date(2026, 8, 3), date(2026, 8, 28)))
+    _write_daily(bronze, "EQR", _sessions(date(2026, 8, 3), date(2026, 8, 17)))
+    for session in _sessions(date(2026, 8, 3), date(2026, 8, 17)):
+        _write_raw_symbols(bronze, session, ["AAPL", "EQR"])
+    for session in _sessions(date(2026, 8, 18), date(2026, 8, 28)):
+        _write_raw_symbols(bronze, session, ["AAPL"])
+
+    findings = scan_findings(
+        date(2026, 8, 28), bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL", "EQR"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    )
+    assert [(f.symbol, f.gap, f.tier) for f in findings] == [("EQR", "G14", "B")]
+
+    manifest, queue = tmp_path / "a.json", tmp_path / "b.json"
+    write_tier_a_manifest(findings, manifest)
+    write_decision_requests(findings, queue)
+    assert json.loads(manifest.read_text()) == []
+    assert json.loads(queue.read_text())[0]["verdict"] == "terminus"
+
+
+def test_a_registry_member_with_no_file_is_a_g3_in_the_tier_a_manifest(tmp_path):
+    # BK: an sp500 member with no 1d.parquet and a live tape presence. Nothing
+    # about it is a terminus, so it is a plain repairable G3 -- and Tier A,
+    # because equity inside Massive's rolling window is repairable unattended.
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", _sessions(date(2026, 8, 3), date(2026, 8, 28)))
+    for session in _sessions(date(2026, 8, 3), date(2026, 8, 28)):
+        _write_raw_symbols(bronze, session, ["AAPL", "BK"])
+
+    findings = scan_findings(
+        date(2026, 8, 28), bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL", "BK"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    )
+    assert [(f.symbol, f.gap, f.tier) for f in findings] == [("BK", "G3", "A")]
+
+
+def test_a_session_before_its_deadline_produces_no_findings(tmp_path):
+    # The 497 phantoms, at the artifact layer. A run at 04:21 UTC must write an
+    # empty manifest, not one tail gap per symbol in the universe.
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", _sessions(date(2026, 8, 3), date(2026, 8, 27)))
+    for session in _sessions(date(2026, 8, 3), date(2026, 8, 28)):
+        _write_raw_symbols(bronze, session, ["AAPL"])
+    findings = scan_findings(
+        date(2026, 8, 28), bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 4, 21, tzinfo=UTC),
+    )
+    assert findings == []
+```
+
+- [ ] **Step 3: Run and verify they fail**
+
+Run: `uv run pytest tests/test_coverage_orchestration.py -v`
+Expected: FAIL — `ImportError: cannot import name 'scan_findings'`.
+
+- [ ] **Step 4: Implement `scan_findings`**
+
+In `livewire_scripts/coverage_report.py`:
+
+```python
+# The classifier window. gap_scan used 30 days; keeping it means the artifacts
+# this produces are comparable to the ones it produced.
+SCAN_WINDOW_DAYS = 30
+
+
+def scan_findings(
+    target_date: date,
+    *,
+    bronze_root: Path,
+    registry_path: Path | None = None,
+    presets_dir: Path | None = None,
+    as_of: datetime | None = None,
+    window_days: int = SCAN_WINDOW_DAYS,
+) -> list[Finding]:
+    """Every registry row, diffed over a trailing window and classified.
+
+    This is the windowed classifier gap_scan.py used to be. It is here, and not
+    in a fourth script, because it needs exactly what coverage already reads:
+    the registry universe, the trading calendar, the on-disk bronze tree and the
+    raw traded sets. Two detectors answering one question with two denominators
+    is what spec section 11 criterion 7 forbids.
+    """
+    as_of = as_of or datetime.now(UTC)
+    presets_dir = presets_dir or Path("presets")
+    start = target_date - timedelta(days=window_days)
+    floor = massive_floor_for(target_date)
+
+    window = trading_dates_in_range(
+        target_date - timedelta(days=40), target_date
+    )[-TERMINUS_WINDOW_SESSIONS:]
+    tape = traded_by_session(bronze_root.parent / RAW_MINUTE_AGGS, window)
+
+    findings: list[Finding] = []
+    for row in load_registry(registry_path or Path("registry/gaps.json")):
+        expected = build_denominator(
+            [presets_dir / f"{name}.json" for name in row.universe],
+            row.asset_class, row.timeframe, start, target_date,
+            as_of=as_of, lag_days=DUE_LAG_DAYS.get(row.asset_class, 1),
+        )
+        for series in expected:
+            if not series.sessions:
+                continue
+            # Terminus is an equity-tape fact. No other asset class has a tape to
+            # ask, which is why only the equity registry row declares G14.
+            terminus = terminus_of(tape, series.symbol) if row.asset_class == "equity" else None
+            findings.extend(
+                classify(series, actual_sessions(bronze_root, series), floor, terminus=terminus)
+            )
+    unresolved = load_unresolved(bronze_root.parent / "repairs" / "unresolved.json")
+    return suppress_unresolved(findings, unresolved)
+```
+
+- [ ] **Step 5: Wire it into `main()`**
+
+In `coverage_report.main()`, after the coverage line is written and **before**
+`auto_recover` runs, call `scan_findings` once and write both artifacts under
+`<data-lake>/repairs/`:
+
+```python
+    findings = scan_findings(effective_target, bronze_root=bronze_root, as_of=as_of)
+    repairs = _resolved_data_lake() / "repairs"
+    write_tier_a_manifest(findings, repairs / f"tier_a_{effective_target}.json")
+    write_decision_requests(findings, repairs / f"decisions_{effective_target}.json")
+    log_lines.append(
+        f"  scan: {len(findings)} findings "
+        f"(tier A {sum(1 for f in findings if f.tier == 'A')}, "
+        f"tier B {sum(1 for f in findings if f.tier == 'B')})"
+    )
+```
+
+`main()` is where `as_of = datetime.now(UTC)` is established and passed to both
+`compute_coverage` and `scan_findings`, so one run cannot grade two different
+clocks.
+
+⚠️ **Budget.** `com.livewire.coverage` has **no timeout** by design
+(`CLAUDE.md`: a cold pass measured 2858s and every guessed budget expired), so
+there is nothing to blow here. But `scan_findings` calls `actual_sessions`,
+which does a **column read**, not a footer read, per series. Over 515 registry
+symbols that is bounded; it is the reason `scan_findings` iterates the registry
+universe and not the ~13,270-file glob. Record the measured wall clock in Task 9
+step 5 and stop if it exceeds ~300s.
+
+- [ ] **Step 6: Run and commit**
+
+```bash
+uv run pytest tests/test_coverage_orchestration.py tests/test_coverage_report.py -v
+uv run ruff format . && uv run ruff check .
+git add livewire_scripts/coverage_report.py tests/test_coverage_orchestration.py
+git commit -m "feat(coverage): coverage_report runs the windowed classifier and writes both repair artifacts"
+```
+
+---
+
+### Task 8: Retire the fourth detector
+
+Spec §11 criterion 7 is measured by deletion. This runs **after** Task 7, never
+before: the writers and the classifier now live in `coverage_report.py` and have
+a real caller, so `gap_scan.py` is genuinely redundant rather than merely gone.
+
+**Files:**
+- Modify: `scripts/livewire_quality.py:24`
+- Delete: `livewire_scripts/gap_scan.py`, `launchd/com.livewire.gap-scan.plist.example`, `tests/test_gap_scan.py`, `tests/test_gap_scan_integration.py`
+- **Keep** `launchd/com.livewire.universe-refresh.plist.example` — see below
+- Test: `tests/test_coverage_orchestration.py`
+
+- [ ] **Step 1: Delete**
 
 ```bash
 git rm livewire_scripts/gap_scan.py \
@@ -1118,9 +1621,9 @@ and §4.3's producer run).
 In `scripts/livewire_quality.py`, delete the line
 `"gap-scan": "livewire_scripts.gap_scan",`.
 
-- [ ] **Step 4: Write the convergence guard**
+- [ ] **Step 2: Write the convergence guard**
 
-Append to `tests/test_coverage_report.py`:
+Append to `tests/test_coverage_orchestration.py`:
 
 ```python
 def test_no_second_gap_detector_exists():
@@ -1137,66 +1640,82 @@ def test_no_second_gap_detector_exists():
     # The universe-refresh template is a PRODUCER, not a detector, and spec
     # section 10 deliverable 4 still wants it. Convergence does not delete it.
     assert (repo / "launchd/com.livewire.universe-refresh.plist.example").exists()
+
+
+def test_classify_still_has_a_production_caller():
+    """The other half of criterion 7, and the one the first revision failed.
+
+    Deleting the only caller of classify() would retire the classifier along with
+    the script, leaving Finding, the tier and the decision queue dead. Convergence
+    means one caller, not zero.
+    """
+    import inspect
+
+    from livewire_scripts import coverage_report
+
+    assert "classify(" in inspect.getsource(coverage_report.scan_findings)
 ```
 
-- [ ] **Step 5: Run the full suite and the coverage gate**
+- [ ] **Step 3: Run the full suite and the coverage gate**
 
 ```bash
 uv run pytest tests/ -v --cov=clients --cov=scripts --cov-report=term-missing
 ```
-Expected: PASS with the 95% gate satisfied. `clients/gap_engine.py` lost two
-branches, so its covered fraction should rise, not fall.
+Expected: PASS with the 95% gate satisfied, and **no ignores** — the two
+knowingly-red `gap_scan` test files are gone as of Step 1, so this is the first
+point since Task 6 at which the whole suite is green. If it is not, stop: the
+classifier absorption in Task 7 is incomplete.
 
-- [ ] **Step 6: Format, lint, commit**
+- [ ] **Step 4: Format, lint, commit**
 
 ```bash
 uv run ruff format . && uv run ruff check .
 git add -A
-git commit -m "refactor(gap): retire gap_scan and its two launchd templates — one engine, not a fourth detector"
+git commit -m "refactor(gap): retire gap_scan — one detector, and its classifier now lives in coverage_report"
 ```
 
 ---
 
-### Task 8: Calibrate and verify against the production lake
+### Task 9: Calibrate and verify against the production lake
 
-The only acceptance criteria that matter here cannot be met by a test suite. Spec
+The acceptance criteria that matter here cannot be met by a test suite. Spec
 §11 criteria 9–11 name their regression cases; this task runs them on the real
 lake. **Read-only. Nothing in this task writes the data lake.**
 
-**Files:**
-- Create: `docs/audits/2026-09-01-terminus-vs-no-trade.md` — append a
-  "Verification" section (the file already exists from the spike)
+⚠️ **Every command below runs against a CHECKOUT of this branch, never against
+`~/market-warehouse/current`.** `CLAUDE.md`: the scheduled jobs `cd` into
+`current`, an immutable `git archive` export that does not contain this code
+until `release promote` runs. Verifying against `current` would measure the
+**old** detector and prove nothing.
 
-**Interfaces:**
-- Consumes: everything above.
-- Produces: measured values for `MIN_TERMINUS_SESSIONS` and the criterion-9
-  false-positive count, recorded in the audit note.
+**Files:**
+- Modify: `docs/audits/2026-09-01-terminus-vs-no-trade.md` — append a
+  "Verification" section (the file already exists from the spike)
 
 - [ ] **Step 1: Criterion 9 — terminus separation, zero false positives**
 
-On the production host, over the `sp500 + ndx100` universe (515 members) and the
-trailing 20 sessions, assert the positive set is exactly `{BK, EA, AVB, EQR}` and
-the negative set (the other 511) produces nothing:
+Over the `sp500 + ndx100` registry universe (515 members) and the trailing 20
+sessions, assert the positive set is exactly `{BK, EA, AVB, EQR}` and the other
+511 produce nothing:
 
 ```bash
-ssh macmini 'cd ~/market-warehouse && ./.venv/bin/python - ' <<'PY'
+scp -r clients presets macmini:/tmp/gap-check/
+ssh macmini 'cd /tmp/gap-check && ~/market-warehouse/.venv/bin/python - ' <<'PY'
 import json, os
+from datetime import date
 from pathlib import Path
 from clients.terminus import terminus_of, traded_by_session
 from clients.trading_calendar import trading_dates_in_range
-from datetime import date
 
 lake = Path(os.path.expanduser("~/market-warehouse/data-lake"))
 raw = lake / "raw/massive/us_stocks_sip/minute_aggs_v1"
-repo = Path(os.path.expanduser("~/market-warehouse/current"))
 members = set()
 for name in ("sp500", "ndx100"):
-    members |= set(json.loads((repo / "presets" / f"{name}.json").read_text())["tickers"])
+    members |= set(json.loads(Path(f"presets/{name}.json").read_text())["tickers"])
 window = trading_dates_in_range(date(2026, 8, 4), date(2026, 8, 31))
 tape = traded_by_session(raw, window)
 for n in (2, 3, 5, 8):
-    hits = {s: terminus_of(tape, s, min_sessions=n) for s in members}
-    hits = {s: t for s, t in hits.items() if t}
+    hits = {s: t for s in members if (t := terminus_of(tape, s, min_sessions=n))}
     print(f"min_sessions={n}: {len(hits)} findings -> {sorted(hits)}")
 PY
 ```
@@ -1204,69 +1723,89 @@ PY
 Expected at every value tested: exactly `['AVB', 'BK', 'EA', 'EQR']`. If a value
 produces a fifth symbol, that value is too low — record which, and raise
 `MIN_TERMINUS_SESSIONS` to the lowest value that still yields exactly four.
-**PYTHONPATH must point at the checkout that has `clients.terminus`** — the
-served release does not carry this code yet, so prefix
-`PYTHONPATH=/path/to/checkout`.
 
-- [ ] **Step 2: Criterion 11 — no phantom tail gaps before the deadline**
+- [ ] **Step 2: Criterion 11 — no phantom tail gaps before the deadline, through the real caller**
 
-Run the equity `1d` denominator twice against the same session, once before and
-once after that session's due time, and assert the session appears only in the
-second:
+Not `build_denominator` in isolation — that is the tautology Task 1 warns about.
+Run `compute_coverage` twice against the same session with two different clocks:
 
 ```bash
 uv run python - <<'PY'
 from datetime import UTC, date, datetime
 from pathlib import Path
-from clients.coverage_denominator import build_denominator
+from livewire_scripts.coverage_report import compute_coverage
 
+lake = Path.home() / "market-warehouse/data-lake"
 for hour in (4, 11):
-    s = build_denominator([Path("presets/sp500.json")], "equity", "1d",
-                          date(2026, 8, 27), date(2026, 8, 31),
-                          as_of=datetime(2026, 9, 1, hour, 0, tzinfo=UTC))
-    print(hour, date(2026, 8, 31) in s[0].sessions)
+    r = compute_coverage(date(2026, 8, 31), bronze_root=lake / "bronze",
+                         as_of=datetime(2026, 9, 1, hour, 0, tzinfo=UTC))["1d"]
+    print(hour, r.total, r.present, len(r.missing_symbols), len(r.terminus_symbols))
 PY
 ```
-Expected: `4 False` then `11 True`.
+Expected: `4 0 0 0 0` then a non-zero total at `11`. A non-zero `total` at hour 4
+means the deadline rule is inert — stop and fix Task 6, do not adjust the
+expectation.
 
-- [ ] **Step 3: Criterion 2 — BK is still detected**
+- [ ] **Step 3: Criterion 2 — BK is still detected, and as what**
 
-The one result that justifies replacing the denominator. Run
-`compute_coverage` for a recent session against the production lake with
-`--no-recover` and confirm `BK` appears in the `1d terminus:` line (it is a
-terminus, not a plain missing symbol, which is the corrected classification).
+Run `scan_findings` for a recent session against the production lake and confirm
+`BK` appears with `gap="G14"`, `tier="B"`, in the decision queue and **not** in
+the Tier A manifest. Record EA/AVB/EQR's classes alongside it.
 
 - [ ] **Step 4: Criterion 8 — producer liveness on the mini**
 
-The criterion is verified here, not created. Three claims, each checked on disk
-on the production host and none from code:
+The criterion is verified here, not created. Four claims, all checked on disk on
+the production host, none from code:
 
 ```bash
 ssh macmini 'launchctl list | grep -c com.livewire.coverage; \
   ls -la ~/market-warehouse/logs/coverage_*.log | tail -3; \
-  ls -d ~/market-warehouse/data-lake/raw/massive/us_stocks_sip/minute_aggs_v1/date=* | wc -l'
+  ls -d ~/market-warehouse/data-lake/raw/massive/us_stocks_sip/minute_aggs_v1/date=* | wc -l; \
+  ls -d ~/market-warehouse/data-lake/raw/massive/us_stocks_sip/minute_aggs_v1/date=* | tail -1'
 ```
 
 Expected: the job is loaded (count 1); the newest coverage log is under three
-days old; the raw partition count covers the terminus window. If the coverage job
-is **not** loaded, stop — every conclusion in this plan about "coverage already
-runs this at 11:00 UTC" is false and the plan needs a scheduling task.
+days old; the raw partition count covers the terminus window; **and the newest
+partition is recent** — a stale tape makes every symbol look like a terminus at
+once, which is the failure mode that would page the whole universe. If the
+coverage job is **not** loaded, stop — every conclusion in this plan about
+"coverage already runs this at 11:00 UTC" is false and the plan needs a
+scheduling task.
 
-Note the timestamp trap from issue #94 does not apply to `com.livewire.coverage`
-— it is a separate job, not a lane inside `run-daily-job`.
+The producers the due rule depends on are the ones issue #94 leaves unbudgeted;
+this step measures their **output**, which is the only thing this plan can
+assert without fixing #94.
 
-- [ ] **Step 5: Record the results**
+- [ ] **Step 5: Measure the added cost**
+
+`scan_findings` does a column read per registry series, on top of coverage's
+footer pass. Time it:
+
+```bash
+uv run python -c "
+import time; from datetime import UTC, date, datetime; from pathlib import Path
+from livewire_scripts.coverage_report import scan_findings
+t=time.time(); f=scan_findings(date(2026,8,31), bronze_root=Path.home()/'market-warehouse/data-lake/bronze', as_of=datetime.now(UTC))
+print(len(f), round(time.time()-t,1), 's')"
+```
+
+Record the number. If it exceeds ~300s, stop and narrow the window rather than
+guessing a timeout — `CLAUDE.md` records four separate budgets that were guessed
+and expired.
+
+- [ ] **Step 6: Record the results**
 
 Append a `## Verification (post-implementation)` section to
-`docs/audits/2026-09-01-terminus-vs-no-trade.md` with the three commands' actual
-output and the chosen `MIN_TERMINUS_SESSIONS`. If any expectation failed, stop
-and report — do not adjust the assertion to match the output.
+`docs/audits/2026-09-01-terminus-vs-no-trade.md` with every command's actual
+output, the chosen `MIN_TERMINUS_SESSIONS`, and the measured `scan_findings`
+wall clock. If any expectation failed, stop and report — do not adjust the
+assertion to match the output.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add docs/audits/2026-09-01-terminus-vs-no-trade.md clients/terminus.py
-git commit -m "docs(gap): record the production calibration for MIN_TERMINUS_SESSIONS"
+git commit -m "docs(gap): record the production calibration for MIN_TERMINUS_SESSIONS and the scan cost"
 ```
 
 ---
@@ -1279,14 +1818,41 @@ git commit -m "docs(gap): record the production calibration for MIN_TERMINUS_SES
   provide, and that is deliberate.
 - **Issue #89** (deprecated Massive reference endpoints). Unrelated.
 - **Tier A execution wiring to `shepherd_repair`** (spec §11 criterion 1). The
-  manifest is written; nothing consumes it. That is the next change, and its
-  input is the queue this plan produces.
+  manifest is written by Task 7 and nothing consumes it. That is the next
+  change, and its input is the queue this plan produces.
+- **Giving the `non-equity 1d:` log line a reader.** Verified 2026-09-01: no
+  parser in the repo reads it — not `status.py`, not
+  `weekly_quality_summary.py`, not the digest. Task 5 widens a line nobody
+  grades. Wiring it into `status.collect()` is a real gap and a separate change;
+  it is named here so it is not lost.
+- **Widening the equity registry row to spec §8's five presets**
+  (`sp500, ndx100, r2k, etfs, adrs`). The row stays at `sp500 + ndx100` because
+  that is the universe the terminus threshold was measured on. Widening it needs
+  a calibration run at the wider scale first — Task 9 step 1, re-run over the
+  wider member set — or it reproduces the 96.6% false-positive shape on the
+  illiquid tail.
+- **A per-asset-class trading calendar.** `clients/gap_registry.py:25-30` records
+  the XNYS blind spot for fx, CME futures and FRED. Task 5 adds two classes that
+  inherit it, deliberately and with a test naming it.
 - **Installing any `launchd` job.** `com.livewire.coverage` at 11:00 UTC already
   runs after the ingestion deadline and already runs this code path. Spec §11
-  criterion 8 is *verified* in Task 8 step 4, not created — and if that check
+  criterion 8 is *verified* in Task 9 step 4, not created — and if that check
   finds the job unloaded, stop and re-plan rather than installing it here.
 - **Scheduling `universe_sync` / `shepherd_universe`** (spec §10 deliverable 4).
   Its template is kept, not installed; it needs `MASSIVE_API_KEY` and §4.3's
   producer run, and it is the first follow-on after this plan.
 - **G2 and G13.** Named in the taxonomy, not emitted. Reinstating either needs a
   measurement asking for it.
+
+  ⚠️ **This one is genuinely contested and is recorded, not settled.** The
+  cross-model review argued that G2 should stay for `1d`: a missing *daily* bar
+  bounded by present bars is not the circular 5m question (SIP emits a daily bar
+  whenever there was a trade, and the raw traded set answers "was there a trade"
+  independently), and the spike's "zero G2 findings" came from a 4-symbol
+  residue after 497 phantoms were removed — a sample too small to retire a
+  branch on. The counter-argument is spec §10 deliverable 2: an unexercised
+  branch should not ship. **Resolution: retire G2 in this plan as written, and
+  re-measure it as the first follow-on** — run the Task 9 step 1 harness with
+  the interior branch restored over the 515-member universe and a 90-day window,
+  and reinstate G2 if it produces a non-empty, non-noise result. `classify`'s
+  signature does not change either way, so this costs nothing to defer.
