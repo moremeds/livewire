@@ -957,20 +957,24 @@ python scripts/livewire_ingest.py daily --asset-class futures             # Dail
 
 **Scheduling with launchd** (macOS):
 ```bash
-# The four warehouse jobs run the immutable release, so they take the WAREHOUSE path.
+# The six warehouse jobs run the immutable release, so they take the WAREHOUSE path.
 # The promoter is the one job that reads the repo — it is what builds the release.
 WAREHOUSE=~/market-warehouse
-for L in daily-update daily-update-watchdog intraday-catchup coverage; do
+for L in daily-update daily-update-watchdog intraday-catchup coverage gap-scan; do
   sed "s|/path/to/warehouse|$WAREHOUSE|g" "launchd/com.livewire.$L.plist.example" \
     > ~/Library/LaunchAgents/com.livewire.$L.plist
 done
-sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.release-promote.plist.example \
-  > ~/Library/LaunchAgents/com.livewire.release-promote.plist
-for L in daily-update daily-update-watchdog intraday-catchup coverage release-promote; do
+# release-promote and universe-refresh both read the repo: one builds the
+# release, the other writes presets/ (which a frozen release forbids).
+for L in release-promote universe-refresh; do
+  sed -e "s|/path/to/repo|$(pwd)|g" -e "s|/path/to/warehouse|$WAREHOUSE|g" \
+    "launchd/com.livewire.$L.plist.example" > ~/Library/LaunchAgents/com.livewire.$L.plist
+done
+for L in daily-update daily-update-watchdog intraday-catchup coverage gap-scan universe-refresh release-promote; do
   launchctl load ~/Library/LaunchAgents/com.livewire.$L.plist
 done
 ```
-`scripts/livewire_ops.py run-daily-job` loads `~/.secrets`, repo `.env`, and `~/market-warehouse/.env` before invoking the retrying scheduled runner. The runner automatically syncs equities, futures, and cmdty via IB, then all volatility indices via CBOE's public API and DXY/FX via Yahoo+Massive, in a single invocation; pass `--asset-class <name>` to run only one IB asset class (skips both the CBOE volatility and fx syncs). After a successful run it also spawns the weekly quality report, sends the nightly digest email, and runs the housekeeping retention sweep last. Coverage is **not** here — it has its own job, `com.livewire.coverage` at 11:00 UTC.
+`scripts/livewire_ops.py run-daily-job` loads `~/.secrets`, repo `.env`, and `~/market-warehouse/.env` before invoking the retrying scheduled runner. The runner automatically syncs equities, futures, and cmdty via IB, then all volatility indices via CBOE's public API and DXY/FX via Yahoo+Massive, in a single invocation; pass `--asset-class <name>` to run only one IB asset class (skips both the CBOE volatility and fx syncs). After a successful run it also spawns the weekly quality report, sends the nightly digest email, and runs the housekeeping retention sweep last. Coverage is **not** here — it has its own job, `com.livewire.coverage` at 11:00 UTC. Neither is the gap scan: `com.livewire.gap-scan` runs at 12:00 UTC, after coverage.
 
 A second scheduled job, `com.livewire.intraday-catchup`, runs at 05:00 UTC daily (= 01:00 ET EDT / 00:00 ET EST) and invokes `scripts/livewire_ops.py run-intraday-catchup-job`. This calls the existing `daily-backfill` orchestrator so equity daily + intraday parquet (1m/5m/30m/1h), FRED Treasury rates, CBOE volatility daily, and IB volatility intraday (30m and 5m, with 1h derived locally from 30m) all refresh. Equity intraday requires `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY`; missing credentials fail the orchestrator before any phases run, and there is no REST or IB equity-intraday fallback. The wrapper is single-attempt because `daily-backfill` owns its phase execution and activity-based stall detection; on terminal failure the wrapper sends one alert through the same Nodemailer pipeline as the daily-update wrapper, tagged `--job-name intraday_catchup`. Logs land at `~/market-warehouse/logs/intraday_catchup_YYYY-MM-DD.log` (UTC date). The default 7-day `MDW_DAILY_BACKFILL_INTRADAY_DAYS` lookback absorbs a single missed run; widen via `~/market-warehouse/.env` if you need more headroom. 05:00 UTC is well after Massive's empirical whole-market SIP minute-aggregate publish (file for trade-date D appears shortly after midnight ET on D+1) and gives a 1h15m buffer after IBC's `AutoRestartTime=11:45` ET nightly restart (= 03:45 UTC), which requires 2FA approval before port 4001 is available.
 
@@ -1189,6 +1193,125 @@ python scripts/livewire_ops.py status
 - The nightly digest renders the same `Section` objects — `build_digest` calls
   `status.collect()` and enumerates nothing itself, enforced by a test. A check
   added to `collect()` reaches both surfaces or neither.
+
+### Gap engine — the denominator is not the disk
+
+`scripts/livewire_quality.py gap-scan` computes `expected − actual` where
+**expected comes from `registry/gaps.json` × `presets/*.json` × the trading
+calendar**, never from what is already on disk.
+
+⚠️ **This is the defect it replaces.** `coverage_report.py` builds its
+denominator by globbing `bronze/asset_class=*/symbol=*/`, so numerator and
+denominator are drawn from the same set and **a symbol that never landed cannot
+be counted missing**. Measured 2026-09-01 on the local lake: `gap-scan` returned
+11 `G3` findings for `presets/futures-active.json` because
+`bronze/asset_class=futures/` **does not exist at all** — there is no directory
+for a glob to enumerate, so the disk-glob detector reports nothing wrong.
+`coverage_report.py:363` also omits `fx` and `cmdty` outright; the registry
+carries rows for both.
+
+```bash
+python scripts/livewire_quality.py gap-scan \
+    --bronze-root ~/market-warehouse/data-lake/bronze \
+    --start 2026-08-01 --end 2026-08-28 --as-of 2026-08-31 \
+    --manifest-out /tmp/gap-manifest.json --decisions-out /tmp/gap-decisions.json
+```
+
+- **Gap classes.** `G3` = nothing on disk for the series; `G1` = missing the
+  newest sessions (tail); `G2` = missing interior sessions; `G13` = sessions
+  before the series' *first-ever* bar. One series can emit several.
+  ⚠️ **`G13` exists because head and interior gaps are different events.**
+  Backfill not having reached that far back is routine; a session written and
+  then lost is an incident. Both landed in `G2`, which made the incident
+  unfindable in the noise. `present` is every session in the file, not just the
+  window, so `min(present)` is genuinely the first-ever bar. `G13` is not in the
+  spec taxonomy yet — that row is owed on `docs/gap-autoheal-design`.
+- ⚠️ **Tier follows the repair SOURCE, not the severity of the gap.** Tier A
+  means *repairable unattended*, which is a property of where the bar comes from:
+
+  | Asset class | Source | Tier | Floor |
+  |---|---|---|---|
+  | equity | Massive | A inside the window, B below | rolling |
+  | fx | Yahoo | A | none (deep history) |
+  | volatility | CBOE | A | none |
+  | rates | FRED | A | none |
+  | futures, cmdty | **IB** | **always B** | n/a |
+
+  IB-sourced lanes are **never** Tier A no matter how recent the gap: IB is
+  2FA-gated and never auto-retries. Deriving tier from the equity Massive floor
+  for every asset class put 76 non-equity findings in the Tier A manifest
+  claiming an unattended Massive repair that does not exist for them.
+  An unmapped asset class raises rather than defaulting — `repair_source` fails
+  closed.
+- **`heal_by_days` is `None` when the source has no rolling window**, and those
+  sort *last*: nothing expires, so they are never the most urgent. For equity it
+  is `earliest_missing_session − massive_floor`, and the manifest sorts ascending
+  because the floor rolls forward one day per day — the sessions nearest it lose
+  the cheap repair path first.
+- ⚠️ **The Massive floor is derived from the scan date, not hardcoded.**
+  `massive_floor_for(as_of) = as_of − 1827 days` (measured 2026-07-29:
+  `2021-07-27` → 403, `2021-07-28` → OK, exactly 5.00 years). A constant here
+  rots one day per day and silently mis-tiers. `--massive-floor` still pins it.
+- ⚠️ **The denominator is XNYS-only, and that is a known blind spot.**
+  `trading_calendar.trading_dates_in_range` is the NYSE calendar, but FX trades
+  ~24/5, CME futures keep their own sessions and FRED publishes on its own
+  schedule — so for those a bar expected on an XNYS holiday is not expected at
+  all, and its absence is invisible. `load_registry` rejects any `asset_class`
+  outside `XNYS_CALENDAR_ASSET_CLASSES` so a new one cannot inherit the blind
+  spot silently. Fixing it means real per-asset-class calendars.
+- ⚠️ **Phase 1 is read-only.** `gap-scan` writes exactly two artifacts and
+  mutates nothing. The Tier A manifest is **not** fed to `shepherd_repair` yet;
+  no unattended mutation is scheduled until the denominator has been observed
+  correct on real data. The Tier B queue has no consumer at all — its depth is
+  the measurement that decides whether building one is worth it.
+- **A row without a `test` is rejected** by `load_registry`. A registry row
+  asserting coverage with nothing executing behind it is a claim, not coverage.
+- **The unresolved ledger stops re-litigation.** `--unresolved <path>` records
+  permanently unsourceable `(symbol, session)` pairs with a reason, so a delisted
+  name with no provider is not re-reported every night. Suppression is
+  per-session: a finding whose other sessions are still open keeps them.
+- ⚠️ **A row that resolves to no symbols fails the run.** The rates row
+  originally pointed at `presets/interests.json`, which is empty, so it reported
+  all-green for a reason that had nothing to do with the data — the disk-glob
+  failure this engine replaces, reintroduced from the registry side. It now
+  points at `presets/rates.json` (`DGS3/DGS5/DGS10/DGS30`, the documented FRED
+  series), and `scan` raises on any zero denominator.
+- ⚠️ **Presets overlap, so the denominator deduplicates.** `sp500 ∩ ndx100` is
+  87 symbols. Emitting one `ExpectedSeries` per occurrence put every gap those
+  87 had into the Tier A manifest **twice** — and once that manifest feeds
+  `shepherd_repair`, two repair instructions against one parquet path is a
+  concurrent write. `shepherd_repair.py:905` holds an `fcntl.flock`, but the
+  fix is not to manufacture the situation the lock exists to survive.
+- **Futures expiry is judged against the scan window, not `as_of`.** Otherwise
+  the same window yields a different denominator depending on when you scanned
+  it: a May 2026 range scanned in August silently dropped `ES/NQ/RTY/YM_202606`,
+  contracts that were live throughout it.
+- **The unresolved ledger is keyed on `(symbol, asset_class, timeframe,
+  session)`.** Keyed on symbol alone, marking `1d` unresolved also silenced
+  `1h`. An entry missing those fields is rejected, never defaulted — defaulting
+  recreates the over-broad suppression. Writes take an `fcntl.flock`.
+- ⚠️ **`shepherd_repair` requires `source_evidence` (a `HashedRef`) in its
+  manifest — it is a transactional applier, not a fetcher.** The Tier A manifest
+  this engine writes is therefore *not* yet in its input format; follow-on 1 has
+  to acquire and hash the evidence first. Tier is a claim about which fetch path
+  can supply that evidence.
+
+⚠️ **`com.livewire.universe-refresh` runs from the REPO, not from the release.**
+It is the one warehouse job that cannot use `current`: `release.freeze()` does
+`chmod -R a-w` over the release tree and `universe_sync` writes
+`presets/*.json` on every run, so from `current` it fails with `PermissionError`
+every week. It also needs `shepherd-universe`'s required subcommand and index —
+without them the job exited argparse status 2 every week.
+
+**It exists because nothing refreshed the denominator.** `livewire_scripts/universe_sync.py` and
+`livewire_scripts/shepherd_universe.py` both existed and **neither was
+scheduled**, so index membership changes never reached `presets/*`. An
+unrefreshed preset is wrong in both directions: a delisted name is expected
+forever, and a new index member is never expected at all. Detection built on a
+stale denominator measures the past. The job chains the two through the existing
+`scripts/livewire_ingest.py` router (`universe-sync` then `shepherd-universe`,
+with `&&` so a failed sync cannot let the shepherd act on stale input), weekly on
+Sunday after that day's scan.
 
 ### Weekly quality summary
 

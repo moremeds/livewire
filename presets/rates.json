@@ -1,0 +1,11 @@
+{
+  "name": "rates",
+  "description": "FRED Treasury constant-maturity yield series ingested by `livewire_ingest.py fred-rates` into asset_class=rates. These are the four default series; they are not index membership and universe-sync does not touch this file.",
+  "asset_class": "rates",
+  "tickers": [
+    "DGS3",
+    "DGS5",
+    "DGS10",
+    "DGS30"
+  ]
+}
