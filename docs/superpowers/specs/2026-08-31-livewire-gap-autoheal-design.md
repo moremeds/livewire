@@ -178,23 +178,45 @@ What matters for the denominator: the terminus does **not** have to come from
 "last bar on disk", so the circular no-bar-vs-no-trade problem (`CLAUDE.md`,
 interior gap scan) stays out of it.
 
-**Neither producer can run on the development host, and this was not measured
-against production.** Checked 2026-09-01 on the dev machine: no
-`com.livewire.*` plist installed, newest warehouse log `2026-05-31`, no
-`releases/`, no `current`, no `~/market-warehouse/.env`, IB port 4001 closed,
-and `MASSIVE_API_KEY` set in no env file on the box. `registry.json`,
-`bronze-delisted/` and `security_master/` are all absent **here** — which is
-consistent with a stale dev copy and is **not evidence about the production
-warehouse.** Production state must be re-checked on the host that actually runs
-the jobs before any of this is treated as a finding.
+**Measured on the production host** (`moremeds-Mini`, Mac16,10, over ssh,
+2026-09-01). The dev checkout this design is written in has none of this — no
+plists, warehouse logs stopped 2026-05-31, no `.env`, no `MASSIVE_API_KEY` — so
+every number below comes from the mini, not from the repo host:
 
-Consequence for Phase 1 regardless of which way that check comes out:
-`build_denominator` has no delisted branch, and the branch cannot be written
-against a store whose row count is unknown — it would pass its tests and change
-nothing, the vacuous-test failure this plan already hit once in the
-futures-expiry test written against a preset containing no expired contract.
-**L4's first step is a measurement on the production host, then a producer run;
-the boundary definition was never the blocker.**
+| Store                                    | Production state                        |
+| ---------------------------------------- | --------------------------------------- |
+| `data-lake/bronze-delisted/…=equity/`    | **8,620 symbols**                       |
+| `data-lake/security_master/events.parquet` | **1 row** (schema proven, no population) |
+| `registry.json`                          | **absent**; `universe_sync` has never logged |
+| `data-lake/bronze/asset_class=equity/`   | 14,811 symbols (live universe)          |
+
+Scheduling is healthy — 5 plists installed, 6 jobs loaded, logs current through
+2026-08-31 — and `MASSIVE_API_KEY` is present in the mini's warehouse `.env`.
+IB port 4001 is closed while the Gateway process runs, i.e. the ordinary
+2FA-pending state, not a livewire fault.
+
+So the two producers have diverged as far as they can: **the archive half has
+run 8,620 times and the date half has never run once.** 8,620 archived symbols
+carry no `delisted_at`, against a live universe of 14,811 — 37% of everything
+ever ingested sits in an archive with no terminus. That is L4's actual input
+size, and it settles the open question in the follow-on plan: a population that
+large is not adjudicated by hand, so the agent lane is the only path that
+finishes.
+
+Consequence for Phase 1. `build_denominator` still has no delisted branch, but
+the blocker is now named: the branch needs a terminus per archived symbol, and
+`registry.json` supplies none. Writing it against `bronze-delisted/` alone gives
+a membership test with no dates — enough to drop 8,620 symbols out of the live
+denominator, not enough to place them in the frozen-history one (§6). So L4
+splits cleanly in two, and only the first half is cheap:
+
+1. **Membership** — archived symbols leave the live denominator. Reads a
+   directory listing, no provider, no key. Can ship immediately.
+2. **Terminus** — each archived symbol gets a `delisted_at`, and rename is
+   separated from delisting. Needs `universe_sync` to run for the first time,
+   then adjudication over the residue.
+
+The boundary definition was never the blocker; 8,620 missing dates is.
 
 ### 4.4 Unresolved denominator (cause 5)
 
