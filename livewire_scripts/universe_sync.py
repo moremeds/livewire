@@ -309,7 +309,14 @@ def main(argv: list[str] | None = None) -> None:
         log.info("Interests preset: %d tickers", len(interest_tickers))
 
     # ── Update preset tickers arrays ────────────────────────────────────
-    for idx in INDEX_TAGS:
+    # `selected` again, and for a second reason. This loop reads the REGISTRY,
+    # not `live` -- but the registry was only tagged for the indexes that were
+    # fetched, so an unselected index resolves to the empty set and the write
+    # TRUNCATES its preset. Measured 2026-09-02 on the first real apply:
+    # `Updated r2k.json: 0 tickers`, 1886 gone. The compute_movements guard above
+    # does not cover this; it is a separate write path, and the movements table
+    # was correct while the file was being emptied.
+    for idx in selected:
         active_tickers = registry.by_tag(idx, active_only=True)
         preset_path = _PRESET_DIR / f"{idx}.json"
         if preset_path.exists():
