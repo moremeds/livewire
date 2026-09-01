@@ -98,17 +98,26 @@ Completeness gaps:
 | G4  | Missing class/timeframe | Whole class or timeframe absent                            |
 | G5  | Intraday partial        | Session present, bar count below expected for that session |
 | G13 | Head gap                | Series starts later than the expected history horizon (§13, default 1995-01-01) — distinct from G2, which is bounded by existing bars on both sides |
-| G14 | Terminus                | Symbol absent from the raw traded set for **every** session from date X through the as-of date — distinct from a no-trade day, which is bounded by presence on both sides |
+| G14 | Terminus                | Symbol absent from the raw traded set for **every** session from date X through the as-of date, **with no corporate action explaining it** — distinct from a no-trade day, which is bounded by presence on both sides |
 
-⚠️ **Amended 2026-09-01.** This row previously read "…with no corporate action
-explaining it". That clause is **not implementable against the store this repo
-has** and is removed rather than left as an unmet requirement.
-`clients/corporate_action_store.py:421` writes exactly two `action_type` values,
-`"split"` and `"cash_dividend"`, and neither removes a ticker from the SIP tape.
-There is no delisting event and no rename event to consult, so a store lookup
-could not explain a terminus even in principle. **G14 is emitted on tape evidence
-alone.** Acquiring a delisting/rename feed and reinstating the clause is a
-separate change with its own measurement; see §11 criterion 8.
+**The corporate-action clause is part of the definition, not decoration.** A
+2026-09-01 draft proposed dropping it on the grounds that
+`clients/corporate_action_store.py:421` writes only `"split"` and
+`"cash_dividend"`, so the store holds no delisting or rename event. That
+reasoning is wrong and the clause stands. An **active split** whose `ex_date`
+falls at the terminus is exactly the shape of a reorganisation that takes a
+ticker off the tape — `CLAUDE.md` records real reverse splits at `1:300` (LIME)
+and `1:3000` (TTSH) — so the store *can* explain a terminus, for the one event
+class it carries. §4.4's measurement already ran this check by hand: its last
+column is "latest corporate action", and the finding that BK/EA/AVB/EQR carry
+nothing but ordinary quarterly dividends is what licensed calling them termini.
+Doing by hand what the engine must not do in code is the gap; §11 criterion 8
+names the implementation.
+
+What the clause does **not** claim: that the store can explain every terminus. A
+plain delisting leaves no event here at all, and that is precisely the case G14
+exists to report. The check is exculpatory — it withholds G14 when the store
+*does* offer an explanation — and it is never used to justify emitting one.
 
 G14 is not repairable and does not belong to the same family as G1–G3: the bars
 are absent because the instrument stopped appearing on the tape, and no provider
@@ -804,22 +813,35 @@ stopped during Phase 1 and returns decision-only in Phase 2.
    by reading the producer's own Done stamp. This is §9.3 rule 2 applied to time:
    an on-disk artifact can exist and still lie.
 
-   ⚠️ **Amended 2026-09-01 — the corporate-action clause is withdrawn.** This
-   paragraph previously required the engine to read the corporate-action store's
-   freshness before emitting G14, on the premise that the store is "the second
-   source G14 rests on". That premise is wrong: the store carries only `"split"`
-   and `"cash_dividend"` events (`corporate_action_store.py:421`), neither of
-   which removes a ticker from the tape, so a frozen store cannot produce a false
-   G14 and a fresh one cannot prevent one. **G14's second source is the raw
-   traded set, and the two tapes that independently confirm it** (§4.4: the
-   `minute_aggs_v1` and `day_aggs_v1` termini agree for all four symbols). The
-   freshness that G14 *does* depend on is the raw partition's — a stale tape
-   makes every symbol look like a terminus at once — so the criterion now reads:
-   **before emitting any G14, the engine must establish that the newest raw
-   `minute_aggs_v1` partition covers the terminus window.** The general rule
-   above (a producer's completion is established by differencing against an
-   independent later timestamp, never by its own Done stamp) is unchanged and
-   still applies to every store this design reads.
+   The corporate-action store is the case that makes this load-bearing rather
+   than hygienic. It is the second source G14 rests on — §3's definition is
+   literally "with no corporate action explaining it" — and it is written by
+   lane 1, the unbudgeted one that already wedged on 2026-07-28 (`CLAUDE.md`). A
+   frozen store turns every unreconciled reorganisation into a false G14, so the
+   engine must read the store's freshness before emitting G14 at all.
+
+   **Two gates, both required, and neither may fail open** (a symbol that cannot
+   be cleared is withheld from G14, never promoted into it):
+
+   1. **Store freshness, per symbol.** `CorporateActionStore.fetch_history(symbol)`
+      records a `fetched_at` per reconciliation. The newest one must postdate the
+      terminus date, or the engine has not asked about the window in which the
+      explanation would live and cannot assert its absence. Per §11's general
+      rule this is an independent timestamp written by the reconciler, not a
+      `=== Done ===` marker the lane wrote about itself.
+   2. **Explanation lookup.** `CorporateActionStore.latest_active(symbol)` must
+      contain no **active split** with an `ex_date` inside the terminus window.
+      A split there is the one event this store carries that plausibly takes a
+      ticker off the tape, so its presence withholds G14. A cash dividend never
+      does and is ignored.
+
+   **The raw tape has its own freshness gate, and it is additional rather than a
+   substitute.** A stale `minute_aggs_v1` partition makes every symbol look like
+   a terminus at once — the failure mode that would page the whole universe — so
+   before emitting any G14 the engine must also establish that the newest raw
+   partition covers the terminus window. The general rule above (a producer's
+   completion is established by differencing against an independent later
+   timestamp, never by its own Done stamp) applies to both stores.
 9. **Terminus separation:** a symbol absent from the raw traded set for a single
    session with presence on both sides is **not** reported; a symbol absent from
    date X through the as-of date is reported as G14, Tier B. Verified against

@@ -289,7 +289,13 @@ git commit -m "fix(gap): a session is expected when it is due on disk, not when 
 The rule is load-bearing (without it the interior scan flags 96.6% of the
 universe) and it is also what hides EA, AVB and EQR — three S&P 500 members that
 stopped printing on 2026-08-04, 2026-08-14 and 2026-08-17 and never returned.
-The separation is a suffix test, not a threshold. Spec §3 (G14), §4.4.
+The separation is a suffix test over the tape, **plus** the exculpatory
+corporate-action check spec §3 puts inside G14's definition. Spec §3 (G14), §4.4,
+§11 criterion 8.
+
+The tape half and the store half stay in separate functions on purpose:
+`terminus_of` is pure and takes a dict, so it is testable without a lake; the
+store gate takes a `CorporateActionStore` and is the part that must fail closed.
 
 **Files:**
 - Create: `clients/terminus.py`
@@ -302,6 +308,9 @@ The separation is a suffix test, not a threshold. Spec §3 (G14), §4.4.
   - `terminus_of(traded_by_session: dict[date, set[str]], symbol: str, min_sessions: int = MIN_TERMINUS_SESSIONS) -> date | None`
   - `traded_by_session(raw_root: Path, sessions: Sequence[date]) -> dict[date, set[str]]`
   - `RAW_MINUTE_AGGS: str` — the raw sub-path, so callers do not re-spell it
+  - `terminus_is_unexplained(store: CorporateActionStore, symbol: str, terminus: date, window_days: int = TERMINUS_CA_WINDOW_DAYS) -> bool` — spec §3's clause, **fail-closed**: `False` whenever the store cannot clear the symbol, so an unclearable candidate is withheld from G14 rather than promoted into it
+  - `TERMINUS_CA_WINDOW_DAYS: int` (default `10`)
+  - `raw_tape_covers(raw_root: Path, through: date) -> bool` — §11 criterion 8's other half: a stale `minute_aggs_v1` partition makes every symbol look like a terminus at once
 
 - [ ] **Step 1: Write the failing test**
 
@@ -474,7 +483,147 @@ def test_traded_by_session_omits_a_session_with_no_partition(tmp_path):
     assert got[S[0]] == {"AAPL", "BK"}
 ```
 
-- [ ] **Step 6: Run, format, lint, commit**
+- [ ] **Step 6: Write the failing tests for the corporate-action gate**
+
+Spec §3 defines G14 as absence **"with no corporate action explaining it"**, and
+§11 criterion 8 requires the store's freshness be read before any G14 is emitted.
+§4.4's measurement already ran this by hand — its last column is "latest
+corporate action", and the finding that BK/EA/AVB/EQR carry nothing but ordinary
+quarterly dividends is what licensed calling them termini. This step is that
+column, in code.
+
+Append to `tests/test_terminus.py`:
+
+```python
+from datetime import UTC, datetime
+
+from clients.corporate_action_store import CorporateActionStore
+from clients.terminus import terminus_is_unexplained
+
+
+def _store_with(tmp_path, symbol, actions, fetched_at):
+    """A store holding real events for a real ticker, at a recorded as-of date."""
+    store = CorporateActionStore(tmp_path)
+    store.reconcile(symbol, actions, fetched_at=fetched_at)
+    return store
+
+
+def test_an_ordinary_dividend_does_not_explain_a_terminus(tmp_path):
+    # EQR, measured 2026-09-01: last tape print 2026-08-17, and the newest event
+    # in the store is a 2026-06-29 cash dividend. A dividend never takes a ticker
+    # off the tape, so nothing here explains the absence -> this IS a G14.
+    store = _store_with(tmp_path, "EQR", [_dividend("EQR", date(2026, 6, 29))],
+                        fetched_at=datetime(2026, 8, 31, 6, 0, tzinfo=UTC))
+    assert terminus_is_unexplained(store, "EQR", date(2026, 8, 18)) is True
+
+
+def test_a_split_at_the_terminus_explains_it(tmp_path):
+    # A reverse split IS a reorganisation that can take a ticker off the tape --
+    # CLAUDE.md records real ones at 1:300 (LIME) and 1:3000 (TTSH). The store
+    # offers an explanation, so the symbol is withheld from G14.
+    store = _store_with(tmp_path, "LIME", [_split("LIME", date(2026, 8, 19), 300, 1)],
+                        fetched_at=datetime(2026, 8, 31, 6, 0, tzinfo=UTC))
+    assert terminus_is_unexplained(store, "LIME", date(2026, 8, 18)) is False
+
+
+def test_a_stale_store_withholds_g14_rather_than_emitting_one(tmp_path):
+    # Criterion 8, fail-closed. Lane 1 wedged on 2026-07-28 and is the unbudgeted
+    # one (issue #94). If the store was last asked BEFORE the terminus, the engine
+    # never looked at the window the explanation would live in and cannot assert
+    # its absence. "We did not measure" must not render as "delisted".
+    store = _store_with(tmp_path, "EQR", [_dividend("EQR", date(2026, 6, 29))],
+                        fetched_at=datetime(2026, 7, 28, 6, 0, tzinfo=UTC))
+    assert terminus_is_unexplained(store, "EQR", date(2026, 8, 18)) is False
+
+
+def test_a_symbol_never_asked_about_withholds_g14(tmp_path):
+    # No fetch history at all is the same failure as a stale one, and it is the
+    # likelier one: reconcile() skips a symbol that errored.
+    assert terminus_is_unexplained(CorporateActionStore(tmp_path), "EQR", date(2026, 8, 18)) is False
+```
+
+Write `_dividend` and `_split` as thin provider-payload builders for the real
+tickers named above; they carry event dates and ratios, never prices.
+
+- [ ] **Step 7: Implement the gate**
+
+```python
+# How far either side of the terminus an explaining event may sit. A reorganisation
+# does not land on the exact session the tape goes quiet: the ex-date and the last
+# print differ by settlement and by when the new line starts trading.
+TERMINUS_CA_WINDOW_DAYS = 10
+
+
+def terminus_is_unexplained(
+    store: CorporateActionStore,
+    symbol: str,
+    terminus: date,
+    window_days: int = TERMINUS_CA_WINDOW_DAYS,
+) -> bool:
+    """Spec section 3's clause: absence with no corporate action explaining it.
+
+    FAIL-CLOSED in both directions, which is the whole point:
+    - the store was not asked about this symbol on or after the terminus -> we
+      never looked at the window the explanation would live in, so we cannot
+      assert its absence. Withhold.
+    - an ACTIVE SPLIT sits inside the window -> the store does offer an
+      explanation. Withhold.
+
+    A cash dividend never removes a ticker from the tape and is ignored; those
+    two action_type values are all this store carries
+    (corporate_action_store.py:421), so "no split in the window" is the strongest
+    exculpatory statement it can make. That is a real limit on what G14 asserts,
+    not a reason to skip the check: a plain delisting leaves no event here at all,
+    and that is exactly the case G14 exists to report.
+    """
+    fetches = store.fetch_history(symbol)
+    if not fetches:
+        return False
+    if max(f.fetched_at for f in fetches).date() < terminus:
+        return False
+    lo, hi = terminus - timedelta(days=window_days), terminus + timedelta(days=window_days)
+    return not any(
+        action.action_type == "split" and lo <= action.ex_date <= hi
+        for action in store.latest_active(symbol)
+    )
+
+
+def raw_tape_covers(raw_root: Path, through: date) -> bool:
+    """Does the newest raw partition reach *through*?
+
+    The other half of criterion 8, and the one whose failure is loudest: a
+    flat-file lane that stopped a week ago makes EVERY symbol a trailing run of
+    absences at once. traded_by_session already omits a session with no partition
+    rather than recording an empty set, so a total outage yields an empty tape and
+    terminus_of returns None -- but a PARTIAL outage does not, and that is the
+    case this guards. ponytail: directory names, no footer reads.
+    """
+    dates = [
+        date.fromisoformat(child.name.removeprefix("date="))
+        for child in raw_root.glob("date=*")
+        if child.is_dir()
+    ]
+    return bool(dates) and max(dates) >= through
+```
+
+Add its tests to `tests/test_terminus.py` alongside the gate's:
+
+```python
+def test_a_tape_that_stops_short_of_the_window_blocks_every_g14(tmp_path):
+    # The loud failure: one stalled flat-file lane would otherwise report the
+    # whole universe delisted on the same morning.
+    raw = tmp_path / "raw"
+    (raw / "date=2026-08-20").mkdir(parents=True)
+    assert raw_tape_covers(raw, date(2026, 8, 28)) is False
+    (raw / "date=2026-08-28").mkdir()
+    assert raw_tape_covers(raw, date(2026, 8, 28)) is True
+
+
+def test_an_absent_raw_tree_blocks_every_g14(tmp_path):
+    assert raw_tape_covers(tmp_path / "nothing", date(2026, 8, 28)) is False
+```
+
+- [ ] **Step 8: Run, format, lint, commit**
 
 ```bash
 uv run pytest tests/test_terminus.py -v
@@ -497,17 +646,25 @@ Three changes to `clients/gap_engine.py`, all from the same measurement:
    Massive's own tape is what lacks them — a repair that fetches nothing,
    forever. Spec §9.3 rule 4.
 
-⚠️ **What G14 does NOT do, and why the spec changes rather than the code.**
-Spec §3 as first written defined G14 as absence "with no corporate action
-explaining it", and §11 criterion 8 demanded the engine read the store's
-freshness before emitting one. Neither is implementable against the store this
-repo has: `clients/corporate_action_store.py:421` writes exactly two
-`action_type` values, `"split"` and `"cash_dividend"`, and **neither removes a
-ticker from the SIP tape**. There is no delisting event and no rename event to
-consult, so a store lookup could never explain a terminus. G14 is therefore
-emitted on **tape evidence alone**, and the spec is amended (§3, §11 criterion
-8) to say so and to record the missing-event-type as the reason. Adding a
-delisting feed is a separate change with its own measurement.
+⚠️ **G14 is tape evidence AND the store's silence — but `classify` sees only the
+verdict.** Spec §3 defines G14 as absence "with no corporate action explaining
+it", and §11 criterion 8 requires the store's freshness be read before any G14 is
+emitted. Both are implemented — in Task 2 steps 6–7 (`terminus_is_unexplained`)
+and applied in Task 7 (`scan_findings`) — and deliberately **not here**.
+`classify` receives a `terminus: date | None` that has already passed both gates,
+so the engine stays a pure function of `(expected, present, terminus)` and the
+evidence-gathering stays where the stores are. A candidate the store cannot clear
+arrives as `terminus=None` and falls through to the ordinary G1/G3 path, which is
+the correct fail-closed outcome: "we could not check" must render as a repairable
+gap, never as a delisting.
+
+An earlier revision of this plan proposed **dropping** the clause instead,
+arguing the store carries only `"split"` and `"cash_dividend"` and so could never
+explain a terminus. That was wrong on the facts — an active split at the terminus
+is exactly the reorganisation shape that takes a ticker off the tape
+(`CLAUDE.md` records real ones at `1:300` and `1:3000`), and §4.4's own table ran
+this check by hand in its "latest corporate action" column. Withdrawing a
+requirement is not a way to satisfy it.
 
 **Files:**
 - Modify: `clients/gap_engine.py`, `clients/gap_registry.py`
@@ -1391,7 +1548,8 @@ registry rows and the same tape read Task 6 already performs.
 
 **Interfaces:**
 - Consumes: `build_denominator`, `session_due_at`, `DUE_LAG_DAYS` (Task 1);
-  `terminus_of`, `traded_by_session` (Task 2); `actual_sessions`, `classify`,
+  `terminus_of`, `traded_by_session`, `terminus_is_unexplained`, `raw_tape_covers`
+  (Task 2); `CorporateActionStore` (existing); `actual_sessions`, `classify`,
   `massive_floor_for`, `load_unresolved`, `suppress_unresolved` (existing in
   `clients/gap_engine.py`).
 - Produces:
@@ -1523,10 +1681,17 @@ def scan_findings(
     start = target_date - timedelta(days=window_days)
     floor = massive_floor_for(target_date)
 
+    raw_root = bronze_root.parent / RAW_MINUTE_AGGS
     window = trading_dates_in_range(
         target_date - timedelta(days=40), target_date
     )[-TERMINUS_WINDOW_SESSIONS:]
-    tape = traded_by_session(bronze_root.parent / RAW_MINUTE_AGGS, window)
+    tape = traded_by_session(raw_root, window)
+    # Criterion 8, first gate. A raw tape that stops short of the window makes
+    # EVERY symbol look like a terminus at once -- one stalled flat-file lane
+    # would page the whole universe. No G14 is emitted at all until the tape is
+    # shown to cover the window.
+    tape_ok = raw_tape_covers(raw_root, target_date)
+    store = CorporateActionStore(bronze_root.parent)
 
     findings: list[Finding] = []
     for row in load_registry(registry_path or Path("registry/gaps.json")):
@@ -1540,7 +1705,14 @@ def scan_findings(
                 continue
             # Terminus is an equity-tape fact. No other asset class has a tape to
             # ask, which is why only the equity registry row declares G14.
-            terminus = terminus_of(tape, series.symbol) if row.asset_class == "equity" else None
+            terminus = terminus_of(tape, series.symbol) if (tape_ok and row.asset_class == "equity") else None
+            # Criterion 8, second gate, and spec section 3's own wording: a
+            # terminus the corporate-action store can explain -- or that the store
+            # is too stale to speak about -- is NOT a G14. Setting it back to None
+            # drops the symbol into the ordinary G1/G3 path, which is the
+            # fail-closed answer: a repairable gap, never a delisting.
+            if terminus is not None and not terminus_is_unexplained(store, series.symbol, terminus):
+                terminus = None
             findings.extend(
                 classify(series, actual_sessions(bronze_root, series), floor, terminus=terminus)
             )
@@ -1751,6 +1923,40 @@ expectation.
 Run `scan_findings` for a recent session against the production lake and confirm
 `BK` appears with `gap="G14"`, `tier="B"`, in the decision queue and **not** in
 the Tier A manifest. Record EA/AVB/EQR's classes alongside it.
+
+- [ ] **Step 3b: Criterion 8 — the corporate-action gate, on the four real symbols**
+
+The gate must clear all four (§4.4 measured their newest events as ordinary
+quarterly dividends: BK 2026-04-27, EA 2026-05-27, AVB 2026-06-30, EQR
+2026-06-29) **and** must be shown to actually run rather than trivially return
+`True`:
+
+```bash
+scp -r clients presets macmini:/tmp/gap-check/
+ssh macmini 'cd /tmp/gap-check && ~/market-warehouse/.venv/bin/python - ' <<'PY'
+from datetime import date
+from pathlib import Path
+from clients.corporate_action_store import CorporateActionStore
+from clients.terminus import terminus_is_unexplained
+
+store = CorporateActionStore(Path.home() / "market-warehouse/data-lake")
+for symbol, terminus in (("BK", date(2026, 7, 1)), ("EA", date(2026, 8, 5)),
+                         ("AVB", date(2026, 8, 17)), ("EQR", date(2026, 8, 18))):
+    fetches = store.fetch_history(symbol)
+    newest = max((f.fetched_at for f in fetches), default=None)
+    splits = [a.ex_date for a in store.latest_active(symbol) if a.action_type == "split"]
+    print(symbol, terminus, "unexplained=", terminus_is_unexplained(store, symbol, terminus),
+          "last_fetch=", newest, "splits=", splits)
+PY
+```
+
+Expected: `unexplained= True` for all four, each with a `last_fetch` **on or
+after** its terminus. If any prints `False` with a recent `last_fetch`, the store
+found an explaining split and the symbol is legitimately not a G14 — record it
+and re-derive criterion 9's expected set. If any prints `False` because
+`last_fetch` is stale or absent, **that is issue #94 reaching this feature**: the
+gate is working, lane 1 is not, and the finding is that G14 cannot be emitted for
+that symbol until the reconciler is budgeted. Report it; do not relax the gate.
 
 - [ ] **Step 4: Criterion 8 — producer liveness on the mini**
 
