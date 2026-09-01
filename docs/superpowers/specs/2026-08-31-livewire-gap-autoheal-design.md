@@ -76,7 +76,7 @@ new code.
 | 2   | The denominator itself drifts (renames, delistings, new listings, index changes)          | Agent-maintained (§9)                                 | **Yes**      |
 | 3   | Each repair round exposes a new gap type, spawning a new project                          | Full taxonomy written once (§3)                       | No           |
 | 4   | A finished project is unwatched; it breaks again months later                             | Standing cron with a hard failure signal              | No           |
-| 5   | The same unsourceable symbols are re-litigated every round, and giving up is not recorded | Persistent unresolved denominator with reasons (§4.4) | No           |
+| 5   | The same unsourceable symbols are re-litigated every round, and giving up is not recorded | Persistent unresolved denominator with reasons (§4.5) | No           |
 
 Four of five causes are structural. Cause 2 is the only one that never stops,
 because the market never stops changing — that is where the agent belongs, and
@@ -98,6 +98,14 @@ Completeness gaps:
 | G4  | Missing class/timeframe | Whole class or timeframe absent                            |
 | G5  | Intraday partial        | Session present, bar count below expected for that session |
 | G13 | Head gap                | Series starts later than the expected history horizon (§13, default 1995-01-01) — distinct from G2, which is bounded by existing bars on both sides |
+| G14 | Terminus                | Symbol absent from the raw traded set for **every** session from date X through the as-of date, with no corporate action explaining it — distinct from a no-trade day, which is bounded by presence on both sides |
+
+G14 is not repairable and does not belong to the same family as G1–G3: the bars
+are absent because the instrument stopped appearing on the tape, and no provider
+can supply them. It is listed here because **G1 and G3 cannot be evaluated
+without it.** Measured 2026-09-01 (§4.4): all four true findings on the
+`sp500 + ndx100` universe were G14, and every one was emitted as a G1/G3 Tier A
+repair against Massive — the store whose own tape is what lacks them.
 
 Correctness gaps (the population that hurt in 2026-07-16):
 
@@ -262,13 +270,62 @@ population is small enough to adjudicate and large enough to be worth it, which
 makes it the natural first batch for the agent lane (§9.3) — ahead of the
 remaining 8,386, which no preset contradicts.
 
-### 4.4 Unresolved denominator (cause 5)
+### 4.4 The no-trade exemption is the other half of the denominator
+
+`livewire_scripts/coverage_report.py:322` exempts a symbol that is **absent from
+the day's raw `_symbols.parquet` traded set** — no-trade is not missing. The rule
+is load-bearing: it is the only second source separating "no bar" from "no trade"
+(`CLAUDE.md`), and without it the interior scan flags 96.6% of the universe. It
+must not be removed.
+
+It is also the *second* mechanism hiding the population the disk-glob denominator
+hides, and it hides them independently. Measured on the production host
+2026-09-01 over the live lake — full method, scripts and output in
+`docs/audits/2026-09-01-terminus-vs-no-trade.md`:
+
+| Symbol | last on `minute_aggs_v1` | last on `day_aggs_v1` | in `bronze-delisted/` | latest corporate action |
+| ------ | ------------------------ | --------------------- | --------------------- | ----------------------- |
+| BK  | never (0 of 43 days from 2026-07-01) | never (0 of 21) | **yes** | 2026-04-27 cash dividend |
+| EA  | 2026-08-04 | 2026-08-04 | no | 2026-05-27 cash dividend |
+| AVB | 2026-08-14 | 2026-08-14 | no | 2026-06-30 cash dividend |
+| EQR | 2026-08-17 | 2026-08-17 | no | 2026-06-29 cash dividend |
+
+Two independently published tapes give the same terminus for each symbol, so this
+is not a minute-file artifact, and the tape is healthy on the last of those
+sessions (11,913 tickers; `AAPL`, `SPY`, `MSFT`, `NVDA` all present).
+
+Consequences, in order of how much they change the design:
+
+1. **The exemption exempts all four, on every one of their missing sessions**
+   (21 / 19 / 11 / 10 of 21 / 19 / 11 / 10). Coverage therefore grades them
+   present. Combined with the disk-glob denominator, which never sees BK at all,
+   coverage is blind to this population through two independent mechanisms —
+   **fixing either one alone still reports green.** This, not the denominator
+   alone, is why a delisted S&P 500 member survived weeks under a detector
+   reporting 99.93%.
+2. **The distinction is a suffix test, not a threshold.** Absent for one session
+   with presence on both sides is a no-trade day; absent from date X through the
+   as-of date with no return is a terminus. Both readings use files coverage
+   already opens, and the test costs 20 reads against coverage's ~13,000 footer
+   reads. No threshold to tune — which is the same property that made
+   `classify_seed_boundary` succeed where the blind heuristic failed (`CLAUDE.md`).
+3. **Signal-to-noise, measured: 515 members → 4 findings → 0 false positives.**
+   The no-trade population the 96.6% disease is made of does not appear, because
+   those symbols return to the tape inside the window.
+
+BK is additionally the proof for §4.3's claim that the two delisting producers
+are not one chain: it sits in `bronze-delisted/` **and** in `presets/sp500.json`.
+The archive move ran; nothing removed it from the universe the denominator is
+built from. A delisted-aware denominator must therefore reconcile the archive
+against the presets, not simply read one of them.
+
+### 4.5 Unresolved denominator (cause 5)
 
 A symbol/session that cannot be sourced from any provider is recorded once, with
 reason and as-of date, and **stops being retried**. It remains visible in
 coverage output as unresolved — never silently dropped, never re-litigated.
 
-### 4.5 The registry row
+### 4.6 The registry row
 
 This is the artifact the whole design turns on. "Coverage" is a set of rows, and
 growing coverage means adding a row, not writing a detector.
@@ -303,7 +360,7 @@ Rules that make this work:
   and thresholds. A genuinely novel failure mode may still need a new kind — that
   should be rare, and proposing it is the agent's job 2 (§9.2).
 
-### 4.6 Identity key
+### 4.7 Identity key
 
 `ExpectedSeries.symbol` and the unresolved-ledger key are ticker strings, while
 `clients/security_master.py` exists precisely to end ticker-string joins (the
@@ -315,12 +372,23 @@ cannot answer today. Split it: **the key type becomes `security_id` now**
 (signature-only, cheap), **resolution keeps a ticker fallback** until the store
 has rows. Deferring both halves is what makes the migration expensive later.
 
-## 5. Two deadlines
+## 5. Three deadlines
 
 | Deadline           | Trigger                                                                                                                                                                            | Consequence of missing it                                                                                                                                                          | Class           |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
 | **Massive window** | `/v2/aggs` is entitled for a rolling ~5 years (`CLAUDE.md:719`; measured floor 2021-07-12 in `docs/audits/2026-07-11-daily-bronze-repair.md:58`) and the floor rolls forward daily | Repair becomes IB-only and 2FA-gated; for delisted symbols possibly unobtainable                                                                                                   | Cost            |
+| **Ingestion**      | The job filling session S starts 06:00 UTC on S+1 and must complete inside `MDW_DAILY_JOB_DEADLINE_SECONDS` (4h, so 10:00 UTC) | Session S is *closed* but not yet *due on disk*. A denominator that expects S the moment it closes manufactures a tail gap for every symbol in the universe | **Correctness of the signal** |
 | **PIT revision**   | Every `rebuild-silver` publish                                                                                                                                                     | The published revision permanently carries the hole. PIT means "as of that date it looked like this" — a later backfill cannot retroactively correct an already-published revision | **Correctness** |
+
+The ingestion deadline is why `build_denominator`'s `d < as_of` predicate is
+wrong: `as_of` is a date, and closing is not delivery. Measured 2026-09-01, a run
+at 04:21 UTC produced **497 phantom tail gaps out of 501 findings** — one for
+every sp500 member — purely because session 2026-08-31 had closed and its job had
+not yet started. The rule is `expected(S) ⇔ as_of >= (S + 1 day) 10:00 UTC`,
+reusing the existing job deadline rather than introducing a second constant, and
+`as_of` becomes a `datetime`. `com.livewire.coverage` never had this bug because
+it is scheduled at 11:00 UTC, after the deadline; anything reading the
+denominator earlier must apply the rule explicitly.
 
 Consequence for the engine: **`heal_by` (days of remaining Massive-window
 headroom) is a first-class field on every G1/G2/G3 finding, and the repair queue
@@ -397,6 +465,16 @@ escalate the decision · **C** = explicit non-goal.
 **General rule replacing per-cell reasoning:** _IB-sourced cells cannot be fully
 unattended; all others can._
 
+**The rule is about the provider's availability, not about the symbol.** A cell
+marked **A** means the named store *can* be asked without a human; it does not
+mean the store holds every symbol in the denominator. Measured 2026-09-01 (§4.4),
+four `sp500` members are absent from Massive's own tape entirely, and an engine
+reading this matrix alone emitted them as Tier A Massive repairs that can never
+succeed. Per-finding tier is therefore this matrix **and** §9.3 rule 4: a finding
+demotes to B when the cell's store does not carry the target session. A G14
+terminus is always B in every cell — no source can supply bars for an instrument
+that left the tape.
+
 **G6 auto-repair boundary (must not widen):** only `h<l`, `c∉[l,h]`, `price<=0`,
 exact duplicate rows, out-of-order timestamps. Price jumps and volume anomalies
 are **always B** — `CLAUDE.md:787` already warns against trimming real market
@@ -404,11 +482,20 @@ moves as corruption.
 
 ### 8.1 Freshness SLA (Tier A)
 
-| Class                                | Expected complete by                 | Overdue ⇒ |
-| ------------------------------------ | ------------------------------------ | --------- |
-| equity 1d                            | T+1 06:00 HKT                        | G1        |
-| volatility / futures / cmdty / fx 1d | T+1 08:00 HKT                        | G1        |
-| rates 1d                             | T+2 08:00 HKT (FRED publication lag) | G1        |
+| Class                                | Expected complete by                                | Overdue ⇒ |
+| ------------------------------------ | --------------------------------------------------- | --------- |
+| equity 1d                            | T+1 10:00 UTC (18:00 HKT)                           | G1        |
+| volatility / futures / cmdty / fx 1d | T+1 10:00 UTC (18:00 HKT)                           | G1        |
+| rates 1d                             | T+2 10:00 UTC (FRED publication lag)                | G1        |
+
+Every row is the **same** existing constant: `run-daily-job` starts at 06:00 UTC
+on T+1 and `MDW_DAILY_JOB_DEADLINE_SECONDS` (4h) puts its deadline at 10:00 UTC,
+shared across all seven lanes (`CLAUDE.md`). The lanes are sequential, so there
+is no per-class time to stagger — an earlier draft of this table read
+`T+1 06:00 HKT` for equity, which is 22:00 UTC on T, **eight hours before the job
+that fills the session even starts**. Any SLA earlier than the deadline
+manufactures the 497 phantom findings of §5 by construction. One constant, read
+from the environment, not three written down here.
 
 ## 9. Architecture
 
@@ -490,6 +577,16 @@ failure mode already observed in this repo, not from principle.
 3. **Budget is per job, and exhaustion queues rather than guesses.** Unchanged
    from §10, restated here because 1 and 2 are exactly what fails open under time
    pressure.
+4. **A tier is a claim about a store, and the store must be asked.** Tier A means
+   "repairable unattended by a named source". `gap_engine._finding()` assigns the
+   source from the asset class, and nothing verifies that the source carries the
+   symbol on the target session. Measured 2026-09-01: all four true findings were
+   emitted Tier A `source: massive`, `heal_by_days: 1798`, when Massive's own tape
+   is exactly what lacks them — a repair that fetches nothing, forever, and
+   reports either a permanent failure or a silent no-op. **Tier A requires
+   positive evidence that the named store holds the target session; without that
+   evidence the finding is Tier B.** This is rule 2 applied to the repair side:
+   liveness of a producer is checked on disk, not asserted from a class map.
 
 **First agent task: L4.** Whether a ticker delisted, when, and whether it was a
 delisting or a rename (VSCO→VSXY, `tasks/todo.md:380`) is external fact-finding
@@ -510,13 +607,30 @@ Deliverables:
    delisted-aware, unresolved-aware). Expiry- and unresolved-aware shipped;
    **delisted-aware is blocked on §4.3's producer run** and is the first
    follow-on, not a Phase 1 core deliverable.
-2. One registry-driven engine; checks are rows, not scripts.
+2. One registry-driven engine; checks are rows, not scripts. **Scoped by what the
+   data supports:** on the first production run (§4.4) G2 and G13 produced zero
+   true findings out of 501, and 497 of the rest were an artifact of §5's
+   ingestion deadline. Phase 1 ships the denominator, G1, G3 and G14. G2 and G13
+   stay unimplemented until a measurement asks for them — an unexercised branch in
+   a detector is the thing this design exists to stop shipping.
 3. Detector convergence — **no eleventh detector allowed.** `coverage_report.py`
    is rewired onto the denominator (`:274`, `:363`, `:379`) and becomes the
    engine's reporting surface. Each of the **other nine** ENGINE-classified
    scripts (§15) gets an explicit written disposition inside Phase 1: **folded
    into the engine** or **retired**. No third state. Leaving them running beside a
    new engine fails §1.1 by construction.
+
+   **`livewire_scripts/gap_scan.py` is the violation this clause was written to
+   prevent, and it is retired.** Written 2026-08-31 as a standalone subcommand
+   with two `launchd` templates, it stands beside `coverage_report.py` answering
+   the same question with a different denominator, and it carries neither the
+   no-trade exemption (§4.4) nor the ingestion deadline (§5) — so on the full
+   14,811-symbol universe it would reproduce the 96.6% interior-scan disease. The
+   `sp500` spike did not expose that because every sp500 member is liquid. Its one
+   earned part, `clients/coverage_denominator.py`, moves into
+   `coverage_report.py`; the script, both `.plist.example` templates and the
+   `scripts/livewire_quality.py` subcommand registration are deleted. Net effect
+   of Phase 1 on the script count is **negative**.
 
    Three constraints found by the audit:
 
@@ -538,7 +652,11 @@ Deliverables:
 8. Decision-request file format (written, not consumed) — **adopt the existing
    `triage_breaks.py` verdict vocabulary** (`real_move | bad_data |
 missing_action | inconclusive`, atomically checkpointed) rather than inventing
-   a schema. See §15.
+   a schema. See §15. **G14 does not fit that vocabulary** and is the one place a
+   term is added: a terminus asks *delisted / renamed / stale universe*, none of
+   which is a statement about a price. It gets `terminus` as a fifth verdict with
+   its own sub-field, not a strained reading of `inconclusive` — which would make
+   the queue unsortable exactly where §9.2's first agent task reads it.
 
 **Phase 2 — Helium decision lane.** Reads the queue, applies judgment under
 job-level budget caps, writes decisions back. Reuses Helium's provider routing
@@ -571,11 +689,27 @@ stopped during Phase 1 and returns decision-only in Phase 2.
    trim.
 6. **Degradation:** with Helium absent, criteria 1–5 still pass.
 7. **Convergence:** at the end of Phase 1 there is one engine, not a fourth
-   detector.
+   detector. **Measured by deletion, not by intent:** `livewire_scripts/gap_scan.py`,
+   `launchd/com.livewire.gap-scan.plist.example`,
+   `launchd/com.livewire.universe-refresh.plist.example` and the `gap-scan`
+   subcommand registration are absent from the tree, and no `launchd` job exists
+   that a rewired `com.livewire.coverage` does not already cover.
 8. **Producer liveness:** every store this design reads has a non-empty artifact
    at the path the code resolves, or the section reading it states it is
    unpopulated and names the branch that is consequently untestable. Re-checked
    at the start of each phase, not once. §4.3 is the standing counter-example.
+9. **Terminus separation:** a symbol absent from the raw traded set for a single
+   session with presence on both sides is **not** reported; a symbol absent from
+   date X through the as-of date is reported as G14, Tier B. Verified against
+   §4.4's four symbols as the positive set and the remaining 511 members of that
+   universe as the negative set — **the negative set must produce zero findings.**
+   A detector that cannot pass this is the 96.6% scan again.
+10. **Tier honesty:** no finding is emitted Tier A unless the named store is shown
+    to carry the target session (§9.3 rule 4). The four §4.4 symbols are the
+    regression case: each must land Tier B, not Tier A `source: massive`.
+11. **Due, not merely closed:** a run at any hour before `(S + 1 day) 10:00 UTC`
+    reports no tail gap for session S. The 2026-09-01 04:21 UTC run, which
+    produced 497 phantom findings, is the regression case.
 
 ## 12. Non-goals
 
@@ -596,7 +730,9 @@ These were decided while drafting and need confirmation during review:
 | 2   | `heal_by` is a first-class field and the repair-queue sort key                                                                                                                                                                             | drop it                               |
 | 3   | futures + cmdty follow "one-time + frozen guard" rather than waiting on IB auto-repair                                                                                                                                                     | queue on IB instead                   |
 | 4   | equity intraday stays Tier B                                                                                                                                                                                                               | promote to A (adds IB 2FA dependency) |
-| 5   | SLA times in §8.1                                                                                                                                                                                                                          | adjust                                |
+| 5   | ~~SLA times in §8.1~~ → **settled**: all classes inherit `MDW_DAILY_JOB_DEADLINE_SECONDS`, so the SLA is `(S + 1 day) 10:00 UTC` and there is no second constant to keep in step                                                          | settled                               |
+| 6   | **Settled 2026-09-01 (user):** the ingestion deadline reuses the existing job deadline rather than a new `MDW_GAP_*` variable; `as_of` becomes a `datetime`                                                                                | a dedicated constant                  |
+| 7   | G14 terminus is Tier B in every cell and never auto-repaired                                                                                                                                                                              | attempt an IB re-ask first            |
 
 ## 14. Evidence index
 
@@ -612,6 +748,23 @@ Verified against the working tree at `28242e9`:
 - `docs/audits/2026-07-11-daily-bronze-repair.md:58` — measured Massive floor 2021-07-12
 - `docs/audits/2026-07-16-silver-correctness-gap-from-apex.md` — the 165-symbol incident
 - `livewire_scripts/status.py:197`, `sync_runner.py:337`, `shepherd_daily.py:424` — IB degradation handling
+
+Added 2026-09-01, measured on the production host `moremeds-Mini` against the
+live lake (not the dev checkout — §9.3 rule 2):
+
+- `livewire_scripts/coverage_report.py:105,261,282,322` — `_raw_symbols_for_date`,
+  the traded set, the disk-glob universe, and the no-trade exemption. Neither
+  `clients/gap_engine.py` nor `clients/coverage_denominator.py` nor
+  `livewire_scripts/gap_scan.py` contains any of them (grep, zero hits).
+- `docs/audits/2026-09-01-terminus-vs-no-trade.md` — the full measurement behind
+  §4.4, §5's ingestion deadline, §9.3 rule 4 and acceptance criteria 9–11.
+  Production spike: 501 findings over sp500 equity `1d` in 38.5s; 497 ingestion
+  lag, 4 terminus, 0 G2, 0 G13. Universe pass: 515 members → 4 findings → 0 false
+  positives.
+- Acceptance criterion 2 is **met on the real lake**: BK, an `sp500.json` member
+  with no `1d.parquet`, is reported as G3 in production. This is the case the
+  disk-glob denominator cannot express, and it is the one result that justifies
+  the denominator replacement.
 
 ## 15. Appendix — script disposition audit (2026-08-31)
 
