@@ -44,9 +44,19 @@ def test_a_trailing_run_of_absences_is_a_terminus_at_its_first_session():
     assert terminus_of(_tape(EQR="xxx.."), "EQR", min_sessions=2) == S[3]
 
 
-def test_a_symbol_absent_from_every_session_terminates_at_the_window_start():
-    # BK: an sp500 member with no 1d.parquet and no row on the tape at all.
-    assert terminus_of(_tape(AAPL="xxxxx"), "BK", min_sessions=1) == S[0]
+def test_a_symbol_absent_from_every_session_is_not_a_terminus():
+    """BK, measured on the real tape 2026-09-01: 0/30 sessions, while BNY prints
+    in 30/30. It was renamed, not delisted -- and the action store carries only
+    splits and cash dividends, so no event can ever explain a ticker change and
+    all three gates pass on silence. This used to terminate at the window start
+    and emit a G14 for a live S&P 500 member."""
+    assert terminus_of(_tape(AAPL="xxxxx"), "BK", min_sessions=1) is None
+
+
+def test_a_symbol_that_printed_once_and_stopped_still_terminates():
+    """The boundary the rule above must not overshoot: one session of evidence
+    that it was on the tape is enough to observe it leaving."""
+    assert terminus_of(_tape(EQR="x...."), "EQR", min_sessions=2) == S[1]
 
 
 def test_a_trailing_run_shorter_than_the_minimum_is_not_yet_a_terminus():

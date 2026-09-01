@@ -61,6 +61,18 @@ def terminus_of(
     absent_from = len(sessions)
     while absent_from > 0 and symbol not in traded_by_session[sessions[absent_from - 1]]:
         absent_from -= 1
+    # Never present in the window is NOT a terminus. Leaving the tape is a
+    # transition, and a symbol that never printed here has not been observed
+    # making one -- "we have no data for it" is G3's fact, not G14's.
+    # Measured on the real tape 2026-09-01: BK is absent from all 30 sessions
+    # while BNY prints in all 30. BK did not delist, it was renamed, and the
+    # action store carries only splits and cash dividends -- a ticker change is
+    # not in its vocabulary, so terminus_is_unexplained can only ever return
+    # True for one. All three gates then pass on silence rather than evidence,
+    # and a live S&P 500 member renders as a delisting. The stale preset row is
+    # a separate fix; this is the one that stops G14 asserting what it cannot know.
+    if absent_from == 0:
+        return None
     if len(sessions) - absent_from < min_sessions:
         return None
     return sessions[absent_from]

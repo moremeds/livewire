@@ -1164,6 +1164,10 @@ def test_a_terminus_symbol_is_in_neither_present_nor_missing(tmp_path):
     bronze = tmp_path / "bronze"
     _write_daily(bronze, "AAPL", [date(2026, 8, 28)])
     _write_daily(bronze, "EQR", [date(2026, 8, 17)])
+    # EQR prints on the 17th and never again. A symbol that never appears on the
+    # tape at all is not a terminus -- that shape is BK, renamed rather than
+    # delisted -- so the fixture has to show it leaving, not merely being absent.
+    _write_raw_symbols(bronze, date(2026, 8, 17), ["AAPL", "EQR"])
     for session in _sessions(date(2026, 8, 18), date(2026, 8, 28)):
         _write_raw_symbols(bronze, session, ["AAPL"])
     # The coverage denominator applies the same three gates the classifier does,
@@ -1313,6 +1317,10 @@ def test_an_unasked_action_store_leaves_a_terminus_in_the_denominator(tmp_path):
     bronze = tmp_path / "bronze"
     _write_daily(bronze, "AAPL", [date(2026, 8, 28)])
     _write_daily(bronze, "EQR", [date(2026, 8, 17)])
+    # EQR prints on the 17th and never again. A symbol that never appears on the
+    # tape at all is not a terminus -- that shape is BK, renamed rather than
+    # delisted -- so the fixture has to show it leaving, not merely being absent.
+    _write_raw_symbols(bronze, date(2026, 8, 17), ["AAPL", "EQR"])
     for session in _sessions(date(2026, 8, 18), date(2026, 8, 28)):
         _write_raw_symbols(bronze, session, ["AAPL"])
     # No _seed_action_store call: the store has no fetch receipt for EQR.

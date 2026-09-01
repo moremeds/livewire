@@ -1245,6 +1245,14 @@ python scripts/livewire_quality.py coverage --target-date 2026-08-28
   exemption either — that absorption is what hid EA/AVB/EQR for a month.
   `clients.terminus.confirmed_terminus` is the only entry point; composing the
   three parts by hand at a call site is how the two surfaces diverged once.
+  ⚠️ **And a symbol absent from EVERY session of the window is not a terminus.**
+  Leaving the tape is a transition; a symbol never observed on it has not been
+  seen making one. Measured on the real tape 2026-09-01: BK is absent from all
+  30 sessions while BNY prints in all 30 — a rename, not a delisting. The action
+  store carries only splits and cash dividends, so no event can ever explain a
+  ticker change and all three gates pass on **silence rather than evidence**.
+  Without this precondition a live S&P 500 member renders as delisted. The stale
+  `BK` preset row is a separate fix.
   A withheld terminus counts as **missing but is never auto-recovered**: a fetch
   for an instrument we could not prove still prints cannot succeed, so it stays
   in the ratio and in `still_missing` where the alert names it, and no Massive
