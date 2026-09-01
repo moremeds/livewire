@@ -796,6 +796,7 @@ def auto_recover(
     registry_path: Path | None = None,
     presets_dir: Path | None = None,
     as_of: datetime | None = None,
+    withheld: tuple[str, ...] = (),
 ) -> RecoveryOutcome:
     """Trigger a targeted backfill subprocess and re-check coverage.
 
@@ -810,8 +811,15 @@ def auto_recover(
     date-shaped, not symbol-shaped, and refusing to run because 101 symbols are
     missing was measuring the wrong quantity.
     """
+    # A withheld terminus means we could not prove the symbol still trades:
+    # the tape reached the session, it stopped printing, and the corporate-action
+    # store could not explain it. Fetching one queues an instrument that may
+    # never print again -- so it stays in `missing_symbols` (the ratio must not
+    # lie) and it is still reported, but it is never attempted.
+    unfetchable = [s for s in missing_symbols if s in set(withheld)]
+    missing_symbols = [s for s in missing_symbols if s not in set(withheld)]
     if not missing_symbols:
-        return RecoveryOutcome(timeframe=timeframe, attempted=[], recovered=0, still_missing=[])
+        return RecoveryOutcome(timeframe=timeframe, attempted=[], recovered=0, still_missing=unfetchable)
 
     effective_target = target_date or datetime.now(UTC).date()
 
@@ -879,7 +887,7 @@ def auto_recover(
         timeframe=timeframe,
         attempted=list(missing_symbols),
         recovered=recovered,
-        still_missing=still_missing,
+        still_missing=still_missing + unfetchable,
     )
 
 
@@ -1063,6 +1071,7 @@ def main() -> None:
             missing_symbols=r.missing_symbols,
             target_date=target,
             as_of=as_of,
+            withheld=r.unconfirmed_terminus_symbols,
         )
         outcomes.append(outcome)
 

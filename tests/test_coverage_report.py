@@ -409,6 +409,32 @@ class TestAutoRecover:
         # Whole-file republish — no per-symbol argument.
         assert "--tickers" not in cmd
 
+    def test_a_withheld_terminus_is_reported_but_never_fetched(self):
+        """The peers' finding: queueing a fetch for an instrument we could not
+        prove still prints is work that cannot succeed. It stays missing (the
+        ratio must not lie) and it is still named in still_missing."""
+        with (
+            patch("livewire_scripts.coverage_report.subprocess.run") as mock_run,
+            patch(
+                "livewire_scripts.coverage_report.compute_coverage",
+                return_value={"1d": CoverageResult("1d", total=2, present=1, missing_symbols=[])},
+            ),
+        ):
+            outcome = auto_recover("1d", ["AAPL", "BK"], target_date=date(2026, 4, 6), withheld=("BK",))
+
+        cmd = mock_run.call_args_list[0][0][0]
+        assert cmd[cmd.index("--tickers") + 1 :] == ["AAPL"]
+        assert outcome.attempted == ["AAPL"]
+        assert outcome.still_missing == ["BK"]
+
+    def test_an_all_withheld_gap_launches_no_subprocess_at_all(self):
+        with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
+            outcome = auto_recover("1d", ["BK"], target_date=date(2026, 4, 6), withheld=("BK",))
+
+        assert mock_run.call_count == 0
+        assert outcome.attempted == []
+        assert outcome.still_missing == ["BK"]
+
     def test_daily_recovery_batches_instead_of_dropping(self):
         """Over-cap used to be dropped entirely and re-emailed every night."""
         missing = [f"SYM{i}" for i in range(250)]

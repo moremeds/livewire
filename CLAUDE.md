@@ -1245,6 +1245,10 @@ python scripts/livewire_quality.py coverage --target-date 2026-08-28
   exemption either — that absorption is what hid EA/AVB/EQR for a month.
   `clients.terminus.confirmed_terminus` is the only entry point; composing the
   three parts by hand at a call site is how the two surfaces diverged once.
+  A withheld terminus counts as **missing but is never auto-recovered**: a fetch
+  for an instrument we could not prove still prints cannot succeed, so it stays
+  in the ratio and in `still_missing` where the alert names it, and no Massive
+  batch is queued for it.
 - ⚠️ **Tier follows the repair SOURCE, not the severity of the gap.** Tier A
   means *repairable unattended*, which is a property of where the bar comes from:
 
