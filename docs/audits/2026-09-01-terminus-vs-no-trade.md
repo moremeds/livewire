@@ -174,3 +174,87 @@ for s, n, lastd in partial:
 
 Invoked as `./.venv/bin/python terminus.py ~/market-warehouse/current` so the
 presets come from the served release, not from a checkout.
+
+## Verification (post-implementation)
+
+Phase 1 landed on `feat/gap-autoheal-phase1` (Tasks 1–8). This section records
+what Task 9 could and could not measure, run from a **checkout of that branch**
+(`.worktrees/gap-autoheal-phase1`), never from `~/market-warehouse/current`,
+which is an immutable export that does not carry this code.
+
+### ⚠️ Blocked: this host is not the production warehouse
+
+Task 9 steps 1, 3, 3b and 4 could not run. Measured 2026-09-01:
+
+| Check | Expected (CLAUDE.md) | Observed |
+| --- | --- | --- |
+| `/Volumes/DATA_LAKE` mounted | yes — `data-lake` is a symlink to it | **not mounted**; `data-lake` is a real local directory |
+| equity bronze symbols | ~13,270 | **653** |
+| sp500+ndx100 members on disk | 515 | **288** |
+| `raw/massive/us_stocks_sip/minute_aggs_v1/` | the tape the terminus test reads | **does not exist** |
+| `bronze/asset_class=corporate_action/` | the store the G14 gate reads | **does not exist** |
+| `com.livewire.coverage` loaded | count 1 | **no `com.livewire.*` plist installed at all** |
+| newest `coverage_*.log` | under 3 days old | **2026-04-07** |
+
+Task 9 step 4 names this exact case as a stop condition: *"If the coverage job
+is not loaded, stop — every conclusion in this plan about 'coverage already runs
+this at 11:00 UTC' is false and the plan needs a scheduling task."* That
+conclusion is now open. Nothing was relaxed to work around it, and no expected
+value was adjusted to match an output.
+
+`MIN_TERMINUS_SESSIONS` therefore stays at **5**, the value the pre-implementation
+measurement in this document chose. It has **not** been re-derived against the
+production tape by this branch.
+
+### Verified here
+
+**Criterion 11 — no phantom tail gaps before the ingestion deadline.** Run
+through `compute_coverage`, not `build_denominator`, because
+`as_of=session_due_at(target_date)` makes the due filter tautologically true for
+a single-session window and a helper-level test cannot catch a regression:
+
+```
+hour total present missing terminus
+4    0     0       0       0
+11   880   0       880     0
+```
+
+Session 2026-08-31 at 04:00 UTC on 2026-09-01 is before its 10:00 UTC deadline,
+so the denominator is empty — zero of zero, not one tail gap per symbol. At
+11:00 UTC the same session is due and the denominator is populated. The 880 is
+`on_disk | registry` on this host; `present=0` because this lake's newest equity
+bar predates 2026-06.
+
+**Cost.** `scan_findings` over all six registry rows: **595 findings in 0.9s**,
+far under the ~300s stop threshold. This is a lower bound — the production
+equity universe is ~46× larger — so it does not retire the measurement, and the
+run must be re-timed once the warehouse volume is available.
+
+**Fail-closed behaviour, observed rather than asserted.** With no raw tape and no
+corporate-action store, **zero G14 findings were emitted**. Both criterion-8
+gates withheld, and every symbol fell through to the ordinary repairable path.
+"We could not check" rendered as a repairable gap, not as a delisting.
+
+**Tier honesty.** Every Tier B finding was IB-sourced:
+
+```
+equity     G1 A massive  288      volatility G1 A cboe   15
+equity     G3 A massive  227      futures    G3 B ib     11
+volatility G3 A cboe      28      rates      G1 A fred    4
+fx         G3 A yahoo     21      cmdty      G1 B ib      1
+```
+
+`futures` and `cmdty` are Tier B by construction — IB is 2FA-gated and never
+auto-retries, so its repair is a decision, not an unattended action. The equity
+288 + 227 = 515 is the full registry universe, which is the point of the
+registry-backed denominator: a member with no file is now countable. `fx` and
+`cmdty` appear at all only because Task 5 replaced the hardcoded
+`("volatility", "futures", "rates")` tuple with the registry.
+
+### Still owed
+
+1. Steps 1, 3, 3b, 4 against the mounted production warehouse.
+2. A ruling on scheduling: nothing is installed on this host, so the claim that
+   `com.livewire.coverage` already runs this code path at 11:00 UTC is unverified
+   here.
+3. Re-measure `scan_findings` wall clock at production scale.
