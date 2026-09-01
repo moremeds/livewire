@@ -89,9 +89,10 @@ class SilverRevisionPublisher:
         artifacts: list[PublishedArtifact],
         affected: list[AffectedSymbol],
         actions_as_of: datetime,
+        published_at: datetime | None = None,
     ) -> SilverRevision:
         with self._lock():
-            return self._publish_locked(artifacts, affected, actions_as_of)
+            return self._publish_locked(artifacts, affected, actions_as_of, published_at)
 
     def read_current(self) -> SilverRevision | None:
         """Read the current committed revision without creating the Silver root."""
@@ -110,6 +111,7 @@ class SilverRevisionPublisher:
         artifacts: list[PublishedArtifact],
         affected: list[AffectedSymbol],
         actions_as_of: datetime,
+        published_at: datetime | None = None,
     ) -> SilverRevision:
         manifest_artifacts = self._validate_artifacts(artifacts)
         normalized_affected = self._validate_affected(affected)
@@ -118,7 +120,10 @@ class SilverRevisionPublisher:
             return current
 
         revision = 1 if current is None else current.revision + 1
-        published_at = datetime.now(UTC)
+        # ponytail: an injectable clock, because a manifest stamped from the wall clock
+        # cannot be tested against a frozen PIT as-of -- freeze one half and the pair
+        # collides at some midnight. Production passes nothing and still gets now().
+        published_at = (published_at or datetime.now(UTC)).astimezone(UTC)
         generation_id = f"{published_at.strftime('%Y%m%dT%H%M%SZ')}-{revision}"
         silver_revision = SilverRevision(
             schema_version=1,

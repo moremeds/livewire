@@ -202,3 +202,27 @@ def test_a_revision_moved_by_another_writer_is_still_fatal(tmp_path):
             # cross-process flock this transaction is holding and deadlock the test.
             publisher._publish_locked([_artifact(tmp_path, "b.parquet", b"two")], AFFECTED, ACTIONS_AS_OF)
             transaction.commit([_artifact(tmp_path, "c.parquet", b"three")], AFFECTED, ACTIONS_AS_OF)
+
+
+def test_publish_honours_an_injected_clock_and_defaults_to_now(tmp_path):
+    """A manifest whose publish time can only come from the wall clock cannot be
+    tested against a frozen point-in-time as_of: freeze one half of the pair and it
+    collides the moment real time crosses the constant. That is exactly what took
+    19 tests red on 2026-09-01 — `AS_OF` was pinned to 2026-08-31 23:59Z while
+    `published_at` was `datetime.now(UTC)`, so main went red at midnight with no
+    commit in between.
+
+    This is a guard, not a feature test: it fails the moment `published_at` goes
+    back to being unconditionally `now()`.
+    """
+    frozen = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    publisher = SilverRevisionPublisher(tmp_path)
+
+    pinned = publisher.publish(
+        [_artifact(tmp_path, "a.parquet", b"one")], AFFECTED, ACTIONS_AS_OF, published_at=frozen
+    )
+    assert pinned.published_at == frozen
+    assert pinned.generation_id == "20260102T030405Z-1"
+
+    default = publisher.publish([_artifact(tmp_path, "b.parquet", b"two")], AFFECTED, ACTIONS_AS_OF)
+    assert default.published_at > frozen

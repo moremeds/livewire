@@ -33,6 +33,10 @@ from clients.duckdb_catalog import (
 from clients.pit_silver_revision import PitSilverRevisionPublisher
 from clients.silver_client import PublishedArtifact
 from clients.silver_revision import AffectedSymbol, SilverRevisionPublisher
+
+# Every PIT as_of in this file is on or after 2026-08-31 23:59Z; the fixture's Silver
+# revision must predate all of them, and a wall clock stops predating them at midnight.
+SILVER_PUBLISHED_AT = datetime(2026, 8, 30, tzinfo=UTC)
 from clients.symbol_paths import canonical_symbol, encode_symbol
 from livewire_scripts.shepherd_actions import export_actions
 from livewire_scripts.shepherd_silver import publish_pit
@@ -445,6 +449,7 @@ def test_pit_views_join_verified_identity_intervals_to_existing_silver_bytes(tmp
         [PublishedArtifact(artifact, hashlib.sha256(artifact.read_bytes()).hexdigest(), 2)],
         [AffectedSymbol("NVDA", date(2020, 1, 1), ("1d",))],
         known,
+        published_at=SILVER_PUBLISHED_AT,
     )
     _verified_empty_fetch(tmp_path, "NVDA")
     publish_pit("sp500", 1, datetime(2026, 8, 31, 23, 59, tzinfo=UTC), data_lake_root=tmp_path)
@@ -495,6 +500,7 @@ def test_pit_daily_view_excludes_the_still_open_same_day_session(tmp_path: Path)
         [PublishedArtifact(artifact, hashlib.sha256(artifact.read_bytes()).hexdigest(), 1)],
         [AffectedSymbol("NVDA", date(2020, 1, 1), ("1d",))],
         AT,
+        published_at=SILVER_PUBLISHED_AT,
     )
     _verified_empty_fetch(tmp_path, "NVDA")
     PitSilverRevisionPublisher(tmp_path).publish(
@@ -547,6 +553,7 @@ def test_membership_effective_after_close_starts_with_the_next_session_in_every_
         [PublishedArtifact(artifact, hashlib.sha256(artifact.read_bytes()).hexdigest(), 1)],
         [AffectedSymbol("NVDA", date(2020, 1, 1), ("1d",))],
         AT,
+        published_at=SILVER_PUBLISHED_AT,
     )
     _verified_empty_fetch(tmp_path, "NVDA")
     PitSilverRevisionPublisher(tmp_path).publish(
@@ -576,6 +583,7 @@ def test_pit_views_reject_a_replayable_but_partial_manifest(tmp_path: Path) -> N
         [PublishedArtifact(artifact, hashlib.sha256(artifact.read_bytes()).hexdigest(), 2)],
         [AffectedSymbol("NVDA", date(2020, 1, 1), ("1d",))],
         AT,
+        published_at=SILVER_PUBLISHED_AT,
     )
     partial = PitSilverRevisionPublisher(tmp_path).publish(
         index_id="sp500",
@@ -604,6 +612,7 @@ def test_pit_views_use_the_exact_manifest_bytes_returned_by_verification(
         [PublishedArtifact(artifact, hashlib.sha256(artifact.read_bytes()).hexdigest(), 2)],
         [AffectedSymbol("NVDA", date(2020, 1, 1), ("1d",))],
         AT,
+        published_at=SILVER_PUBLISHED_AT,
     )
     _verified_empty_fetch(tmp_path, "NVDA")
     publish_pit("sp500", 1, datetime(2026, 8, 31, 23, 59, tzinfo=UTC), data_lake_root=tmp_path)
@@ -632,6 +641,7 @@ def test_pit_coverage_view_is_bound_to_the_manifest_input_hash(tmp_path: Path) -
         [PublishedArtifact(artifact, hashlib.sha256(artifact.read_bytes()).hexdigest(), 2)],
         [AffectedSymbol("NVDA", date(2020, 1, 1), ("1d",))],
         AT,
+        published_at=SILVER_PUBLISHED_AT,
     )
     _verified_empty_fetch(tmp_path, "NVDA")
     publish_pit("sp500", 1, datetime(2026, 8, 31, 23, 59, tzinfo=UTC), data_lake_root=tmp_path)
