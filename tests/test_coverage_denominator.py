@@ -1,7 +1,9 @@
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from clients.coverage_denominator import build_denominator
+import pytest
+
+from clients.coverage_denominator import build_denominator, session_due_at
 
 PRESETS = Path(__file__).resolve().parents[1] / "presets"
 
@@ -18,7 +20,7 @@ def test_denominator_does_not_depend_on_disk():
         timeframe="1d",
         start=date(2026, 8, 26),
         end=date(2026, 8, 28),
-        as_of=date(2026, 8, 31),
+        as_of=datetime(2026, 8, 31, 10, 0, tzinfo=UTC),
     )
     assert series, "volatility preset must yield expected series"
     # every expected series carries the three real XNYS sessions in range
@@ -40,7 +42,7 @@ def test_expired_futures_contract_is_not_expected():
         timeframe="1d",
         start=date(2026, 8, 26),
         end=date(2026, 8, 28),
-        as_of=date(2026, 8, 31),
+        as_of=datetime(2026, 8, 31, 10, 0, tzinfo=UTC),
     )
     symbols = {s.symbol for s in tickers}
     assert symbols, "futures-index preset must yield live contracts"
@@ -59,7 +61,7 @@ def test_overlapping_presets_yield_each_symbol_once():
         timeframe="1d",
         start=date(2026, 8, 26),
         end=date(2026, 8, 28),
-        as_of=date(2026, 8, 31),
+        as_of=datetime(2026, 8, 31, 10, 0, tzinfo=UTC),
     )
     symbols = [s.symbol for s in series]
     assert len(symbols) == len(set(symbols)), "duplicate expected series"
@@ -73,7 +75,7 @@ def test_a_session_not_yet_closed_is_not_expected():
         timeframe="1d",
         start=date(2026, 8, 26),
         end=date(2026, 9, 30),
-        as_of=date(2026, 8, 28),
+        as_of=datetime(2026, 8, 28, 10, 0, tzinfo=UTC),
     )
     assert max(s.sessions[-1] for s in series) < date(2026, 8, 28)
 
@@ -100,6 +102,70 @@ def test_an_archived_symbol_a_preset_still_claims_stays_expected():
         timeframe="1d",
         start=date(2026, 8, 26),
         end=date(2026, 8, 28),
-        as_of=date(2026, 8, 31),
+        as_of=datetime(2026, 8, 31, 10, 0, tzinfo=UTC),
     )
     assert "BK" in {s.symbol for s in series}
+
+
+def test_session_is_due_at_the_daily_job_deadline_the_following_day():
+    # run-daily-job starts 06:00 UTC on S+1 and MDW_DAILY_JOB_DEADLINE_SECONDS
+    # (4h) puts its deadline at 10:00 UTC.
+    assert session_due_at(date(2026, 8, 31)) == datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
+
+
+def test_session_due_at_honours_the_existing_deadline_env_var(monkeypatch):
+    monkeypatch.setenv("MDW_DAILY_JOB_DEADLINE_SECONDS", "7200")
+    assert session_due_at(date(2026, 8, 31)) == datetime(2026, 9, 1, 8, 0, tzinfo=UTC)
+
+
+def test_rates_is_due_a_day_later_than_equity():
+    # Spec section 8.1: FRED publishes a session behind, so the rates row is T+2.
+    # A uniform T+1 expects DGS10 for session S at 10:00 UTC on S+1, when the
+    # series legitimately does not exist yet -- one phantom gap per series, daily.
+    session = date(2026, 8, 28)
+    assert session_due_at(session, lag_days=2) - session_due_at(session) == timedelta(days=1)
+
+
+def test_a_closed_but_not_yet_due_session_is_not_expected(tmp_path):
+    # The 2026-09-01 04:21 UTC production run: session 2026-08-31 had closed and
+    # its job had not started. 497 of 501 findings were this.
+    preset = tmp_path / "p.json"
+    preset.write_text('{"name": "p", "tickers": ["AAPL"]}')
+    series = build_denominator(
+        [preset],
+        "equity",
+        "1d",
+        date(2026, 8, 27),
+        date(2026, 8, 31),
+        as_of=datetime(2026, 9, 1, 4, 21, tzinfo=UTC),
+    )
+    assert date(2026, 8, 31) not in series[0].sessions
+    assert date(2026, 8, 28) in series[0].sessions
+
+
+def test_the_same_session_is_expected_once_the_deadline_passes(tmp_path):
+    preset = tmp_path / "p.json"
+    preset.write_text('{"name": "p", "tickers": ["AAPL"]}')
+    series = build_denominator(
+        [preset],
+        "equity",
+        "1d",
+        date(2026, 8, 27),
+        date(2026, 8, 31),
+        as_of=datetime(2026, 9, 1, 10, 0, tzinfo=UTC),
+    )
+    assert date(2026, 8, 31) in series[0].sessions
+
+
+def test_a_naive_as_of_is_rejected_rather_than_assumed_utc(tmp_path):
+    preset = tmp_path / "p.json"
+    preset.write_text('{"name": "p", "tickers": ["AAPL"]}')
+    with pytest.raises(ValueError, match="tz-aware"):
+        build_denominator(
+            [preset],
+            "equity",
+            "1d",
+            date(2026, 8, 27),
+            date(2026, 8, 31),
+            as_of=datetime(2026, 9, 1, 10, 0),
+        )

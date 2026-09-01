@@ -7,12 +7,42 @@ docs/superpowers/specs/2026-08-31-livewire-gap-autoheal-design.md.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
 from clients.ingestion_common import load_preset
 from clients.trading_calendar import trading_dates_in_range
+
+# run-daily-job's StartCalendarInterval, in UTC. The lane that fills session S
+# starts here on S+1.
+JOB_START_UTC = time(6, 0)
+# The default of MDW_DAILY_JOB_DEADLINE_SECONDS (4h). Read at call time, not at
+# import, so a test and a scheduled run can disagree.
+DEFAULT_JOB_DEADLINE_SECONDS = 14400
+
+
+def session_due_at(session: date, lag_days: int = 1) -> datetime:
+    """The instant session *session* is due on disk.
+
+    ponytail: reuses MDW_DAILY_JOB_DEADLINE_SECONDS rather than introducing a
+    second constant to keep in step. "Closed" is not "delivered" -- the job that
+    fills S starts 06:00 UTC on S+1, and a denominator that expects S the moment
+    it closes manufactures one tail gap per symbol in the universe.
+
+    lag_days is the number of days after the session that the filling job
+    starts. It is 1 for every lane run by run-daily-job, and 2 for rates: FRED
+    publishes a session behind, which spec section 8.1 already records as
+    T+2. A uniform T+1 there manufactures one phantom gap per series per day.
+    """
+    seconds = int(os.environ.get("MDW_DAILY_JOB_DEADLINE_SECONDS", DEFAULT_JOB_DEADLINE_SECONDS))
+    start = datetime.combine(session + timedelta(days=lag_days), JOB_START_UTC, tzinfo=UTC)
+    return start + timedelta(seconds=seconds)
+
+
+# Spec section 8.1. Anything not listed is T+1.
+DUE_LAG_DAYS = {"rates": 2}
 
 
 @dataclass(frozen=True)
@@ -37,11 +67,15 @@ def build_denominator(
     timeframe: str,
     start: date,
     end: date,
-    as_of: date,
+    as_of: datetime,
+    lag_days: int = 1,
 ) -> list[ExpectedSeries]:
-    # A session at or after `as_of` has not closed yet, so it cannot be missing.
-    # Without this an `--end` in the future manufactures phantom G1 findings.
-    sessions = tuple(d for d in trading_dates_in_range(start, end) if d < as_of)
+    if as_of.tzinfo is None:
+        raise ValueError("as_of must be tz-aware; a naive local datetime silently shifts the due rule")
+    # A session is expected only once the job that fills it was due to finish.
+    # Guarding on `d < as_of.date()` instead would reintroduce the 497 phantoms:
+    # closing is not delivery.
+    sessions = tuple(d for d in trading_dates_in_range(start, end) if session_due_at(d, lag_days) <= as_of)
     # Expiry is judged against the WINDOW, not against `as_of`: a contract that
     # was live during the scanned range belongs in that range's denominator even
     # if it has expired by today. Judging against `as_of` made the same window
