@@ -125,3 +125,31 @@ def raw_tape_covers(raw_root: Path, through: date) -> bool:
         date.fromisoformat(child.name.removeprefix("date=")) for child in raw_root.glob("date=*") if child.is_dir()
     ]
     return bool(dates) and max(dates) >= through
+
+
+def confirmed_terminus(
+    tape: dict[date, set[str]],
+    symbol: str,
+    store: CorporateActionStore,
+    tape_ok: bool,
+) -> date | None:
+    """All three gates of spec criterion 8, as one decision.
+
+    This exists because the decision has two callers -- the coverage denominator
+    and the windowed classifier -- and they diverged: one applied the suffix test
+    alone and dropped the symbol from its denominator on that basis, which is
+    "we could not check" rendering as "delisted", the one thing this module says
+    must never happen. Three separate functions in a caller-defined order is an
+    invariant nothing enforces; one function is enforced by there being nothing
+    else to call.
+
+    Any gate failing returns None, and None means "ordinary repairable gap".
+    """
+    if not tape_ok:
+        return None
+    terminus = terminus_of(tape, symbol)
+    if terminus is None:
+        return None
+    if not terminus_is_unexplained(store, symbol, terminus):
+        return None
+    return terminus

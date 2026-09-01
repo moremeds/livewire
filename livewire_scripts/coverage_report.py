@@ -47,9 +47,8 @@ from clients.intraday_bronze_client import INTRADAY_PARQUET_FILENAME
 from clients.symbol_paths import decode_symbol
 from clients.terminus import (
     RAW_MINUTE_AGGS,
+    confirmed_terminus,
     raw_tape_covers,
-    terminus_is_unexplained,
-    terminus_of,
     traded_by_session,
 )
 from clients.trading_calendar import trading_dates_in_range
@@ -321,7 +320,14 @@ def compute_coverage(
     # span, defines the window. previous_trading_day(d) takes a single argument
     # and cannot step back N sessions, which is why this is a slice.
     window = trading_dates_in_range(target_date - timedelta(days=40), target_date)[-TERMINUS_WINDOW_SESSIONS:]
-    tape = traded_by_session(bronze_root.parent / RAW_MINUTE_AGGS, window)
+    raw_root = bronze_root.parent / RAW_MINUTE_AGGS
+    tape = traded_by_session(raw_root, window)
+    # The same three gates the classifier applies, via the same function. Reading
+    # the tape and asking `terminus_of` alone -- which this did -- removes a symbol
+    # from the DENOMINATOR on evidence the module itself calls insufficient, so a
+    # store too stale to answer raised the coverage ratio instead of lowering it.
+    tape_ok = raw_tape_covers(raw_root, target_date)
+    action_store = CorporateActionStore(bronze_root.parent)
 
     for tf in TIMEFRAMES:
         parquet_paths = sorted((bronze_root / "asset_class=equity").glob(f"symbol=*/{_filename_for(tf)}"))
@@ -364,7 +370,11 @@ def compute_coverage(
         # not print for days.
         terminus: dict[str, date] = {}
         if tf == "1d":
-            terminus = {symbol: when for symbol in registry_universe if (when := terminus_of(tape, symbol)) is not None}
+            terminus = {
+                symbol: when
+                for symbol in registry_universe
+                if (when := confirmed_terminus(tape, symbol, action_store, tape_ok)) is not None
+            }
 
         column_name = "trade_date" if tf == "1d" else "bar_timestamp"
         # Threaded: the pass is one small footer read per file, so it is bound by
@@ -536,14 +546,11 @@ def scan_findings(
                 continue
             # Terminus is an equity-tape fact. No other asset class has a tape to
             # ask, which is why only the equity registry row declares G14.
-            terminus = terminus_of(tape, series.symbol) if (tape_ok and row.asset_class == "equity") else None
-            # Criterion 8, second gate, and spec section 3's own wording: a
-            # terminus the corporate-action store can explain -- or that the store
-            # is too stale to speak about -- is NOT a G14. Setting it back to None
-            # drops the symbol into the ordinary G1/G3 path, which is the
-            # fail-closed answer: a repairable gap, never a delisting.
-            if terminus is not None and not terminus_is_unexplained(store, series.symbol, terminus):
-                terminus = None
+            # Criterion 8, all three gates, through the one function the coverage
+            # denominator also calls. Any gate failing yields None, which drops the
+            # symbol into the ordinary G1/G3 path -- a repairable gap, never a
+            # delisting.
+            terminus = confirmed_terminus(tape, series.symbol, store, tape_ok) if row.asset_class == "equity" else None
             findings.extend(classify(series, actual_sessions(bronze_root, series), floor, terminus=terminus))
     unresolved = load_unresolved(bronze_root.parent / "repairs" / "unresolved.json")
     return sorted(suppress_unresolved(findings, unresolved), key=_urgency)
@@ -853,6 +860,30 @@ def _resolve_target_date(force: bool, override: date | None) -> date | None:
     return None
 
 
+def _scan_and_write_artifacts(target: date, as_of: datetime) -> str:
+    """Run the windowed classifier and publish its two artifacts. Never raises.
+
+    Returns the one log line describing the outcome. A scan failure degrades the
+    run rather than failing it -- but it is loud in three places at once (ERROR in
+    the job log, the line in the coverage log, and the artifacts simply not being
+    rewritten), because a swallowed warning is how the last dead detector hid for
+    four weeks.
+    """
+    try:
+        findings = scan_findings(target, bronze_root=_resolved_data_lake() / "bronze", as_of=as_of)
+    except Exception as exc:  # noqa: BLE001 - the coverage half must survive any scan failure
+        log.error("scan failed for %s: %s", target, exc, exc_info=True)
+        return f"  scan: FAILED ({type(exc).__name__}: {exc})"
+    repairs_dir = _resolved_data_lake() / "repairs"
+    write_tier_a_manifest(findings, repairs_dir / f"tier_a_{target}.json")
+    write_decision_requests(findings, repairs_dir / f"decisions_{target}.json")
+    return (
+        f"  scan: {len(findings)} findings "
+        f"(tier A {sum(1 for f in findings if f.tier == 'A')}, "
+        f"tier B {sum(1 for f in findings if f.tier == 'B')})"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Daily coverage report + auto-recovery")
     parser.add_argument(
@@ -919,19 +950,17 @@ def main() -> None:
     # CLAUDE.md records four separate budgets that were guessed and expired. The
     # cost is bounded by iterating the ~515-symbol registry universe rather than
     # the ~13,270-file glob; Task 9 step 5 measures it.
-    bronze_root = _resolved_data_lake() / "bronze"
-    findings = scan_findings(target, bronze_root=bronze_root, as_of=as_of)
-    repairs_dir = _resolved_data_lake() / "repairs"
-    write_tier_a_manifest(findings, repairs_dir / f"tier_a_{target}.json")
-    write_decision_requests(findings, repairs_dir / f"decisions_{target}.json")
-    scan_line = (
-        f"  scan: {len(findings)} findings "
-        f"(tier A {sum(1 for f in findings if f.tier == 'A')}, "
-        f"tier B {sum(1 for f in findings if f.tier == 'B')})"
-    )
-    console.print(scan_line)
+    # The coverage measurement is durable BEFORE the scan runs. Consolidating two
+    # jobs into one merged their failure domains too: a RegistryError in the scan
+    # -- new, and consumed by nothing yet -- would otherwise take down the coverage
+    # log, the auto-recovery and the alert, and leave `status` and the digest
+    # reading a frozen log. That is the four-week blindness in CLAUDE.md, rebuilt.
+    log_path = write_coverage_log(target, line, [*blocks, non_equity_line], results)
 
-    log_path = write_coverage_log(target, line, [*blocks, non_equity_line, scan_line], results)
+    scan_line = _scan_and_write_artifacts(target, as_of)
+    console.print(scan_line)
+    with log_path.open("a", encoding="utf-8") as fh:
+        fh.write(scan_line + "\n")
 
     if args.no_recover:
         return

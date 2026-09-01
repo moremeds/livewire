@@ -22,6 +22,7 @@ from clients.gap_engine import Finding
 from clients.gap_registry import RegistryError
 from clients.massive_client import MassiveDividend, MassivePageEvidence
 from clients.trading_calendar import trading_dates_in_range
+from livewire_scripts import coverage_report
 from livewire_scripts.coverage_report import (
     scan_findings,
     write_decision_requests,
@@ -371,3 +372,24 @@ def test_classify_still_has_a_production_caller():
     from livewire_scripts import coverage_report
 
     assert "classify(" in inspect.getsource(coverage_report.scan_findings)
+
+
+def test_a_scan_failure_does_not_take_down_the_coverage_measurement(tmp_path, monkeypatch):
+    """Consolidating two jobs merged their failure domains; this un-merges them.
+
+    The scan is new and consumed by nothing yet. The coverage half feeds
+    auto-recovery, the alert, `status` and the nightly digest. A RegistryError in
+    the former must not stop the latter's log from being written -- that is the
+    four-week detector blindness CLAUDE.md records, rebuilt with new parts.
+    """
+    monkeypatch.setattr(coverage_report, "_DATA_LAKE", tmp_path)
+    monkeypatch.setattr(
+        coverage_report,
+        "scan_findings",
+        lambda *a, **k: (_ for _ in ()).throw(RegistryError("row x resolves to no symbols")),
+    )
+    line = coverage_report._scan_and_write_artifacts(date(2026, 8, 28), datetime(2026, 8, 29, 11, 0, tzinfo=UTC))
+    assert line.startswith("  scan: FAILED (RegistryError")
+    # And it published nothing, rather than an empty manifest that would read as
+    # "the scan ran and found no repairs".
+    assert not (tmp_path / "repairs").exists()

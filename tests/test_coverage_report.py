@@ -1090,6 +1090,9 @@ def _registry_for(tmp_path: Path, tickers: list[str]) -> Path:
     return registry
 
 
+from tests.test_coverage_orchestration import _seed_action_store  # noqa: E402
+
+
 def _sessions(start: date, end: date) -> list[date]:
     from clients.trading_calendar import trading_dates_in_range
 
@@ -1122,6 +1125,9 @@ def test_a_terminus_symbol_is_in_neither_present_nor_missing(tmp_path):
     _write_daily(bronze, "EQR", [date(2026, 8, 17)])
     for session in _sessions(date(2026, 8, 18), date(2026, 8, 28)):
         _write_raw_symbols(bronze, session, ["AAPL"])
+    # The coverage denominator applies the same three gates the classifier does,
+    # so the store has to have been asked -- see the companion test below.
+    _seed_action_store(tmp_path, "EQR", datetime(2026, 8, 28, 6, 0, tzinfo=UTC))
     results = compute_coverage(
         date(2026, 8, 28),
         bronze_root=bronze,
@@ -1252,3 +1258,60 @@ def test_main_writes_both_repair_artifacts(seeded_bronze, monkeypatch, tmp_path)
     # findings is visible rather than absent.
     log_text = (tmp_path / "logs" / "coverage_2026-04-06.log").read_text()
     assert "scan:" in log_text
+
+
+def test_an_unasked_action_store_leaves_a_terminus_in_the_denominator(tmp_path):
+    """The regression: coverage applied ONE of the three gates, not three.
+
+    A symbol whose trailing absence the corporate-action store cannot speak to --
+    because it was never asked -- was removed from the denominator anyway, so
+    "we could not check" raised the coverage ratio instead of lowering it. The
+    classifier calls the same symbol a repairable G1 in the same run. Both
+    surfaces must now agree: it stays countable, and it is missing.
+    """
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", [date(2026, 8, 28)])
+    _write_daily(bronze, "EQR", [date(2026, 8, 17)])
+    for session in _sessions(date(2026, 8, 18), date(2026, 8, 28)):
+        _write_raw_symbols(bronze, session, ["AAPL"])
+    # No _seed_action_store call: the store has no fetch receipt for EQR.
+    results = compute_coverage(
+        date(2026, 8, 28),
+        bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL", "EQR"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    )
+    result = results["1d"]
+    # Withheld: the store cannot speak to this absence, so no terminus is claimed
+    # and the symbol stays COUNTABLE. Before the gates were unified, coverage
+    # dropped it from `total` on the tape evidence alone.
+    assert result.terminus_symbols == ()
+    assert result.total == 2
+    # ponytail: it then reads present via the no-trade exemption, while the
+    # classifier calls the same symbol a repairable G1 in the same run. That
+    # second divergence predates this branch (it is the G1-vs-no-trade tension,
+    # not the terminus gates) and is not closed here -- see the review notes.
+    assert result.present == 2
+
+
+def test_a_stale_raw_tape_keeps_every_symbol_in_the_coverage_denominator(tmp_path):
+    """raw_tape_covers, on the coverage surface. A partial flat-file outage must
+    not be able to empty the denominator -- the failure mode that gate exists for
+    is exactly "every symbol looks terminated at once"."""
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", [date(2026, 8, 28)])
+    _write_daily(bronze, "EQR", [date(2026, 8, 17)])
+    # The tape stops four sessions short of the target day.
+    for session in _sessions(date(2026, 8, 18), date(2026, 8, 24)):
+        _write_raw_symbols(bronze, session, ["AAPL"])
+    _seed_action_store(tmp_path, "EQR", datetime(2026, 8, 28, 6, 0, tzinfo=UTC))
+    results = compute_coverage(
+        date(2026, 8, 28),
+        bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL", "EQR"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    )
+    assert results["1d"].terminus_symbols == ()
+    assert results["1d"].total == 2
