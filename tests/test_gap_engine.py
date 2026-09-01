@@ -33,13 +33,6 @@ def test_missing_latest_session_is_g1():
     assert findings[0].sessions == (date(2026, 8, 28),)
 
 
-def test_missing_middle_session_is_g2():
-    present = {date(2026, 8, 26), date(2026, 8, 28)}
-    findings = classify(_series(), present=present, massive_floor=FLOOR)
-    assert [f.gap for f in findings] == ["G2"]
-    assert findings[0].sessions == (date(2026, 8, 27),)
-
-
 def test_complete_series_yields_nothing():
     assert classify(_series(), present=set(SESSIONS), massive_floor=FLOOR) == []
 
@@ -159,20 +152,74 @@ def test_the_massive_floor_rolls_with_the_scan_date():
     assert later > massive_floor_for(date(2026, 7, 29)), "the floor must roll forward"
 
 
-def test_sessions_before_the_first_ever_bar_are_g13_not_g2():
-    """Backfill not reaching that far is routine; a session written then lost is
-    an incident. Both used to be G2, which hid the incident."""
-    series = ExpectedSeries("MUNJ", "equity", "1d", SESSIONS)
-    findings = classify(series, present={SESSIONS[2]}, massive_floor=FLOOR)
-    assert [f.gap for f in findings] == ["G13"]
-    assert findings[0].sessions == (SESSIONS[0], SESSIONS[1])
+def _terminus_series(symbol="EQR", sessions=()):
+    return ExpectedSeries(symbol, "equity", "1d", tuple(sessions))
 
 
-def test_head_and_interior_are_reported_separately():
-    window = (date(2026, 8, 24), date(2026, 8, 25), date(2026, 8, 26), date(2026, 8, 27), date(2026, 8, 28))
-    series = ExpectedSeries("MUNJ", "equity", "1d", window)
-    # first-ever bar is 08-25; 08-24 is head, 08-26/27 are a real interior loss
-    findings = classify(series, present={window[1], window[4]}, massive_floor=FLOOR)
-    by_gap = {f.gap: f.sessions for f in findings}
-    assert by_gap["G13"] == (window[0],)
-    assert by_gap["G2"] == (window[2], window[3])
+def test_a_terminus_is_g14_and_never_tier_a():
+    # EQR left the tape on 2026-08-18. No source can supply bars for an
+    # instrument that is not printing, so Tier A would queue a repair that
+    # fetches nothing, forever.
+    sessions = (date(2026, 8, 18), date(2026, 8, 19), date(2026, 8, 20))
+    findings = classify(
+        _terminus_series(sessions=sessions),
+        present={date(2026, 8, 17)},
+        massive_floor=FLOOR,
+        terminus=date(2026, 8, 18),
+    )
+    assert [f.gap for f in findings] == ["G14"]
+    assert findings[0].tier == "B"
+    assert findings[0].heal_by_days is None
+
+
+def test_a_terminus_swallows_the_tail_rather_than_emitting_both():
+    # Without this the same sessions are reported twice: once as a repairable G1
+    # and once as an unrepairable G14, and the Tier A queue gets a job it cannot
+    # do.
+    sessions = (date(2026, 8, 18), date(2026, 8, 19))
+    findings = classify(
+        _terminus_series(sessions=sessions),
+        present={date(2026, 8, 17)},
+        massive_floor=FLOOR,
+        terminus=date(2026, 8, 18),
+    )
+    assert len(findings) == 1
+
+
+def test_a_missing_file_with_a_terminus_is_g14_not_g3():
+    # BK is in sp500.json, has no 1d.parquet, and has never been on the tape.
+    findings = classify(
+        _terminus_series(symbol="BK", sessions=(date(2026, 8, 18),)),
+        present=set(),
+        massive_floor=FLOOR,
+        terminus=date(2026, 8, 3),
+    )
+    assert [f.gap for f in findings] == ["G14"]
+    assert findings[0].tier == "B"
+
+
+def test_a_missing_file_with_no_terminus_is_still_g3_tier_a():
+    # The acceptance-criterion-2 case: a symbol that never landed but IS on the
+    # tape is a real, repairable gap. This must not regress.
+    findings = classify(
+        _terminus_series(sessions=(date(2026, 8, 18),)),
+        present=set(),
+        massive_floor=FLOOR,
+        terminus=None,
+    )
+    assert [f.gap for f in findings] == ["G3"]
+    assert findings[0].tier == "A"
+
+
+def test_interior_and_head_gaps_are_no_longer_emitted():
+    # G2 and G13 produced zero true findings out of 501 on the first production
+    # run. Only the tail is reported.
+    sessions = (date(2026, 8, 3), date(2026, 8, 5), date(2026, 8, 7))
+    findings = classify(
+        _terminus_series(sessions=sessions),
+        present={date(2026, 8, 4), date(2026, 8, 6)},
+        massive_floor=FLOOR,
+        terminus=None,
+    )
+    assert [f.gap for f in findings] == ["G1"]
+    assert findings[0].sessions == (date(2026, 8, 7),)

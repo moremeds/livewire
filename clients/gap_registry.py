@@ -11,11 +11,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-# G1..G12 are the spec taxonomy. G13 (head gap: sessions before a series' first
-# ever bar) was added by this engine because routine backfill shortfall and a
-# session written-then-lost were indistinguishable as G2. The spec row is owed
-# on the docs/gap-autoheal-design branch, which does not carry this code yet.
-VALID_GAPS = {f"G{n}" for n in range(1, 14)}
+# G1..G12 are the spec taxonomy. G13 (head gap) and G14 (terminus: the symbol
+# left the tape) were added by this engine. G2 and G13 are named but not emitted
+# -- see clients/gap_engine.classify.
+VALID_GAPS = {f"G{n}" for n in range(1, 15)}
 VALID_TIERS = {"A", "B"}
 # Only checks the engine actually dispatches. `scan` runs denominator_diff for
 # every row regardless of this field, so a row naming anything else would

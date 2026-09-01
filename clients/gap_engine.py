@@ -58,7 +58,7 @@ class Finding:
     symbol: str
     asset_class: str
     timeframe: str
-    gap: str  # "G1" tail | "G2" interior | "G3" nothing on disk | "G13" head
+    gap: str  # "G1" tail | "G3" nothing on disk | "G14" left the tape
     sessions: tuple[date, ...]
     # Days of headroom above the rolling Massive floor. None when the repair
     # source has no rolling window (Yahoo/CBOE/FRED/IB), i.e. no expiry date.
@@ -122,33 +122,54 @@ def _finding(series: ExpectedSeries, gap: str, sessions: tuple[date, ...], massi
     )
 
 
-def classify(series: ExpectedSeries, present: set[date], massive_floor: date) -> list[Finding]:
+def _terminus_finding(series: ExpectedSeries, sessions: tuple[date, ...]) -> Finding:
+    """Always Tier B, in every cell, with no heal-by.
+
+    Spec section 9.3 rule 4: a tier is a claim about a store. No store carries
+    bars for an instrument that is not printing, so the rolling-window arithmetic
+    that produces `heal_by_days` has nothing to measure and would sort a job that
+    can never run to the front of the repair queue.
+    """
+    return Finding(
+        symbol=series.symbol,
+        asset_class=series.asset_class,
+        timeframe=series.timeframe,
+        gap="G14",
+        sessions=sessions,
+        heal_by_days=None,
+        tier="B",
+        source=repair_source(series.asset_class),
+    )
+
+
+def classify(
+    series: ExpectedSeries,
+    present: set[date],
+    massive_floor: date,
+    terminus: date | None = None,
+) -> list[Finding]:
     expected = set(series.sessions)
     missing = tuple(sorted(expected - present))
     if not missing:
         return []
+    if terminus is not None:
+        # An instrument that left the tape cannot be repaired from any source, so
+        # it is one Tier B finding rather than a repairable G1/G3. Emitting both
+        # would put a job in the Tier A queue that fetches nothing, forever.
+        terminal = tuple(d for d in missing if d >= terminus)
+        if terminal:
+            return [_terminus_finding(series, terminal)]
     if not present:
         return [_finding(series, "G3", missing, massive_floor)]
 
-    # `present` is every session in the file, not just the window, so min() is
-    # the series' first-ever bar.
-    oldest_present = min(present)
+    # ponytail: tail only. G2 (interior) and G13 (head) produced zero true
+    # findings out of 501 on the first production run, and interior absence
+    # within bar files alone is the circular question that made the 5m scan flag
+    # 96.6% of the universe. Reinstate either only with a measurement asking for
+    # it -- the taxonomy still names them (spec section 3).
     newest_present = max(present)
     tail = tuple(d for d in missing if d > newest_present)
-    interior = tuple(d for d in missing if oldest_present < d < newest_present)
-    # Sessions before the first bar the series ever had. Backfill not having
-    # reached that far is routine; a session written and then lost is an
-    # incident. Both used to land in G2, which made the incident unfindable.
-    head = tuple(d for d in missing if d < oldest_present)
-
-    findings: list[Finding] = []
-    if tail:
-        findings.append(_finding(series, "G1", tail, massive_floor))
-    if interior:
-        findings.append(_finding(series, "G2", interior, massive_floor))
-    if head:
-        findings.append(_finding(series, "G13", head, massive_floor))
-    return findings
+    return [_finding(series, "G1", tail, massive_floor)] if tail else []
 
 
 UnresolvedKey = tuple[str, str, str, date]
