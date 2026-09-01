@@ -341,3 +341,33 @@ def test_a_stale_raw_tape_blocks_every_g14_at_once(tmp_path):
         as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
     )
     assert "G14" not in {f.gap for f in findings}
+
+
+def test_no_second_gap_detector_exists():
+    """Spec section 11 criterion 7, measured by deletion rather than by intent.
+
+    A fourth detector re-implements every "why is this bar legitimately absent"
+    rule from scratch, and gets them wrong -- gap_scan carried neither the
+    no-trade exemption nor the ingestion deadline.
+    """
+    repo = Path(__file__).resolve().parent.parent
+    assert not (repo / "livewire_scripts/gap_scan.py").exists()
+    assert not (repo / "launchd/com.livewire.gap-scan.plist.example").exists()
+    assert "gap_scan" not in (repo / "scripts/livewire_quality.py").read_text()
+    # The universe-refresh template is a PRODUCER, not a detector, and spec
+    # section 10 deliverable 4 still wants it. Convergence does not delete it.
+    assert (repo / "launchd/com.livewire.universe-refresh.plist.example").exists()
+
+
+def test_classify_still_has_a_production_caller():
+    """The other half of criterion 7, and the one the first revision failed.
+
+    Deleting the only caller of classify() would retire the classifier along with
+    the script, leaving Finding, the tier and the decision queue dead. Convergence
+    means one caller, not zero.
+    """
+    import inspect
+
+    from livewire_scripts import coverage_report
+
+    assert "classify(" in inspect.getsource(coverage_report.scan_findings)
