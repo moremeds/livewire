@@ -97,6 +97,7 @@ Completeness gaps:
 | G3  | Missing symbol          | In the denominator, no file on disk                        |
 | G4  | Missing class/timeframe | Whole class or timeframe absent                            |
 | G5  | Intraday partial        | Session present, bar count below expected for that session |
+| G13 | Head gap                | Series starts later than the expected history horizon (§13, default 1995-01-01) — distinct from G2, which is bounded by existing bars on both sides |
 
 Correctness gaps (the population that hurt in 2026-07-16):
 
@@ -157,6 +158,44 @@ roots; the denominator expands roots × active contracts for the date.
 symbols excluded from future syncs. Archived symbols leave the live denominator
 and enter the frozen-history denominator (§6).
 
+**The terminus date already has a schema and two independent producers** (source
+read 2026-09-01):
+
+| Part           | Location                                                                            | Gated on                        |
+| -------------- | ----------------------------------------------------------------------------------- | ------------------------------- |
+| Provider field | `clients/universe_client.py:40,156` `delisted_utc` (Polygon `/v3/reference/tickers`) | `MASSIVE_API_KEY`               |
+| Stored field   | `clients/tag_registry.py:27` `delisted_at`, written by `:172 mark_delisted()`         | —                               |
+| Date producer  | `livewire_scripts/universe_sync.py:273`–`274` — the **only** `mark_delisted` caller   | `MASSIVE_API_KEY`, else skipped |
+| Archive move   | `livewire_scripts/universe_screener.py:380`                                           | IB Gateway (scanner sweeps)     |
+
+They are **not one chain.** `universe_sync` is Polygon-backed and writes the
+date; `universe_screener` is IB-Scanner-backed and moves the directory. Nothing
+joins them, so `bronze-delisted/` can gain a symbol that has no `delisted_at`,
+and vice versa. Whichever one L4 builds on, it inherits that provider's outage
+mode — and joining the two is itself part of L4, not a given.
+
+What matters for the denominator: the terminus does **not** have to come from
+"last bar on disk", so the circular no-bar-vs-no-trade problem (`CLAUDE.md`,
+interior gap scan) stays out of it.
+
+**Neither producer can run on the development host, and this was not measured
+against production.** Checked 2026-09-01 on the dev machine: no
+`com.livewire.*` plist installed, newest warehouse log `2026-05-31`, no
+`releases/`, no `current`, no `~/market-warehouse/.env`, IB port 4001 closed,
+and `MASSIVE_API_KEY` set in no env file on the box. `registry.json`,
+`bronze-delisted/` and `security_master/` are all absent **here** — which is
+consistent with a stale dev copy and is **not evidence about the production
+warehouse.** Production state must be re-checked on the host that actually runs
+the jobs before any of this is treated as a finding.
+
+Consequence for Phase 1 regardless of which way that check comes out:
+`build_denominator` has no delisted branch, and the branch cannot be written
+against a store whose row count is unknown — it would pass its tests and change
+nothing, the vacuous-test failure this plan already hit once in the
+futures-expiry test written against a preset containing no expired contract.
+**L4's first step is a measurement on the production host, then a producer run;
+the boundary definition was never the blocker.**
+
 ### 4.4 Unresolved denominator (cause 5)
 
 A symbol/session that cannot be sourced from any provider is recorded once, with
@@ -197,6 +236,18 @@ Rules that make this work:
   fixes the kinds (G1–G12) and rows parameterize them across universes, classes
   and thresholds. A genuinely novel failure mode may still need a new kind — that
   should be rare, and proposing it is the agent's job 2 (§9.2).
+
+### 4.6 Identity key
+
+`ExpectedSeries.symbol` and the unresolved-ledger key are ticker strings, while
+`clients/security_master.py` exists precisely to end ticker-string joins (the
+2,345 reused tickers). On a reuse the ledger records the predecessor company's
+"unresolvable" against the successor — the disease the CA store already has.
+
+`security_master/events.parquet` is also empty (§4.3), so `resolve_symbol()`
+cannot answer today. Split it: **the key type becomes `security_id` now**
+(signature-only, cheap), **resolution keeps a ticker fallback** until the store
+has rows. Deferring both halves is what makes the migration expensive later.
 
 ## 5. Two deadlines
 
@@ -350,6 +401,36 @@ Ambiguity adjudication (G11 real split vs. real crash, G9 identity, source
 disagreement) also lands here, but jobs 1 and 2 are the ones that stop
 recurrence.
 
+### 9.3 Agent output contract
+
+Three constraints on anything the Phase 2 agent produces. Each comes from a
+failure mode already observed in this repo, not from principle.
+
+1. **The agent produces evidence, never facts.** `SecurityMaster.__init__`
+   requires an `evidence_verifier` and `_validate_event` rejects an unverified
+   append; `shepherd_repair` requires `source_evidence: tuple[HashedRef, ...]`.
+   An agent's search result therefore lands as a hashed reference in the review
+   queue and is adjudicated through the same fail-closed path as
+   `resolve-yahoo-basis`'s `ib_mismatch`. There is no code path by which a model
+   assertion becomes a stored row.
+2. **Liveness is checked on disk, never in code.** "`mark_delisted()` exists" and
+   "the registry has delisted rows" are different claims. The corollary bit twice
+   on 2026-09-01: the three §4.3 stores were absent on the dev host, *and* that
+   absence was nearly written up as a production finding — a dev checkout is not
+   the deployment. An agent finding must name the host it measured. Any finding —
+   that a gap exists, or that a repair worked — must cite an on-disk artifact at
+   the path the code resolves. **A green test suite is not evidence that a
+   producer ran.**
+3. **Budget is per job, and exhaustion queues rather than guesses.** Unchanged
+   from §10, restated here because 1 and 2 are exactly what fails open under time
+   pressure.
+
+**First agent task: L4.** Whether a ticker delisted, when, and whether it was a
+delisting or a rename (VSCO→VSXY, `tasks/todo.md:380`) is external fact-finding
+at a scale nobody enumerates by hand, and it already has an evidence gate. Its
+own prerequisite is §4.3's producer run, which produces the list to adjudicate —
+against an empty registry the agent has nothing to work on.
+
 ## 10. Phase boundary
 
 **Phase 1 — Livewire only.** Fixes causes 1, 3, 4, 5. No model calls, no Helium
@@ -360,7 +441,9 @@ whether Phase 2 is worth building**, instead of assuming it.
 Deliverables:
 
 1. Denominator module (`presets × trading_calendar × timeframe`, expiry-aware,
-   delisted-aware, unresolved-aware).
+   delisted-aware, unresolved-aware). Expiry- and unresolved-aware shipped;
+   **delisted-aware is blocked on §4.3's producer run** and is the first
+   follow-on, not a Phase 1 core deliverable.
 2. One registry-driven engine; checks are rows, not scripts.
 3. Detector convergence — **no eleventh detector allowed.** `coverage_report.py`
    is rewired onto the denominator (`:274`, `:363`, `:379`) and becomes the
@@ -423,6 +506,10 @@ stopped during Phase 1 and returns decision-only in Phase 2.
 6. **Degradation:** with Helium absent, criteria 1–5 still pass.
 7. **Convergence:** at the end of Phase 1 there is one engine, not a fourth
    detector.
+8. **Producer liveness:** every store this design reads has a non-empty artifact
+   at the path the code resolves, or the section reading it states it is
+   unpopulated and names the branch that is consequently untestable. Re-checked
+   at the start of each phase, not once. §4.3 is the standing counter-example.
 
 ## 12. Non-goals
 

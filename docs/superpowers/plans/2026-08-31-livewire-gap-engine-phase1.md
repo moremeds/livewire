@@ -1047,4 +1047,7 @@ Run before opening the PR:
 1. **Tier A execution** — feed the manifest to `shepherd_repair`, verify, and prove one repair end-to-end.
 2. **Detector convergence** — dispositions for the 10 ENGINE scripts (spec §15), respecting the `weekly_quality_summary` → `coverage_report` log dependency.
 3. **G12 silent mispricing** — the replay-set investigation and threshold calibration.
-4. **Silver publication contract** — `rebuild-silver` precondition gate, `INCOMPLETE_HISTORY`, `known_holes[]`.
+4. **Silver publication contract** — `rebuild-silver` precondition gate, `INCOMPLETE_HISTORY`, `known_holes[]`. _(The `reason` half is cut out into 6.)_
+5. **L4 — delisting terminus.** Prerequisite for Task 1's delisted branch, so it goes first. Run the existing producer chain (`universe_screener` → `TagRegistry.mark_delisted`) so `registry.json` and `bronze-delisted/` hold rows, *then* add the delisted branch to `build_denominator`. Against an empty registry the branch is untestable — spec §4.3.
+6. **L5-min — carry `reason` into the silver manifest.** `rebuild_silver.py:472` already computes it and writes it only to the optional `--failure-output`. Adding it to the revision manifest is spec §7's "additive only", so Apex needs no coordinated change. Independent PR, does not touch the gap engine. The precondition gate and `INCOMPLETE_HISTORY` stay in 4.
+7. **L2 — G11 negative evidence.** A missing corporate-action event recorded once with reason and as-of, never retried: Task 4's ledger semantics with an action rather than a bar as the object. G11 appears in no plan today.
