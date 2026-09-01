@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -95,7 +96,14 @@ def test_an_archived_symbol_a_preset_still_claims_stays_expected():
     This is a guard, not a feature test: it passes today because
     build_denominator has no delisted branch, and it fails the moment someone
     adds one that subtracts.
+
+    It asserts the invariant rather than one symbol. It used to pin BK, and the
+    2026-09-02 index refresh removed BK from sp500.json -- it was renamed to BNY,
+    not delisted -- so the example evaporated while the rule it stood for did
+    not. Every ticker the preset claims must reach the denominator; naming one
+    of them makes the guard expire the next time the universe moves.
     """
+    claimed = set(json.loads((PRESETS / "sp500.json").read_text())["tickers"])
     series = build_denominator(
         [PRESETS / "sp500.json"],
         asset_class="equity",
@@ -104,7 +112,7 @@ def test_an_archived_symbol_a_preset_still_claims_stays_expected():
         end=date(2026, 8, 28),
         as_of=datetime(2026, 8, 31, 10, 0, tzinfo=UTC),
     )
-    assert "BK" in {s.symbol for s in series}
+    assert claimed and claimed <= {s.symbol for s in series}
 
 
 def test_session_is_due_at_the_daily_job_deadline_the_following_day():
