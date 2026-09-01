@@ -409,6 +409,26 @@ def _coverage_section(run_date: str, log_dir: Path) -> Section:
         if age > _COVERAGE_STALE_DAYS:
             # Green numbers from a frozen detector are the four-week outage.
             return Section("Coverage", Verdict.BAD, lines, fix="launchctl start com.livewire.coverage")
+        # The coverage job also runs the windowed classifier, and that half is
+        # deliberately allowed to fail without taking coverage down. Isolating
+        # it is right; letting it fail invisibly is the swallowed-WARNING shape
+        # with a different log level. The job exits 0 either way and no alert
+        # fires, so this line is the only place an operator can learn of it.
+        # Scoped to the run that produced the selected measurement. The log is
+        # append-mode, so an earlier failed run's line survives below a later
+        # healthy one -- reading the whole file would WARN forever on a failure
+        # that has since been fixed.
+        stripped = [ln.strip() for ln in text.splitlines()]
+        last_run = len(stripped) - 1 - stripped[::-1].index(measurement)
+        scan_failure = next((ln for ln in stripped[last_run:] if ln.startswith("scan: FAILED")), None)
+        if scan_failure:
+            lines.append(f"  ⚠ {scan_failure}")
+            return Section(
+                "Coverage",
+                Verdict.WARN,
+                lines,
+                fix=f"python scripts/livewire_quality.py coverage --target-date {measured} --no-recover",
+            )
         return Section("Coverage", Verdict.OK, lines)
     lines.append("  (not found)")
     return Section("Coverage", Verdict.UNKNOWN, lines, fix="launchctl start com.livewire.coverage")
