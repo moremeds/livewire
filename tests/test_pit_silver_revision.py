@@ -29,6 +29,7 @@ def _silver(root: Path) -> tuple[Path, bytes]:
         [PublishedArtifact(artifact, hashlib.sha256(artifact.read_bytes()).hexdigest(), 1)],
         [AffectedSymbol("AAPL", date(2026, 8, 28), ("1d",))],
         AS_OF,
+        published_at=AS_OF,
     )
     current = silver / "revisions" / "current.json"
     return artifact, current.read_bytes()
