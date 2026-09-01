@@ -414,9 +414,13 @@ def _coverage_section(run_date: str, log_dir: Path) -> Section:
         # it is right; letting it fail invisibly is the swallowed-WARNING shape
         # with a different log level. The job exits 0 either way and no alert
         # fires, so this line is the only place an operator can learn of it.
-        scan_failure = next(
-            (ln.strip() for ln in reversed(text.splitlines()) if ln.strip().startswith("scan: FAILED")), None
-        )
+        # Scoped to the run that produced the selected measurement. The log is
+        # append-mode, so an earlier failed run's line survives below a later
+        # healthy one -- reading the whole file would WARN forever on a failure
+        # that has since been fixed.
+        stripped = [ln.strip() for ln in text.splitlines()]
+        last_run = len(stripped) - 1 - stripped[::-1].index(measurement)
+        scan_failure = next((ln for ln in stripped[last_run:] if ln.startswith("scan: FAILED")), None)
         if scan_failure:
             lines.append(f"  ⚠ {scan_failure}")
             return Section(

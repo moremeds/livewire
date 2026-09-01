@@ -238,3 +238,20 @@ def test_confirmed_terminus_needs_all_three_gates(tmp_path):
     # No candidate at all: an ordinary symbol still trading is not "withheld".
     v = confirmed_terminus({d: {"AAPL"} for d in sessions}, "AAPL", ok, tape_ok=True)
     assert (v.when, v.candidate, v.withheld) == (None, None, False)
+
+
+def test_a_corrupt_traded_set_skips_its_session_instead_of_killing_the_run(tmp_path, caplog):
+    """One truncated partition must not abort the whole coverage job.
+
+    CLAUDE.md records the precedent: a single truncated 1m.parquet aborted every
+    nightly publish for a month. traded_by_session is read outside any guard in
+    compute_coverage, so an unreadable file here took the detector down with it.
+    """
+    _write_tape(tmp_path, S[0], ["AAPL", "BK"])
+    (tmp_path / f"date={S[1].isoformat()}").mkdir()
+    (tmp_path / f"date={S[1].isoformat()}" / "_symbols.parquet").write_bytes(b"PAR1truncated")
+
+    got = traded_by_session(tmp_path, S)
+
+    assert set(got) == {S[0]}
+    assert any("unreadable raw traded set" in r.message for r in caplog.records)

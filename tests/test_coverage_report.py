@@ -28,6 +28,7 @@ from livewire_scripts.coverage_report import (
     format_missing_blocks,
     format_non_equity_line,
     format_one_liner,
+    format_terminus_block,
     main,
     write_coverage_log,
 )
@@ -1404,3 +1405,25 @@ def test_a_pre_deadline_run_does_not_erase_the_1d_footer_cache(tmp_path):
     assert {k: v for k, v in after.items() if k.endswith("1d.parquet")} == {
         k: v for k, v in seeded.items() if k.endswith("1d.parquet")
     }
+
+
+def test_the_log_names_unconfirmed_termini_separately_from_confirmed_ones(tmp_path):
+    """They are counted missing, so the operator triaging that list needs the flag.
+
+    A symbol here stopped printing for a full trading week and the
+    corporate-action store could not say why -- an ordinary `missing:` entry
+    implies a fetch will fix it, and for this one it may not.
+    """
+    result = CoverageResult(
+        timeframe="1d",
+        total=3,
+        present=1,
+        missing_symbols=["EQR"],
+        terminus_symbols=(("AVB", date(2026, 8, 14)),),
+        unconfirmed_terminus_symbols=("EQR",),
+    )
+    blocks = format_terminus_block({"1d": result})
+    assert blocks == [
+        "  1d terminus: AVB@2026-08-14",
+        "  1d unconfirmed terminus (counted missing): EQR",
+    ]

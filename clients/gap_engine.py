@@ -6,7 +6,6 @@ import fcntl
 import json
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
-from functools import partial
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -123,27 +122,6 @@ def _finding(series: ExpectedSeries, gap: str, sessions: tuple[date, ...], massi
     )
 
 
-def _unconfirmed_finding(series: ExpectedSeries, gap: str, sessions: tuple[date, ...]) -> Finding:
-    """A repairable-shaped gap the terminus gates could not clear, forced to Tier B.
-
-    Tier A means "repairable unattended". A symbol with a qualifying absence run
-    that the corporate-action store could not explain -- or could not be asked
-    about -- may not be printing at all, so an unattended fetch would run every
-    night and return nothing. The gap class stays honest (it really is a tail or
-    a missing file); only the tier records that a human has to look.
-    """
-    return Finding(
-        symbol=series.symbol,
-        asset_class=series.asset_class,
-        timeframe=series.timeframe,
-        gap=gap,
-        sessions=sessions,
-        heal_by_days=None,
-        tier="B",
-        source=repair_source(series.asset_class),
-    )
-
-
 def _terminus_finding(series: ExpectedSeries, sessions: tuple[date, ...]) -> Finding:
     """Always Tier B, in every cell, with no heal-by.
 
@@ -196,21 +174,28 @@ def classify(
             findings.append(_terminus_finding(series, terminal))
         if not missing:
             return findings
-    build = partial(_unconfirmed_finding, series) if unconfirmed else None
+    repairable: list[Finding] = []
     if not present:
-        findings.append(build("G3", missing) if build else _finding(series, "G3", missing, massive_floor))
-        return findings
-
-    # ponytail: tail only. G2 (interior) and G13 (head) produced zero true
-    # findings out of 501 on the first production run, and interior absence
-    # within bar files alone is the circular question that made the 5m scan flag
-    # 96.6% of the universe. Reinstate either only with a measurement asking for
-    # it -- the taxonomy still names them (spec section 3).
-    newest_present = max(present)
-    tail = tuple(d for d in missing if d > newest_present)
-    if tail:
-        findings.append(build("G1", tail) if build else _finding(series, "G1", tail, massive_floor))
-    return findings
+        repairable.append(_finding(series, "G3", missing, massive_floor))
+    else:
+        # ponytail: tail only. G2 (interior) and G13 (head) produced zero true
+        # findings out of 501 on the first production run, and interior absence
+        # within bar files alone is the circular question that made the 5m scan
+        # flag 96.6% of the universe. Reinstate either only with a measurement
+        # asking for it -- the taxonomy still names them (spec section 3).
+        newest_present = max(present)
+        tail = tuple(d for d in missing if d > newest_present)
+        if tail:
+            repairable.append(_finding(series, "G1", tail, massive_floor))
+    if unconfirmed:
+        # Tier A means "repairable unattended". A qualifying absence run nobody
+        # could explain may be an instrument that is not printing at all, so the
+        # nightly job would fetch nothing forever. The gap CLASS stays honest --
+        # it really is a tail or a missing file -- and only the tier records that
+        # a human has to look. heal_by_days goes with it: no store carries bars
+        # for an instrument that may be gone, so there is nothing to expire.
+        repairable = [replace(f, tier="B", heal_by_days=None) for f in repairable]
+    return findings + repairable
 
 
 UnresolvedKey = tuple[str, str, str, date]

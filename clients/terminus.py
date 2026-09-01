@@ -12,6 +12,7 @@ docs/superpowers/specs/2026-08-31-livewire-gap-autoheal-design.md.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -40,6 +41,8 @@ MIN_TERMINUS_SESSIONS = 5
 # does not land on the exact session the tape goes quiet: the ex-date and the last
 # print differ by settlement and by when the new line starts trading.
 TERMINUS_CA_WINDOW_DAYS = 10
+
+log = logging.getLogger(__name__)
 
 
 def terminus_of(
@@ -75,7 +78,18 @@ def traded_by_session(raw_root: Path, sessions: Sequence[date]) -> dict[date, se
         path = raw_root / f"date={session.isoformat()}" / "_symbols.parquet"
         if not path.exists():
             continue
-        out[session] = set(pq.read_table(path, columns=["ticker"]).column("ticker").to_pylist())
+        try:
+            out[session] = set(pq.read_table(path, columns=["ticker"]).column("ticker").to_pylist())
+        except Exception:  # noqa: BLE001 - a corrupt partition must not kill the detector
+            # Same epistemic state as an absent file: we cannot read that day's
+            # traded set. The repo has been here before -- one truncated
+            # 1m.parquet aborted every nightly publish for a month -- and the
+            # footer pass already refuses to die of its own inputs.
+            # ponytail: this leaves raw_tape_covers (which only stats the file)
+            # able to pass while this session is absent from the tape. That can
+            # only ADD a terminus candidate, and the corporate-action gate still
+            # has to clear it before any G14 is emitted.
+            log.warning("unreadable raw traded set for %s at %s -- skipping the session", session, path)
     return out
 
 

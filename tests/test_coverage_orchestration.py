@@ -417,3 +417,31 @@ def test_status_grades_a_scan_failure_that_the_coverage_ratio_cannot_show(tmp_pa
     section = _coverage_section("2026-08-28", tmp_path)
     assert section.verdict is Verdict.WARN
     assert any("scan: FAILED" in line for line in section.lines)
+
+
+def test_the_repair_artifacts_are_published_atomically(tmp_path):
+    """Phase 2's executor reads these; write_text truncates before it writes.
+
+    A reader that opens the manifest inside that window sees valid JSON's worth
+    of nothing -- a repair manifest that silently lost every entry. Bronze has
+    published by temp + os.replace since the beginning for this reason.
+    """
+    path = tmp_path / "repairs" / "tier_a_2026-08-28.json"
+    finding = Finding("EQR", "equity", "1d", "G1", (date(2026, 8, 28),), 100, "A", "massive")
+    write_tier_a_manifest([finding], path)
+    assert json.loads(path.read_text())["repairs"][0]["symbol"] == "EQR"
+    # No temp file survives a successful publish.
+    assert list(path.parent.glob("*.tmp")) == []
+
+
+def test_status_ignores_a_scan_failure_from_an_earlier_run_in_the_same_log(tmp_path):
+    """Coverage logs are append-mode, so a fixed failure must not WARN forever."""
+    from livewire_scripts.status import Verdict, _coverage_section
+
+    green = (
+        "2026-08-28 coverage: 1d=100/100 (100.00%) 1m=100/100 (100.00%) "
+        "1h=100/100 (100.00%) 5m=100/100 (100.00%) 30m=100/100 (100.00%)\n"
+    )
+    log = tmp_path / "coverage_2026-08-28.log"
+    log.write_text(green + "  scan: FAILED (RegistryError: x)\n" + green + "  scan: 12 findings (tier A 9, tier B 3)\n")
+    assert _coverage_section("2026-08-28", tmp_path).verdict is Verdict.OK

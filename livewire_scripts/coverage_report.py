@@ -489,15 +489,28 @@ def _entry(finding: Finding) -> dict:
     }
 
 
+def _publish_json(path: Path, payload: object) -> None:
+    """Write via temp + os.replace, the way bronze publishes.
+
+    `write_text` truncates before it writes, so a reader that opens the file in
+    that window gets valid JSON's worth of nothing. These two artifacts are the
+    hand-off to Phase 2's repair executor; a torn read there would be a repair
+    manifest that silently lost entries.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2))
+    os.replace(tmp, path)
+
+
 def write_tier_a_manifest(findings: list[Finding], path: Path) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
     repairs = [_entry(f) for f in sorted((f for f in findings if f.tier == "A"), key=_urgency)]
-    Path(path).write_text(json.dumps({"repairs": repairs}, indent=2))
+    _publish_json(path, {"repairs": repairs})
 
 
 def write_decision_requests(findings: list[Finding], path: Path) -> None:
     """Tier B queue. Verdict vocabulary is triage_breaks.py's, not a new one."""
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
     requests = [
         # Spec section 10.8 added `terminus` as a fifth verdict precisely because
         # "we could not tell" and "the instrument stopped printing" are different
@@ -506,7 +519,7 @@ def write_decision_requests(findings: list[Finding], path: Path) -> None:
         for f in findings
         if f.tier == "B"
     ]
-    Path(path).write_text(json.dumps(requests, indent=2))
+    _publish_json(path, requests)
 
 
 def scan_findings(
@@ -595,12 +608,21 @@ def format_terminus_block(results: dict[str, CoverageResult]) -> list[str]:
     selects the last line matching `coverage:` and parses timeframe terms, so a
     detail line that looked like a measurement would be read as one.
     """
+    blocks = []
     pairs = results["1d"].terminus_symbols
-    if not pairs:
-        return []
-    listed = ", ".join(f"{symbol}@{when.isoformat()}" for symbol, when in pairs[:10])
-    suffix = f", ... ({len(pairs)} total)" if len(pairs) > 10 else ""
-    return [f"  1d terminus: {listed}{suffix}"]
+    if pairs:
+        listed = ", ".join(f"{symbol}@{when.isoformat()}" for symbol, when in pairs[:10])
+        suffix = f", ... ({len(pairs)} total)" if len(pairs) > 10 else ""
+        blocks.append(f"  1d terminus: {listed}{suffix}")
+    # These ARE counted missing, and an operator triaging that list needs to know
+    # which entries may not be fetchable at all: a symbol here stopped printing
+    # for a full week and the corporate-action store could not say why.
+    unconfirmed = results["1d"].unconfirmed_terminus_symbols
+    if unconfirmed:
+        listed = ", ".join(unconfirmed[:10])
+        suffix = f", ... ({len(unconfirmed)} total)" if len(unconfirmed) > 10 else ""
+        blocks.append(f"  1d unconfirmed terminus (counted missing): {listed}{suffix}")
+    return blocks
 
 
 def format_missing_blocks(results: dict[str, CoverageResult], max_listed: int = 10) -> list[str]:
