@@ -47,6 +47,7 @@ from clients.intraday_bronze_client import INTRADAY_PARQUET_FILENAME
 from clients.symbol_paths import decode_symbol
 from clients.terminus import (
     RAW_MINUTE_AGGS,
+    TerminusVerdict,
     confirmed_terminus,
     raw_tape_covers,
     traded_by_session,
@@ -105,6 +106,12 @@ class CoverageResult:
     # stopped printing, so counting these missing queues an impossible repair and
     # counting them present is what hid BK, EA, AVB and EQR.
     terminus_symbols: tuple[tuple[str, date], ...] = ()
+    # A qualifying absence run the gates could not clear. Counted in `total` and
+    # in `missing_symbols` -- NOT exempted as no-trade, which is what hid it.
+    unconfirmed_terminus_symbols: tuple[str, ...] = ()
+    # The session this result actually measured. Differs from the run's target
+    # for a lane whose ingestion lag has not elapsed yet (rates is T+2).
+    measured_session: date | None = None
 
     @property
     def ratio(self) -> float:
@@ -347,6 +354,13 @@ def compute_coverage(
             # per symbol, which is what 497 of the first run's 501 findings were.
             if session_due_at(target_date) > as_of:
                 results[tf] = CoverageResult(tf, 0, 0, [], ())
+                # _save_footer_cache REPLACES the file with `fresh`, so returning
+                # here without carrying the existing 1d entries forward deletes
+                # ~13,270 of them -- and the next run pays a cold 1d footer walk,
+                # the cost that made coverage a no-timeout job of its own. This
+                # branch exists for exactly the pre-deadline run that would then
+                # penalise the real one.
+                fresh.update({key: cache[key] for path in parquet_paths if (key := str(path)) in cache})
                 continue
             expected = build_denominator(
                 _equity_preset_paths(registry_path, presets_dir),
@@ -369,12 +383,11 @@ def compute_coverage(
         # calibrated on 515 liquid names and the on-disk tail legitimately does
         # not print for days.
         terminus: dict[str, date] = {}
+        unconfirmed: set[str] = set()
         if tf == "1d":
-            terminus = {
-                symbol: when
-                for symbol in registry_universe
-                if (when := confirmed_terminus(tape, symbol, action_store, tape_ok)) is not None
-            }
+            verdicts = {symbol: confirmed_terminus(tape, symbol, action_store, tape_ok) for symbol in registry_universe}
+            terminus = {symbol: v.when for symbol, v in verdicts.items() if v.when is not None}
+            unconfirmed = {symbol for symbol, v in verdicts.items() if v.withheld}
 
         column_name = "trade_date" if tf == "1d" else "bar_timestamp"
         # Threaded: the pass is one small footer read per file, so it is bound by
@@ -415,23 +428,27 @@ def compute_coverage(
         # an absent symbol as present, so the symbol simply moves from one
         # counted bucket to the other and the ratio still reads green.
         countable = universe - set(terminus)
+        # The no-trade exemption stays load-bearing for an ordinary one-session
+        # absence -- without it the interior scan flags 96.6% of the universe.
+        # It must NOT absorb a symbol whose absence run already qualified as a
+        # terminus and was only withheld for lack of evidence: "we could not
+        # check" reading as "it did not trade today" is precisely the mechanism
+        # that hid EA/AVB/EQR for a month.
         present_symbols = {
             symbol
             for symbol in countable
             if (latest_by_symbol.get(symbol) or date.min) >= target_date
-            or (tf == "1d" and traded_today and symbol not in traded_today)
+            or (tf == "1d" and traded_today and symbol not in traded_today and symbol not in unconfirmed)
         }
         missing = sorted(countable - present_symbols)
-        # ponytail: a plain assert; nothing in this repo runs python -O. It is
-        # here because the two buckets drifting apart silently is the exact
-        # failure mode this task is correcting.
-        assert len(countable) == len(present_symbols) + len(missing)
         results[tf] = CoverageResult(
             timeframe=tf,
             total=len(countable),
             present=len(present_symbols),
             missing_symbols=missing,
             terminus_symbols=tuple(sorted(terminus.items())),
+            unconfirmed_terminus_symbols=tuple(sorted(unconfirmed & set(missing))),
+            measured_session=target_date,
         )
 
     _save_footer_cache(cache_path, fresh)
@@ -512,7 +529,10 @@ def scan_findings(
     as_of = as_of or datetime.now(UTC)
     presets_dir = presets_dir or Path("presets")
     start = target_date - timedelta(days=window_days)
-    floor = massive_floor_for(target_date)
+    # as_of, not target_date. The Massive floor rolls one day per day against the
+    # WALL CLOCK; on a Monday run for Friday's session the two differ by three
+    # days, which mislabels a session sitting just under the boundary as Tier A.
+    floor = massive_floor_for(as_of.date())
 
     raw_root = bronze_root.parent / RAW_MINUTE_AGGS
     window = trading_dates_in_range(target_date - timedelta(days=40), target_date)[-TERMINUS_WINDOW_SESSIONS:]
@@ -550,8 +570,20 @@ def scan_findings(
             # denominator also calls. Any gate failing yields None, which drops the
             # symbol into the ordinary G1/G3 path -- a repairable gap, never a
             # delisting.
-            terminus = confirmed_terminus(tape, series.symbol, store, tape_ok) if row.asset_class == "equity" else None
-            findings.extend(classify(series, actual_sessions(bronze_root, series), floor, terminus=terminus))
+            verdict = (
+                confirmed_terminus(tape, series.symbol, store, tape_ok)
+                if row.asset_class == "equity"
+                else TerminusVerdict(None, None)
+            )
+            findings.extend(
+                classify(
+                    series,
+                    actual_sessions(bronze_root, series),
+                    floor,
+                    terminus=verdict.when,
+                    unconfirmed=verdict.withheld,
+                )
+            )
     unresolved = load_unresolved(bronze_root.parent / "repairs" / "unresolved.json")
     return sorted(suppress_unresolved(findings, unresolved), key=_urgency)
 
@@ -596,6 +628,23 @@ def _non_equity_rows(registry_path: Path | None):
     return [r for r in rows if r.asset_class != "equity" and r.timeframe == "1d"]
 
 
+def _newest_due_session(target_date: date, lag_days: int, as_of: datetime) -> date | None:
+    """Newest trading session at or before *target_date* whose filling job was due.
+
+    Asking only about `target_date` is what made rates permanently invisible.
+    The run targets the previous trading session S and rates are due at S+2
+    10:00 UTC, but the job runs at S+1 11:00 UTC -- so rates scored 0/0 and, the
+    next night, the target had already advanced to S+1. Session S was never
+    revisited by any run. 0/0 maps to ratio 1.0, so it read green forever: a
+    detector reporting perfect health because it enumerated nothing, which is
+    the exact disease this engine was built to cure.
+    """
+    for session in reversed(trading_dates_in_range(target_date - timedelta(days=14), target_date)):
+        if session_due_at(session, lag_days) <= as_of:
+            return session
+    return None
+
+
 def compute_non_equity_coverage(
     target_date: date,
     bronze_root: Path | None = None,
@@ -623,17 +672,22 @@ def compute_non_equity_coverage(
     as_of = as_of or datetime.now(UTC)
     results: dict[str, CoverageResult] = {}
     for row in _non_equity_rows(registry_path):
+        lag_days = DUE_LAG_DAYS.get(row.asset_class, 1)
+        # Each class is graded against the newest session ITS lane owed, which
+        # for rates is one session behind the run's target.
+        session = _newest_due_session(target_date, lag_days, as_of)
+        if session is None:
+            results[row.asset_class] = CoverageResult(row.asset_class, 0, 0, [])
+            continue
         expected = build_denominator(
             [presets_dir / f"{name}.json" for name in row.universe],
             row.asset_class,
             "1d",
-            target_date,
-            target_date,
+            session,
+            session,
             as_of=as_of,
-            lag_days=DUE_LAG_DAYS.get(row.asset_class, 1),
+            lag_days=lag_days,
         )
-        # An empty denominator means the session is not due yet for this class
-        # (rates at T+2). Zero of zero, not N phantom gaps.
         universe = {series.symbol for series in expected if series.sessions}
         present = set()
         for symbol in universe:
@@ -641,19 +695,26 @@ def compute_non_equity_coverage(
             if not path.exists():
                 continue
             latest = _latest_date_in_parquet(path, "trade_date")
-            if latest is not None and latest >= target_date:
+            if latest is not None and latest >= session:
                 present.add(symbol)
         results[row.asset_class] = CoverageResult(
             timeframe=row.asset_class,
             total=len(universe),
             present=len(present),
             missing_symbols=sorted(universe - present),
+            measured_session=session,
         )
     return results
 
 
 def format_non_equity_line(target_date: date, results: dict[str, CoverageResult]) -> str:
-    parts = [f"{ac}={results[ac].present}/{results[ac].total}" for ac in sorted(results)]
+    """A class graded against an older session says so, rather than implying it
+    measured the target. rates is T+2, so it is legitimately one session behind."""
+    parts = []
+    for ac in sorted(results):
+        r = results[ac]
+        stamp = f"@{r.measured_session}" if r.measured_session and r.measured_session != target_date else ""
+        parts.append(f"{ac}={r.present}/{r.total}{stamp}")
     return f"{target_date} non-equity 1d: " + " ".join(parts)
 
 
@@ -871,12 +932,16 @@ def _scan_and_write_artifacts(target: date, as_of: datetime) -> str:
     """
     try:
         findings = scan_findings(target, bronze_root=_resolved_data_lake() / "bronze", as_of=as_of)
+        # Inside the boundary, not after it. A scan that succeeded and a WRITE
+        # that failed (full disk, read-only release tree, a permission change)
+        # escaped the "never raises" contract and aborted main() before
+        # auto-recovery -- the same failure-domain leak, one line further down.
+        repairs_dir = _resolved_data_lake() / "repairs"
+        write_tier_a_manifest(findings, repairs_dir / f"tier_a_{target}.json")
+        write_decision_requests(findings, repairs_dir / f"decisions_{target}.json")
     except Exception as exc:  # noqa: BLE001 - the coverage half must survive any scan failure
         log.error("scan failed for %s: %s", target, exc, exc_info=True)
         return f"  scan: FAILED ({type(exc).__name__}: {exc})"
-    repairs_dir = _resolved_data_lake() / "repairs"
-    write_tier_a_manifest(findings, repairs_dir / f"tier_a_{target}.json")
-    write_decision_requests(findings, repairs_dir / f"decisions_{target}.json")
     return (
         f"  scan: {len(findings)} findings "
         f"(tier A {sum(1 for f in findings if f.tier == 'A')}, "

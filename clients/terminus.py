@@ -13,6 +13,7 @@ docs/superpowers/specs/2026-08-31-livewire-gap-autoheal-design.md.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -103,7 +104,12 @@ def terminus_is_unexplained(
     fetches = store.fetch_history(symbol)
     if not fetches:
         return False
-    if max(f.fetched_at for f in fetches).date() < terminus:
+    # <= , not <. A reconciliation stamped the same day as the terminus may have
+    # run before that session closed, so it cannot speak for it. The boundary is
+    # unreachable in production (a terminus is at least MIN_TERMINUS_SESSIONS
+    # sessions old and the reconcile is nightly), which is exactly why it would
+    # never have been caught by observation.
+    if max(f.fetched_at for f in fetches).date() <= terminus:
         return False
     lo, hi = terminus - timedelta(days=window_days), terminus + timedelta(days=window_days)
     return not any(
@@ -121,10 +127,40 @@ def raw_tape_covers(raw_root: Path, through: date) -> bool:
     terminus_of returns None -- but a PARTIAL outage does not, and that is the
     case this guards. ponytail: directory names, no footer reads.
     """
+    # The partition FILE, not the directory. traded_by_session omits a session
+    # whose _symbols.parquet is absent, so a directory that exists without its
+    # parquet -- an interrupted fetch -- passed this gate while contributing no
+    # traded set, and every symbol that printed only in that session read as a
+    # trailing absence. Both functions now key on the same artifact.
     dates = [
-        date.fromisoformat(child.name.removeprefix("date=")) for child in raw_root.glob("date=*") if child.is_dir()
+        date.fromisoformat(child.parent.name.removeprefix("date="))
+        for child in raw_root.glob("date=*/_symbols.parquet")
     ]
     return bool(dates) and max(dates) >= through
+
+
+@dataclass(frozen=True)
+class TerminusVerdict:
+    """The suffix test's answer and whether the gates could confirm it.
+
+    Three states, and collapsing the last two is the bug this type exists to
+    prevent:
+    - `when is None and candidate is None` -- no qualifying absence run. Ordinary
+      symbol; the no-trade exemption applies as it always has.
+    - `when` set -- all three gates passed. It left the tape.
+    - `withheld` -- a qualifying absence run the store could not explain OR could
+      not be asked about. "We could not check" is not "it did not trade today":
+      taking the no-trade exemption here restores the mechanism that hid
+      EA/AVB/EQR, and routing it to an unattended Tier A repair queues a fetch of
+      an instrument that is not printing.
+    """
+
+    when: date | None
+    candidate: date | None
+
+    @property
+    def withheld(self) -> bool:
+        return self.when is None and self.candidate is not None
 
 
 def confirmed_terminus(
@@ -132,7 +168,7 @@ def confirmed_terminus(
     symbol: str,
     store: CorporateActionStore,
     tape_ok: bool,
-) -> date | None:
+) -> TerminusVerdict:
     """All three gates of spec criterion 8, as one decision.
 
     This exists because the decision has two callers -- the coverage denominator
@@ -142,14 +178,12 @@ def confirmed_terminus(
     must never happen. Three separate functions in a caller-defined order is an
     invariant nothing enforces; one function is enforced by there being nothing
     else to call.
-
-    Any gate failing returns None, and None means "ordinary repairable gap".
     """
     if not tape_ok:
-        return None
-    terminus = terminus_of(tape, symbol)
-    if terminus is None:
-        return None
-    if not terminus_is_unexplained(store, symbol, terminus):
-        return None
-    return terminus
+        return TerminusVerdict(None, None)
+    candidate = terminus_of(tape, symbol)
+    if candidate is None:
+        return TerminusVerdict(None, None)
+    if not terminus_is_unexplained(store, symbol, candidate):
+        return TerminusVerdict(None, candidate)
+    return TerminusVerdict(candidate, candidate)

@@ -223,3 +223,35 @@ def test_interior_and_head_gaps_are_no_longer_emitted():
     )
     assert [f.gap for f in findings] == ["G1"]
     assert findings[0].sessions == (date(2026, 8, 7),)
+
+
+def test_a_terminus_does_not_swallow_repairable_sessions_before_it():
+    """An ingestion outage that happens to precede a delisting stays repairable.
+
+    classify used to return the G14 finding alone, so sessions BEFORE the
+    terminus -- when the instrument was demonstrably still printing, and whose
+    bars therefore exist at the provider -- were silently discarded. Two
+    different facts, two findings.
+    """
+    sessions = tuple(date(2026, 8, d) for d in (10, 11, 12, 13, 14, 17, 18, 19))
+    series = ExpectedSeries("EQR", "equity", "1d", sessions)
+    findings = classify(series, present={date(2026, 8, 10)}, massive_floor=FLOOR, terminus=date(2026, 8, 17))
+
+    by_gap = {f.gap: f for f in findings}
+    assert set(by_gap) == {"G1", "G14"}
+    assert by_gap["G14"].sessions == (date(2026, 8, 17), date(2026, 8, 18), date(2026, 8, 19))
+    assert by_gap["G14"].tier == "B"
+    # The pre-terminus run is an ordinary repairable tail.
+    assert by_gap["G1"].sessions == (date(2026, 8, 11), date(2026, 8, 12), date(2026, 8, 13), date(2026, 8, 14))
+    assert by_gap["G1"].tier == "A"
+
+
+def test_an_unconfirmed_terminus_keeps_its_gap_class_but_loses_tier_a():
+    """A qualifying absence run nobody could explain is not an unattended repair.
+
+    The gap really is a tail, so the class stays G1; but Tier A means "a job can
+    fetch this tonight without a human", and an instrument that may have stopped
+    printing would make that job return nothing every night forever.
+    """
+    findings = classify(_series(), present={SESSIONS[0]}, massive_floor=FLOOR, unconfirmed=True)
+    assert [(f.gap, f.tier, f.heal_by_days) for f in findings] == [("G1", "B", None)]

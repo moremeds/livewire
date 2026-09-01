@@ -960,7 +960,7 @@ python scripts/livewire_ingest.py daily --asset-class futures             # Dail
 # The six warehouse jobs run the immutable release, so they take the WAREHOUSE path.
 # The promoter is the one job that reads the repo — it is what builds the release.
 WAREHOUSE=~/market-warehouse
-for L in daily-update daily-update-watchdog intraday-catchup coverage gap-scan; do
+for L in daily-update daily-update-watchdog intraday-catchup coverage; do
   sed "s|/path/to/warehouse|$WAREHOUSE|g" "launchd/com.livewire.$L.plist.example" \
     > ~/Library/LaunchAgents/com.livewire.$L.plist
 done
@@ -970,11 +970,11 @@ for L in release-promote universe-refresh; do
   sed -e "s|/path/to/repo|$(pwd)|g" -e "s|/path/to/warehouse|$WAREHOUSE|g" \
     "launchd/com.livewire.$L.plist.example" > ~/Library/LaunchAgents/com.livewire.$L.plist
 done
-for L in daily-update daily-update-watchdog intraday-catchup coverage gap-scan universe-refresh release-promote; do
+for L in daily-update daily-update-watchdog intraday-catchup coverage universe-refresh release-promote; do
   launchctl load ~/Library/LaunchAgents/com.livewire.$L.plist
 done
 ```
-`scripts/livewire_ops.py run-daily-job` loads `~/.secrets`, repo `.env`, and `~/market-warehouse/.env` before invoking the retrying scheduled runner. The runner automatically syncs equities, futures, and cmdty via IB, then all volatility indices via CBOE's public API and DXY/FX via Yahoo+Massive, in a single invocation; pass `--asset-class <name>` to run only one IB asset class (skips both the CBOE volatility and fx syncs). After a successful run it also spawns the weekly quality report, sends the nightly digest email, and runs the housekeeping retention sweep last. Coverage is **not** here — it has its own job, `com.livewire.coverage` at 11:00 UTC. Neither is the gap scan: `com.livewire.gap-scan` runs at 12:00 UTC, after coverage.
+`scripts/livewire_ops.py run-daily-job` loads `~/.secrets`, repo `.env`, and `~/market-warehouse/.env` before invoking the retrying scheduled runner. The runner automatically syncs equities, futures, and cmdty via IB, then all volatility indices via CBOE's public API and DXY/FX via Yahoo+Massive, in a single invocation; pass `--asset-class <name>` to run only one IB asset class (skips both the CBOE volatility and fx syncs). After a successful run it also spawns the weekly quality report, sends the nightly digest email, and runs the housekeeping retention sweep last. Coverage is **not** here — it has its own job, `com.livewire.coverage` at 11:00 UTC, and that job now also runs the windowed gap classifier. ⚠️ **`com.livewire.gap-scan` was retired**; its plist template and its `livewire_quality.py gap-scan` subcommand are both deleted. Deleting them from the repo does **not** remove an already-rendered LaunchAgent, which would keep invoking a subcommand that no longer parses — on any host that installed it, run `launchctl unload ~/Library/LaunchAgents/com.livewire.gap-scan.plist && rm ~/Library/LaunchAgents/com.livewire.gap-scan.plist` once.
 
 A second scheduled job, `com.livewire.intraday-catchup`, runs at 05:00 UTC daily (= 01:00 ET EDT / 00:00 ET EST) and invokes `scripts/livewire_ops.py run-intraday-catchup-job`. This calls the existing `daily-backfill` orchestrator so equity daily + intraday parquet (1m/5m/30m/1h), FRED Treasury rates, CBOE volatility daily, and IB volatility intraday (30m and 5m, with 1h derived locally from 30m) all refresh. Equity intraday requires `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY`; missing credentials fail the orchestrator before any phases run, and there is no REST or IB equity-intraday fallback. The wrapper is single-attempt because `daily-backfill` owns its phase execution and activity-based stall detection; on terminal failure the wrapper sends one alert through the same Nodemailer pipeline as the daily-update wrapper, tagged `--job-name intraday_catchup`. Logs land at `~/market-warehouse/logs/intraday_catchup_YYYY-MM-DD.log` (UTC date). The default 7-day `MDW_DAILY_BACKFILL_INTRADAY_DAYS` lookback absorbs a single missed run; widen via `~/market-warehouse/.env` if you need more headroom. 05:00 UTC is well after Massive's empirical whole-market SIP minute-aggregate publish (file for trade-date D appears shortly after midnight ET on D+1) and gives a 1h15m buffer after IBC's `AutoRestartTime=11:45` ET nightly restart (= 03:45 UTC), which requires 2FA approval before port 4001 is available.
 
@@ -1196,36 +1196,55 @@ python scripts/livewire_ops.py status
 
 ### Gap engine — the denominator is not the disk
 
-`scripts/livewire_quality.py gap-scan` computes `expected − actual` where
+`scripts/livewire_quality.py coverage` computes `expected − actual` where
 **expected comes from `registry/gaps.json` × `presets/*.json` × the trading
-calendar**, never from what is already on disk.
+calendar**, never from what is already on disk. There is **one** detector: the
+freshness ratio and the 30-day windowed classifier are the same job, reading the
+same registry on the same clock.
 
-⚠️ **This is the defect it replaces.** `coverage_report.py` builds its
+⚠️ **This is the defect it replaced.** `coverage_report.py` used to build its
 denominator by globbing `bronze/asset_class=*/symbol=*/`, so numerator and
-denominator are drawn from the same set and **a symbol that never landed cannot
-be counted missing**. Measured 2026-09-01 on the local lake: `gap-scan` returned
-11 `G3` findings for `presets/futures-active.json` because
+denominator were drawn from the same set and **a symbol that never landed could
+not be counted missing**. Measured 2026-09-01 on the local lake: the registry
+denominator returns 11 `G3` findings for `presets/futures-active.json` because
 `bronze/asset_class=futures/` **does not exist at all** — there is no directory
-for a glob to enumerate, so the disk-glob detector reports nothing wrong.
-`coverage_report.py:363` also omits `fx` and `cmdty` outright; the registry
-carries rows for both.
+for a glob to enumerate, so the disk-glob detector reported nothing wrong. The
+old hardcoded non-equity tuple also omitted `fx` and `cmdty` outright.
+
+⚠️ **A second detector is forbidden, and there is a test for it.**
+`tests/test_coverage_orchestration.py` asserts that `gap_scan.py` does not come
+back and that `classify()` keeps exactly one production caller. Two detectors
+answering one question with two denominators is what spec §11 criterion 7
+forbids — the retired `gap-scan` carried neither the no-trade exemption nor the
+ingestion deadline, so it and `coverage` disagreed about the same symbol nightly.
 
 ```bash
-python scripts/livewire_quality.py gap-scan \
-    --bronze-root ~/market-warehouse/data-lake/bronze \
-    --start 2026-08-01 --end 2026-08-28 --as-of 2026-08-31 \
-    --manifest-out /tmp/gap-manifest.json --decisions-out /tmp/gap-decisions.json
+python scripts/livewire_quality.py coverage --target-date 2026-08-28
+# writes <data-lake>/repairs/tier_a_<date>.json and decisions_<date>.json,
+# plus the `scan:` line in <log_dir>/coverage_<date>.log
 ```
 
-- **Gap classes.** `G3` = nothing on disk for the series; `G1` = missing the
-  newest sessions (tail); `G2` = missing interior sessions; `G13` = sessions
-  before the series' *first-ever* bar. One series can emit several.
-  ⚠️ **`G13` exists because head and interior gaps are different events.**
-  Backfill not having reached that far back is routine; a session written and
-  then lost is an incident. Both landed in `G2`, which made the incident
-  unfindable in the noise. `present` is every session in the file, not just the
-  window, so `min(present)` is genuinely the first-ever bar. `G13` is not in the
-  spec taxonomy yet — that row is owed on `docs/gap-autoheal-design`.
+- **Gap classes actually emitted:** `G3` = nothing on disk for the series;
+  `G1` = missing the newest sessions (tail); `G14` = the instrument left the
+  tape. One series can emit several — a `G14` and a `G1` for the repairable
+  sessions *before* the terminus, which are two different facts.
+  ⚠️ **`G2` (interior) and `G13` (head) are named in the taxonomy and NOT
+  emitted.** They produced zero true findings out of 501 on the first production
+  run, and interior absence judged from bar files alone is the circular question
+  that made the 5m scan flag 96.6% of the universe. `registry/gaps.json` rows no
+  longer declare `G2`, and `tests/test_gap_registry_contract.py` fails if one
+  does. Reinstating either needs a measurement asking for it; `classify()`'s
+  signature does not change either way.
+- ⚠️ **`G14` is exculpatory-only and fails closed three ways.** It is withheld
+  unless (1) the raw tape reaches the target session — checked on the
+  `_symbols.parquet` file, not the directory, because an interrupted fetch
+  leaves the latter; (2) the corporate-action store was reconciled *after* the
+  terminus; and (3) no active split sits within ±10 days of it. Any gate failing
+  yields an ordinary repairable gap **at Tier B**: "we could not check" must
+  never render as a delisting, and must not be silently absorbed by the no-trade
+  exemption either — that absorption is what hid EA/AVB/EQR for a month.
+  `clients.terminus.confirmed_terminus` is the only entry point; composing the
+  three parts by hand at a call site is how the two surfaces diverged once.
 - ⚠️ **Tier follows the repair SOURCE, not the severity of the gap.** Tier A
   means *repairable unattended*, which is a property of where the bar comes from:
 
@@ -1251,7 +1270,8 @@ python scripts/livewire_quality.py gap-scan \
 - ⚠️ **The Massive floor is derived from the scan date, not hardcoded.**
   `massive_floor_for(as_of) = as_of − 1827 days` (measured 2026-07-29:
   `2021-07-27` → 403, `2021-07-28` → OK, exactly 5.00 years). A constant here
-  rots one day per day and silently mis-tiers. `--massive-floor` still pins it.
+  rots one day per day and silently mis-tiers — and so does passing the *target
+  date*: on a Monday run for Friday's session the two differ by three days.
 - ⚠️ **The denominator is XNYS-only, and that is a known blind spot.**
   `trading_calendar.trading_dates_in_range` is the NYSE calendar, but FX trades
   ~24/5, CME futures keep their own sessions and FRED publishes on its own
@@ -1259,14 +1279,14 @@ python scripts/livewire_quality.py gap-scan \
   all, and its absence is invisible. `load_registry` rejects any `asset_class`
   outside `XNYS_CALENDAR_ASSET_CLASSES` so a new one cannot inherit the blind
   spot silently. Fixing it means real per-asset-class calendars.
-- ⚠️ **Phase 1 is read-only.** `gap-scan` writes exactly two artifacts and
+- ⚠️ **Phase 1 is read-only.** The scan writes exactly two artifacts and
   mutates nothing. The Tier A manifest is **not** fed to `shepherd_repair` yet;
   no unattended mutation is scheduled until the denominator has been observed
   correct on real data. The Tier B queue has no consumer at all — its depth is
   the measurement that decides whether building one is worth it.
 - **A row without a `test` is rejected** by `load_registry`. A registry row
   asserting coverage with nothing executing behind it is a claim, not coverage.
-- **The unresolved ledger stops re-litigation.** `--unresolved <path>` records
+- **The unresolved ledger stops re-litigation.** `<data-lake>/repairs/unresolved.json` records
   permanently unsourceable `(symbol, session)` pairs with a reason, so a delisted
   name with no provider is not re-reported every night. Suppression is
   per-session: a finding whose other sessions are still open keeps them.

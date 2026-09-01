@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 from clients.corporate_action_store import CorporateActionStore
 from clients.massive_client import MassiveDividend, MassivePageEvidence, MassiveSplit
 from clients.terminus import (
+    confirmed_terminus,
     raw_tape_covers,
     terminus_is_unexplained,
     terminus_of,
@@ -178,11 +179,62 @@ def test_a_tape_that_stops_short_of_the_window_blocks_every_g14(tmp_path):
     # The loud failure: one stalled flat-file lane would otherwise report the
     # whole universe delisted on the same morning.
     raw = tmp_path / "raw"
-    (raw / "date=2026-08-20").mkdir(parents=True)
+    _write_tape(raw, date(2026, 8, 20), ["AAPL"])
     assert raw_tape_covers(raw, date(2026, 8, 28)) is False
-    (raw / "date=2026-08-28").mkdir()
+    _write_tape(raw, date(2026, 8, 28), ["AAPL"])
     assert raw_tape_covers(raw, date(2026, 8, 28)) is True
+
+
+def test_a_partition_directory_without_its_parquet_does_not_count_as_coverage(tmp_path):
+    """An interrupted fetch leaves the directory and no _symbols.parquet.
+
+    traded_by_session skips such a session, so counting it here made tape_ok
+    true while the tape silently omitted the session -- and every symbol that
+    printed only in it read as a trailing absence. The two functions must key on
+    the same artifact.
+    """
+    raw = tmp_path / "raw"
+    _write_tape(raw, date(2026, 8, 20), ["AAPL"])
+    (raw / "date=2026-08-28").mkdir()
+    assert raw_tape_covers(raw, date(2026, 8, 28)) is False
 
 
 def test_an_absent_raw_tree_blocks_every_g14(tmp_path):
     assert raw_tape_covers(tmp_path / "nothing", date(2026, 8, 28)) is False
+
+
+def test_confirmed_terminus_needs_all_three_gates(tmp_path):
+    """Pin the COMPOSITION, not just the parts.
+
+    The three gates stayed importable individually and a caller assembled two of
+    them in the wrong order -- coverage dropped symbols from its denominator on
+    the suffix test alone. The parts each have their own test; without this one
+    nothing tests the only thing production calls.
+    """
+    # confirmed_terminus takes MIN_TERMINUS_SESSIONS as shipped (5), so the
+    # fixture is ten real sessions: EQR prints for five and then stops.
+    sessions = [date(2026, 8, 17 + i) for i in range(10)]
+    tape = {d: ({"EQR"} if i < 5 else set()) for i, d in enumerate(sessions)}
+    terminus = sessions[5]
+    fresh = datetime(2026, 8, 31, 6, 0, tzinfo=UTC)
+    div = [_dividend("EQR", date(2026, 6, 29))]
+
+    ok = _store_with(tmp_path / "ok", "EQR", div, fetched_at=fresh)
+    assert confirmed_terminus(tape, "EQR", ok, tape_ok=True).when == terminus
+
+    # Gate 1: the raw tape does not reach the window. No candidate is even formed.
+    v = confirmed_terminus(tape, "EQR", ok, tape_ok=False)
+    assert (v.when, v.candidate, v.withheld) == (None, None, False)
+
+    # Gate 2: the store was never asked about this symbol.
+    v = confirmed_terminus(tape, "EQR", CorporateActionStore(tmp_path / "empty"), tape_ok=True)
+    assert (v.when, v.candidate, v.withheld) == (None, terminus, True)
+
+    # Gate 3: an active split explains the departure.
+    split = _store_with(tmp_path / "split", "EQR", [_split("EQR", terminus, 300, 1)], fetched_at=fresh)
+    v = confirmed_terminus(tape, "EQR", split, tape_ok=True)
+    assert (v.when, v.candidate, v.withheld) == (None, terminus, True)
+
+    # No candidate at all: an ordinary symbol still trading is not "withheld".
+    v = confirmed_terminus({d: {"AAPL"} for d in sessions}, "AAPL", ok, tape_ok=True)
+    assert (v.when, v.candidate, v.withheld) == (None, None, False)

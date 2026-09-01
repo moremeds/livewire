@@ -319,7 +319,10 @@ def test_an_unasked_corporate_action_store_downgrades_a_terminus_to_a_repairable
         presets_dir=tmp_path / "presets",
         as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
     )
-    assert [(f.symbol, f.gap, f.tier) for f in findings] == [("EQR", "G1", "A")]
+    # G1, because the bars may well be fetchable -- but Tier B, because a
+    # qualifying absence run nobody could explain must not become an unattended
+    # nightly fetch of an instrument that may not be printing at all.
+    assert [(f.symbol, f.gap, f.tier) for f in findings] == [("EQR", "G1", "B")]
 
 
 def test_a_stale_raw_tape_blocks_every_g14_at_once(tmp_path):
@@ -393,3 +396,24 @@ def test_a_scan_failure_does_not_take_down_the_coverage_measurement(tmp_path, mo
     # And it published nothing, rather than an empty manifest that would read as
     # "the scan ran and found no repairs".
     assert not (tmp_path / "repairs").exists()
+
+
+def test_status_grades_a_scan_failure_that_the_coverage_ratio_cannot_show(tmp_path):
+    """The scan is isolated from coverage on purpose; it must not be invisible.
+
+    main() exits 0 whether the scan ran or not, no alert path covers it, and
+    `status._coverage_section` selects only lines matching `coverage:` -- so a
+    permanently broken classifier looked identical to a clean lake on every
+    surface an operator reads.
+    """
+    from livewire_scripts.status import Verdict, _coverage_section
+
+    log = tmp_path / "coverage_2026-08-28.log"
+    log.write_text(
+        "2026-08-28 coverage: 1d=100/100 (100.00%) 1m=100/100 (100.00%) "
+        "1h=100/100 (100.00%) 5m=100/100 (100.00%) 30m=100/100 (100.00%)\n"
+        "  scan: FAILED (RegistryError: row g1-g2-g3-fx-daily resolves to no symbols)\n"
+    )
+    section = _coverage_section("2026-08-28", tmp_path)
+    assert section.verdict is Verdict.WARN
+    assert any("scan: FAILED" in line for line in section.lines)

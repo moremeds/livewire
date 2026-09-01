@@ -6,6 +6,7 @@ import fcntl
 import json
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
+from functools import partial
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -122,6 +123,27 @@ def _finding(series: ExpectedSeries, gap: str, sessions: tuple[date, ...], massi
     )
 
 
+def _unconfirmed_finding(series: ExpectedSeries, gap: str, sessions: tuple[date, ...]) -> Finding:
+    """A repairable-shaped gap the terminus gates could not clear, forced to Tier B.
+
+    Tier A means "repairable unattended". A symbol with a qualifying absence run
+    that the corporate-action store could not explain -- or could not be asked
+    about -- may not be printing at all, so an unattended fetch would run every
+    night and return nothing. The gap class stays honest (it really is a tail or
+    a missing file); only the tier records that a human has to look.
+    """
+    return Finding(
+        symbol=series.symbol,
+        asset_class=series.asset_class,
+        timeframe=series.timeframe,
+        gap=gap,
+        sessions=sessions,
+        heal_by_days=None,
+        tier="B",
+        source=repair_source(series.asset_class),
+    )
+
+
 def _terminus_finding(series: ExpectedSeries, sessions: tuple[date, ...]) -> Finding:
     """Always Tier B, in every cell, with no heal-by.
 
@@ -147,20 +169,37 @@ def classify(
     present: set[date],
     massive_floor: date,
     terminus: date | None = None,
+    unconfirmed: bool = False,
 ) -> list[Finding]:
+    """Classify what is missing.
+
+    `terminus` is a confirmed departure from the tape; `unconfirmed` says the
+    suffix test fired but a gate withheld, which downgrades the tier without
+    changing the gap class. They are mutually exclusive by construction -- see
+    clients.terminus.TerminusVerdict.
+    """
     expected = set(series.sessions)
     missing = tuple(sorted(expected - present))
     if not missing:
         return []
+    findings: list[Finding] = []
     if terminus is not None:
         # An instrument that left the tape cannot be repaired from any source, so
-        # it is one Tier B finding rather than a repairable G1/G3. Emitting both
-        # would put a job in the Tier A queue that fetches nothing, forever.
+        # its terminal sessions are one Tier B finding. Sessions BEFORE the
+        # terminus are a different fact: the instrument was still printing then,
+        # so those bars exist at the provider and are repairable. Returning only
+        # the terminus finding silently discarded them -- an ingestion outage that
+        # happened to precede a delisting became unrepairable by classification.
         terminal = tuple(d for d in missing if d >= terminus)
+        missing = tuple(d for d in missing if d < terminus)
         if terminal:
-            return [_terminus_finding(series, terminal)]
+            findings.append(_terminus_finding(series, terminal))
+        if not missing:
+            return findings
+    build = partial(_unconfirmed_finding, series) if unconfirmed else None
     if not present:
-        return [_finding(series, "G3", missing, massive_floor)]
+        findings.append(build("G3", missing) if build else _finding(series, "G3", missing, massive_floor))
+        return findings
 
     # ponytail: tail only. G2 (interior) and G13 (head) produced zero true
     # findings out of 501 on the first production run, and interior absence
@@ -169,7 +208,9 @@ def classify(
     # it -- the taxonomy still names them (spec section 3).
     newest_present = max(present)
     tail = tuple(d for d in missing if d > newest_present)
-    return [_finding(series, "G1", tail, massive_floor)] if tail else []
+    if tail:
+        findings.append(build("G1", tail) if build else _finding(series, "G1", tail, massive_floor))
+    return findings
 
 
 UnresolvedKey = tuple[str, str, str, date]

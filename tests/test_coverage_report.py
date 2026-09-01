@@ -26,6 +26,7 @@ from livewire_scripts.coverage_report import (
     compute_coverage,
     compute_non_equity_coverage,
     format_missing_blocks,
+    format_non_equity_line,
     format_one_liner,
     main,
     write_coverage_log,
@@ -1035,10 +1036,18 @@ def test_a_non_equity_symbol_that_never_landed_is_counted_missing(tmp_path):
     assert "DGS30" in results["rates"].missing_symbols
 
 
-def test_rates_is_not_expected_until_t_plus_2(tmp_path):
-    # FRED publishes a session behind (spec 8.1). At 11:00 UTC on 2026-08-29 the
-    # 2026-08-28 session is due for equity but NOT for rates, so an empty rates
-    # tree must produce a zero-length denominator rather than 4 phantom gaps.
+def test_rates_is_graded_against_the_newest_session_its_lane_actually_owed(tmp_path):
+    """FRED publishes a session behind (spec 8.1), so rates must be graded at T+2.
+
+    Asking only about the run's target made rates invisible on EVERY night, not
+    just some: at 11:00 UTC on 08-29 the 08-28 session is not yet due for rates,
+    and by the next run the target had advanced to 08-28, so 08-27 was never
+    revisited by anybody. total=0 maps to ratio 1.0, so it read green forever --
+    a detector reporting perfect health because it enumerated nothing.
+
+    The grade is therefore against 08-27, the newest session rates owed, and an
+    empty tree is 4 real gaps rather than a silent zero.
+    """
     bronze = tmp_path / "bronze"
     (bronze / "asset_class=rates").mkdir(parents=True)
     results = compute_non_equity_coverage(
@@ -1046,7 +1055,12 @@ def test_rates_is_not_expected_until_t_plus_2(tmp_path):
         bronze_root=bronze,
         as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
     )
-    assert results["rates"].total == 0
+    assert results["rates"].measured_session == date(2026, 8, 27)
+    assert results["rates"].total == 4
+    assert results["rates"].missing_symbols == ["DGS10", "DGS3", "DGS30", "DGS5"]
+    # And the line says which session it graded, so "rates=0/4" cannot be read as
+    # a statement about 08-28.
+    assert "rates=0/4@2026-08-27" in format_non_equity_line(date(2026, 8, 28), results)
 
 
 def test_every_non_equity_row_is_declared_xnys_or_rejected():
@@ -1288,11 +1302,12 @@ def test_an_unasked_action_store_leaves_a_terminus_in_the_denominator(tmp_path):
     # dropped it from `total` on the tape evidence alone.
     assert result.terminus_symbols == ()
     assert result.total == 2
-    # ponytail: it then reads present via the no-trade exemption, while the
-    # classifier calls the same symbol a repairable G1 in the same run. That
-    # second divergence predates this branch (it is the G1-vs-no-trade tension,
-    # not the terminus gates) and is not closed here -- see the review notes.
-    assert result.present == 2
+    # And it is MISSING, not exempted. The no-trade exemption is for a symbol
+    # that did not print today; this one has a qualifying absence run nobody
+    # could explain, and letting the exemption absorb it is the mechanism that
+    # hid EA/AVB/EQR. The classifier reaches the same verdict (G1 Tier B).
+    assert result.missing_symbols == ["EQR"]
+    assert result.unconfirmed_terminus_symbols == ("EQR",)
 
 
 def test_a_stale_raw_tape_keeps_every_symbol_in_the_coverage_denominator(tmp_path):
@@ -1315,3 +1330,77 @@ def test_a_stale_raw_tape_keeps_every_symbol_in_the_coverage_denominator(tmp_pat
     )
     assert results["1d"].terminus_symbols == ()
     assert results["1d"].total == 2
+    # tape_ok is false, so the suffix test never runs and there is no candidate
+    # to withhold -- the symbol is an ordinary no-trade, not an unconfirmed
+    # terminus. A stalled lane must not manufacture 13,000 of those either.
+    assert results["1d"].unconfirmed_terminus_symbols == ()
+
+
+def test_the_equity_deadline_gate_is_the_early_return_not_build_denominator(tmp_path):
+    """A landmine test: `build_denominator` does NOT gate equity coverage.
+
+    compute_coverage passes `as_of` into build_denominator, which makes it look
+    as though the ingestion deadline is applied there. It is not -- that call
+    filters SESSIONS, and the 1d branch keeps every returned symbol regardless of
+    whether its session list is empty. The early `session_due_at(...) > as_of`
+    return is the only thing standing between a pre-deadline run and one phantom
+    tail gap per symbol (497 of the first run's 501 findings). Delete the early
+    return believing the denominator handles it, and this test fails.
+    """
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", [date(2026, 8, 27)])
+    kwargs = dict(
+        bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL", "BK"]),
+        presets_dir=tmp_path / "presets",
+    )
+    # 04:00 UTC on 08-28: the job that fills 08-28 has not even started.
+    early = compute_coverage(date(2026, 8, 28), as_of=datetime(2026, 8, 28, 4, 0, tzinfo=UTC), **kwargs)
+    assert (early["1d"].total, early["1d"].present) == (0, 0)
+    # 11:00 UTC the next day: due, and the two registry symbols are countable.
+    due = compute_coverage(date(2026, 8, 28), as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC), **kwargs)
+    assert due["1d"].total == 2
+
+    # And the sessions build_denominator returns are empty in the early case --
+    # proving the filter ran and that keeping only `expected` would still have
+    # yielded both symbols, i.e. the early return is load-bearing.
+    from clients.coverage_denominator import build_denominator
+
+    expected = build_denominator(
+        [tmp_path / "presets" / "t.json"],
+        "equity",
+        "1d",
+        date(2026, 8, 28),
+        date(2026, 8, 28),
+        as_of=datetime(2026, 8, 28, 4, 0, tzinfo=UTC),
+    )
+    assert len(expected) == 2
+    assert all(series.sessions == () for series in expected)
+
+
+def test_a_pre_deadline_run_does_not_erase_the_1d_footer_cache(tmp_path):
+    """The not-due branch must not make the next real run pay a cold footer walk.
+
+    _save_footer_cache REPLACES the cache file, so returning early without
+    carrying 1d entries forward deleted ~13,270 of them -- and the run that
+    triggers this branch is precisely the pre-deadline one that then penalises
+    the 11:00 job it precedes.
+    """
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", [date(2026, 8, 28)])
+    cache_path = tmp_path / "cache.json"
+    kwargs = dict(
+        bronze_root=bronze,
+        cache_path=cache_path,
+        registry_path=_registry_for(tmp_path, ["AAPL"]),
+        presets_dir=tmp_path / "presets",
+    )
+    compute_coverage(date(2026, 8, 28), as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC), **kwargs)
+    seeded = json.loads(cache_path.read_text())
+    assert any(key.endswith("1d.parquet") for key in seeded)
+
+    compute_coverage(date(2026, 8, 28), as_of=datetime(2026, 8, 28, 4, 0, tzinfo=UTC), **kwargs)
+    after = json.loads(cache_path.read_text())
+    assert {k: v for k, v in after.items() if k.endswith("1d.parquet")} == {
+        k: v for k, v in seeded.items() if k.endswith("1d.parquet")
+    }
