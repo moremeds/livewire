@@ -76,3 +76,30 @@ def test_a_session_not_yet_closed_is_not_expected():
         as_of=date(2026, 8, 28),
     )
     assert max(s.sessions[-1] for s in series) < date(2026, 8, 28)
+
+
+def test_an_archived_symbol_a_preset_still_claims_stays_expected():
+    """The delisted archive is NOT authoritative and must never filter the
+    denominator.
+
+    Measured on the production warehouse 2026-09-01: bronze-delisted holds 8,620
+    symbols, and 234 of them are still claimed by a preset -- BK (a current S&P
+    500 member, in sp500.json and two sector presets), 63 ADRs including ORAN,
+    TEF, ERJ and ABB, and 157 ETFs. BK has no 1d.parquet in live bronze, so it
+    is a real G3 hole *today*; an archive-driven filter would have hidden it
+    permanently, which is exactly the invisible-gap failure this denominator
+    exists to remove.
+
+    This is a guard, not a feature test: it passes today because
+    build_denominator has no delisted branch, and it fails the moment someone
+    adds one that subtracts.
+    """
+    series = build_denominator(
+        [PRESETS / "sp500.json"],
+        asset_class="equity",
+        timeframe="1d",
+        start=date(2026, 8, 26),
+        end=date(2026, 8, 28),
+        as_of=date(2026, 8, 31),
+    )
+    assert "BK" in {s.symbol for s in series}
