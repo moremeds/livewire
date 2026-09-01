@@ -227,6 +227,35 @@ So the earlier split of L4 was wrong. There is no cheap membership half:
    a `delisted_at`, and rename must be separated from delisting. `universe_sync`
    has never run, so all 8,620 lack one.
 
+**Why the terminus half has never run** (traced 2026-09-01 on the mini).
+`universe-sync --dry-run` exits **1** after two log lines:
+
+```
+INFO  S&P 500: 503 constituents
+ERROR Failed to fetch Nasdaq-100: Nasdaq-100: no constituent table found
+```
+
+`fetch_ndx100` reads the Wikipedia article `Nasdaq-100`, whose section list is
+now History / Selection criteria / Performance / Record values / … — **there is
+no Components section any more**, and the four remaining `wikitable`s are index
+history (`['Year', 'Closing level', …]`). It is not a moved page: `Nasdaq-100
+Index`, `List of Nasdaq-100 companies` and `Nasdaq-100 components` all 404, and
+a Wikipedia search returns only the one article. **The upstream source is
+gone**, so this is a source replacement, not a selector fix.
+
+Two consequences, and the second is worse:
+
+- `universe_sync.py:178` is `sys.exit(1)` inside the fetch loop, so one dead
+  source kills the whole sync — S&P 500 movements, registry seeding and the
+  entire delisting path included. This is the "IB is not a single point of
+  failure" lesson (`CLAUDE.md`) reproduced in a lane nobody checked.
+- Even after that is fixed, the Polygon check runs over
+  `removed_tickers + orphan_tickers`, both drawn from the registry, which is
+  seeded only from *current* index members. Archived symbols are in no live
+  index, so they are never seeded and never checked. **`universe_sync` cannot
+  assign `delisted_at` to the 8,620 by design**; L4b needs a separate pass that
+  feeds the archived list straight to `check_tickers_bulk`.
+
 The 234 conflicts are themselves the first tranche of work: two universes
 disagree about them in writing, and one of the two is wrong per symbol. That
 population is small enough to adjudicate and large enough to be worth it, which
