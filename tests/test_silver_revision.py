@@ -218,9 +218,7 @@ def test_publish_honours_an_injected_clock_and_defaults_to_now(tmp_path):
     frozen = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
     publisher = SilverRevisionPublisher(tmp_path)
 
-    pinned = publisher.publish(
-        [_artifact(tmp_path, "a.parquet", b"one")], AFFECTED, ACTIONS_AS_OF, published_at=frozen
-    )
+    pinned = publisher.publish([_artifact(tmp_path, "a.parquet", b"one")], AFFECTED, ACTIONS_AS_OF, published_at=frozen)
     assert pinned.published_at == frozen
     assert pinned.generation_id == "20260102T030405Z-1"
 
