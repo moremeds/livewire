@@ -32,6 +32,8 @@ if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
 import pyarrow.parquet as pq
 from rich.console import Console
 
+from clients.coverage_denominator import DUE_LAG_DAYS, build_denominator
+from clients.gap_registry import load_registry
 from clients.intraday_bronze_client import INTRADAY_PARQUET_FILENAME
 from clients.symbol_paths import decode_symbol
 from livewire_scripts.daily_update import _et_today, is_trading_day, previous_trading_day
@@ -357,34 +359,65 @@ def format_missing_blocks(results: dict[str, CoverageResult], max_listed: int = 
     return blocks
 
 
-# Daily-only asset classes. They were in no denominator at any timeframe, so
-# VIX going stale for a week was invisible to coverage. There is no recovery
-# path for these (CBOE/FRED/IB own them), so this reports and alerts only.
-NON_EQUITY_ASSET_CLASSES: tuple[str, ...] = ("volatility", "futures", "rates")
+# ponytail: derived from the registry, not written here. The hardcoded tuple
+# ("volatility", "futures", "rates") omitted fx and cmdty, so a stale DXY was
+# invisible -- and the omission was invisible too, because nothing compared the
+# tuple to the asset classes the warehouse actually carries. There is no recovery
+# path for these (CBOE/FRED/IB/Yahoo own them), so this reports and alerts only.
+def _non_equity_rows(registry_path: Path | None):
+    rows = load_registry(registry_path or Path("registry/gaps.json"))
+    return [r for r in rows if r.asset_class != "equity" and r.timeframe == "1d"]
 
 
 def compute_non_equity_coverage(
     target_date: date,
     bronze_root: Path | None = None,
+    registry_path: Path | None = None,
+    presets_dir: Path | None = None,
+    as_of: datetime | None = None,
 ) -> dict[str, CoverageResult]:
     """Return per-asset-class 1d freshness for the non-equity universes.
 
-    No no-trade exemption: these are small, continuously-quoted universes
-    (~14 volatility indices, a handful of futures, 4 Treasury series). A stale
-    one is a real gap, not an instrument that happened not to print.
+    The denominator is the registry universe, never the files on disk: a symbol
+    that never landed has to stay countable. No no-trade exemption -- these are
+    small universes and a stale one is a real gap.
+
+    ponytail: the calendar is XNYS for every class here, which is WRONG for fx
+    (~24/5), CME futures and FRED -- see gap_registry.XNYS_CALENDAR_ASSET_CLASSES.
+    A bar expected on an XNYS holiday is not expected at all, so its absence is
+    invisible. Known, deferred, and carried forward deliberately; the fix is a
+    per-class calendar, not a tweak here.
     """
     bronze_root = bronze_root or _resolved_data_lake() / "bronze"
+    presets_dir = presets_dir or Path("presets")
+    # Real wall clock, not the session's own due time: passing session_due_at
+    # (target_date) here would make the due filter tautologically true and the
+    # whole deadline rule inert.
+    as_of = as_of or datetime.now(UTC)
     results: dict[str, CoverageResult] = {}
-    for asset_class in NON_EQUITY_ASSET_CLASSES:
-        paths = sorted((bronze_root / f"asset_class={asset_class}").glob("symbol=*/1d.parquet"))
-        universe = {_symbol_from_parquet_path(p) for p in paths}
-        present = {
-            _symbol_from_parquet_path(p)
-            for p in paths
-            if (latest := _latest_date_in_parquet(p, "trade_date")) is not None and latest >= target_date
-        }
-        results[asset_class] = CoverageResult(
-            timeframe=asset_class,
+    for row in _non_equity_rows(registry_path):
+        expected = build_denominator(
+            [presets_dir / f"{name}.json" for name in row.universe],
+            row.asset_class,
+            "1d",
+            target_date,
+            target_date,
+            as_of=as_of,
+            lag_days=DUE_LAG_DAYS.get(row.asset_class, 1),
+        )
+        # An empty denominator means the session is not due yet for this class
+        # (rates at T+2). Zero of zero, not N phantom gaps.
+        universe = {series.symbol for series in expected if series.sessions}
+        present = set()
+        for symbol in universe:
+            path = bronze_root / f"asset_class={row.asset_class}" / f"symbol={symbol}" / "1d.parquet"
+            if not path.exists():
+                continue
+            latest = _latest_date_in_parquet(path, "trade_date")
+            if latest is not None and latest >= target_date:
+                present.add(symbol)
+        results[row.asset_class] = CoverageResult(
+            timeframe=row.asset_class,
             total=len(universe),
             present=len(present),
             missing_symbols=sorted(universe - present),
@@ -393,7 +426,7 @@ def compute_non_equity_coverage(
 
 
 def format_non_equity_line(target_date: date, results: dict[str, CoverageResult]) -> str:
-    parts = [f"{ac}={results[ac].present}/{results[ac].total}" for ac in NON_EQUITY_ASSET_CLASSES]
+    parts = [f"{ac}={results[ac].present}/{results[ac].total}" for ac in sorted(results)]
     return f"{target_date} non-equity 1d: " + " ".join(parts)
 
 

@@ -18,7 +18,6 @@ import pytest
 
 from livewire_scripts import coverage_report
 from livewire_scripts.coverage_report import (
-    NON_EQUITY_ASSET_CLASSES,
     CoverageResult,
     RecoveryOutcome,
     _resolve_target_date,
@@ -574,9 +573,19 @@ class TestMain:
 
     def test_above_threshold_no_recovery(self, seeded_bronze, monkeypatch, tmp_path):
         monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
-        with patch(
-            "livewire_scripts.coverage_report.compute_coverage",
-            wraps=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=seeded_bronze),
+        with (
+            patch(
+                "livewire_scripts.coverage_report.compute_coverage",
+                wraps=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=seeded_bronze),
+            ),
+            patch(
+                # This test is about the EQUITY threshold. Since the non-equity
+                # denominator became registry-backed, an empty non-equity tree
+                # legitimately reports every preset member missing and pages -- a
+                # different code path, covered by its own tests above.
+                "livewire_scripts.coverage_report.compute_non_equity_coverage",
+                return_value={},
+            ),
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
                 with patch.object(
@@ -731,13 +740,24 @@ class TestNonEquityCoverage:
 
         results = compute_non_equity_coverage(target, bronze_root=root)
 
-        assert results["volatility"].missing_symbols == ["VVIX"]
-        assert results["rates"].missing_symbols == []
+        # The denominator is now the registry universe, so every preset member
+        # with no file is also missing. The assertion that matters is unchanged:
+        # a symbol whose newest bar predates the target is reported, and a
+        # current one is not.
+        assert "VVIX" in results["volatility"].missing_symbols
+        assert "VIX" not in results["volatility"].missing_symbols
+        assert "DGS10" not in results["rates"].missing_symbols
 
     def test_absent_asset_class_is_empty_not_an_error(self, tmp_path):
+        # An empty bronze tree is not an error, and with a registry denominator
+        # it is also not an empty result: every preset member is countable and
+        # missing, which is the whole point -- a symbol that never landed used to
+        # be invisible.
         results = compute_non_equity_coverage(date(2026, 4, 6), bronze_root=tmp_path / "bronze")
-        for asset_class in NON_EQUITY_ASSET_CLASSES:
-            assert results[asset_class].total == 0
+        assert set(results) == {"volatility", "futures", "rates", "fx", "cmdty"}
+        for result in results.values():
+            assert result.present == 0
+            assert len(result.missing_symbols) == result.total
 
 
 def _count_opens(monkeypatch) -> list[Path]:
@@ -905,3 +925,46 @@ class TestTheCacheCannotKillTheRun:
         results = coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
 
         assert results["1d"].present == 1, "the run completes and measures correctly"
+
+
+def test_non_equity_denominator_includes_fx_and_cmdty(tmp_path):
+    # Both were absent from the hardcoded tuple, so a stale DXY or a stale gold
+    # contract was invisible to coverage at every timeframe.
+    bronze = tmp_path / "bronze"
+    (bronze / "asset_class=rates" / "symbol=DGS10").mkdir(parents=True)
+    results = compute_non_equity_coverage(date(2026, 8, 28), bronze_root=bronze)
+    assert "fx" in results
+    assert "cmdty" in results
+
+
+def test_a_non_equity_symbol_that_never_landed_is_counted_missing(tmp_path):
+    # The whole point of the registry denominator: DGS30 is in the rates preset
+    # and has no directory at all, so a disk glob cannot see it.
+    bronze = tmp_path / "bronze"
+    (bronze / "asset_class=rates" / "symbol=DGS10").mkdir(parents=True)
+    results = compute_non_equity_coverage(date(2026, 8, 28), bronze_root=bronze)
+    assert "DGS30" in results["rates"].missing_symbols
+
+
+def test_rates_is_not_expected_until_t_plus_2(tmp_path):
+    # FRED publishes a session behind (spec 8.1). At 11:00 UTC on 2026-08-29 the
+    # 2026-08-28 session is due for equity but NOT for rates, so an empty rates
+    # tree must produce a zero-length denominator rather than 4 phantom gaps.
+    bronze = tmp_path / "bronze"
+    (bronze / "asset_class=rates").mkdir(parents=True)
+    results = compute_non_equity_coverage(
+        date(2026, 8, 28),
+        bronze_root=bronze,
+        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    )
+    assert results["rates"].total == 0
+
+
+def test_every_non_equity_row_is_declared_xnys_or_rejected():
+    # gap_registry.XNYS_CALENDAR_ASSET_CLASSES is the recorded blind spot. This
+    # test does not fix the calendar; it makes adding a sixth asset class an
+    # explicit act rather than a silent inheritance.
+    from clients.gap_registry import XNYS_CALENDAR_ASSET_CLASSES, load_registry
+
+    for row in load_registry(Path("registry/gaps.json")):
+        assert row.asset_class in XNYS_CALENDAR_ASSET_CLASSES, row.id
