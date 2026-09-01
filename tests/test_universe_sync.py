@@ -222,6 +222,65 @@ class TestMain:
         main(["--dry-run"])
         assert not (warehouse / "registry.json").exists()
 
+    @patch("livewire_scripts.universe_sync.fetch_sp500", return_value={f"T{i}" for i in range(500)})
+    @patch("livewire_scripts.universe_sync.fetch_ndx100", return_value={f"N{i}" for i in range(100)})
+    @patch("livewire_scripts.universe_sync.fetch_r2k", side_effect=AssertionError("must not be fetched"))
+    def test_an_unselected_index_is_never_fetched(self, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch):
+        """slickcharts dropped every Russell page (404, measured 2026-09-02) and the
+        gap registry's equity row only names sp500 and ndx100, so the scheduled job
+        asks for those two. One dead source must not block the two the denominator
+        actually uses."""
+        self._setup_workspace(tmp_path, monkeypatch)
+        main(["--dry-run", "--indexes", "sp500", "ndx100"])
+        mock_r2k.assert_not_called()
+
+    @patch(
+        "livewire_scripts.universe_sync.fetch_sp500",
+        return_value={"AAPL"} | {f"T{i}" for i in range(500)},
+    )
+    @patch(
+        "livewire_scripts.universe_sync.fetch_ndx100",
+        return_value={"AAPL"} | {f"N{i}" for i in range(100)},
+    )
+    @patch("livewire_scripts.universe_sync.fetch_r2k", side_effect=AssertionError("must not be fetched"))
+    def test_an_unselected_index_is_not_read_as_a_mass_removal(
+        self, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch, capsys
+    ):
+        """The trap this flag could have walked into. `existing` used to be built
+        over every INDEX_TAG, so an index absent from `live` had all of its members
+        diffed against nothing and emitted as removals -- r2k alone is 1886 tickers
+        in the real preset. MIN_EXPECTED_CONSTITUENTS cannot catch it: that guard
+        only inspects indexes that were actually fetched."""
+        warehouse, _ = self._setup_workspace(tmp_path, monkeypatch)
+        main(["--dry-run", "--indexes", "sp500", "ndx100"])
+        out = capsys.readouterr().out
+        # ACME is the r2k-only member of the fixture preset.
+        assert "ACME" not in out
+        assert "REMOVE" not in out
+        assert not (warehouse / "registry.json").exists()
+
+    @patch(
+        "livewire_scripts.universe_sync.fetch_sp500",
+        return_value={"AAPL"} | {f"T{i}" for i in range(500)},
+    )
+    @patch(
+        "livewire_scripts.universe_sync.fetch_ndx100",
+        return_value={"AAPL"} | {f"N{i}" for i in range(100)},
+    )
+    @patch("livewire_scripts.universe_sync.fetch_r2k", side_effect=AssertionError("must not be fetched"))
+    def test_an_unselected_index_keeps_its_preset_file(self, mock_r2k, mock_ndx, mock_sp, tmp_path, monkeypatch):
+        """A SECOND write path, and the one that actually fired. The preset writer
+        reads the REGISTRY rather than `live`, and the registry is only tagged for
+        the indexes that were fetched -- so an unselected index resolved to the
+        empty set and its file was truncated. Measured on the first real apply,
+        2026-09-02: `Updated r2k.json: 0 tickers`, 1886 gone, while the movements
+        table above was entirely correct. Guarding one write path is not enough."""
+        _, presets = self._setup_workspace(tmp_path, monkeypatch)
+        before = (presets / "r2k.json").read_text()
+        main(["--indexes", "sp500", "ndx100"])
+        assert (presets / "r2k.json").read_text() == before
+        assert json.loads((presets / "sp500.json").read_text())["tickers"]
+
     @patch(
         "livewire_scripts.universe_sync.fetch_sp500",
         return_value=set(f"T{i}" for i in range(500)) | {"MSFT"},

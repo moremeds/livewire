@@ -150,6 +150,13 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--dry-run", action="store_true", help="Report changes without modifying")
     parser.add_argument("--skip-dead", action="store_true", help="Skip Polygon dead-ticker check")
     parser.add_argument(
+        "--indexes",
+        nargs="+",
+        choices=INDEX_TAGS,
+        default=list(INDEX_TAGS),
+        help="Which indexes to refresh. Defaults to all of them.",
+    )
+    parser.add_argument(
         "--interests",
         nargs="*",
         default=None,
@@ -164,12 +171,18 @@ def main(argv: list[str] | None = None) -> None:
 
     # ── Fetch live constituents ──────────────────────────────────────────
     log.info("Fetching live index constituents...")
+    # Canonical order, not the order the flag was typed in: INDEX_HIERARCHY is
+    # ordered and compute_movements reads promotions and demotions off it.
+    selected = tuple(idx for idx in INDEX_TAGS if idx in set(args.indexes))
     live: dict[str, set[str]] = {}
     for idx, fetcher, label in [
         ("sp500", fetch_sp500, "S&P 500"),
         ("ndx100", fetch_ndx100, "Nasdaq-100"),
         ("r2k", fetch_r2k, "Russell 2000"),
     ]:
+        if idx not in selected:
+            log.info("%s: skipped (not in --indexes)", label)
+            continue
         try:
             tickers = fetcher()
             live[idx] = tickers
@@ -191,8 +204,13 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(1)
 
     # ── Build existing state from registry or presets ────────────────────
+    # `selected`, NOT INDEX_TAGS. An index present in `existing` but absent from
+    # `live` has every one of its members read as a removal -- r2k alone is 1886
+    # tickers -- and MIN_EXPECTED_CONSTITUENTS cannot catch it, because that guard
+    # only inspects indexes that were actually fetched. The two dicts must cover
+    # the same set of indexes or compute_movements is comparing against nothing.
     existing: dict[str, set[str]] = {}
-    for idx in INDEX_TAGS:
+    for idx in selected:
         existing[idx] = registry.by_tag(idx, active_only=False)
         if not existing[idx]:
             preset_path = _PRESET_DIR / f"{idx}.json"
@@ -291,7 +309,14 @@ def main(argv: list[str] | None = None) -> None:
         log.info("Interests preset: %d tickers", len(interest_tickers))
 
     # ── Update preset tickers arrays ────────────────────────────────────
-    for idx in INDEX_TAGS:
+    # `selected` again, and for a second reason. This loop reads the REGISTRY,
+    # not `live` -- but the registry was only tagged for the indexes that were
+    # fetched, so an unselected index resolves to the empty set and the write
+    # TRUNCATES its preset. Measured 2026-09-02 on the first real apply:
+    # `Updated r2k.json: 0 tickers`, 1886 gone. The compute_movements guard above
+    # does not cover this; it is a separate write path, and the movements table
+    # was correct while the file was being emptied.
+    for idx in selected:
         active_tickers = registry.by_tag(idx, active_only=True)
         preset_path = _PRESET_DIR / f"{idx}.json"
         if preset_path.exists():

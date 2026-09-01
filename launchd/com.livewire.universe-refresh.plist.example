@@ -36,8 +36,19 @@
              from the repo checkout (like release-promote, the other job that
              cannot use a frozen tree) and borrows the warehouse venv.
              shepherd-universe takes a required subcommand plus an index
-             argument; without them it exits argparse status 2 every week. -->
-        <string>cd /path/to/repo &amp;&amp; /path/to/warehouse/.venv/bin/python scripts/livewire_ingest.py universe-sync &amp;&amp; /path/to/warehouse/.venv/bin/python scripts/livewire_ingest.py shepherd-universe scan --index sp500 &amp;&amp; /path/to/warehouse/.venv/bin/python scripts/livewire_ingest.py shepherd-universe scan --index ndx100</string>
+             argument; without them it exits argparse status 2 every week.
+
+             Restricting the sync to sp500 and ndx100 is deliberate, not a
+             narrowing for speed: registry/gaps.json's equity row names exactly
+             those two, so they are the whole denominator. r2k is left out
+             because its source is GONE. slickcharts returned 404 for
+             russell2000, russell1000 and russell3000 on 2026-09-02 while its
+             sp500 page still served, and universe_sync exits 1 if ANY
+             requested index fails, so asking for r2k would block the refresh
+             of the two that are actually used. presets/r2k.json (1886
+             tickers) keeps its last state; nothing reads it today. Restore
+             r2k here the day it gains both a live source and a consumer. -->
+        <string>cd /path/to/repo &amp;&amp; /path/to/warehouse/.venv/bin/python scripts/livewire_ingest.py universe-sync --indexes sp500 ndx100 &amp;&amp; /path/to/warehouse/.venv/bin/python scripts/livewire_ingest.py shepherd-universe scan --index sp500 &amp;&amp; /path/to/warehouse/.venv/bin/python scripts/livewire_ingest.py shepherd-universe scan --index ndx100</string>
     </array>
 
     <key>StartCalendarInterval</key>
