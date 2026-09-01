@@ -32,11 +32,26 @@ if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
 import pyarrow.parquet as pq
 from rich.console import Console
 
+from clients.corporate_action_store import CorporateActionStore
 from clients.coverage_denominator import DUE_LAG_DAYS, build_denominator, session_due_at
-from clients.gap_registry import load_registry
+from clients.gap_engine import (
+    Finding,
+    actual_sessions,
+    classify,
+    load_unresolved,
+    massive_floor_for,
+    suppress_unresolved,
+)
+from clients.gap_registry import RegistryError, load_registry
 from clients.intraday_bronze_client import INTRADAY_PARQUET_FILENAME
 from clients.symbol_paths import decode_symbol
-from clients.terminus import RAW_MINUTE_AGGS, terminus_of, traded_by_session
+from clients.terminus import (
+    RAW_MINUTE_AGGS,
+    raw_tape_covers,
+    terminus_is_unexplained,
+    terminus_of,
+    traded_by_session,
+)
 from clients.trading_calendar import trading_dates_in_range
 from livewire_scripts.daily_update import _et_today, is_trading_day, previous_trading_day
 from livewire_scripts.paths import data_lake_dir, log_dir
@@ -422,6 +437,118 @@ def format_one_liner(target_date: date, results: dict[str, CoverageResult]) -> s
     return f"{target_date} coverage: " + " ".join(parts)
 
 
+# The classifier window. gap_scan used 30 days; keeping it means the artifacts
+# this produces are comparable to the ones it produced.
+SCAN_WINDOW_DAYS = 30
+
+
+def _urgency(finding: Finding) -> tuple[int, int]:
+    """Sort key. `heal_by_days` is None when the repair source has no rolling
+    window, i.e. nothing expires -- those sort last, never first."""
+    if finding.heal_by_days is None:
+        return (1, 0)
+    return (0, finding.heal_by_days)
+
+
+def _entry(finding: Finding) -> dict:
+    return {
+        "symbol": finding.symbol,
+        "asset_class": finding.asset_class,
+        "timeframe": finding.timeframe,
+        "gap": finding.gap,
+        "sessions": [session.isoformat() for session in finding.sessions],
+        "heal_by_days": finding.heal_by_days,
+        "source": finding.source,
+    }
+
+
+def write_tier_a_manifest(findings: list[Finding], path: Path) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    repairs = [_entry(f) for f in sorted((f for f in findings if f.tier == "A"), key=_urgency)]
+    Path(path).write_text(json.dumps({"repairs": repairs}, indent=2))
+
+
+def write_decision_requests(findings: list[Finding], path: Path) -> None:
+    """Tier B queue. Verdict vocabulary is triage_breaks.py's, not a new one."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    requests = [
+        # Spec section 10.8 added `terminus` as a fifth verdict precisely because
+        # "we could not tell" and "the instrument stopped printing" are different
+        # answers, and an operator triaging the queue acts differently on each.
+        dict(_entry(f), verdict="terminus" if f.gap == "G14" else "inconclusive")
+        for f in findings
+        if f.tier == "B"
+    ]
+    Path(path).write_text(json.dumps(requests, indent=2))
+
+
+def scan_findings(
+    target_date: date,
+    *,
+    bronze_root: Path,
+    registry_path: Path | None = None,
+    presets_dir: Path | None = None,
+    as_of: datetime | None = None,
+    window_days: int = SCAN_WINDOW_DAYS,
+) -> list[Finding]:
+    """Every registry row, diffed over a trailing window and classified.
+
+    This is the windowed classifier gap_scan.py used to be. It is here, and not
+    in a fourth script, because it needs exactly what coverage already reads:
+    the registry universe, the trading calendar, the on-disk bronze tree and the
+    raw traded sets. Two detectors answering one question with two denominators
+    is what spec section 11 criterion 7 forbids.
+    """
+    as_of = as_of or datetime.now(UTC)
+    presets_dir = presets_dir or Path("presets")
+    start = target_date - timedelta(days=window_days)
+    floor = massive_floor_for(target_date)
+
+    raw_root = bronze_root.parent / RAW_MINUTE_AGGS
+    window = trading_dates_in_range(target_date - timedelta(days=40), target_date)[-TERMINUS_WINDOW_SESSIONS:]
+    tape = traded_by_session(raw_root, window)
+    # Criterion 8, first gate. A raw tape that stops short of the window makes
+    # EVERY symbol look like a terminus at once -- one stalled flat-file lane
+    # would page the whole universe. No G14 is emitted at all until the tape is
+    # shown to cover the window.
+    tape_ok = raw_tape_covers(raw_root, target_date)
+    store = CorporateActionStore(bronze_root.parent)
+
+    findings: list[Finding] = []
+    for row in load_registry(registry_path or Path("registry/gaps.json")):
+        expected = build_denominator(
+            [presets_dir / f"{name}.json" for name in row.universe],
+            row.asset_class,
+            row.timeframe,
+            start,
+            target_date,
+            as_of=as_of,
+            lag_days=DUE_LAG_DAYS.get(row.asset_class, 1),
+        )
+        # A row that resolves to no symbols is a zero denominator: it reports
+        # all-green for a reason that has nothing to do with the data. That is
+        # exactly the disk-glob failure this engine replaces, reintroduced from
+        # the registry side, so it fails the run rather than scoring perfect.
+        if not expected:
+            raise RegistryError(f"row {row.id}: universe {list(row.universe)} resolves to no symbols")
+        for series in expected:
+            if not series.sessions:
+                continue
+            # Terminus is an equity-tape fact. No other asset class has a tape to
+            # ask, which is why only the equity registry row declares G14.
+            terminus = terminus_of(tape, series.symbol) if (tape_ok and row.asset_class == "equity") else None
+            # Criterion 8, second gate, and spec section 3's own wording: a
+            # terminus the corporate-action store can explain -- or that the store
+            # is too stale to speak about -- is NOT a G14. Setting it back to None
+            # drops the symbol into the ordinary G1/G3 path, which is the
+            # fail-closed answer: a repairable gap, never a delisting.
+            if terminus is not None and not terminus_is_unexplained(store, series.symbol, terminus):
+                terminus = None
+            findings.extend(classify(series, actual_sessions(bronze_root, series), floor, terminus=terminus))
+    unresolved = load_unresolved(bronze_root.parent / "repairs" / "unresolved.json")
+    return sorted(suppress_unresolved(findings, unresolved), key=_urgency)
+
+
 def format_terminus_block(results: dict[str, CoverageResult]) -> list[str]:
     """One `  1d terminus:` line, or none.
 
@@ -783,7 +910,28 @@ def main() -> None:
     for asset_class, symbols in stale_non_equity.items():
         console.print(f"  [yellow]{asset_class} stale:[/yellow] {', '.join(symbols)}")
 
-    log_path = write_coverage_log(target, line, [*blocks, non_equity_line], results)
+    # The windowed classifier, on the same clock and the same registry rows.
+    # coverage answers "is this symbol current as of one session"; this answers
+    # "which sessions in a 30-day window are absent, and what class and tier is
+    # each run of them". Both artifacts land under <data-lake>/repairs/.
+    #
+    # ponytail: no timeout guard. com.livewire.coverage deliberately has none --
+    # CLAUDE.md records four separate budgets that were guessed and expired. The
+    # cost is bounded by iterating the ~515-symbol registry universe rather than
+    # the ~13,270-file glob; Task 9 step 5 measures it.
+    bronze_root = _resolved_data_lake() / "bronze"
+    findings = scan_findings(target, bronze_root=bronze_root, as_of=as_of)
+    repairs_dir = _resolved_data_lake() / "repairs"
+    write_tier_a_manifest(findings, repairs_dir / f"tier_a_{target}.json")
+    write_decision_requests(findings, repairs_dir / f"decisions_{target}.json")
+    scan_line = (
+        f"  scan: {len(findings)} findings "
+        f"(tier A {sum(1 for f in findings if f.tier == 'A')}, "
+        f"tier B {sum(1 for f in findings if f.tier == 'B')})"
+    )
+    console.print(scan_line)
+
+    log_path = write_coverage_log(target, line, [*blocks, non_equity_line, scan_line], results)
 
     if args.no_recover:
         return

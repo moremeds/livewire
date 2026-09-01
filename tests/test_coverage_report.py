@@ -618,6 +618,10 @@ class TestMain:
 
     def test_above_threshold_no_recovery(self, seeded_bronze, monkeypatch, tmp_path):
         monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        # main() writes the Tier A manifest and the decision queue under
+        # <data-lake>/repairs/. Without this the test writes them into the
+        # REAL warehouse.
+        monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", tmp_path / "lake")
         with (
             patch(
                 "livewire_scripts.coverage_report.compute_coverage",
@@ -653,6 +657,10 @@ class TestMain:
         _write_intraday(root, "AAPL", "30m", [target])
         _write_intraday(root, "AAPL", "5m", [date(2026, 3, 1)])  # stale -> triggers recovery
         monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        # main() writes the Tier A manifest and the decision queue under
+        # <data-lake>/repairs/. Without this the test writes them into the
+        # REAL warehouse.
+        monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", tmp_path / "lake")
 
         def fake_run(cmd, **kwargs):
             if "livewire_ingest.py" in str(cmd):
@@ -687,6 +695,10 @@ class TestMain:
         _write_intraday(root, "AAPL", "5m", [date(2026, 3, 1)])
         _write_intraday(root, "MSFT", "5m", [date(2026, 3, 1)])
         monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        # main() writes the Tier A manifest and the decision queue under
+        # <data-lake>/repairs/. Without this the test writes them into the
+        # REAL warehouse.
+        monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", tmp_path / "lake")
 
         def fake_run(cmd, **kwargs):
             if "livewire_ingest.py" in str(cmd):
@@ -719,6 +731,10 @@ class TestMain:
             _write_intraday(root, sym, "1h", [target])
             _write_intraday(root, sym, "5m", [date(2026, 3, 1)])
         monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        # main() writes the Tier A manifest and the decision queue under
+        # <data-lake>/repairs/. Without this the test writes them into the
+        # REAL warehouse.
+        monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", tmp_path / "lake")
 
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
@@ -1209,3 +1225,30 @@ def test_a_registry_only_symbol_survives_a_recovery_that_could_not_fetch_it(tmp_
     assert run_mock.call_count == 1
     assert outcome.still_missing == ["BK"]
     assert outcome.recovered == 0
+
+
+def test_main_writes_both_repair_artifacts(seeded_bronze, monkeypatch, tmp_path):
+    # The Task 7 wiring: without this the classifier exists and nothing scheduled
+    # ever calls it, which is the state gap_scan's deletion would have left.
+    lake = tmp_path / "lake"
+    monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", lake)
+    monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+    with patch(
+        "livewire_scripts.coverage_report.compute_coverage",
+        wraps=lambda d, bronze_root=None, cache_path=None, as_of=None, registry_path=None, presets_dir=None: (
+            compute_coverage(d, bronze_root=seeded_bronze, as_of=as_of, **_disk_only(tmp_path))
+        ),
+    ):
+        with patch("livewire_scripts.coverage_report.subprocess.run"):
+            with patch.object(sys, "argv", ["coverage_report.py", "--target-date", "2026-04-06", "--no-recover"]):
+                main()
+
+    manifest = lake / "repairs" / "tier_a_2026-04-06.json"
+    queue = lake / "repairs" / "decisions_2026-04-06.json"
+    assert manifest.is_file() and queue.is_file()
+    assert "repairs" in json.loads(manifest.read_text())
+    assert isinstance(json.loads(queue.read_text()), list)
+    # And the log carries the count, so a scan that silently stopped producing
+    # findings is visible rather than absent.
+    log_text = (tmp_path / "logs" / "coverage_2026-04-06.log").read_text()
+    assert "scan:" in log_text
