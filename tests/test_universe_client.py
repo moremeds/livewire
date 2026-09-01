@@ -8,6 +8,7 @@ import pytest
 import responses
 
 from clients.universe_client import (
+    NDX100_WIKIPEDIA_TITLE,
     UniverseFetchError,
     check_ticker_status,
     check_tickers_bulk,
@@ -140,16 +141,25 @@ class TestFetchSP500:
 
 
 class TestFetchNDX100:
+    def test_the_title_names_the_article_that_still_carries_the_table(self):
+        """Measured 2026-09-02: the `Nasdaq-100` article's Components section was
+        split out, so the old title fetched 200 OK and parsed to nothing --
+        universe-sync exited 1 every run and the ndx100 half of the denominator
+        never refreshed. Every other test here mocks whatever URL the code asks
+        for, so none of them could see it. `List of Nasdaq-100 companies` is a
+        404; only this capitalisation resolves."""
+        assert NDX100_WIKIPEDIA_TITLE == "List of NASDAQ-100 companies"
+
     @responses.activate
     def test_parses_wikipedia_table(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
         responses.add(
             responses.GET,
-            mediawiki_url("Nasdaq-100"),
+            mediawiki_url(NDX100_WIKIPEDIA_TITLE),
             body=mediawiki_payload(
                 NDX100_HTML,
-                title="Nasdaq-100",
-                canonical_url="https://en.wikipedia.org/wiki/Nasdaq-100",
+                title=NDX100_WIKIPEDIA_TITLE,
+                canonical_url="https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies",
             ),
             status=200,
         )
@@ -167,11 +177,11 @@ class TestFetchNDX100:
         )
         responses.add(
             responses.GET,
-            mediawiki_url("Nasdaq-100"),
+            mediawiki_url(NDX100_WIKIPEDIA_TITLE),
             body=mediawiki_payload(
                 content,
-                title="Nasdaq-100",
-                canonical_url="https://en.wikipedia.org/wiki/Nasdaq-100",
+                title=NDX100_WIKIPEDIA_TITLE,
+                canonical_url="https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies",
             ),
             status=200,
         )
@@ -182,7 +192,7 @@ class TestFetchNDX100:
         monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
         responses.add(
             responses.GET,
-            mediawiki_url("Nasdaq-100"),
+            mediawiki_url(NDX100_WIKIPEDIA_TITLE),
             status=404,
         )
         with pytest.raises(UniverseFetchError, match="Nasdaq-100"):
@@ -193,11 +203,11 @@ class TestFetchNDX100:
         monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
         responses.add(
             responses.GET,
-            mediawiki_url("Nasdaq-100"),
+            mediawiki_url(NDX100_WIKIPEDIA_TITLE),
             body=mediawiki_payload(
                 "<p>No table</p>",
-                title="Nasdaq-100",
-                canonical_url="https://en.wikipedia.org/wiki/Nasdaq-100",
+                title=NDX100_WIKIPEDIA_TITLE,
+                canonical_url="https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies",
             ),
             status=200,
         )
@@ -255,11 +265,11 @@ class TestFetchNDX100Fallback:
         """
         responses.add(
             responses.GET,
-            mediawiki_url("Nasdaq-100"),
+            mediawiki_url(NDX100_WIKIPEDIA_TITLE),
             body=mediawiki_payload(
                 fallback_html,
-                title="Nasdaq-100",
-                canonical_url="https://en.wikipedia.org/wiki/Nasdaq-100",
+                title=NDX100_WIKIPEDIA_TITLE,
+                canonical_url="https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies",
             ),
             status=200,
         )

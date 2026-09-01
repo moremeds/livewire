@@ -109,10 +109,19 @@ def fetch_sp500() -> set[str]:
     return _fetch_wikipedia_universe("List of S&P 500 companies", "S&P 500")
 
 
+# The list lives in its own article, the same shape as the S&P 500 one above.
+# The `Nasdaq-100` article itself no longer carries a Components section --
+# measured 2026-09-02, its four wikitables are annual returns and closing
+# milestones -- so parse_constituent_table found nothing and universe-sync
+# exited 1 on every run. Note the capitalisation: `List of Nasdaq-100 companies`
+# is a 404; only the all-caps form resolves.
+NDX100_WIKIPEDIA_TITLE = "List of NASDAQ-100 companies"
+
+
 def fetch_ndx100() -> set[str]:
     """Fetch current Nasdaq-100 members from one revision-bound snapshot."""
 
-    return _fetch_wikipedia_universe("Nasdaq-100", "Nasdaq-100")
+    return _fetch_wikipedia_universe(NDX100_WIKIPEDIA_TITLE, "Nasdaq-100")
 
 
 def fetch_r2k() -> set[str]:
