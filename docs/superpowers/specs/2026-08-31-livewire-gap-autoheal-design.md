@@ -644,9 +644,10 @@ Deliverables:
    14,811-symbol universe it would reproduce the 96.6% interior-scan disease. The
    `sp500` spike did not expose that because every sp500 member is liquid. Its one
    earned part, `clients/coverage_denominator.py`, moves into
-   `coverage_report.py`; the script, both `.plist.example` templates and the
-   `scripts/livewire_quality.py` subcommand registration are deleted. Net effect
-   of Phase 1 on the script count is **negative**.
+   `coverage_report.py`; the script, `launchd/com.livewire.gap-scan.plist.example`
+   and the `scripts/livewire_quality.py` subcommand registration are deleted. Net
+   effect of Phase 1 on the script count is **negative**. The
+   `universe-refresh` template is **not** deleted — see §11 criterion 7.
 
    Three constraints found by the audit:
 
@@ -705,11 +706,17 @@ stopped during Phase 1 and returns decision-only in Phase 2.
    trim.
 6. **Degradation:** with Helium absent, criteria 1–5 still pass.
 7. **Convergence:** at the end of Phase 1 there is one engine, not a fourth
-   detector. **Measured by deletion, not by intent:** `livewire_scripts/gap_scan.py`,
-   `launchd/com.livewire.gap-scan.plist.example`,
-   `launchd/com.livewire.universe-refresh.plist.example` and the `gap-scan`
-   subcommand registration are absent from the tree, and no `launchd` job exists
-   that a rewired `com.livewire.coverage` does not already cover.
+   detector. **Measured by deletion, not by intent:**
+   `livewire_scripts/gap_scan.py`, `launchd/com.livewire.gap-scan.plist.example`
+   and the `gap-scan` subcommand registration are absent from the tree, and no
+   *detector* `launchd` job exists that a rewired `com.livewire.coverage` does
+   not already cover. **`launchd/com.livewire.universe-refresh.plist.example` is
+   explicitly exempt** — an earlier draft of this criterion listed it, which was
+   wrong: convergence is about detectors, and that template schedules
+   `universe_sync`, a *producer*, and the one §10 deliverable 4 asks for. It
+   duplicates nothing, and BK is the argument for keeping it (in
+   `bronze-delisted/` and in `presets/sp500.json` at once, because nothing
+   reconciles the two).
 8. **Producer liveness:** every store this design reads has a non-empty artifact
    at the path the code resolves, or the section reading it states it is
    unpopulated and names the branch that is consequently untestable. Re-checked
