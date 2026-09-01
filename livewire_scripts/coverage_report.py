@@ -21,7 +21,7 @@ import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from pathlib import Path
 
@@ -32,10 +32,12 @@ if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
 import pyarrow.parquet as pq
 from rich.console import Console
 
-from clients.coverage_denominator import DUE_LAG_DAYS, build_denominator
+from clients.coverage_denominator import DUE_LAG_DAYS, build_denominator, session_due_at
 from clients.gap_registry import load_registry
 from clients.intraday_bronze_client import INTRADAY_PARQUET_FILENAME
 from clients.symbol_paths import decode_symbol
+from clients.terminus import RAW_MINUTE_AGGS, terminus_of, traded_by_session
+from clients.trading_calendar import trading_dates_in_range
 from livewire_scripts.daily_update import _et_today, is_trading_day, previous_trading_day
 from livewire_scripts.paths import data_lake_dir, log_dir
 
@@ -65,6 +67,10 @@ DEFAULT_SAFETY_CAP = 100
 # has been an empty "No coverage logs found" stub.
 FOOTER_READ_WORKERS = 16
 
+# The window the 2026-09-01 measurement used. MIN_TERMINUS_SESSIONS decides
+# inside it; this only bounds how far back a terminus can be dated.
+TERMINUS_WINDOW_SESSIONS = 20
+
 
 def _resolved_data_lake() -> Path:
     return _DATA_LAKE or data_lake_dir()
@@ -80,6 +86,11 @@ class CoverageResult:
     total: int
     present: int
     missing_symbols: list[str] = field(default_factory=list)
+    # (symbol, terminus date) pairs. In NEITHER `present` nor `missing_symbols`,
+    # and NOT in `total`: no source can supply bars for an instrument that
+    # stopped printing, so counting these missing queues an impossible repair and
+    # counting them present is what hid BK, EA, AVB and EQR.
+    terminus_symbols: tuple[tuple[str, date], ...] = ()
 
     @property
     def ratio(self) -> float:
@@ -241,10 +252,22 @@ def _latest_date_with_cache(
     return _latest_date_in_parquet(path, column_name), False, stamp
 
 
+def _equity_preset_paths(registry_path: Path | None, presets_dir: Path) -> list[Path]:
+    rows = load_registry(registry_path or Path("registry/gaps.json"))
+    names: list[str] = []
+    for row in rows:
+        if row.asset_class == "equity" and row.timeframe == "1d":
+            names.extend(row.universe)
+    return [presets_dir / f"{name}.json" for name in dict.fromkeys(names)]
+
+
 def compute_coverage(
     target_date: date,
     bronze_root: Path | None = None,
     cache_path: Path | None = None,
+    registry_path: Path | None = None,
+    presets_dir: Path | None = None,
+    as_of: datetime | None = None,
 ) -> dict[str, CoverageResult]:
     """Return per-timeframe coverage as-of *target_date*.
 
@@ -254,6 +277,12 @@ def compute_coverage(
     day's raw traded set (it simply did not trade; no-trade is not missing).
     """
     bronze_root = bronze_root or _resolved_data_lake() / "bronze"
+    # The real clock. NOT session_due_at(target_date): that makes the due filter
+    # `session_due_at(d) <= as_of` tautologically true for a single-session
+    # window, so the entire deadline rule would be inert on the one code path
+    # production runs.
+    as_of = as_of or datetime.now(UTC)
+    presets_dir = presets_dir or Path("presets")
     results: dict[str, CoverageResult] = {}
     cache = _load_footer_cache(cache_path)
     fresh: dict = {}
@@ -272,6 +301,13 @@ def compute_coverage(
             target_date,
         )
 
+    # One window, read once, shared by every timeframe. 40 calendar days is
+    # comfortably more than 20 sessions including holidays; the slice, not the
+    # span, defines the window. previous_trading_day(d) takes a single argument
+    # and cannot step back N sessions, which is why this is a slice.
+    window = trading_dates_in_range(target_date - timedelta(days=40), target_date)[-TERMINUS_WINDOW_SESSIONS:]
+    tape = traded_by_session(bronze_root.parent / RAW_MINUTE_AGGS, window)
+
     for tf in TIMEFRAMES:
         parquet_paths = sorted((bronze_root / "asset_class=equity").glob(f"symbol=*/{_filename_for(tf)}"))
         on_disk = {_symbol_from_parquet_path(path) for path in parquet_paths}
@@ -281,7 +317,39 @@ def compute_coverage(
         # with no 5m.parquet was not in the 5m universe, so a symbol that
         # silently stopped receiving intraday — or never got a file at all —
         # could never be counted missing, and coverage read 100% forever.
-        universe = on_disk if (tf == "1d" or not traded_today) else set(traded_today)
+        registry_universe: set[str] = set()
+        if tf == "1d":
+            # The ingestion deadline, asked directly rather than inferred from an
+            # empty denominator: "the registry resolves to no symbols" and "the
+            # session is not due yet" are different facts, and only the second one
+            # means zero of zero. Not due -> zero of zero, NOT one phantom tail gap
+            # per symbol, which is what 497 of the first run's 501 findings were.
+            if session_due_at(target_date) > as_of:
+                results[tf] = CoverageResult(tf, 0, 0, [], ())
+                continue
+            expected = build_denominator(
+                _equity_preset_paths(registry_path, presets_dir),
+                "equity",
+                "1d",
+                target_date,
+                target_date,
+                as_of=as_of,
+            )
+            # The registry, not the disk. A symbol that never landed has no file
+            # to glob, which is why BK -- an sp500 member -- read as 100% healthy.
+            # ponytail: a UNION, so ~96% of this denominator is still disk-derived.
+            # Widening the registry row is a separate, measured change.
+            registry_universe = {series.symbol for series in expected}
+            universe = on_disk | registry_universe
+        else:
+            universe = on_disk if not traded_today else set(traded_today)
+
+        # Scoped to the registry universe deliberately: the threshold is
+        # calibrated on 515 liquid names and the on-disk tail legitimately does
+        # not print for days.
+        terminus: dict[str, date] = {}
+        if tf == "1d":
+            terminus = {symbol: when for symbol in registry_universe if (when := terminus_of(tape, symbol)) is not None}
 
         column_name = "trade_date" if tf == "1d" else "bar_timestamp"
         # Threaded: the pass is one small footer read per file, so it is bound by
@@ -317,18 +385,28 @@ def compute_coverage(
             len(parquet_paths) - hits,
             time.monotonic() - started,
         )
+        # A terminus leaves the denominator ENTIRELY. Subtracting it from
+        # `missing` alone is a no-op: the no-trade exemption below already counts
+        # an absent symbol as present, so the symbol simply moves from one
+        # counted bucket to the other and the ratio still reads green.
+        countable = universe - set(terminus)
         present_symbols = {
             symbol
-            for symbol in universe
+            for symbol in countable
             if (latest_by_symbol.get(symbol) or date.min) >= target_date
             or (tf == "1d" and traded_today and symbol not in traded_today)
         }
-        missing = sorted(universe - present_symbols)
+        missing = sorted(countable - present_symbols)
+        # ponytail: a plain assert; nothing in this repo runs python -O. It is
+        # here because the two buckets drifting apart silently is the exact
+        # failure mode this task is correcting.
+        assert len(countable) == len(present_symbols) + len(missing)
         results[tf] = CoverageResult(
             timeframe=tf,
-            total=len(universe),
+            total=len(countable),
             present=len(present_symbols),
             missing_symbols=missing,
+            terminus_symbols=tuple(sorted(terminus.items())),
         )
 
     _save_footer_cache(cache_path, fresh)
@@ -342,6 +420,21 @@ def format_one_liner(target_date: date, results: dict[str, CoverageResult]) -> s
         r = results[tf]
         parts.append(f"{tf}={r.present}/{r.total} ({r.ratio:.2%})")
     return f"{target_date} coverage: " + " ".join(parts)
+
+
+def format_terminus_block(results: dict[str, CoverageResult]) -> list[str]:
+    """One `  1d terminus:` line, or none.
+
+    Deliberately NOT of the form `<tf>=<p>/<t>`: `status._coverage_section`
+    selects the last line matching `coverage:` and parses timeframe terms, so a
+    detail line that looked like a measurement would be read as one.
+    """
+    pairs = results["1d"].terminus_symbols
+    if not pairs:
+        return []
+    listed = ", ".join(f"{symbol}@{when.isoformat()}" for symbol, when in pairs[:10])
+    suffix = f", ... ({len(pairs)} total)" if len(pairs) > 10 else ""
+    return [f"  1d terminus: {listed}{suffix}"]
 
 
 def format_missing_blocks(results: dict[str, CoverageResult], max_listed: int = 10) -> list[str]:
@@ -483,6 +576,9 @@ def auto_recover(
     bronze_root: Path | None = None,
     target_date: date | None = None,
     safety_cap: int = DEFAULT_SAFETY_CAP,
+    registry_path: Path | None = None,
+    presets_dir: Path | None = None,
+    as_of: datetime | None = None,
 ) -> RecoveryOutcome:
     """Trigger a targeted backfill subprocess and re-check coverage.
 
@@ -549,7 +645,17 @@ def auto_recover(
     # closed. Across the 24h between scheduled runs the granularity is
     # irrelevant; within one run it is exactly the failure mode. This reads
     # only the symbols recovery touched, so skipping the cache costs nothing.
-    rechecked = compute_coverage(effective_target, bronze_root=bronze_root)[timeframe]
+    # Every argument, not just bronze_root. Dropping registry_path/presets_dir
+    # would re-check with the DISK-GLOB denominator, so a registry-only symbol
+    # like BK -- which has no file to glob -- vanishes from the universe and
+    # reads as recovered by a fetch that could not have touched it.
+    rechecked = compute_coverage(
+        effective_target,
+        bronze_root=bronze_root,
+        registry_path=registry_path,
+        presets_dir=presets_dir,
+        as_of=as_of,
+    )[timeframe]
     still_missing = [s for s in missing_symbols if s in rechecked.missing_symbols]
     recovered = len(missing_symbols) - len(still_missing)
     return RecoveryOutcome(
@@ -651,17 +757,26 @@ def main() -> None:
         return
 
     console.print(f"\n[bold]Coverage Report[/bold]  target_date={target}")
+    # One clock for the whole run. Established here and passed to every consumer
+    # so a single invocation cannot grade two different instants -- the equity
+    # denominator, the non-equity denominator and the classifier must all agree
+    # on whether the target session was due.
+    as_of = datetime.now(UTC)
     # Cached across runs: an unchanged (mtime, size) cannot mean a later max
     # date, and the cold footer walk is what this job's runtime actually is.
-    results = compute_coverage(target, cache_path=_resolved_log_dir() / "coverage_footer_cache.json")
+    results = compute_coverage(
+        target,
+        cache_path=_resolved_log_dir() / "coverage_footer_cache.json",
+        as_of=as_of,
+    )
     line = format_one_liner(target, results)
     console.print(line)
-    blocks = format_missing_blocks(results)
+    blocks = [*format_missing_blocks(results), *format_terminus_block(results)]
     for block in blocks:
         console.print(block)
     # Non-equity was in no denominator at all: a stale VIX, a stale DGS10 or a
     # stale futures contract could never register as missing.
-    non_equity = compute_non_equity_coverage(target)
+    non_equity = compute_non_equity_coverage(target, as_of=as_of)
     non_equity_line = format_non_equity_line(target, non_equity)
     console.print(non_equity_line)
     stale_non_equity = {ac: r.missing_symbols for ac, r in non_equity.items() if r.missing_symbols}
@@ -683,6 +798,7 @@ def main() -> None:
             timeframe=tf,
             missing_symbols=r.missing_symbols,
             target_date=target,
+            as_of=as_of,
         )
         outcomes.append(outcome)
 

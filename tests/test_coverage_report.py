@@ -117,6 +117,39 @@ def _write_intraday(bronze_root: Path, symbol: str, timeframe: str, days: list[d
     )
 
 
+def _disk_only(tmp_path: Path) -> dict:
+    """compute_coverage kwargs whose registry contributes no symbols.
+
+    The 1d denominator is `on_disk | registry`. A test about the footer cache,
+    the no-trade exemption or the log shape is not about that union, and without
+    this it silently measures the SHIPPED registry's 515 sp500+ndx100 members
+    against a two-file tmp tree.
+    """
+    presets = tmp_path / "presets"
+    presets.mkdir(exist_ok=True)
+    (presets / "none.json").write_text(json.dumps({"name": "none", "tickers": []}))
+    registry = tmp_path / "gaps-empty.json"
+    registry.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "g1-g2-g3-equity-daily",
+                    "gap": ["G1", "G3", "G14"],
+                    "asset_class": "equity",
+                    "timeframe": "1d",
+                    "universe": ["none"],
+                    "check": "denominator_diff",
+                    "params": {},
+                    "tier": "A",
+                    "since": "2026-08-31",
+                    "test": "tests/test_gap_engine.py::test_a_missing_file_with_no_terminus_is_still_g3_tier_a",
+                }
+            ]
+        )
+    )
+    return {"registry_path": registry, "presets_dir": presets}
+
+
 def _write_raw_symbols(bronze_root: Path, target: date, symbols: list[str]) -> None:
     path = bronze_root.parent / "raw" / "massive" / "us_stocks_sip" / "minute_aggs_v1" / f"date={target.isoformat()}"
     path.mkdir(parents=True)
@@ -140,20 +173,20 @@ def seeded_bronze(tmp_path):
 
 
 class TestComputeCoverage:
-    def test_all_present(self, seeded_bronze):
-        results = compute_coverage(date(2026, 4, 6), bronze_root=seeded_bronze)
+    def test_all_present(self, seeded_bronze, tmp_path):
+        results = compute_coverage(date(2026, 4, 6), bronze_root=seeded_bronze, **_disk_only(tmp_path))
         for tf in ("1d", "1m", "1h", "5m"):
             assert results[tf].total == 2
             assert results[tf].present == 2
             assert results[tf].missing_symbols == []
             assert results[tf].ratio == 1.0
 
-    def test_denominator_is_bronze_universe_not_raw_set(self, seeded_bronze):
+    def test_denominator_is_bronze_universe_not_raw_set(self, seeded_bronze, tmp_path):
         # The raw traded set lists only AAPL, but bronze carries AAPL + MSFT.
         # The denominator is the bronze universe (2), not the raw set (1).
         target = date(2026, 4, 6)
         _write_raw_symbols(seeded_bronze, target, ["AAPL", "MSFT"])
-        results = compute_coverage(target, bronze_root=seeded_bronze)
+        results = compute_coverage(target, bronze_root=seeded_bronze, **_disk_only(tmp_path))
         assert results["1d"].total == 2
         assert results["1d"].present == 2
 
@@ -165,7 +198,7 @@ class TestComputeCoverage:
         _write_daily(root, "AAPL", [target])
         _write_daily(root, "WLIIU", [date(2026, 3, 30)])  # stale
         _write_raw_symbols(root, target, ["AAPL"])  # WLIIU did not trade
-        results = compute_coverage(target, bronze_root=root)
+        results = compute_coverage(target, bronze_root=root, **_disk_only(tmp_path))
         assert results["1d"].total == 2
         assert results["1d"].present == 2
         assert results["1d"].missing_symbols == []
@@ -176,7 +209,7 @@ class TestComputeCoverage:
         target = date(2026, 4, 6)
         _write_daily(root, "AAPL", [date(2026, 3, 30)])  # stale
         _write_raw_symbols(root, target, ["AAPL"])
-        results = compute_coverage(target, bronze_root=root)
+        results = compute_coverage(target, bronze_root=root, **_disk_only(tmp_path))
         assert results["1d"].present == 0
         assert results["1d"].missing_symbols == ["AAPL"]
 
@@ -243,7 +276,7 @@ class TestComputeCoverage:
         root = tmp_path / "bronze"
         target = date(2026, 4, 6)
         _write_intraday(root, "AAPL", "30m", [target])
-        results = compute_coverage(target, bronze_root=root)
+        results = compute_coverage(target, bronze_root=root, **_disk_only(tmp_path))
         assert "30m" in results
         assert results["30m"].total == 1
         assert results["30m"].present == 1
@@ -255,7 +288,7 @@ class TestComputeCoverage:
         _write_intraday(root, "AAPL", "1m", [target])
         _write_intraday(root, "AAPL", "1h", [target])
         _write_intraday(root, "AAPL", "5m", [date(2026, 3, 1)])  # stale
-        results = compute_coverage(target, bronze_root=root)
+        results = compute_coverage(target, bronze_root=root, **_disk_only(tmp_path))
         assert results["5m"].present == 0
         assert results["5m"].missing_symbols == ["AAPL"]
         assert results["1d"].present == 1
@@ -267,7 +300,7 @@ class TestComputeCoverage:
         root = tmp_path / "bronze"
         target = date(2026, 4, 6)
         _write_daily(root, "AAPL", [target])
-        results = compute_coverage(target, bronze_root=root)
+        results = compute_coverage(target, bronze_root=root, **_disk_only(tmp_path))
         assert results["1d"].present == 1
         for tf in ("1m", "1h", "5m", "30m"):
             assert results[tf].total == 0
@@ -275,7 +308,7 @@ class TestComputeCoverage:
             assert results[tf].missing_symbols == []
 
     def test_empty_bronze(self, tmp_path):
-        results = compute_coverage(date(2026, 4, 6), bronze_root=tmp_path / "empty")
+        results = compute_coverage(date(2026, 4, 6), bronze_root=tmp_path / "empty", **_disk_only(tmp_path))
         for tf in ("1d", "1m", "1h", "5m"):
             assert results[tf].total == 0
             assert results[tf].present == 0
@@ -291,7 +324,7 @@ class TestComputeCoverage:
             compression="snappy",
         )
 
-        results = compute_coverage(date(2026, 4, 6), bronze_root=root)
+        results = compute_coverage(date(2026, 4, 6), bronze_root=root, **_disk_only(tmp_path))
 
         assert results["1d"].total == 1
         assert results["1d"].present == 0
@@ -302,8 +335,8 @@ class TestComputeCoverage:
 
 
 class TestFormatters:
-    def test_one_liner_matches_spec_shape(self, seeded_bronze):
-        results = compute_coverage(date(2026, 4, 6), bronze_root=seeded_bronze)
+    def test_one_liner_matches_spec_shape(self, seeded_bronze, tmp_path):
+        results = compute_coverage(date(2026, 4, 6), bronze_root=seeded_bronze, **_disk_only(tmp_path))
         line = format_one_liner(date(2026, 4, 6), results)
         assert line.startswith("2026-04-06 coverage:")
         assert "1d=2/2 (100.00%)" in line
@@ -455,7 +488,17 @@ class TestAutoRecover:
 
         command = run_mock.call_args.args[0]
         assert command[command.index("--dates") + 1] == "2026-04-06"
-        compute_mock.assert_called_once_with(date(2026, 4, 6), bronze_root=tmp_path)
+        # Every argument, not just bronze_root. A re-check that drops
+        # registry_path/presets_dir runs the DISK-GLOB denominator, so a
+        # registry-only symbol with no file to glob reads as recovered by a
+        # fetch that could not have touched it.
+        compute_mock.assert_called_once_with(
+            date(2026, 4, 6),
+            bronze_root=tmp_path,
+            registry_path=None,
+            presets_dir=None,
+            as_of=None,
+        )
         assert outcome.still_missing == ["AAPL"]
 
     def test_partial_recovery_path(self, seeded_bronze):
@@ -560,7 +603,9 @@ class TestMain:
         monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
-            wraps=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=seeded_bronze),
+            wraps=lambda d, bronze_root=None, cache_path=None, as_of=None, registry_path=None, presets_dir=None: (
+                compute_coverage(d, bronze_root=seeded_bronze, as_of=as_of, **_disk_only(tmp_path))
+            ),
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
                 with patch.object(
@@ -576,7 +621,9 @@ class TestMain:
         with (
             patch(
                 "livewire_scripts.coverage_report.compute_coverage",
-                wraps=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=seeded_bronze),
+                wraps=lambda d, bronze_root=None, cache_path=None, as_of=None, registry_path=None, presets_dir=None: (
+                    compute_coverage(d, bronze_root=seeded_bronze, as_of=as_of, **_disk_only(tmp_path))
+                ),
             ),
             patch(
                 # This test is about the EQUITY threshold. Since the non-equity
@@ -614,7 +661,9 @@ class TestMain:
 
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
-            side_effect=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=root),
+            side_effect=lambda d, bronze_root=None, cache_path=None, as_of=None, registry_path=None, presets_dir=None: (
+                compute_coverage(d, bronze_root=root, as_of=as_of, **_disk_only(tmp_path))
+            ),
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
                 with patch.object(
@@ -646,7 +695,9 @@ class TestMain:
 
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
-            side_effect=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=root),
+            side_effect=lambda d, bronze_root=None, cache_path=None, as_of=None, registry_path=None, presets_dir=None: (
+                compute_coverage(d, bronze_root=root, as_of=as_of, **_disk_only(tmp_path))
+            ),
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
                 with patch.object(
@@ -671,7 +722,9 @@ class TestMain:
 
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
-            side_effect=lambda d, bronze_root=None, cache_path=None: compute_coverage(d, bronze_root=root),
+            side_effect=lambda d, bronze_root=None, cache_path=None, as_of=None, registry_path=None, presets_dir=None: (
+                compute_coverage(d, bronze_root=root, as_of=as_of, **_disk_only(tmp_path))
+            ),
         ):
             with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
                 with patch.object(
@@ -700,7 +753,7 @@ class TestIntradayDenominator:
         _write_daily(root, "NOFILE", [target])
         _write_raw_symbols(root, target, ["GOTBARS", "NOFILE"])
 
-        results = compute_coverage(target, bronze_root=root)
+        results = compute_coverage(target, bronze_root=root, **_disk_only(tmp_path))
 
         # Globbing files on disk put NOFILE outside the 5m universe entirely,
         # so it could never be counted missing and coverage read 100%.
@@ -715,7 +768,7 @@ class TestIntradayDenominator:
         _write_daily(root, "QUIET", [date(2026, 3, 1)])
         _write_raw_symbols(root, target, ["TRADED"])
 
-        results = compute_coverage(target, bronze_root=root)
+        results = compute_coverage(target, bronze_root=root, **_disk_only(tmp_path))
 
         assert results["1d"].missing_symbols == []
 
@@ -787,11 +840,15 @@ class TestFooterReadsAreIncremental:
         cache_path = tmp_path / "cache.json"
         opens = _count_opens(monkeypatch)
 
-        first = coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+        first = coverage_report.compute_coverage(
+            date(2026, 8, 6), bronze_root=root, cache_path=cache_path, **_disk_only(tmp_path)
+        )
         assert len(opens) >= 1
         opens.clear()
 
-        second = coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+        second = coverage_report.compute_coverage(
+            date(2026, 8, 6), bronze_root=root, cache_path=cache_path, **_disk_only(tmp_path)
+        )
         assert opens == [], "an unchanged parquet must not be reopened"
         assert second["1d"].present == first["1d"].present
         assert second["1d"].missing_symbols == first["1d"].missing_symbols
@@ -800,7 +857,9 @@ class TestFooterReadsAreIncremental:
         root = tmp_path / "bronze"
         _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6)])
         cache_path = tmp_path / "cache.json"
-        coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+        coverage_report.compute_coverage(
+            date(2026, 8, 6), bronze_root=root, cache_path=cache_path, **_disk_only(tmp_path)
+        )
 
         parquet = root / "asset_class=equity" / "symbol=NVDA" / "1d.parquet"
         _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6), date(2026, 8, 7)])
@@ -811,7 +870,9 @@ class TestFooterReadsAreIncremental:
         os.utime(parquet, (stamp, stamp))
 
         opens = _count_opens(monkeypatch)
-        results = coverage_report.compute_coverage(date(2026, 8, 7), bronze_root=root, cache_path=cache_path)
+        results = coverage_report.compute_coverage(
+            date(2026, 8, 7), bronze_root=root, cache_path=cache_path, **_disk_only(tmp_path)
+        )
         assert opens == [parquet], "a rewritten parquet must be reread"
         assert results["1d"].missing_symbols == []
 
@@ -825,7 +886,9 @@ class TestFooterReadsAreIncremental:
         root = tmp_path / "bronze"
         _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6)])
         cache_path = tmp_path / "cache.json"
-        coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+        coverage_report.compute_coverage(
+            date(2026, 8, 6), bronze_root=root, cache_path=cache_path, **_disk_only(tmp_path)
+        )
 
         parquet = root / "asset_class=equity" / "symbol=NVDA" / "1d.parquet"
         frozen = parquet.stat().st_mtime
@@ -839,7 +902,9 @@ class TestFooterReadsAreIncremental:
         assert parquet.stat().st_mtime == frozen
 
         opens = _count_opens(monkeypatch)
-        results = coverage_report.compute_coverage(date(2026, 8, 7), bronze_root=root, cache_path=cache_path)
+        results = coverage_report.compute_coverage(
+            date(2026, 8, 7), bronze_root=root, cache_path=cache_path, **_disk_only(tmp_path)
+        )
         assert opens == [parquet], "a size change must invalidate the entry"
         assert results["1d"].missing_symbols == []
 
@@ -848,7 +913,7 @@ class TestFooterReadsAreIncremental:
         _write_daily(root, "NVDA", [date(2026, 8, 5), date(2026, 8, 6)])
         opens = _count_opens(monkeypatch)
         for _ in range(2):
-            coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root)
+            coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, **_disk_only(tmp_path))
         assert len(opens) == 2, "without a cache path every run reads every footer"
 
     def test_a_corrupt_cache_is_not_fatal(self, tmp_path, monkeypatch):
@@ -859,7 +924,9 @@ class TestFooterReadsAreIncremental:
         cache_path = tmp_path / "cache.json"
         cache_path.write_text("{not json", encoding="utf-8")
 
-        results = coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+        results = coverage_report.compute_coverage(
+            date(2026, 8, 6), bronze_root=root, cache_path=cache_path, **_disk_only(tmp_path)
+        )
         assert results["1d"].total == 1
 
     def test_a_removed_symbol_drops_out_of_the_cache(self, tmp_path):
@@ -868,11 +935,15 @@ class TestFooterReadsAreIncremental:
         _write_daily(root, "NVDA", [date(2026, 8, 6)])
         _write_daily(root, "HON", [date(2026, 8, 6)])
         cache_path = tmp_path / "cache.json"
-        coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+        coverage_report.compute_coverage(
+            date(2026, 8, 6), bronze_root=root, cache_path=cache_path, **_disk_only(tmp_path)
+        )
         assert len(json.loads(cache_path.read_text())) == 2
 
         shutil.rmtree(root / "asset_class=equity" / "symbol=HON")
-        coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+        coverage_report.compute_coverage(
+            date(2026, 8, 6), bronze_root=root, cache_path=cache_path, **_disk_only(tmp_path)
+        )
         entries = json.loads(cache_path.read_text())
         assert len(entries) == 1
         assert all("NVDA" in key for key in entries)
@@ -922,7 +993,9 @@ class TestTheCacheCannotKillTheRun:
             encoding="utf-8",
         )
 
-        results = coverage_report.compute_coverage(date(2026, 8, 6), bronze_root=root, cache_path=cache_path)
+        results = coverage_report.compute_coverage(
+            date(2026, 8, 6), bronze_root=root, cache_path=cache_path, **_disk_only(tmp_path)
+        )
 
         assert results["1d"].present == 1, "the run completes and measures correctly"
 
@@ -968,3 +1041,171 @@ def test_every_non_equity_row_is_declared_xnys_or_rejected():
 
     for row in load_registry(Path("registry/gaps.json")):
         assert row.asset_class in XNYS_CALENDAR_ASSET_CLASSES, row.id
+
+
+def _registry_for(tmp_path: Path, tickers: list[str]) -> Path:
+    """A one-row registry plus the preset it names, both under tmp_path.
+
+    Pair it with presets_dir=tmp_path / "presets" at the call site; production
+    resolves preset names against a directory it is GIVEN, never against the CWD.
+    """
+    presets = tmp_path / "presets"
+    presets.mkdir(exist_ok=True)
+    (presets / "t.json").write_text(json.dumps({"name": "t", "tickers": tickers}))
+    registry = tmp_path / "gaps.json"
+    registry.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "g1-g2-g3-equity-daily",
+                    "gap": ["G1", "G3", "G14"],
+                    "asset_class": "equity",
+                    "timeframe": "1d",
+                    "universe": ["t"],
+                    "check": "denominator_diff",
+                    "params": {},
+                    "tier": "A",
+                    "since": "2026-08-31",
+                    "test": "tests/test_gap_engine.py::test_a_missing_file_with_no_terminus_is_still_g3_tier_a",
+                }
+            ]
+        )
+    )
+    return registry
+
+
+def _sessions(start: date, end: date) -> list[date]:
+    from clients.trading_calendar import trading_dates_in_range
+
+    return trading_dates_in_range(start, end)
+
+
+def test_a_preset_member_with_no_parquet_is_counted_missing(tmp_path):
+    # BK, measured 2026-09-01: an sp500 member with no 1d.parquet at all. The
+    # disk-glob denominator cannot express this symbol, which is why it read as
+    # 100% healthy for weeks.
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", [date(2026, 8, 28)])
+    _write_raw_symbols(bronze, date(2026, 8, 28), ["AAPL", "BK"])
+    results = compute_coverage(
+        date(2026, 8, 28),
+        bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL", "BK"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    )
+    assert "BK" in results["1d"].missing_symbols
+
+
+def test_a_terminus_symbol_is_in_neither_present_nor_missing(tmp_path):
+    # EQR left the tape 2026-08-18. Counting it missing queues an impossible
+    # repair; counting it present is what hid it. It is in NEITHER, and the
+    # ratio must not be able to read green because of it.
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", [date(2026, 8, 28)])
+    _write_daily(bronze, "EQR", [date(2026, 8, 17)])
+    for session in _sessions(date(2026, 8, 18), date(2026, 8, 28)):
+        _write_raw_symbols(bronze, session, ["AAPL"])
+    results = compute_coverage(
+        date(2026, 8, 28),
+        bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL", "EQR"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    )
+    result = results["1d"]
+    assert "EQR" in dict(result.terminus_symbols)
+    assert "EQR" not in result.missing_symbols
+    # The regression this test exists for: the no-trade exemption also counts an
+    # absent symbol PRESENT, so subtracting terminus from `missing` alone is a
+    # no-op and the ratio still reads 100%.
+    assert result.total == result.present + len(result.missing_symbols)
+    assert result.total == 1
+
+
+def test_a_one_day_absence_is_still_exempted_as_no_trade(tmp_path):
+    # The exemption stays load-bearing. Without it the interior scan flags 96.6%
+    # of the universe, and this test is the guard on that.
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", [date(2026, 8, 28)])
+    _write_daily(bronze, "SLND", [date(2026, 8, 27)])
+    for session in _sessions(date(2026, 8, 18), date(2026, 8, 27)):
+        _write_raw_symbols(bronze, session, ["AAPL", "SLND"])
+    _write_raw_symbols(bronze, date(2026, 8, 28), ["AAPL"])
+    results = compute_coverage(
+        date(2026, 8, 28),
+        bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL", "SLND"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    )
+    assert "SLND" not in results["1d"].missing_symbols
+    assert results["1d"].terminus_symbols == ()
+
+
+def test_before_the_deadline_the_session_is_not_expected_at_all(tmp_path):
+    # Spec section 11 criterion 11, exercised through compute_coverage rather
+    # than through build_denominator. Passing as_of=session_due_at(target_date)
+    # would make the due filter tautologically true, so the ONLY test that can
+    # catch a regression here is one that goes through the real caller with a
+    # real clock. 04:21 UTC on 2026-08-29 is before the 10:00 UTC deadline for
+    # session 2026-08-28, so nothing is due and nothing is missing.
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", [date(2026, 8, 27)])
+    _write_raw_symbols(bronze, date(2026, 8, 28), ["AAPL"])
+    early = compute_coverage(
+        date(2026, 8, 28),
+        bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 4, 21, tzinfo=UTC),
+    )
+    assert early["1d"].total == 0
+    late = compute_coverage(
+        date(2026, 8, 28),
+        bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    )
+    assert late["1d"].missing_symbols == ["AAPL"]
+
+
+def test_terminus_is_not_computed_for_symbols_outside_the_registry(tmp_path):
+    # SLND is on disk but not in any preset. The terminus threshold is calibrated
+    # on 515 liquid names; the illiquid on-disk tail genuinely does not print for
+    # days, so applying it there manufactures the 96.6% disease.
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", [date(2026, 8, 28)])
+    _write_daily(bronze, "SLND", [date(2026, 8, 5)])
+    for session in _sessions(date(2026, 8, 6), date(2026, 8, 28)):
+        _write_raw_symbols(bronze, session, ["AAPL"])
+    results = compute_coverage(
+        date(2026, 8, 28),
+        bronze_root=bronze,
+        registry_path=_registry_for(tmp_path, ["AAPL"]),
+        presets_dir=tmp_path / "presets",
+        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    )
+    assert results["1d"].terminus_symbols == ()
+
+
+def test_a_registry_only_symbol_survives_a_recovery_that_could_not_fetch_it(tmp_path):
+    # BK has no 1d.parquet, so the subprocess writes nothing. Before the recheck
+    # was given registry_path/presets_dir it re-ran the DISK-GLOB denominator,
+    # where BK is not in the universe at all -- so it fell out of
+    # missing_symbols and was reported "recovered" by a fetch that did nothing.
+    bronze = tmp_path / "bronze"
+    _write_daily(bronze, "AAPL", [date(2026, 8, 28)])
+    _write_raw_symbols(bronze, date(2026, 8, 28), ["AAPL", "BK"])
+    kwargs = {
+        "registry_path": _registry_for(tmp_path, ["AAPL", "BK"]),
+        "presets_dir": tmp_path / "presets",
+        "as_of": datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+    }
+    with patch.object(coverage_report.subprocess, "run") as run_mock:
+        outcome = auto_recover("1d", ["BK"], bronze_root=bronze, target_date=date(2026, 8, 28), **kwargs)
+
+    assert run_mock.call_count == 1
+    assert outcome.still_missing == ["BK"]
+    assert outcome.recovered == 0
