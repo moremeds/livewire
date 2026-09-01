@@ -390,6 +390,22 @@ reusing the existing job deadline rather than introducing a second constant, and
 it is scheduled at 11:00 UTC, after the deadline; anything reading the
 denominator earlier must apply the rule explicitly.
 
+⚠️ **The deadline exists only where a lane wrapper forwards it, and three of the
+seven do not.** Read 2026-09-01 in `livewire_scripts/run_daily_update_job.py`:
+`main()` passes `deadline=deadline` to every lane (`:861`, `:900`, `:904`,
+`:921`), and `run_fx_sync:764`, `run_corporate_action_sync:790` and
+`run_silver_rebuild:810` accept the parameter, are typed for it, and drop it at
+the call to `_run_scheduled_lane`. Only `run_cboe_volatility_sync:709` forwards
+it. Silver is the **last** lane, so an unbudgeted job can run past 10:00 UTC with
+nothing killing it — and this rule would then declare session S due while the
+lane filling it is still writing. **Until issue #94 is fixed, `expected(S)` rests
+on a guarantee the code does not provide**, and the engine must treat the
+deadline as an assumption to verify (§11 criterion 8), not as an enforced bound.
+The 3.27h healthy peak this 4h budget was sized against was measured over
+2026-07-01..28, and the budget landed 2026-07-29 — the peak is a measurement of a
+job nothing was killing, so it cannot by itself show 4h is enough once the three
+wrappers are wired.
+
 Consequence for the engine: **`heal_by` (days of remaining Massive-window
 headroom) is a first-class field on every G1/G2/G3 finding, and the repair queue
 is ordered by it.** Gaps nearest the rolling floor are repaired first.
@@ -698,6 +714,26 @@ stopped during Phase 1 and returns decision-only in Phase 2.
    at the path the code resolves, or the section reading it states it is
    unpopulated and names the branch that is consequently untestable. Re-checked
    at the start of each phase, not once. §4.3 is the standing counter-example.
+
+   **Presence is not completion, and the artifact's own timestamp is not
+   evidence.** `_run_scheduled_lane:730` writes `=== Done <scope> <ts> ===`, and
+   `run_corporate_action_sync:797` passes `now_fn=lambda: now` — a clock frozen
+   at lane start for a legitimate reason (the Sunday `--full-reconcile` weekday
+   decision), so the marker reports the **start** time as the completion time
+   (issue #94). A lane that wedged for 85 minutes leaves a present, non-empty,
+   correctly-formatted artifact that satisfies this criterion as originally
+   worded. The criterion therefore requires that a producer's completion be
+   established by **differencing against an independent later timestamp** — the
+   next lane's `=== <label> <ts> ===` header, or the cursor file's mtime — never
+   by reading the producer's own Done stamp. This is §9.3 rule 2 applied to time:
+   an on-disk artifact can exist and still lie.
+
+   The corporate-action store is the case that makes this load-bearing rather
+   than hygienic. It is the second source G14 rests on — §4.4's finding is
+   literally "no corporate action explains the terminus" — and it is written by
+   lane 1, the unbudgeted one that already wedged on 2026-07-28 (`CLAUDE.md`). A
+   frozen store turns every unreconciled delisting into a false G14, so the
+   engine must read the store's freshness before emitting G14 at all.
 9. **Terminus separation:** a symbol absent from the raw traded set for a single
    session with presence on both sides is **not** reported; a symbol absent from
    date X through the as-of date is reported as G14, Tier B. Verified against
