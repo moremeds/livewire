@@ -150,10 +150,7 @@ def default_database() -> Path:
     return Path(os.environ.get("MDW_DUCKDB_PATH", warehouse_dir() / "analytics.duckdb")).expanduser()
 
 
-_LEDGER_VIEW_SQL = (
-    "CREATE OR REPLACE TEMP VIEW {name} AS "
-    "SELECT * FROM read_parquet({glob!r}, union_by_name=true)"
-)
+_LEDGER_VIEW_SQL = "CREATE OR REPLACE TEMP VIEW {name} AS SELECT * FROM read_parquet({glob!r}, union_by_name=true)"
 
 
 def ledger_query(

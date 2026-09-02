@@ -71,8 +71,7 @@ class TestPerLaneBudgets:
         self._lane(config, "cmdty", [sys.executable, "-c", "import time; time.sleep(30)"])
         self._lane(config, "cboe", ["true"])
         assert ledger.query(
-            "select lane, outcome, exit_code from lane_results "
-            "where outcome is not null order by lane"
+            "select lane, outcome, exit_code from lane_results where outcome is not null order by lane"
         ) == [
             {"lane": "cboe", "outcome": "done", "exit_code": 0},
             {"lane": "cmdty", "outcome": "timeout", "exit_code": 124},
@@ -99,8 +98,7 @@ class TestPerLaneBudgets:
 
         self._lane(_config(tmp_path), "cboe", ["true"])
         assert [
-            row["outcome"]
-            for row in ledger.query("select outcome from lane_results order by ended nulls first")
+            row["outcome"] for row in ledger.query("select outcome from lane_results order by ended nulls first")
         ] == [None, "done"]
 
     def test_run_with_retries_records_a_lane_row_and_uses_the_lane_budget(self, tmp_path, monkeypatch):
@@ -113,17 +111,18 @@ class TestPerLaneBudgets:
             seen["timeout"] = timeout
             return SimpleNamespace(returncode=0, stdout="")
 
-        assert daily_runner.run_with_retries(
-            _config(tmp_path),
-            ["--asset-class", "futures"],
-            runner=runner,
-            sleep_fn=lambda _: None,
-            completion_scope="futures",
-        ) == 0
+        assert (
+            daily_runner.run_with_retries(
+                _config(tmp_path),
+                ["--asset-class", "futures"],
+                runner=runner,
+                sleep_fn=lambda _: None,
+                completion_scope="futures",
+            )
+            == 0
+        )
         assert seen["timeout"] == 1234.0
-        assert ledger.query(
-            "select lane, outcome, budget_s from lane_results order by ended nulls first"
-        ) == [
+        assert ledger.query("select lane, outcome, budget_s from lane_results order by ended nulls first") == [
             {"lane": "futures", "outcome": None, "budget_s": 1234.0},
             {"lane": "futures", "outcome": "done", "budget_s": 1234.0},
         ]
@@ -141,9 +140,9 @@ class TestPerLaneBudgets:
             sleep_fn=lambda _: None,
             completion_scope="cmdty",
         )
-        assert ledger.query(
-            "select outcome, blocker from lane_results where outcome is not null"
-        ) == [{"outcome": "blocked", "blocker": "ib_unreachable"}]
+        assert ledger.query("select outcome, blocker from lane_results where outcome is not null") == [
+            {"outcome": "blocked", "blocker": "ib_unreachable"}
+        ]
 
     def test_main_runs_the_no_fallback_lanes_before_the_expensive_ones(self, tmp_path, monkeypatch):
         order = []
@@ -181,17 +180,19 @@ class TestPerLaneBudgets:
         now = datetime.now(UTC)
         ledger.emit(
             "lane_results",
-            [{
-                "run_id": "daily-update-20260902T060000Z-1",
-                "lane": "equity",
-                "started": now,
-                "ended": now,
-                "exit_code": 1,
-                "budget_s": 7200.0,
-                "elapsed_s": 1.0,
-                "outcome": "failed",
-                "blocker": None,
-            }],
+            [
+                {
+                    "run_id": "daily-update-20260902T060000Z-1",
+                    "lane": "equity",
+                    "started": now,
+                    "ended": now,
+                    "exit_code": 1,
+                    "budget_s": 7200.0,
+                    "elapsed_s": 1.0,
+                    "outcome": "failed",
+                    "blocker": None,
+                }
+            ],
             run_id="daily-update-20260902T060000Z-1",
         )
         assert daily_runner.silver_is_blocked() == "equity"
@@ -247,17 +248,19 @@ def _emit_test_lane(scope: str, code: int) -> None:
     now = datetime.now(UTC)
     ledger.emit(
         "lane_results",
-        [{
-            "run_id": daily_runner.run_id(),
-            "lane": scope,
-            "started": now,
-            "ended": now,
-            "exit_code": code,
-            "budget_s": 1.0,
-            "elapsed_s": 0.0,
-            "outcome": "done" if code == 0 else "failed",
-            "blocker": None,
-        }],
+        [
+            {
+                "run_id": daily_runner.run_id(),
+                "lane": scope,
+                "started": now,
+                "ended": now,
+                "exit_code": code,
+                "budget_s": 1.0,
+                "elapsed_s": 0.0,
+                "outcome": "done" if code == 0 else "failed",
+                "blocker": None,
+            }
+        ],
         run_id=daily_runner.run_id(),
     )
 
@@ -1079,8 +1082,7 @@ class TestMain:
 
         # IB syncs equity, futures and cmdty; volatility via CBOE, fx via Yahoo/Massive
         assert ib_calls == [
-            ["--dry-run", "--asset-class", asset_class]
-            for asset_class in ("futures", "cmdty", "equity")
+            ["--dry-run", "--asset-class", asset_class] for asset_class in ("futures", "cmdty", "equity")
         ]
         assert cboe_called == [True]
         assert fx_called == [True]
@@ -1118,17 +1120,19 @@ class TestMain:
             now = datetime.now(UTC)
             ledger.emit(
                 "lane_results",
-                [{
-                    "run_id": daily_runner.run_id(),
-                    "lane": scope,
-                    "started": now,
-                    "ended": now,
-                    "exit_code": code,
-                    "budget_s": 1.0,
-                    "elapsed_s": 0.0,
-                    "outcome": "done" if code == 0 else "failed",
-                    "blocker": None,
-                }],
+                [
+                    {
+                        "run_id": daily_runner.run_id(),
+                        "lane": scope,
+                        "started": now,
+                        "ended": now,
+                        "exit_code": code,
+                        "budget_s": 1.0,
+                        "elapsed_s": 0.0,
+                        "outcome": "done" if code == 0 else "failed",
+                        "blocker": None,
+                    }
+                ],
                 run_id=daily_runner.run_id(),
             )
 
@@ -1220,6 +1224,7 @@ class TestAttemptTimeout:
 
         assert result.returncode == daily_runner.TIMEOUT_EXIT_CODE
         assert "process group killed" in log_file.read_text(encoding="utf-8")
+
 
 class TestTimeoutPages:
     """send_failure_alert sits at the END of run_with_retries and is reachable
@@ -1383,6 +1388,7 @@ class TestTheEquityLaneFallsBackToMassive:
     @contextlib.contextmanager
     def _lanes(config, daily, silver_code):
         """Everything main() calls except the equity retry under test."""
+
         def recorded_daily(*args, **kwargs):
             code = daily(*args, **kwargs)
             scope = kwargs.get("completion_scope")

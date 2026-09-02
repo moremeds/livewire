@@ -170,9 +170,7 @@ def test_alert_smtp_failure_records_execution(tmp_path, monkeypatch):
     assert ok is False
     from clients import ledger
 
-    assert ledger.query("select script, exit_code from executions") == [
-        {"script": "send_alert", "exit_code": 1}
-    ]
+    assert ledger.query("select script, exit_code from executions") == [{"script": "send_alert", "exit_code": 1}]
 
 
 @_SKIP_LINUX
@@ -196,9 +194,7 @@ def test_alert_spawn_exception_records_execution(tmp_path, monkeypatch):
     assert ok is False
     from clients import ledger
 
-    assert ledger.query("select script, exit_code from executions") == [
-        {"script": "send_alert", "exit_code": 1}
-    ]
+    assert ledger.query("select script, exit_code from executions") == [{"script": "send_alert", "exit_code": 1}]
 
 
 def _ok():

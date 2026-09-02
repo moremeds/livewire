@@ -185,18 +185,20 @@ def _record_failed_alert(payload: dict, started: datetime, exit_code: int, recei
         run = os.environ["LW_RUN_ID"]
         ledger.emit(
             "executions",
-            [{
-                "evidence_hash": None,
-                "script": "send_alert",
-                "attempt": 1,
-                "args_json": json.dumps(payload, sort_keys=True),
-                "release_sha": os.environ.get("LW_RELEASE_SHA", "unknown"),
-                "started": started,
-                "ended": datetime.now(UTC),
-                "exit_code": exit_code,
-                "receipt_json": json.dumps(receipt, sort_keys=True),
-                "run_id": run,
-            }],
+            [
+                {
+                    "evidence_hash": None,
+                    "script": "send_alert",
+                    "attempt": 1,
+                    "args_json": json.dumps(payload, sort_keys=True),
+                    "release_sha": os.environ.get("LW_RELEASE_SHA", "unknown"),
+                    "started": started,
+                    "ended": datetime.now(UTC),
+                    "exit_code": exit_code,
+                    "receipt_json": json.dumps(receipt, sort_keys=True),
+                    "run_id": run,
+                }
+            ],
             run_id=run,
         )
     except Exception as exc:  # pragma: no cover - alert failure remains non-fatal

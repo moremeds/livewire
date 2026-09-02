@@ -297,9 +297,7 @@ def test_shrinking_silver_failures_are_ok():
 
 def test_a_broken_check_never_takes_the_report_down(monkeypatch):
     monkeypatch.setattr(status.ledger, "query", lambda sql: (_ for _ in ()).throw(RuntimeError("boom")))
-    sections = status.collect(
-        date.today(), Path("/nonexistent"), Path("/nonexistent"), runner=_fake_launchctl
-    )
+    sections = status.collect(date.today(), Path("/nonexistent"), Path("/nonexistent"), runner=_fake_launchctl)
     assert any(section.verdict is Verdict.UNKNOWN for section in sections)
 
 
@@ -359,9 +357,7 @@ class TestTheDiskCheckWatchesBothVolumes:
     def test_one_volume_reports_once_when_both_paths_share_it(self, tmp_path, monkeypatch):
         shared = tmp_path / "everything"
         shared.mkdir()
-        monkeypatch.setattr(
-            status.shutil, "disk_usage", lambda path: _Usage(228 * _GIB, 100 * _GIB, 128 * _GIB)
-        )
+        monkeypatch.setattr(status.shutil, "disk_usage", lambda path: _Usage(228 * _GIB, 100 * _GIB, 128 * _GIB))
         assert len([line for line in _disk_section(shared, shared).lines if line.startswith("Disk")]) == 1
 
     def test_an_unreadable_path_is_skipped_not_fatal(self, tmp_path, monkeypatch):

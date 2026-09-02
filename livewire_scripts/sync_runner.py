@@ -144,11 +144,19 @@ def run_phase(
     if run:
         ledger.emit(
             "lane_results",
-            [{
-                "run_id": run, "lane": label, "started": started, "ended": None,
-                "exit_code": None, "budget_s": float(budget), "elapsed_s": None,
-                "outcome": None, "blocker": None,
-            }],
+            [
+                {
+                    "run_id": run,
+                    "lane": label,
+                    "started": started,
+                    "ended": None,
+                    "exit_code": None,
+                    "budget_s": float(budget),
+                    "elapsed_s": None,
+                    "outcome": None,
+                    "blocker": None,
+                }
+            ],
             run_id=run,
         )
     clock = time.monotonic()
@@ -188,21 +196,27 @@ def run_phase(
         code = result.returncode
         ledger.emit(
             "lane_results",
-            [{
-                "run_id": run, "lane": label, "started": started, "ended": datetime.now(UTC),
-                "exit_code": code, "budget_s": float(budget),
-                "elapsed_s": time.monotonic() - clock,
-                "outcome": (
-                    "done"
-                    if code == 0
-                    else "timeout"
-                    if code == TIMEOUT_EXIT_CODE
-                    else "blocked"
-                    if code == GATEWAY_DOWN_EXIT_CODE
-                    else "failed"
-                ),
-                "blocker": "ib_unreachable" if code == GATEWAY_DOWN_EXIT_CODE else None,
-            }],
+            [
+                {
+                    "run_id": run,
+                    "lane": label,
+                    "started": started,
+                    "ended": datetime.now(UTC),
+                    "exit_code": code,
+                    "budget_s": float(budget),
+                    "elapsed_s": time.monotonic() - clock,
+                    "outcome": (
+                        "done"
+                        if code == 0
+                        else "timeout"
+                        if code == TIMEOUT_EXIT_CODE
+                        else "blocked"
+                        if code == GATEWAY_DOWN_EXIT_CODE
+                        else "failed"
+                    ),
+                    "blocker": "ib_unreachable" if code == GATEWAY_DOWN_EXIT_CODE else None,
+                }
+            ],
             run_id=run,
         )
     return result.returncode

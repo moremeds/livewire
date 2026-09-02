@@ -149,23 +149,21 @@ IB_LANE_SLACK_DAYS = 4
 _FIXES = {
     "Daily update ran": "launchctl list | grep livewire.daily-update   # then read <log_dir>/daily_update_$today.log",
     "Daily update finished": (
-        "python scripts/livewire_ops.py ledger query \"select lane, outcome, elapsed_s "
+        'python scripts/livewire_ops.py ledger query "select lane, outcome, elapsed_s '
         "from lane_results where run_id = '$open_run'\"   # which lane is still open"
     ),
     "Silver failures did not grow": _SILVER_FIX,
     "Lanes terminal": (
-        "python scripts/livewire_ops.py ledger query \"select lane, outcome "
-        "from lane_results where run_id = '$run'\""
+        "python scripts/livewire_ops.py ledger query \"select lane, outcome from lane_results where run_id = '$run'\""
     ),
     "Silver advanced": _SILVER_FIX,
     "Undelivered alerts": (
-        "python scripts/livewire_ops.py ledger query \"select receipt_json from executions "
+        'python scripts/livewire_ops.py ledger query "select receipt_json from executions '
         "where script = 'send_alert' and exit_code <> 0\""
     ),
     "Release matches main": "python scripts/livewire_ops.py release promote",
     "Lanes within budget": (
-        "raise the lane's LANE_BUDGET_S only after measuring it cold; "
-        "see run_daily_update_job.LANE_BUDGET_S"
+        "raise the lane's LANE_BUDGET_S only after measuring it cold; see run_daily_update_job.LANE_BUDGET_S"
     ),
     "IB-only lanes behind": (
         "nc -z 127.0.0.1 4001 && echo up || echo down   # then 2FA by hand; rerun: "

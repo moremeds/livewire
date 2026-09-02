@@ -497,9 +497,7 @@ def format_one_liner(target_date: date, results: dict[str, CoverageResult]) -> s
     return f"{target_date} coverage: " + " ".join(parts)
 
 
-def emit_coverage_measurements(
-    target: date, results: dict[str, CoverageResult], *, elapsed_s: float
-) -> None:
+def emit_coverage_measurements(target: date, results: dict[str, CoverageResult], *, elapsed_s: float) -> None:
     """Publish coverage ratios and elapsed time as ledger measurements."""
     del target
     now = datetime.now(UTC)
