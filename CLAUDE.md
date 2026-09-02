@@ -831,9 +831,9 @@ repairs.
 
 Rollout is batched and 2FA-gated: batch-1 = the split-affected unknown-basis
 failures from `rebuild-silver --full --dry-run --failure-output`, then a STOP GATE
-on the published-vs-review ratio before the ~12K tail. Full design + plan:
+on the published-vs-review ratio before the ~12K tail. Full design:
 `docs/superpowers/specs/2026-07-19-unknown-basis-ib-verified-reconstruction-design.md`
-and `docs/superpowers/plans/2026-07-19-unknown-basis-ib-verified-reconstruction.md`.
+(plan archived; see git history).
 
 Reliability foundation environment variables:
 - `MDW_TELEMETRY_PATH` (default `~/market-warehouse/logs/telemetry.jsonl`): telemetry JSONL append path; set to `none` to disable telemetry.
