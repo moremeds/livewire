@@ -12,6 +12,12 @@ _SKIP_LINUX = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _ledger_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    monkeypatch.setenv("LW_RUN_ID", "quality-flags-test")
+
+
 def _flag(category="range_shortfall", severity="critical"):
     return QualityFlag(
         category=category,
@@ -75,16 +81,14 @@ def test_append_audit_writes_one_jsonl_line(tmp_path, monkeypatch):
 
 
 def test_quality_paths_follow_warehouse_override(tmp_path, monkeypatch):
-    from clients.quality_flags import _resolve_audit_path, _resolve_undelivered_dir
+    from clients.quality_flags import _resolve_audit_path
 
     warehouse = tmp_path / "warehouse"
     monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(warehouse))
     monkeypatch.delenv("MDW_LOG_DIR", raising=False)
     monkeypatch.delenv("MDW_QUALITY_AUDIT_PATH", raising=False)
-    monkeypatch.delenv("MDW_UNDELIVERED_DIR", raising=False)
 
     assert _resolve_audit_path() == warehouse / "logs" / "quality_audit.jsonl"
-    assert _resolve_undelivered_dir() == warehouse / "logs" / "quality_alerts_undelivered"
 
 
 def test_append_audit_rejects_invalid_source(tmp_path, monkeypatch):
@@ -152,9 +156,8 @@ def test_alert_rate_limit_dedupes_within_window(tmp_path, monkeypatch):
 
 
 @_SKIP_LINUX
-def test_alert_smtp_failure_preserves_html(tmp_path, monkeypatch):
+def test_alert_smtp_failure_records_execution(tmp_path, monkeypatch):
     monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
-    monkeypatch.setenv("MDW_UNDELIVERED_DIR", str(tmp_path / "undelivered"))
 
     def fake_run(*a, **kw):
         return _fail("SMTP timeout")
@@ -165,8 +168,11 @@ def test_alert_smtp_failure_preserves_html(tmp_path, monkeypatch):
     quality_flags._RATE_LIMIT_CACHE.clear()
     ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="HOOD")
     assert ok is False
-    saved = list((tmp_path / "undelivered").glob("*HOOD*"))
-    assert saved, "undelivered HTML should be preserved"
+    from clients import ledger
+
+    assert ledger.query("select script, exit_code from executions") == [
+        {"script": "send_alert", "exit_code": 1}
+    ]
 
 
 @_SKIP_LINUX
@@ -179,9 +185,8 @@ def test_alert_invalid_rate_limit_env_uses_default(monkeypatch):
 
 
 @_SKIP_LINUX
-def test_alert_spawn_exception_preserves_html(tmp_path, monkeypatch):
+def test_alert_spawn_exception_records_execution(tmp_path, monkeypatch):
     monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
-    monkeypatch.setenv("MDW_UNDELIVERED_DIR", str(tmp_path / "undelivered"))
 
     def boom(*a, **kw):
         raise OSError("node missing")
@@ -189,7 +194,11 @@ def test_alert_spawn_exception_preserves_html(tmp_path, monkeypatch):
     monkeypatch.setattr("subprocess.run", boom)
     ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="TSLA")
     assert ok is False
-    assert list((tmp_path / "undelivered").glob("*TSLA*"))
+    from clients import ledger
+
+    assert ledger.query("select script, exit_code from executions") == [
+        {"script": "send_alert", "exit_code": 1}
+    ]
 
 
 def _ok():

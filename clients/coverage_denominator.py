@@ -7,7 +7,6 @@ docs/superpowers/specs/2026-08-31-livewire-gap-autoheal-design.md.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -18,16 +17,15 @@ from clients.trading_calendar import trading_dates_in_range
 # run-daily-job's StartCalendarInterval, in UTC. The lane that fills session S
 # starts here on S+1.
 JOB_START_UTC = time(6, 0)
-# The default of MDW_DAILY_JOB_DEADLINE_SECONDS (4h). Read at call time, not at
-# import, so a test and a scheduled run can disagree.
-DEFAULT_JOB_DEADLINE_SECONDS = 14400
+# Availability allowance after the filling job starts. This is denominator
+# timing, not an orchestrator deadline.
+DELIVERY_ALLOWANCE_SECONDS = 14400
 
 
 def session_due_at(session: date, lag_days: int = 1) -> datetime:
     """The instant session *session* is due on disk.
 
-    ponytail: reuses MDW_DAILY_JOB_DEADLINE_SECONDS rather than introducing a
-    second constant to keep in step. "Closed" is not "delivered" -- the job that
+    "Closed" is not "delivered" -- the job that
     fills S starts 06:00 UTC on S+1, and a denominator that expects S the moment
     it closes manufactures one tail gap per symbol in the universe.
 
@@ -36,9 +34,8 @@ def session_due_at(session: date, lag_days: int = 1) -> datetime:
     publishes a session behind, which spec section 8.1 already records as
     T+2. A uniform T+1 there manufactures one phantom gap per series per day.
     """
-    seconds = int(os.environ.get("MDW_DAILY_JOB_DEADLINE_SECONDS", DEFAULT_JOB_DEADLINE_SECONDS))
     start = datetime.combine(session + timedelta(days=lag_days), JOB_START_UTC, tzinfo=UTC)
-    return start + timedelta(seconds=seconds)
+    return start + timedelta(seconds=DELIVERY_ALLOWANCE_SECONDS)
 
 
 # Spec section 8.1. Anything not listed is T+1.

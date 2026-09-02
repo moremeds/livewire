@@ -23,9 +23,7 @@
 
     <key>StartCalendarInterval</key>
     <dict>
-        <!-- Target: 11:00 UTC daily. After the daily job's 4h DEADLINE -->
-        <!-- (06:00 + MDW_DAILY_JOB_DEADLINE_SECONDS = 10:00 UTC), not merely -->
-        <!-- after its 3.27h healthy peak, and after the 10:30 UTC watchdog. -->
+        <!-- Target: 11:00 UTC daily, after the 10:30 UTC watchdog. -->
         <!-- A slow-but-legal daily run must never still be publishing while -->
         <!-- this walks bronze: that would be a mixed-time snapshot, false -->
         <!-- "missing" counts, a spurious recovery subprocess, and cache -->

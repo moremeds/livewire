@@ -115,15 +115,9 @@ def test_an_archived_symbol_a_preset_still_claims_stays_expected():
     assert claimed and claimed <= {s.symbol for s in series}
 
 
-def test_session_is_due_at_the_daily_job_deadline_the_following_day():
-    # run-daily-job starts 06:00 UTC on S+1 and MDW_DAILY_JOB_DEADLINE_SECONDS
-    # (4h) puts its deadline at 10:00 UTC.
+def test_session_is_due_after_the_delivery_allowance_the_following_day():
+    # The denominator allows four hours after the 06:00 UTC filling job starts.
     assert session_due_at(date(2026, 8, 31)) == datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
-
-
-def test_session_due_at_honours_the_existing_deadline_env_var(monkeypatch):
-    monkeypatch.setenv("MDW_DAILY_JOB_DEADLINE_SECONDS", "7200")
-    assert session_due_at(date(2026, 8, 31)) == datetime(2026, 9, 1, 8, 0, tzinfo=UTC)
 
 
 def test_rates_is_due_a_day_later_than_equity():
