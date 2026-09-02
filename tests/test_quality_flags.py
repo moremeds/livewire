@@ -174,6 +174,19 @@ def test_alert_smtp_failure_records_execution(tmp_path, monkeypatch):
 
 
 @_SKIP_LINUX
+def test_alert_failure_without_an_orchestrator_run_id_is_still_recorded(monkeypatch):
+    monkeypatch.delenv("LW_RUN_ID", raising=False)
+    monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: _fail("SMTP timeout"))
+    assert alert_on_flag(_flag(), source="ib", ticker="HOOD") is False
+    from clients import ledger
+
+    rows = ledger.query("select run_id from executions")
+    assert len(rows) == 1
+    assert rows[0]["run_id"].startswith("quality-flag-")
+
+
+@_SKIP_LINUX
 def test_alert_invalid_rate_limit_env_uses_default(monkeypatch):
     monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
     monkeypatch.setenv("MDW_ALERT_RATE_LIMIT_SECONDS", "bad")

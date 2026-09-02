@@ -157,6 +157,7 @@ class TestPerLaneBudgets:
             "run_with_retries",
             lambda config, args, **kwargs: order.append(kwargs["completion_scope"]) or 0,
         )
+        monkeypatch.setattr(daily_runner, "silver_is_blocked", lambda: None)
         daily_runner.main([])
         assert order.index("futures") < order.index("corporate-actions")
         assert order.index("cmdty") < order.index("corporate-actions")
@@ -174,6 +175,19 @@ class TestPerLaneBudgets:
         assert runs[0]["verdict"] is None and runs[1]["verdict"] == "OK"
         assert runs[0]["host"] == socket.gethostname()
 
+    def test_an_unexpected_crash_closes_the_run_as_failed(self, tmp_path, monkeypatch):
+        from clients import ledger
+
+        monkeypatch.setattr(daily_runner, "build_config", lambda: _config(tmp_path))
+        monkeypatch.setattr(daily_runner, "run_with_retries", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+        with pytest.raises(RuntimeError, match="boom"):
+            daily_runner.main([])
+        rows = ledger.query("select ended, exit_code, verdict from runs where verdict is not null")
+        assert len(rows) == 1
+        assert rows[0]["ended"] is not None
+        assert rows[0]["exit_code"] == 1
+        assert rows[0]["verdict"] == "FAILED"
+
     def test_the_silver_gate_reads_the_equity_lane_row_not_an_in_process_dict(self):
         from clients import ledger
 
@@ -181,6 +195,17 @@ class TestPerLaneBudgets:
         ledger.emit(
             "lane_results",
             [
+                {
+                    "run_id": "daily-update-20260902T060000Z-1",
+                    "lane": "corporate-actions",
+                    "started": now,
+                    "ended": now,
+                    "exit_code": 0,
+                    "budget_s": 10800.0,
+                    "elapsed_s": 1.0,
+                    "outcome": "done",
+                    "blocker": None,
+                },
                 {
                     "run_id": "daily-update-20260902T060000Z-1",
                     "lane": "equity",
@@ -197,6 +222,9 @@ class TestPerLaneBudgets:
         )
         assert daily_runner.silver_is_blocked() == "equity"
 
+    def test_the_silver_gate_fails_closed_when_a_prerequisite_fact_is_missing(self):
+        assert daily_runner.silver_is_blocked() == "corporate-actions"
+
     def test_a_lane_records_the_session_it_reached(self):
         from clients import ledger
 
@@ -211,12 +239,17 @@ class TestPerLaneBudgets:
             }
         ]
 
+    def test_a_silent_lane_does_not_inherit_a_previous_lanes_session(self, tmp_path):
+        log_file = tmp_path / "daily_update_2026-09-02.log"
+        log_file.write_text('SUMMARY_JSON {"target_date":"2026-09-01"}\n', encoding="utf-8")
+        assert daily_runner._last_session_from_log(log_file, log_file.stat().st_size) is None
+
 
 @pytest.fixture(autouse=True)
 def no_real_quality_spawn(tmp_path, monkeypatch):
     """Keep main() from shelling out to the real quality CLI.
 
-    main() ends by spawning coverage/weekly/digest. Unpatched, a unit test
+    main() ends by spawning weekly/digest/housekeeping. Unpatched, a unit test
     launches `livewire_quality.py coverage` against the operator's live
     warehouse — and coverage runs auto-recovery subprocesses that write
     bronze. Autouse so a new main() test cannot forget it.
@@ -551,9 +584,8 @@ class TestEndOfDayQualityReport:
     def test_weekly_spawn_failure_is_logged_not_raised(self, tmp_path):
         """A post-success job must never flip a successful ingest run to failure.
 
-        The WARNING is not cosmetic: `nightly_digest._quality_jobs_section`
-        counts exactly this shape, and it is the only reason the four-week
-        coverage outage was eventually visible at all.
+        The WARNING is not cosmetic: the terminal tail row records the failure
+        without turning a successful ingest into a failed one.
         """
         config = _config(tmp_path)
 
@@ -565,6 +597,8 @@ class TestEndOfDayQualityReport:
         assert "WARNING: weekly quality report failed" in log_file.read_text(encoding="utf-8")
 
     def test_digest_failure_is_logged_not_raised(self, tmp_path):
+        from clients import ledger
+
         config = _config(tmp_path)
 
         def fake_runner(cmd, **kwargs):
@@ -572,6 +606,11 @@ class TestEndOfDayQualityReport:
 
         log_file = self._run(config, fake_runner)
         assert "WARNING: nightly digest failed" in log_file.read_text(encoding="utf-8")
+        assert ledger.query("select outcome, exit_code from lane_results where lane = 'digest'")[-1] == {
+            "outcome": "failed",
+            "exit_code": 2,
+        }
+        assert ledger.query("select exit_code from executions where script = 'send_alert'") == [{"exit_code": 2}]
 
     def test_send_failure_alert_skips_when_node_missing(self, tmp_path):
         config = _config(tmp_path, node_bin="/missing/node")
@@ -997,6 +1036,7 @@ class TestMain:
             patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", side_effect=cboe),
             patch("livewire_scripts.run_daily_update_job.run_fx_sync", side_effect=fx),
             patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", side_effect=silver),
+            patch("livewire_scripts.run_daily_update_job.silver_is_blocked", return_value=None),
         ):
             assert main(["--dry-run"]) == 0
 
@@ -1048,6 +1088,7 @@ class TestMain:
             patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0),
             patch("livewire_scripts.run_daily_update_job.run_fx_sync", return_value=0),
             patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", return_value=4),
+            patch("livewire_scripts.run_daily_update_job.silver_is_blocked", return_value=None),
         ):
             assert main([]) == 4
 
@@ -1108,6 +1149,17 @@ class TestMain:
         assert call.kwargs["completion_scope"] == "equity"
         cboe_mock.assert_not_called()
         fx_mock.assert_not_called()
+
+    def test_explicit_ib_lane_preserves_gateway_down_exit_and_records_degraded(self):
+        from clients import ledger
+
+        config = _config(Path("/tmp/test"))
+        with (
+            patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
+            patch("livewire_scripts.run_daily_update_job.run_with_retries", return_value=GATEWAY_DOWN_EXIT_CODE),
+        ):
+            assert main(["--asset-class", "futures"]) == GATEWAY_DOWN_EXIT_CODE
+        assert ledger.query("select verdict from runs where verdict is not null") == [{"verdict": "DEGRADED"}]
 
     def _main_with(self, *, lane_codes=None, action=0, cboe=0, fx=0, gateway_down=()):
         """Run main() with each lane's exit code stubbed. Returns (rc, silver_mock)."""
@@ -1629,9 +1681,8 @@ class TestHousekeepingRunsAfterTheDigest:
     def test_a_failed_sweep_only_warns(self, tmp_path):
         """A sweep that deleted nothing is never worth failing a good ingest run.
 
-        The warning shape is load-bearing: `_quality_jobs_section` counts
-        exactly this, and it is the only reason the four-week coverage outage
-        was eventually visible at all.
+        The warning is load-bearing operator detail; the terminal tail row also
+        records the failure without failing the ingest.
         """
         log_file = tmp_path / "daily_update_2026-08-08.log"
 

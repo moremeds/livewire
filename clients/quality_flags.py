@@ -182,7 +182,7 @@ def alert_on_flag(
 
 def _record_failed_alert(payload: dict, started: datetime, exit_code: int, receipt: dict) -> None:
     try:
-        run = os.environ["LW_RUN_ID"]
+        run = os.environ.get("LW_RUN_ID") or ledger.new_run_id("quality-flag")
         ledger.emit(
             "executions",
             [

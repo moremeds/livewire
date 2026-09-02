@@ -19,7 +19,7 @@ from clients.trading_calendar import trading_dates_in_range
 JOB_START_UTC = time(6, 0)
 # Availability allowance after the filling job starts. This is denominator
 # timing, not an orchestrator deadline.
-DELIVERY_ALLOWANCE_SECONDS = 14400
+DELIVERY_ALLOWANCE_SECONDS = 9 * 60 * 60
 
 
 def session_due_at(session: date, lag_days: int = 1) -> datetime:

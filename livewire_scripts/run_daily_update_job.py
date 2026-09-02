@@ -181,28 +181,33 @@ def _emit_lane(
 def _emit_last_session(scope: str, session: date | None) -> None:
     if session is None:
         return
-    ledger.emit(
-        "measurements",
-        [
-            {
-                "name": "last_session",
-                "scope": scope,
-                "measured_at": _utc_now(),
-                "value": float((session - _EPOCH).days),
-                "unit": "epoch_days",
-                "source": "measured",
-                "run_id": run_id(),
-            }
-        ],
-        run_id=run_id(),
-    )
+    try:
+        ledger.emit(
+            "measurements",
+            [
+                {
+                    "name": "last_session",
+                    "scope": scope,
+                    "measured_at": _utc_now(),
+                    "value": float((session - _EPOCH).days),
+                    "unit": "epoch_days",
+                    "source": "measured",
+                    "run_id": run_id(),
+                }
+            ],
+            run_id=run_id(),
+        )
+    except Exception as exc:  # pragma: no cover - reporting must not kill a lane
+        print(f"WARNING: could not write last_session for {scope}: {exc}", file=sys.stderr)
 
 
-def _last_session_from_log(log_file: Path) -> date | None:
+def _last_session_from_log(log_file: Path, offset: int = 0) -> date | None:
     from livewire_scripts.daily_outcomes import parse_all_summary_json
 
     try:
-        summaries = parse_all_summary_json(log_file.read_text(encoding="utf-8"))
+        with log_file.open(encoding="utf-8") as handle:
+            handle.seek(offset)
+            summaries = parse_all_summary_json(handle.read())
     except FileNotFoundError:
         return None
     for summary in reversed(summaries):
@@ -417,11 +422,14 @@ def _spawn_post_success_quality(runner, log_file, args, label, timeout=120, scri
             timeout=timeout,
             check=False,
             capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             append_log(log_file, f"WARNING: {label} failed: exit_code={result.returncode}")
+        return result
     except Exception as exc:  # pragma: no cover - logged but tolerated
         append_log(log_file, f"WARNING: {label} failed: {exc}")
+        return subprocess.CompletedProcess(args, 1, stdout=str(exc))
 
 
 def _completion_scope_from_args(args: Sequence[str]) -> str:
@@ -443,7 +451,10 @@ def silver_is_blocked() -> str | None:
     )
     by_lane = {row["lane"]: row["exit_code"] for row in rows}
     for lane in ("corporate-actions", "equity"):
-        if by_lane.get(lane, 0) != 0:
+        # The ledger is the gate's source of truth. A missing terminal fact is
+        # not success: if an emit failed, running Silver would silently turn a
+        # failed prerequisite into a green adjusted rebuild.
+        if lane not in by_lane or by_lane[lane] != 0:
             return lane
     return None
 
@@ -498,24 +509,30 @@ def _page_failure(
 
 def record_failed_send(run_date: str, result: subprocess.CompletedProcess | None) -> None:
     """Record a failed alert send as an execution fact."""
-    ledger.emit(
-        "executions",
-        [
-            {
-                "evidence_hash": None,
-                "script": "send_alert",
-                "attempt": 1,
-                "args_json": json.dumps({"run_date": run_date}),
-                "release_sha": _release_sha(),
-                "started": _utc_now(),
-                "ended": _utc_now(),
-                "exit_code": 1 if result is None else result.returncode,
-                "receipt_json": json.dumps({"output": "" if result is None else (result.stdout or "")}),
-                "run_id": run_id(),
-            }
-        ],
-        run_id=run_id(),
-    )
+    try:
+        output = "" if result is None else (result.stdout or "")
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", "replace")
+        ledger.emit(
+            "executions",
+            [
+                {
+                    "evidence_hash": None,
+                    "script": "send_alert",
+                    "attempt": 1,
+                    "args_json": json.dumps({"run_date": run_date}),
+                    "release_sha": _release_sha(),
+                    "started": _utc_now(),
+                    "ended": _utc_now(),
+                    "exit_code": 1 if result is None else result.returncode,
+                    "receipt_json": json.dumps({"output": output}),
+                    "run_id": run_id(),
+                }
+            ],
+            run_id=run_id(),
+        )
+    except Exception as exc:  # pragma: no cover - a failed reporter cannot fail the job
+        print(f"WARNING: could not record failed alert send: {exc}", file=sys.stderr)
 
 
 def run_with_retries(
@@ -555,6 +572,7 @@ def run_with_retries(
         log_file=log_file,
     )
     clock = time.monotonic()
+    lane_log_offset = log_file.stat().st_size
 
     final_exit_code = 1
     for attempt in range(1, config.max_attempts + 1):
@@ -562,7 +580,11 @@ def run_with_retries(
             log_file,
             f"=== Attempt {attempt}/{config.max_attempts} {now_fn():%Y-%m-%dT%H:%M:%SZ} ===",
         )
-        result = run_daily_update_attempt(command, log_file, env=env, runner=runner, timeout=budget)
+        remaining = budget if attempt == 1 else max(0.0, budget - (time.monotonic() - clock))
+        if remaining == 0:
+            result = subprocess.CompletedProcess(list(command), TIMEOUT_EXIT_CODE)
+        else:
+            result = run_daily_update_attempt(command, log_file, env=env, runner=runner, timeout=remaining)
         final_exit_code = result.returncode
 
         if result.returncode == GATEWAY_DOWN_EXIT_CODE:
@@ -575,7 +597,9 @@ def run_with_retries(
                 log_file,
                 f"=== Skipped {done_scope} {ended_at:%Y-%m-%dT%H:%M:%SZ} (IB Gateway unreachable) ===",
             )
-            return _finish_lane(done_scope, log_file, started_at, clock, GATEWAY_DOWN_EXIT_CODE, ended_at)
+            return _finish_lane(
+                done_scope, log_file, started_at, clock, GATEWAY_DOWN_EXIT_CODE, ended_at, lane_log_offset
+            )
 
         if result.returncode == TIMEOUT_EXIT_CODE:
             # `break`, NOT `return`: the only send_failure_alert call sits after
@@ -596,7 +620,7 @@ def run_with_retries(
                 log_file,
                 (f"=== Done {done_scope} {ended_at:%Y-%m-%dT%H:%M:%SZ} (attempt {attempt}/{config.max_attempts}) ==="),
             )
-            return _finish_lane(done_scope, log_file, started_at, clock, 0, ended_at)
+            return _finish_lane(done_scope, log_file, started_at, clock, 0, ended_at, lane_log_offset)
 
         append_log(
             log_file,
@@ -621,10 +645,10 @@ def run_with_retries(
     )
 
     _page_failure(config, log_file, final_exit_code, attempts=config.max_attempts, env=env)
-    return _finish_lane(done_scope, log_file, started_at, clock, final_exit_code, ended_at)
+    return _finish_lane(done_scope, log_file, started_at, clock, final_exit_code, ended_at, lane_log_offset)
 
 
-def _finish_lane(done_scope, log_file, started_at, clock, exit_code, ended_at) -> int:
+def _finish_lane(done_scope, log_file, started_at, clock, exit_code, ended_at, log_offset=0) -> int:
     _emit_lane(
         done_scope,
         started=started_at,
@@ -635,7 +659,7 @@ def _finish_lane(done_scope, log_file, started_at, clock, exit_code, ended_at) -
         blocker="ib_unreachable" if exit_code == GATEWAY_DOWN_EXIT_CODE else None,
         log_file=log_file,
     )
-    _emit_last_session(done_scope, _last_session_from_log(log_file))
+    _emit_last_session(done_scope, _last_session_from_log(log_file, log_offset))
     return exit_code
 
 
@@ -647,10 +671,8 @@ def run_post_success_quality(
     """Run weekly and the nightly digest exactly once, last.
 
     These used to fire inside each asset class's success branch — up to four
-    coverage runs and four digest emails a night, all of them before the
-    Silver rebuild. `_silver_section` parses the same log for Silver's
-    SUMMARY_JSON, which had not been written yet, so the window_regressions
-    warning the digest is supposed to carry could never appear.
+    digest emails a night, all of them before the Silver rebuild. Running the
+    tail last ensures Silver's measurements exist before the digest reads them.
     """
     tail_started = _utc_now()
     tail_clock = time.monotonic()
@@ -659,7 +681,7 @@ def run_post_success_quality(
     # a guessed budget around work whose runtime is dominated by cold I/O on an
     # external volume — so it now has its own job and no budget at all.
     # weekly self-skips on non-Sunday.
-    _spawn_post_success_quality(runner, log_file, ["weekly"], "weekly quality report")
+    results = [_spawn_post_success_quality(runner, log_file, ["weekly"], "weekly quality report")]
     run_date = log_file.stem.removeprefix("daily_update_")
 
     # The interior gap scan runs as com.livewire.interior-gap-scan, not here.
@@ -671,34 +693,37 @@ def run_post_success_quality(
     # coverage: a guessed timeout around work whose runtime is dominated by
     # cold I/O on an external volume. Its own job, and no budget at all.
 
-    _spawn_post_success_quality(
+    digest_result = _spawn_post_success_quality(
         runner,
         log_file,
         ["digest", "--run-date", run_date, "--email"],
         "nightly digest",
     )
+    results.append(digest_result)
+    if digest_result.returncode != 0:
+        record_failed_send(run_date, digest_result)
 
     # Retention sweep, last — the digest must already have been sent. It can
     # only warn: a sweep that deleted nothing is never worth failing a
-    # successful ingest run for, and the warning is already counted —
-    # `_quality_jobs_section` matches this exact shape, which is the only
-    # reason the four-week coverage outage was eventually visible.
-    _spawn_post_success_quality(
+    # successful ingest run for; the terminal tail row carries the failure.
+    results.append(_spawn_post_success_quality(
         runner,
         log_file,
         ["housekeeping", "--apply"],
         "housekeeping",
         timeout=600,
         script=OPS_SCRIPT,
-    )
+    ))
+
+    tail_code = next((result.returncode for result in results if result.returncode != 0), 0)
 
     _emit_lane(
         "digest",
         started=tail_started,
         ended=_utc_now(),
-        exit_code=0,
+        exit_code=tail_code,
         elapsed_s=time.monotonic() - tail_clock,
-        outcome="done",
+        outcome="done" if tail_code == 0 else "failed",
         log_file=log_file,
     )
 
@@ -751,6 +776,7 @@ def _run_scheduled_lane(
     )
     budget = LANE_BUDGET_S.get(done_scope, DEFAULT_LANE_BUDGET_S)
     clock = time.monotonic()
+    lane_log_offset = log_file.stat().st_size
     result = run_daily_update_attempt(command, log_file, env=env, runner=runner, timeout=budget)
     ended_at = now_fn()
     _emit_lane(
@@ -763,7 +789,7 @@ def _run_scheduled_lane(
         blocker="ib_unreachable" if result.returncode == GATEWAY_DOWN_EXIT_CODE else None,
         log_file=log_file,
     )
-    _emit_last_session(done_scope, _last_session_from_log(log_file))
+    _emit_last_session(done_scope, _last_session_from_log(log_file, lane_log_offset))
     if result.returncode == 0:
         append_log(log_file, f"=== Done {done_scope} {ended_at:%Y-%m-%dT%H:%M:%SZ} ===")
         return result.returncode
@@ -830,7 +856,7 @@ def run_corporate_action_sync(
         "corporate-actions",
         env=env,
         runner=runner,
-        now_fn=lambda: now,
+        now_fn=now_fn,
     )
 
 
@@ -878,15 +904,16 @@ def _without_flag(args: Sequence[str], flag: str) -> list[str]:
     return kept
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _run_main(argv: Sequence[str] | None = None) -> int:
     os.environ.setdefault("LW_RUN_ID", ledger.new_run_id("daily-update"))
     config = build_config()
     args = list(argv or sys.argv[1:])
     env = os.environ.copy()
     started_at = _utc_now()
+    job_name = "daily-update" if "--asset-class" not in args else f"daily-update-{_completion_scope_from_args(args)}"
     run_row = {
         "run_id": run_id(),
-        "job": "daily-update",
+        "job": job_name,
         "host": socket.gethostname(),
         "release_sha": _release_sha(),
         "presets_sha": _file_sha((REPO_ROOT / "presets").glob("*.json")),
@@ -899,7 +926,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ledger.emit("runs", [run_row], run_id=run_id())
 
     def close_run(code: int, *, degraded: bool = False) -> int:
-        verdict = "FAILED" if code else ("DEGRADED" if degraded else "OK")
+        verdict = "DEGRADED" if degraded else ("FAILED" if code else "OK")
         ledger.emit(
             "runs",
             [run_row | {"ended": _utc_now(), "exit_code": code, "verdict": verdict}],
@@ -910,7 +937,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     # If --asset-class is explicitly specified, run just that one.
     if "--asset-class" in args:
         code = run_with_retries(config, args, env=env, completion_scope=_completion_scope_from_args(args))
-        return close_run(0 if code == GATEWAY_DOWN_EXIT_CODE else code, degraded=code == GATEWAY_DOWN_EXIT_CODE)
+        source_index = args.index("--source") + 1 if "--source" in args else len(args)
+        source = args[source_index] if source_index < len(args) else "ib"
+        return close_run(code, degraded=code == GATEWAY_DOWN_EXIT_CODE and source == "ib")
 
     dry_run = "--dry-run" in args
     lane_codes: dict[str, int] = {
@@ -972,17 +1001,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Gateway blocked the adjusted rebuild for the whole equity universe.
     blocker = silver_is_blocked()
     if blocker is None:
+        log_file = build_log_file(config.log_dir, _utc_now())
+        silver_log_offset = log_file.stat().st_size if log_file.exists() else 0
         silver_code = run_silver_rebuild(config, dry_run=dry_run, env=env)
         if silver_code != 0:
             final_code = final_code or silver_code
-        log_file = build_log_file(config.log_dir, _utc_now())
         from livewire_scripts.daily_outcomes import parse_all_summary_json
 
         try:
-            summaries = parse_all_summary_json(log_file.read_text(encoding="utf-8"))
+            with log_file.open(encoding="utf-8") as handle:
+                handle.seek(silver_log_offset)
+                summaries = parse_all_summary_json(handle.read())
         except FileNotFoundError:
             summaries = []
-        if summaries:
+        silver_summaries = [summary for summary in summaries if "window_regressions" in summary]
+        if silver_summaries:
+            summary = silver_summaries[-1]
             ledger.emit(
                 "measurements",
                 [
@@ -990,11 +1024,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "name": "silver_failed",
                         "scope": "silver",
                         "measured_at": _utc_now(),
-                        "value": float(summaries[-1].get("failed", 0)),
+                        "value": float(summary.get("failed", 0)),
                         "unit": "symbols",
                         "source": "measured",
                         "run_id": run_id(),
-                    }
+                    },
+                    {
+                        "name": "silver_window_regressions",
+                        "scope": "silver",
+                        "measured_at": _utc_now(),
+                        "value": float(summary.get("window_regressions", 0)),
+                        "unit": "symbols",
+                        "source": "measured",
+                        "run_id": run_id(),
+                    },
                 ],
                 run_id=run_id(),
             )
@@ -1023,6 +1066,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_post_success_quality(config, build_log_file(config.log_dir, _utc_now()))
 
     return close_run(final_code, degraded=bool(degraded))
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the job and close an opened ledger run even on an unexpected crash."""
+    try:
+        return _run_main(argv)
+    except Exception:
+        active_run = os.environ.get("LW_RUN_ID")
+        if active_run:
+            try:
+                rows = ledger.query(
+                    "select run_id, job, host, release_sha, presets_sha, registry_sha, started "
+                    f"from runs where run_id = '{active_run}' "
+                    "group by all having max(ended) is null order by started desc limit 1"
+                )
+                if rows:
+                    ledger.emit(
+                        "runs",
+                        [rows[0] | {"ended": _utc_now(), "exit_code": 1, "verdict": "FAILED"}],
+                        run_id=active_run,
+                    )
+            except Exception as close_exc:  # pragma: no cover - preserve the original crash
+                print(f"WARNING: could not close failed run {active_run}: {close_exc}", file=sys.stderr)
+        raise
 
 
 if __name__ == "__main__":

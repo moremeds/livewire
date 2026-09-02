@@ -54,7 +54,7 @@
     <key>StartCalendarInterval</key>
     <dict>
         <!-- Target: Sunday 13:00 UTC, weekly. After Sunday's coverage job -->
-        <!-- (11:00 UTC), which now owns the gap scan, so a membership change -->
+        <!-- (15:30 UTC), which now owns the gap scan, so a membership change -->
         <!-- lands for the following week's scans -->
         <!-- rather than mid-week, and the week's findings are all measured -->
         <!-- against one denominator. -->

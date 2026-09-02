@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -39,6 +40,14 @@ TIMEOUT_EXIT_CODE = 124
 VOL_DAILY_PRESET = "presets/volatility.json"
 EQUITY_INTRADAY_TIMEFRAMES = ("1m", "5m", "1h")
 VOL_INTRADAY_TIMEFRAMES = ("30m", "5m")
+
+
+def _emit_ledger(table: str, rows: list[dict], run: str) -> None:
+    """Keep reporting failures from aborting the market-data work."""
+    try:
+        ledger.emit(table, rows, run_id=run)
+    except Exception as exc:  # pragma: no cover - observable, but non-fatal
+        logger.error("could not write %s ledger row: %s", table, exc)
 
 
 @dataclass(frozen=True)
@@ -142,7 +151,7 @@ def run_phase(
     run = os.environ.get("LW_RUN_ID")
     started = datetime.now(UTC)
     if run:
-        ledger.emit(
+        _emit_ledger(
             "lane_results",
             [
                 {
@@ -157,7 +166,7 @@ def run_phase(
                     "blocker": None,
                 }
             ],
-            run_id=run,
+            run,
         )
     clock = time.monotonic()
     with log_file.open("a", encoding="utf-8") as fh:
@@ -190,11 +199,12 @@ def run_phase(
                     result = subprocess.CompletedProcess(command, 0)
             except FileNotFoundError:
                 pass
-        logger.warning("%s exited with code %d", label, result.returncode)
+        if result.returncode != 0:
+            logger.warning("%s exited with code %d", label, result.returncode)
 
     if run:
         code = result.returncode
-        ledger.emit(
+        _emit_ledger(
             "lane_results",
             [
                 {
@@ -217,7 +227,7 @@ def run_phase(
                     "blocker": "ib_unreachable" if code == GATEWAY_DOWN_EXIT_CODE else None,
                 }
             ],
-            run_id=run,
+            run,
         )
     return result.returncode
 
@@ -477,7 +487,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     if overrides:
         config = replace(config, **overrides)
 
-    return run_sync(config)
+    started = datetime.now(UTC)
+    run = os.environ["LW_RUN_ID"]
+    run_row = {
+        "run_id": run,
+        "job": "intraday-catchup",
+        "host": socket.gethostname(),
+        "release_sha": os.environ.get("LW_RELEASE_SHA"),
+        "presets_sha": None,
+        "registry_sha": None,
+        "started": started,
+        "ended": None,
+        "exit_code": None,
+        "verdict": None,
+    }
+    _emit_ledger("runs", [run_row], run)
+    try:
+        code = run_sync(config)
+    except BaseException:
+        _emit_ledger(
+            "runs",
+            [run_row | {"ended": datetime.now(UTC), "exit_code": 1, "verdict": "FAILED"}],
+            run,
+        )
+        raise
+    _emit_ledger(
+        "runs",
+        [run_row | {"ended": datetime.now(UTC), "exit_code": code, "verdict": "FAILED" if code else "OK"}],
+        run,
+    )
+    return code
 
 
 if __name__ == "__main__":  # pragma: no cover

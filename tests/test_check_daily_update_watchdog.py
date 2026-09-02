@@ -53,6 +53,34 @@ class TestTheWatchdogIsAStatusCaller:
         assert watchdog.run_watchdog(_config(tmp_path), "2026-09-02") == 0
         assert len(sent) == 1
 
+    def test_a_daily_run_that_never_started_pages(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            watchdog,
+            "collect",
+            lambda *a, **k: [
+                _section(Verdict.UNKNOWN, "Daily update ran"),
+                _section(Verdict.OK, "Daily update finished"),
+            ],
+        )
+        sent = []
+        monkeypatch.setattr(watchdog, "send_failure_alert", lambda *a, **k: sent.append(a) or _ok())
+        assert watchdog.run_watchdog(_config(tmp_path), "2026-09-02") == 0
+        assert len(sent) == 1
+
+    def test_intraday_catchup_that_never_started_pages(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            watchdog,
+            "collect",
+            lambda *a, **k: [
+                _section(Verdict.UNKNOWN, "Intraday catch-up ran"),
+                _section(Verdict.OK, "Intraday catch-up finished"),
+            ],
+        )
+        sent = []
+        monkeypatch.setattr(watchdog, "send_failure_alert", lambda *a, **k: sent.append(a) or _ok())
+        assert watchdog.run_watchdog(_config(tmp_path), "2026-09-02") == 0
+        assert len(sent) == 1
+
     def test_a_second_run_the_same_day_does_not_page_again(self, tmp_path, monkeypatch):
         monkeypatch.setattr(watchdog, "collect", lambda *a, **k: [_section(Verdict.BAD)])
         sent = []

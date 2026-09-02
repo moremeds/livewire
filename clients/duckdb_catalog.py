@@ -157,7 +157,7 @@ def ledger_query(
     sql: str,
     *,
     root: Path,
-    tables: Mapping[str, pa.Schema] | Iterable[str],
+    tables: Mapping[str, pa.Schema],
 ) -> list[dict]:
     """Run SQL over append-only ledger parquet in a read-only memory database."""
     con = duckdb.connect(":memory:")
@@ -166,10 +166,8 @@ def ledger_query(
             directory = Path(root) / name
             if any(directory.glob("*/*.parquet")):
                 con.execute(_LEDGER_VIEW_SQL.format(name=name, glob=f"{directory}/*/*.parquet"))
-            elif isinstance(tables, Mapping):
-                con.register(name, pa.Table.from_batches([], schema=tables[name]))
             else:
-                con.execute(f"CREATE OR REPLACE TEMP VIEW {name} AS SELECT * FROM (SELECT 1) WHERE false")
+                con.register(name, pa.Table.from_batches([], schema=tables[name]))
         cursor = con.execute(sql)
         columns = [description[0] for description in cursor.description]
         return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]

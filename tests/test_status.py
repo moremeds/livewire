@@ -75,6 +75,11 @@ def _lane(lane, **over):
     )
 
 
+def _all_lanes(**overrides):
+    for lane in ("futures", "cmdty", "cboe", "fx", "corporate-actions", "equity", "silver"):
+        _lane(lane, **overrides.get(lane, {}))
+
+
 def _last_session(scope, session: date):
     ledger.emit(
         "measurements",
@@ -89,6 +94,22 @@ def _last_session(scope, session: date):
                 "run_id": RUN,
             }
         ],
+        run_id=RUN,
+    )
+
+
+def _measurement(name, scope, value, *, measured_at=NOW):
+    ledger.emit(
+        "measurements",
+        [{
+            "name": name,
+            "scope": scope,
+            "measured_at": measured_at,
+            "value": float(value),
+            "unit": "ratio" if name == "coverage_pct" else "symbols",
+            "source": "measured",
+            "run_id": RUN,
+        }],
         run_id=RUN,
     )
 
@@ -124,6 +145,11 @@ def test_a_degraded_run_is_warn():
     assert _section("Daily update ran").verdict is Verdict.WARN
 
 
+def test_a_failed_intraday_catchup_is_bad():
+    _run(job="intraday-catchup", verdict="FAILED", exit_code=1)
+    assert _section("Intraday catch-up ran").verdict is Verdict.BAD
+
+
 def test_a_closed_run_reads_finished():
     _run()
     assert _section("Daily update finished").verdict is Verdict.OK
@@ -136,7 +162,7 @@ def test_a_run_still_open_at_watchdog_time_warns_and_grades_no_lane_bad():
     assert finished.verdict is Verdict.WARN
     assert "running_minutes" in "\n".join(finished.lines)
     for name in ("Lanes terminal", "Silver advanced", "Lanes within budget"):
-        assert _section(name).verdict is not Verdict.BAD
+        assert _section(name).verdict is Verdict.UNKNOWN
 
 
 def test_a_lane_with_no_terminal_row_is_bad():
@@ -147,8 +173,7 @@ def test_a_lane_with_no_terminal_row_is_bad():
 
 def test_every_lane_terminal_is_ok():
     _run()
-    _lane("equity")
-    _lane("silver")
+    _all_lanes()
     assert _section("Lanes terminal").verdict is Verdict.OK
 
 
@@ -162,6 +187,12 @@ def test_silver_blocked_is_bad():
     _run()
     _lane("silver", outcome="blocked", blocker="equity", exit_code=None)
     assert _section("Silver advanced").verdict is Verdict.BAD
+
+
+def test_a_failed_digest_is_bad():
+    _run()
+    _lane("digest", outcome="failed", exit_code=2)
+    assert _section("Post-success tail").verdict is Verdict.BAD
 
 
 def test_any_undelivered_alert_is_a_warning():
@@ -196,7 +227,7 @@ def test_a_delivered_alert_is_ok():
 
 def test_an_ib_phase_at_86_reads_degraded_not_failed():
     _run(verdict="DEGRADED")
-    _lane("futures", exit_code=86, outcome="blocked", blocker="ib_unreachable")
+    _all_lanes(futures={"exit_code": 86, "outcome": "blocked", "blocker": "ib_unreachable"})
     assert _section("Lanes terminal").verdict is Verdict.OK
     assert _section("Release matches main", main_sha="deadbeef").verdict is Verdict.OK
 
@@ -229,6 +260,7 @@ def test_an_ib_only_lane_days_behind_warns_and_names_its_blocker():
     _run()
     _lane("futures", exit_code=86, outcome="blocked", blocker="ib_unreachable")
     _last_session("futures", date.today() - timedelta(days=9))
+    _last_session("cmdty", date.today() - timedelta(days=1))
     section = _section("IB-only lanes behind")
     assert section.verdict is Verdict.WARN
     body = "\n".join(section.lines)
@@ -239,6 +271,7 @@ def test_an_ib_only_lane_current_is_ok():
     _run()
     _lane("futures")
     _last_session("futures", date.today() - timedelta(days=1))
+    _last_session("cmdty", date.today() - timedelta(days=1))
     assert _section("IB-only lanes behind").verdict is Verdict.OK
 
 
@@ -246,6 +279,7 @@ def test_a_weekend_gap_is_not_a_backlog():
     _run()
     _lane("futures")
     _last_session("futures", date.today() - timedelta(days=3))
+    _last_session("cmdty", date.today() - timedelta(days=3))
     assert _section("IB-only lanes behind").verdict is Verdict.OK
 
 
@@ -253,6 +287,47 @@ def test_an_ib_only_lane_that_never_reported_a_session_is_unknown():
     _run()
     _lane("futures")
     assert _section("IB-only lanes behind").verdict is Verdict.UNKNOWN
+
+
+def test_one_missing_ib_only_lane_is_unknown_not_green():
+    _last_session("futures", date.today())
+    assert _section("IB-only lanes behind").verdict is Verdict.UNKNOWN
+
+
+def test_coverage_below_threshold_is_bad():
+    for timeframe in ("1d", "1m", "1h", "5m", "30m"):
+        _measurement("coverage_pct", timeframe, 0.90 if timeframe == "1d" else 1.0)
+        _measurement("coverage_total", timeframe, 100)
+    assert _section("Coverage").verdict is Verdict.BAD
+
+
+def test_fresh_complete_coverage_is_ok():
+    for timeframe in ("1d", "1m", "1h", "5m", "30m"):
+        _measurement("coverage_pct", timeframe, 1.0)
+        _measurement("coverage_total", timeframe, 100)
+    assert _section("Coverage").verdict is Verdict.OK
+
+
+def test_missing_coverage_timeframe_is_unknown():
+    _measurement("coverage_pct", "1d", 1.0)
+    assert _section("Coverage").verdict is Verdict.UNKNOWN
+
+
+def test_zero_total_coverage_is_unknown_not_green():
+    for timeframe in ("1d", "1m", "1h", "5m", "30m"):
+        _measurement("coverage_pct", timeframe, 1.0)
+        _measurement("coverage_total", timeframe, 0)
+    assert _section("Coverage").verdict is Verdict.UNKNOWN
+
+
+def test_failed_coverage_scan_warns():
+    _measurement("coverage_scan_ok", "all", 0)
+    assert _section("Coverage scan").verdict is Verdict.WARN
+
+
+def test_silver_window_regressions_warn():
+    _measurement("silver_window_regressions", "silver", 2)
+    assert _section("Silver window regressions").verdict is Verdict.WARN
 
 
 def _silver_failed(value: float, at: datetime):

@@ -29,6 +29,7 @@ _GIB = 1024**3
 #: Coverage is daily and the digest reads yesterday's by design, so 3 absorbs
 #: one missed run without absorbing a job that has stopped firing entirely.
 _COVERAGE_STALE_DAYS = 3
+_COVERAGE_THRESHOLD = float(os.getenv("MDW_COVERAGE_ALERT_THRESHOLD", "0.95"))
 _SILVER_FIX = "python scripts/livewire_store.py rebuild-silver --full --dry-run --failure-output /tmp/silver-dry.json"
 
 
@@ -85,11 +86,28 @@ CHECKS: list[tuple[str, str]] = [
         "group by run_id having max(ended) is null",
     ),
     (
+        "Intraday catch-up ran",
+        "select case verdict when 'FAILED' then 'BAD' when 'DEGRADED' then 'WARN' "
+        "when 'OK' then 'OK' else 'UNKNOWN' end as verdict, run_id, started "
+        "from runs where job = 'intraday-catchup' and date(started) = date '$today' "
+        "and ended is not null order by started desc limit 1",
+    ),
+    (
+        "Intraday catch-up finished",
+        "select 'WARN' as verdict, run_id, date_diff('minute', min(started), now()) as running_minutes "
+        "from runs where job = 'intraday-catchup' and date(started) = date '$today' "
+        "group by run_id having max(ended) is null order by min(started) desc limit 1",
+    ),
+    (
         "Lanes terminal",
-        "select case when count(*) = 0 then 'OK' else 'BAD' end as verdict, "
+        "select case when '$run' = '' then 'UNKNOWN' "
+        "when count(*) = 0 then 'OK' else 'BAD' end as verdict, "
         "count(*) as unterminated, string_agg(lane, ', ') as lanes from ("
-        "  select lane from lane_results where run_id = '$run' "
-        "  group by lane having max(coalesce(outcome, '')) = ''"
+        "  select expected.lane from (values ('futures'), ('cmdty'), ('cboe'), ('fx'), "
+        "    ('corporate-actions'), ('equity'), ('silver')) as expected(lane) "
+        "  left join (select lane, outcome from lane_results where run_id = '$run' "
+        "    qualify row_number() over (partition by lane order by started desc, ended desc nulls last) = 1"
+        "  ) latest using (lane) where latest.outcome is null"
         ")",
     ),
     (
@@ -97,6 +115,12 @@ CHECKS: list[tuple[str, str]] = [
         "select case when outcome = 'done' then 'OK' else 'BAD' end as verdict, "
         "outcome, blocker from lane_results "
         "where run_id = '$run' and lane = 'silver' and outcome is not null "
+        "order by ended desc limit 1",
+    ),
+    (
+        "Post-success tail",
+        "select case when outcome = 'done' then 'OK' else 'BAD' end as verdict, outcome, exit_code "
+        "from lane_results where run_id = '$run' and lane = 'digest' and outcome is not null "
         "order by ended desc limit 1",
     ),
     (
@@ -115,6 +139,7 @@ CHECKS: list[tuple[str, str]] = [
         "Lanes within budget",
         "select 'WARN' as verdict, lane, elapsed_s, budget_s from lane_results "
         "where run_id = '$run' and elapsed_s is not null and elapsed_s > budget_s "
+        "union all select 'UNKNOWN', null, null, null where '$run' = '' "
         "order by elapsed_s desc",
     ),
     (
@@ -129,22 +154,55 @@ CHECKS: list[tuple[str, str]] = [
         ") where rn <= 2",
     ),
     (
+        "Silver window regressions",
+        "select case when value > 0 then 'WARN' else 'OK' end as verdict, value as symbols "
+        "from measurements where name = 'silver_window_regressions' "
+        "order by measured_at desc limit 1",
+    ),
+    (
+        "Coverage",
+        "select case when count(*) filter (where name = 'coverage_pct') < 5 "
+        "or count(*) filter (where name = 'coverage_total') < 5 "
+        "or sum(value) filter (where name = 'coverage_total') = 0 then 'UNKNOWN' "
+        "when min(value) filter (where name = 'coverage_pct') < $coverage_threshold then 'BAD' "
+        "when date_diff('day', date(max(measured_at)), date '$today') > $coverage_stale_days then 'BAD' "
+        "else 'OK' end as verdict, count(*) filter (where name = 'coverage_pct') as timeframes, "
+        "min(value) filter (where name = 'coverage_pct') as worst_ratio, "
+        "max(measured_at) as measured_at from ("
+        "  select name, scope, value, measured_at from measurements "
+        "  where name in ('coverage_pct', 'coverage_total') "
+        "  and scope in ('1d', '1m', '1h', '5m', '30m') "
+        "  qualify row_number() over (partition by name, scope order by measured_at desc) = 1"
+        ")",
+    ),
+    (
+        "Coverage scan",
+        "select case when value = 1 then 'OK' else 'WARN' end as verdict, value as succeeded "
+        "from measurements where name = 'coverage_scan_ok' order by measured_at desc limit 1",
+    ),
+    (
         "IB-only lanes behind",
-        "select case when max(behind) is null then 'UNKNOWN' "
+        "select case when count(last_session) < 2 then 'UNKNOWN' "
         "when max(behind) > $ib_slack_days then 'WARN' else 'OK' end as verdict, "
         "string_agg(lane || '@' || last_session || case when blocker is null then '' "
         "else ' (' || blocker || ')' end, ', ') as lanes, max(behind) as sessions_behind from ("
-        "  select m.scope as lane, date '1970-01-01' + cast(m.value as int) as last_session, "
+        "  select expected.lane, date '1970-01-01' + cast(m.value as int) as last_session, "
         "         date_diff('day', date '1970-01-01' + cast(m.value as int), date '$today') as behind, "
-        "         (select l.blocker from lane_results l where l.lane = m.scope "
+        "         (select l.blocker from lane_results l where l.lane = expected.lane "
         "          and l.outcome is not null order by l.ended desc limit 1) as blocker "
-        "  from measurements m where m.name = 'last_session' and m.scope in ('futures', 'cmdty') "
-        "  qualify row_number() over (partition by m.scope order by m.measured_at desc) = 1"
+        "  from (values ('futures'), ('cmdty')) as expected(lane) left join measurements m "
+        "    on m.name = 'last_session' and m.scope = expected.lane "
+        "  qualify row_number() over (partition by expected.lane order by m.measured_at desc) = 1"
         ")",
     ),
 ]
 
-_EMPTY_IS_OK = {"Undelivered alerts", "Lanes within budget", "Daily update finished"}
+_EMPTY_IS_OK = {
+    "Undelivered alerts",
+    "Lanes within budget",
+    "Daily update finished",
+    "Intraday catch-up finished",
+}
 IB_LANE_SLACK_DAYS = 4
 _FIXES = {
     "Daily update ran": "launchctl list | grep livewire.daily-update   # then read <log_dir>/daily_update_$today.log",
@@ -152,11 +210,16 @@ _FIXES = {
         'python scripts/livewire_ops.py ledger query "select lane, outcome, elapsed_s '
         "from lane_results where run_id = '$open_run'\"   # which lane is still open"
     ),
+    "Intraday catch-up ran": "launchctl start com.livewire.intraday-catchup",
     "Silver failures did not grow": _SILVER_FIX,
+    "Silver window regressions": _SILVER_FIX,
+    "Coverage": "launchctl start com.livewire.coverage",
+    "Coverage scan": "python scripts/livewire_quality.py coverage --no-recover",
     "Lanes terminal": (
         "python scripts/livewire_ops.py ledger query \"select lane, outcome from lane_results where run_id = '$run'\""
     ),
     "Silver advanced": _SILVER_FIX,
+    "Post-success tail": "python scripts/livewire_quality.py digest --email",
     "Undelivered alerts": (
         'python scripts/livewire_ops.py ledger query "select receipt_json from executions '
         "where script = 'send_alert' and exit_code <> 0\""
@@ -490,6 +553,8 @@ def collect(
         "open_run": open_run,
         "main_sha": main_sha or "__missing__",
         "ib_slack_days": str(IB_LANE_SLACK_DAYS),
+        "coverage_threshold": str(_COVERAGE_THRESHOLD),
+        "coverage_stale_days": str(_COVERAGE_STALE_DAYS),
     }
     return [
         _safe("launchd jobs", lambda: _launchd_section(runner=runner)),
@@ -502,7 +567,8 @@ def collect(
 def render(sections: list[Section]) -> str:
     """Render for a terminal. Returns rich markup; Console() applies it.
 
-    EVERY line here is log-derived text and MUST go through `escape()`.
+    EVERY line here may contain operator-controlled or external text and MUST
+    go through `escape()`.
     Measured 2026-08-10 against rich: a line containing "[/]" raises
     MarkupError and takes the whole command down, and a line containing
     "[bold red]" is silently consumed as a style — the text vanishes from the

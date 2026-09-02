@@ -39,10 +39,6 @@ def build_daily_log_file(log_dir: Path, run_date: str) -> Path:
     return log_dir / f"daily_update_{run_date}.log"
 
 
-def build_watchdog_log_file(log_dir: Path, run_date: str) -> Path:
-    return log_dir / f"daily_update_watchdog_{run_date}.log"
-
-
 def build_watchdog_marker_file(warehouse_dir: Path, run_date: str) -> Path:
     return warehouse_dir / "state" / "daily-update-watchdog" / f"{run_date}.alerted"
 
@@ -56,10 +52,22 @@ def run_watchdog(config: RunnerConfig, run_date: str, runner=None) -> int:
     marker_file = build_watchdog_marker_file(config.warehouse_dir, run_date)
     sections = collect(date.fromisoformat(run_date), config.log_dir, data_lake_dir())
     bad = [section for section in sections if section.verdict is Verdict.BAD]
-    if not bad or marker_file.exists():
+    by_name = {section.name: section for section in sections}
+    missing_jobs = []
+    for job, ran_name, finished_name in (
+        ("Daily update", "Daily update ran", "Daily update finished"),
+        ("Intraday catch-up", "Intraday catch-up ran", "Intraday catch-up finished"),
+    ):
+        ran = by_name.get(ran_name)
+        finished = by_name.get(finished_name)
+        if ran is not None and ran.verdict is Verdict.UNKNOWN and finished is not None and finished.verdict is Verdict.OK:
+            missing_jobs.append(job)
+    if (not bad and not missing_jobs) or marker_file.exists():
         return 0
 
-    reason = "; ".join(section.lines[0] if section.lines else section.name for section in bad)
+    reasons = [section.lines[0] if section.lines else section.name for section in bad]
+    reasons.extend(f"{job} did not start on {run_date}" for job in missing_jobs)
+    reason = "; ".join(reasons)
     log_file = build_daily_log_file(config.log_dir, run_date)
     result = send_failure_alert(
         config,
