@@ -22,4 +22,19 @@ with `&&` so a failed sync cannot let the shepherd act on stale input), weekly o
 Sunday after that day's scan.
 
 
+**It also had no env, and that failure was silent.** Installed on the mini
+2026-09-02; the first launchd-triggered run exited 0 and logged
+`MASSIVE_API_KEY not set — skipping dead-ticker check`. The key is present in
+`~/market-warehouse/.env` — the job simply never read it, because launchd starts
+it cold and it is the only plist that invokes `scripts/livewire_ingest.py`
+directly (every other job goes through `livewire_ops.py run-*-job`, which loads
+`~/.secrets` → repo `.env` → warehouse `.env` first). So the weekly refresh
+would have added new index members and never removed delisted ones: the
+denominator drifting in exactly one direction, in the job that exists to stop it
+drifting. `universe_sync` degrades rather than failing, so nothing would have
+paged. `livewire_ingest.py` now calls `load_scheduled_env` for `universe-sync`
+and `shepherd-universe`, the same way `livewire_quality.py` already did for
+`watchdog`/`coverage`/`health` — one loader, one key name (`MASSIVE_API_KEY` is
+the only Massive REST key in the codebase), no plist-local `source`.
+
 **Source:** CLAUDE.md section "Gap engine — the denominator is not the disk" (moved 2026-09-02)

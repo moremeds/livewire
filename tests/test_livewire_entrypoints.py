@@ -418,9 +418,63 @@ def test_ingest_universe_sync_bypasses_ib_preflight(monkeypatch) -> None:
         "assert_gateway_up",
         lambda: (_ for _ in ()).throw(AssertionError("preflight should not run")),
     )
+    monkeypatch.setattr(livewire_ingest, "load_scheduled_env", lambda repo_root: None)
 
     assert livewire_ingest.main(["universe-sync", "--dry-run"]) == 0
     assert calls == [("livewire_scripts.universe_sync", [])]
+
+
+@pytest.mark.parametrize(
+    ("command", "module"),
+    [
+        ("universe-sync", "livewire_scripts.universe_sync"),
+        ("shepherd-universe", "livewire_scripts.shepherd_universe"),
+    ],
+)
+def test_ingest_universe_refresh_commands_load_scheduled_env(monkeypatch, tmp_path, command, module) -> None:
+    """`com.livewire.universe-refresh` chains these two and launchd starts it cold.
+
+    It is the only plist invoking this entrypoint directly; every other job goes
+    through `livewire_ops.py run-*-job`, which loads the same files first. Without
+    the loader `universe_sync` logged `MASSIVE_API_KEY not set — skipping
+    dead-ticker check` and exited 0, so the denominator gained new index members
+    and never lost delisted ones — in the one job that exists to keep it honest.
+    """
+    calls: list[tuple[str, list[str]]] = []
+    loader_calls: list[Path] = []
+    monkeypatch.setattr(livewire_ingest, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        livewire_ingest.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=False),
+    )
+    monkeypatch.setattr(
+        livewire_ingest,
+        "load_scheduled_env",
+        lambda repo_root: loader_calls.append(repo_root),
+    )
+
+    assert livewire_ingest.main([command]) == 0
+    assert loader_calls == [tmp_path]
+    assert calls == [(module, [])]
+
+
+def test_ingest_other_commands_do_not_load_env(monkeypatch) -> None:
+    """Every other ingest command inherits a scheduled parent's env."""
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        livewire_ingest.importlib,
+        "import_module",
+        lambda name: _fake_module(calls, name, accepts_argv=True),
+    )
+    monkeypatch.setattr(
+        livewire_ingest,
+        "load_scheduled_env",
+        lambda repo_root: (_ for _ in ()).throw(AssertionError("env should not load")),
+    )
+
+    assert livewire_ingest.main(["daily", "--source", "massive"]) == 7
+    assert calls == [("livewire_scripts.daily_update", ["--source", "massive"])]
 
 
 def test_ingest_dispatches_corporate_actions_without_ib_preflight(monkeypatch) -> None:
