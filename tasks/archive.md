@@ -420,7 +420,6 @@ Massive minute flat files for the maximum entitled history.
 
 - [x] F2 Write and review the task-by-task implementation plan.
   depends_on: [F1]
-  - Plan: `docs/plans/2026-06-06-massive-flatfile-full-market.md`
   - Includes explicit deletion of legacy ticker-filtered flat-file and Massive REST equity-intraday paths.
 
 # Massive Flat-File Full-Market Implementation

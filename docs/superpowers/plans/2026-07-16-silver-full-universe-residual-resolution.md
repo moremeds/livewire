@@ -380,7 +380,7 @@ R1 -> R2 -> R3 -> R4 -> R5 -> R6 -> R7 -> R8
 - [ ] Run a full-universe semantic before/after comparison for every symbol, not only canaries. Any changed symbol must map to an approved residual/action record; reject unexplained historical changes.
 - [ ] Run a second full dry run. Required: `failed=0`, `rebuilt=0`, and `unchanged=<verifier Bronze count>`.
 - [ ] Restore every originally loaded launchd job exactly once and verify its program path points at merged code.
-- [ ] Record revision, hashes, coverage count, repair manifests, backups, canaries, and rollback commands. Hand the revision to `2026-07-16-silver-full-coverage-apex-adjusted-promotion.md` Task 8; do not change Apex mode in this plan.
+- [ ] Record revision, hashes, coverage count, repair manifests, backups, canaries, and rollback commands. Hand the revision to (plan archived; see git history) Task 8; do not change Apex mode in this plan.
 
 ## Definition of Done
 

@@ -3,7 +3,7 @@
 **Date:** 2026-07-16
 **Status:** Draft (Spec 1 of a 3-spec program)
 **Author:** Livewire silver session
-**Supersedes framing in:** `SILVER_CORRECTNESS_GAP_FROM_APEX.md`, `docs/superpowers/plans/2026-07-16-silver-full-coverage-apex-adjusted-promotion.md`
+**Supersedes framing in:** `SILVER_CORRECTNESS_GAP_FROM_APEX.md`, (plan archived; see git history)
 
 ## 1. Context and problem
 
