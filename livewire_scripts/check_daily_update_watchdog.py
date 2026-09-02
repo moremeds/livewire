@@ -60,7 +60,12 @@ def run_watchdog(config: RunnerConfig, run_date: str, runner=None) -> int:
     ):
         ran = by_name.get(ran_name)
         finished = by_name.get(finished_name)
-        if ran is not None and ran.verdict is Verdict.UNKNOWN and finished is not None and finished.verdict is Verdict.OK:
+        if (
+            ran is not None
+            and ran.verdict is Verdict.UNKNOWN
+            and finished is not None
+            and finished.verdict is Verdict.OK
+        ):
             missing_jobs.append(job)
     if (not bad and not missing_jobs) or marker_file.exists():
         return 0

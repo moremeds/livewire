@@ -101,15 +101,17 @@ def _last_session(scope, session: date):
 def _measurement(name, scope, value, *, measured_at=NOW):
     ledger.emit(
         "measurements",
-        [{
-            "name": name,
-            "scope": scope,
-            "measured_at": measured_at,
-            "value": float(value),
-            "unit": "ratio" if name == "coverage_pct" else "symbols",
-            "source": "measured",
-            "run_id": RUN,
-        }],
+        [
+            {
+                "name": name,
+                "scope": scope,
+                "measured_at": measured_at,
+                "value": float(value),
+                "unit": "ratio" if name == "coverage_pct" else "symbols",
+                "source": "measured",
+                "run_id": RUN,
+            }
+        ],
         run_id=RUN,
     )
 

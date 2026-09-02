@@ -179,7 +179,9 @@ class TestPerLaneBudgets:
         from clients import ledger
 
         monkeypatch.setattr(daily_runner, "build_config", lambda: _config(tmp_path))
-        monkeypatch.setattr(daily_runner, "run_with_retries", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr(
+            daily_runner, "run_with_retries", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
+        )
         with pytest.raises(RuntimeError, match="boom"):
             daily_runner.main([])
         rows = ledger.query("select ended, exit_code, verdict from runs where verdict is not null")
@@ -216,7 +218,7 @@ class TestPerLaneBudgets:
                     "elapsed_s": 1.0,
                     "outcome": "failed",
                     "blocker": None,
-                }
+                },
             ],
             run_id="daily-update-20260902T060000Z-1",
         )

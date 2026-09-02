@@ -706,14 +706,16 @@ def run_post_success_quality(
     # Retention sweep, last — the digest must already have been sent. It can
     # only warn: a sweep that deleted nothing is never worth failing a
     # successful ingest run for; the terminal tail row carries the failure.
-    results.append(_spawn_post_success_quality(
-        runner,
-        log_file,
-        ["housekeeping", "--apply"],
-        "housekeeping",
-        timeout=600,
-        script=OPS_SCRIPT,
-    ))
+    results.append(
+        _spawn_post_success_quality(
+            runner,
+            log_file,
+            ["housekeeping", "--apply"],
+            "housekeeping",
+            timeout=600,
+            script=OPS_SCRIPT,
+        )
+    )
 
     tail_code = next((result.returncode for result in results if result.returncode != 0), 0)
 
