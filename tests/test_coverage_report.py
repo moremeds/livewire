@@ -44,6 +44,22 @@ def _error_summary(cmd) -> str:
     return token.removeprefix("--error-summary=")
 
 
+def test_coverage_emits_its_percentage_and_elapsed_seconds(tmp_path, monkeypatch):
+    from clients import ledger
+
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    monkeypatch.setenv("LW_RUN_ID", "coverage-20260902T110000Z-1")
+    coverage_report.emit_coverage_measurements(
+        date(2026, 9, 2),
+        {"1d": CoverageResult("1d", total=100, present=100, missing_symbols=[])},
+        elapsed_s=1432.0,
+    )
+    assert ledger.query("select name, scope, value, source from measurements order by name") == [
+        {"name": "coverage_elapsed_s", "scope": "all", "value": 1432.0, "source": "measured"},
+        {"name": "coverage_pct", "scope": "1d", "value": 1.0, "source": "measured"},
+    ]
+
+
 _ET = ZoneInfo("America/New_York")
 
 _DAILY_SCHEMA = pa.schema(

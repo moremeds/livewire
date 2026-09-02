@@ -32,6 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
 import pyarrow.parquet as pq
 from rich.console import Console
 
+from clients import ledger
 from clients.corporate_action_store import CorporateActionStore
 from clients.coverage_denominator import DUE_LAG_DAYS, build_denominator, session_due_at
 from clients.gap_engine import (
@@ -494,6 +495,39 @@ def format_one_liner(target_date: date, results: dict[str, CoverageResult]) -> s
         r = results[tf]
         parts.append(f"{tf}={r.present}/{r.total} ({r.ratio:.2%})")
     return f"{target_date} coverage: " + " ".join(parts)
+
+
+def emit_coverage_measurements(
+    target: date, results: dict[str, CoverageResult], *, elapsed_s: float
+) -> None:
+    """Publish coverage ratios and elapsed time as ledger measurements."""
+    del target
+    now = datetime.now(UTC)
+    run = os.environ["LW_RUN_ID"]
+    rows = [
+        {
+            "name": "coverage_pct",
+            "scope": timeframe,
+            "measured_at": now,
+            "value": float(result.ratio),
+            "unit": "ratio",
+            "source": "measured",
+            "run_id": run,
+        }
+        for timeframe, result in sorted(results.items())
+    ]
+    rows.append(
+        {
+            "name": "coverage_elapsed_s",
+            "scope": "all",
+            "measured_at": now,
+            "value": float(elapsed_s),
+            "unit": "s",
+            "source": "measured",
+            "run_id": run,
+        }
+    )
+    ledger.emit("measurements", rows, run_id=run)
 
 
 # The classifier window. gap_scan used 30 days; keeping it means the artifacts
@@ -1012,6 +1046,7 @@ def _scan_and_write_artifacts(target: date, as_of: datetime) -> str:
 
 
 def main() -> None:
+    os.environ.setdefault("LW_RUN_ID", ledger.new_run_id("coverage"))
     parser = argparse.ArgumentParser(description="Daily coverage report + auto-recovery")
     parser.add_argument(
         "--target-date",
@@ -1049,12 +1084,14 @@ def main() -> None:
     as_of = datetime.now(UTC)
     # Cached across runs: an unchanged (mtime, size) cannot mean a later max
     # date, and the cold footer walk is what this job's runtime actually is.
+    coverage_started = time.monotonic()
     results = compute_coverage(
         target,
         cache_path=_resolved_log_dir() / "coverage_footer_cache.json",
         as_of=as_of,
     )
     line = format_one_liner(target, results)
+    emit_coverage_measurements(target, results, elapsed_s=time.monotonic() - coverage_started)
     console.print(line)
     blocks = [*format_missing_blocks(results), *format_terminus_block(results)]
     for block in blocks:
