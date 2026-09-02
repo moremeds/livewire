@@ -406,6 +406,18 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
   `1m.parquet` aborted the entire whole-market publish every night from
   2026-07-14; the file is now moved to `<lake>/quarantine/<stamp>/` and the
   symbol reported for targeted backfill while the rest of the market publishes.
+- ⚠️ **…and on the READ side it counts as missing, also not fatal.** The write
+  path was fixed above; `coverage` was not, so the same class of file kept
+  aborting it. `_latest_date_in_parquet` raised out of `pool.map` on IGA's
+  `5m.parquet` and VSLU's `1m.parquet` (`Parquet magic bytes not found in
+  footer`) — **9 aborts** in `/tmp/com.livewire.coverage.stderr.log`, the last
+  2026-09-01, with coverage logs missing for days around each. One file out of
+  ~70K measured nothing that night. Unreadable now resolves to `None`, which
+  `present_symbols` already treats as MISSING, so the symbol stays in the ratio,
+  the `missing:` line and the alert; the path is named at ERROR. **The detector
+  must not repair** — moving the file aside belongs to the write path that owns
+  the data.
+  → test: `tests/test_coverage_report.py::TestComputeCoverage::test_one_corrupt_parquet_does_not_kill_the_whole_scan`
 - ⚠️ **A preflight belongs to the phase that needs it, not to the orchestrator.**
   `daily-backfill` and `backfill-all` sat in `IB_COMMANDS`, and `main()`
   preflights before dispatching — so a down Gateway exited 86 ten seconds in and

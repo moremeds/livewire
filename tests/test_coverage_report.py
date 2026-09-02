@@ -274,6 +274,30 @@ class TestComputeCoverage:
         )
         assert coverage_report._latest_date_in_parquet(path, "trade_date") is None
 
+    def test_one_corrupt_parquet_does_not_kill_the_whole_scan(self, tmp_path):
+        # Nine production aborts came from exactly this: a truncated footer
+        # raising `Parquet magic bytes not found in footer` out of `pool.map`,
+        # so one file out of ~70K took the 11:00 UTC job down and coverage
+        # measured nothing at all that night. The corrupt symbol must count as
+        # MISSING -- the conservative direction, which keeps it in the ratio and
+        # the alert -- while every other symbol is still measured.
+        root = tmp_path / "bronze"
+        target = date(2026, 4, 6)
+        _write_daily(root, "AAPL", [target])
+        _write_daily(root, "MSFT", [target])
+        _write_raw_symbols(root, target, ["AAPL", "MSFT"])
+
+        corrupt = root / "asset_class=equity" / "symbol=MSFT" / "1d.parquet"
+        # Truncating a real parquet reproduces the production error exactly;
+        # random bytes would exercise a different pyarrow path.
+        corrupt.write_bytes(corrupt.read_bytes()[:-8])
+
+        results = compute_coverage(target, bronze_root=root, **_disk_only(tmp_path))
+
+        assert results["1d"].total == 2
+        assert results["1d"].present == 1
+        assert results["1d"].missing_symbols == ["MSFT"]
+
     def test_tracks_30m_timeframe(self, tmp_path):
         root = tmp_path / "bronze"
         target = date(2026, 4, 6)
