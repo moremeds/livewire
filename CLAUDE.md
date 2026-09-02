@@ -546,7 +546,7 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
   sampled reads were already warm. Never put a guessed timeout around it.
 - **`livewire_quality.py` loads the scheduled env for `health` too**, alongside
   `watchdog` and `coverage`. A manual full scan started from a bare shell
-  otherwise resolves `MDW_DATA_LAKE_DIR`/`MDW_LOG_DIR` to defaults that may not
+  otherwise resolves `MDW_DATA_LAKE`/`MDW_LOG_DIR` to defaults that may not
   be this warehouse — it would scan the wrong tree and write its artifact where
   nothing reads it.
 - ⚠️ **Coverage has its own job because every budget guessed for it expired.**
