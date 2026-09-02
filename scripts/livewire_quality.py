@@ -60,7 +60,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # — it would measure the gap and then be unable to recover it or say so.
         # `health` joined the list when the interior gap scan left the daily
         # job's tail for com.livewire.interior-gap-scan: it used to inherit the
-        # scheduled parent's env and now has no parent, so MDW_DATA_LAKE_DIR /
+        # scheduled parent's env and now has no parent, so MDW_DATA_LAKE /
         # MDW_LOG_DIR would resolve to defaults that may not be this warehouse.
         load_scheduled_env(REPO_ROOT)
     return _dispatch_module(COMMANDS[args.command], rest, f"livewire_quality.py {args.command}")

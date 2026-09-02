@@ -51,3 +51,17 @@ jobs:
 
       - name: Pytest
         run: uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning
+
+      # The alert path is Node, and every scheduled failure page goes through it.
+      # Pytest cannot reach it, so an untested alert regression ships silently —
+      # the exact shape of the quoted-printable digest corruption.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Node alert tests
+        run: npm run test:alerts

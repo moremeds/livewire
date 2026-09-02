@@ -595,7 +595,7 @@ def test_quality_health_loads_scheduled_env(monkeypatch, tmp_path) -> None:
     """The interior gap scan runs as its own launchd job now.
 
     It used to be spawned by the daily job and inherit that parent's env.
-    launchd starts it cold, so without this MDW_DATA_LAKE_DIR / MDW_LOG_DIR
+    launchd starts it cold, so without this MDW_DATA_LAKE / MDW_LOG_DIR
     resolve to defaults that may not be this warehouse — it would scan the
     wrong tree and write its artifact somewhere nothing reads.
     """
