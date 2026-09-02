@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import contextlib
 import os
+import socket
 import subprocess
-from datetime import UTC, datetime
+import sys
+import time
+from datetime import UTC, date, datetime
 from pathlib import Path
 from subprocess import CompletedProcess
 from types import SimpleNamespace
@@ -31,7 +34,6 @@ from livewire_scripts.run_daily_update_job import (
     build_log_file,
     build_silver_rebuild_command,
     extract_error_summary,
-    log_has_completion_marker,
     main,
     node_binary_exists,
     run_cboe_volatility_sync,
@@ -43,8 +45,174 @@ from livewire_scripts.run_daily_update_job import (
 )
 
 
+class TestPerLaneBudgets:
+    @pytest.fixture(autouse=True)
+    def ledger_root(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+        monkeypatch.setenv("LW_RUN_ID", "daily-update-20260902T060000Z-1")
+
+    def _lane(self, config, lane, command):
+        return daily_runner._run_scheduled_lane(
+            config,
+            command,
+            lane,
+            lane,
+            env=None,
+            runner=daily_runner._run_in_own_process_group,
+            now_fn=daily_runner._utc_now,
+        )
+
+    def test_a_lane_over_budget_is_killed_and_the_next_lane_still_runs(self, tmp_path, monkeypatch):
+        from clients import ledger
+
+        config = _config(tmp_path)
+        monkeypatch.setitem(daily_runner.LANE_BUDGET_S, "cmdty", 1.0)
+        self._lane(config, "futures", ["true"])
+        self._lane(config, "cmdty", [sys.executable, "-c", "import time; time.sleep(30)"])
+        self._lane(config, "cboe", ["true"])
+        assert ledger.query(
+            "select lane, outcome, exit_code from lane_results "
+            "where outcome is not null order by lane"
+        ) == [
+            {"lane": "cboe", "outcome": "done", "exit_code": 0},
+            {"lane": "cmdty", "outcome": "timeout", "exit_code": 124},
+            {"lane": "futures", "outcome": "done", "exit_code": 0},
+        ]
+
+    def test_a_lane_that_exits_86_blocks_and_the_next_lane_starts(self, tmp_path):
+        from clients import ledger
+
+        started = time.monotonic()
+        config = _config(tmp_path)
+        self._lane(config, "futures", [sys.executable, "-c", "raise SystemExit(86)"])
+        self._lane(config, "cmdty", ["true"])
+        assert time.monotonic() - started < 5.0
+        assert ledger.query(
+            "select lane, outcome, blocker from lane_results where outcome is not null order by lane"
+        ) == [
+            {"lane": "cmdty", "outcome": "done", "blocker": None},
+            {"lane": "futures", "outcome": "blocked", "blocker": "ib_unreachable"},
+        ]
+
+    def test_each_lane_writes_an_entry_row_before_it_runs(self, tmp_path):
+        from clients import ledger
+
+        self._lane(_config(tmp_path), "cboe", ["true"])
+        assert [
+            row["outcome"]
+            for row in ledger.query("select outcome from lane_results order by ended nulls first")
+        ] == [None, "done"]
+
+    def test_run_with_retries_records_a_lane_row_and_uses_the_lane_budget(self, tmp_path, monkeypatch):
+        from clients import ledger
+
+        monkeypatch.setitem(daily_runner.LANE_BUDGET_S, "futures", 1234.0)
+        seen = {}
+
+        def runner(command, stdout=None, env=None, timeout=None, **_):
+            seen["timeout"] = timeout
+            return SimpleNamespace(returncode=0, stdout="")
+
+        assert daily_runner.run_with_retries(
+            _config(tmp_path),
+            ["--asset-class", "futures"],
+            runner=runner,
+            sleep_fn=lambda _: None,
+            completion_scope="futures",
+        ) == 0
+        assert seen["timeout"] == 1234.0
+        assert ledger.query(
+            "select lane, outcome, budget_s from lane_results order by ended nulls first"
+        ) == [
+            {"lane": "futures", "outcome": None, "budget_s": 1234.0},
+            {"lane": "futures", "outcome": "done", "budget_s": 1234.0},
+        ]
+
+    def test_run_with_retries_records_a_blocked_lane_on_86(self, tmp_path):
+        from clients import ledger
+
+        def runner(command, stdout=None, env=None, timeout=None, **_):
+            return SimpleNamespace(returncode=GATEWAY_DOWN_EXIT_CODE, stdout="")
+
+        daily_runner.run_with_retries(
+            _config(tmp_path),
+            ["--asset-class", "cmdty"],
+            runner=runner,
+            sleep_fn=lambda _: None,
+            completion_scope="cmdty",
+        )
+        assert ledger.query(
+            "select outcome, blocker from lane_results where outcome is not null"
+        ) == [{"outcome": "blocked", "blocker": "ib_unreachable"}]
+
+    def test_main_runs_the_no_fallback_lanes_before_the_expensive_ones(self, tmp_path, monkeypatch):
+        order = []
+        monkeypatch.setattr(daily_runner, "build_config", lambda: _config(tmp_path))
+        monkeypatch.setattr(
+            daily_runner,
+            "_run_scheduled_lane",
+            lambda config, command, label, scope, **kwargs: order.append(scope) or 0,
+        )
+        monkeypatch.setattr(
+            daily_runner,
+            "run_with_retries",
+            lambda config, args, **kwargs: order.append(kwargs["completion_scope"]) or 0,
+        )
+        daily_runner.main([])
+        assert order.index("futures") < order.index("corporate-actions")
+        assert order.index("cmdty") < order.index("corporate-actions")
+        assert order.index("corporate-actions") < order.index("equity") < order.index("silver")
+
+    def test_main_opens_and_closes_one_runs_row(self, tmp_path, monkeypatch):
+        from clients import ledger
+
+        monkeypatch.setattr(daily_runner, "build_config", lambda: _config(tmp_path))
+        monkeypatch.setattr(daily_runner, "run_with_retries", lambda *args, **kwargs: 0)
+        monkeypatch.setattr(daily_runner, "_run_scheduled_lane", lambda *args, **kwargs: 0)
+        assert daily_runner.main([]) == 0
+        runs = ledger.query("select job, host, verdict from runs order by ended nulls first")
+        assert [row["job"] for row in runs] == ["daily-update", "daily-update"]
+        assert runs[0]["verdict"] is None and runs[1]["verdict"] == "OK"
+        assert runs[0]["host"] == socket.gethostname()
+
+    def test_the_silver_gate_reads_the_equity_lane_row_not_an_in_process_dict(self):
+        from clients import ledger
+
+        now = datetime.now(UTC)
+        ledger.emit(
+            "lane_results",
+            [{
+                "run_id": "daily-update-20260902T060000Z-1",
+                "lane": "equity",
+                "started": now,
+                "ended": now,
+                "exit_code": 1,
+                "budget_s": 7200.0,
+                "elapsed_s": 1.0,
+                "outcome": "failed",
+                "blocker": None,
+            }],
+            run_id="daily-update-20260902T060000Z-1",
+        )
+        assert daily_runner.silver_is_blocked() == "equity"
+
+    def test_a_lane_records_the_session_it_reached(self):
+        from clients import ledger
+
+        daily_runner._emit_last_session("futures", date(2026, 9, 1))
+        assert ledger.query("select name, scope, value, unit, source from measurements") == [
+            {
+                "name": "last_session",
+                "scope": "futures",
+                "value": 20697.0,
+                "unit": "epoch_days",
+                "source": "measured",
+            }
+        ]
+
+
 @pytest.fixture(autouse=True)
-def no_real_quality_spawn():
+def no_real_quality_spawn(tmp_path, monkeypatch):
     """Keep main() from shelling out to the real quality CLI.
 
     main() ends by spawning coverage/weekly/digest. Unpatched, a unit test
@@ -52,6 +220,8 @@ def no_real_quality_spawn():
     warehouse — and coverage runs auto-recovery subprocesses that write
     bronze. Autouse so a new main() test cannot forget it.
     """
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-test")
     with patch("livewire_scripts.run_daily_update_job.run_post_success_quality") as spawn:
         yield spawn
 
@@ -68,6 +238,27 @@ def _config(tmp_path: Path, *, node_bin: str = "/opt/homebrew/bin/node") -> Runn
         node_bin=node_bin,
         max_attempts=3,
         retry_delay_seconds=300,
+    )
+
+
+def _emit_test_lane(scope: str, code: int) -> None:
+    from clients import ledger
+
+    now = datetime.now(UTC)
+    ledger.emit(
+        "lane_results",
+        [{
+            "run_id": daily_runner.run_id(),
+            "lane": scope,
+            "started": now,
+            "ended": now,
+            "exit_code": code,
+            "budget_s": 1.0,
+            "elapsed_s": 0.0,
+            "outcome": "done" if code == 0 else "failed",
+            "blocker": None,
+        }],
+        run_id=daily_runner.run_id(),
     )
 
 
@@ -210,7 +401,7 @@ class TestHelpers:
         )
         assert extract_error_summary(empty_log) == "Daily update failed with no error summary captured in the log."
 
-    def test_extract_error_summary_and_completion_marker(self, tmp_path):
+    def test_extract_error_summary(self, tmp_path):
         log_file = tmp_path / "daily.log"
         log_file.write_text(
             "\n".join(
@@ -225,34 +416,6 @@ class TestHelpers:
         )
 
         assert extract_error_summary(log_file) == "Traceback: boom"
-        assert log_has_completion_marker(log_file) is True
-        assert log_has_completion_marker(tmp_path / "nope.log") is False
-
-        no_marker = tmp_path / "no_marker.log"
-        no_marker.write_text("started\nfailed\n", encoding="utf-8")
-        assert log_has_completion_marker(no_marker) is False
-
-    def test_completed_scopes_parses_per_asset_markers(self, tmp_path):
-        log_file = tmp_path / "daily.log"
-        log_file.write_text(
-            "\n".join(
-                [
-                    "=== Done equity 2026-03-11T20:05:08Z (attempt 1/3) ===",
-                    "=== Done futures 2026-03-11T20:05:09Z (attempt 1/3) ===",
-                    "=== Done cboe 2026-03-11T20:05:10Z ===",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-
-        assert daily_runner.completed_scopes(log_file) == {"equity", "futures", "cboe"}
-
-    def test_legacy_done_line_counts_as_wildcard(self, tmp_path):
-        log_file = tmp_path / "daily.log"
-        log_file.write_text("=== Done 2026-03-11T20:05:08Z (attempt 1/3) ===\n", encoding="utf-8")
-
-        assert daily_runner.completed_scopes(log_file) == {"*"}
 
     def test_extract_error_summary_prefers_summary_json(self, tmp_path):
         from livewire_scripts.daily_outcomes import build_summary_line
@@ -502,7 +665,7 @@ class TestRunWithRetries:
 
         assert rc == 0
         log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(encoding="utf-8")
-        assert "Runner config: attempts=3 retry_delay_seconds=300 hostname=warehouse.local" in log_text
+        assert "Runner config: attempts=3 retry_delay_seconds=300 budget_s=1800 hostname=warehouse.local" in log_text
         assert "=== Done daily 2026-03-11T20:05:09Z (attempt 1/3) ===" in log_text
 
     def test_retry_then_success(self, tmp_path):
@@ -659,6 +822,11 @@ class TestRunWithRetries:
         assert rc == 3
         log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(encoding="utf-8")
         assert "WARNING: failure alert returned non-zero exit code 2. smtp down" in log_text
+        from clients import ledger
+
+        assert ledger.query("select script, exit_code from executions where script = 'send_alert'") == [
+            {"script": "send_alert", "exit_code": 2}
+        ]
 
 
 class TestCboeVolatilitySync:
@@ -829,13 +997,18 @@ class TestMain:
         ):
             assert main(["--dry-run"]) == 0
 
-        assert calls == ["actions", *ASSET_CLASSES, "cboe", "fx", "silver"]
+        assert calls == ["futures", "cmdty", "cboe", "fx", "actions", "equity", "silver"]
 
     def test_failed_action_sync_prevents_silver_rebuild(self):
         config = _config(Path("/tmp/test"))
+
+        def actions(*args, **kwargs):
+            _emit_test_lane("corporate-actions", 2)
+            return 2
+
         with (
             patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
-            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=2),
+            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", side_effect=actions),
             patch("livewire_scripts.run_daily_update_job.run_with_retries", return_value=0),
             patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0),
             patch("livewire_scripts.run_daily_update_job.run_fx_sync", return_value=0),
@@ -848,7 +1021,9 @@ class TestMain:
         config = _config(Path("/tmp/test"))
 
         def daily(cfg, args, env, completion_scope=None, **kwargs):
-            return 3 if completion_scope == "equity" else 0
+            code = 3 if completion_scope == "equity" else 0
+            _emit_test_lane(completion_scope, code)
+            return code
 
         with (
             patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
@@ -903,7 +1078,10 @@ class TestMain:
             assert main(["--dry-run"]) == 0
 
         # IB syncs equity, futures and cmdty; volatility via CBOE, fx via Yahoo/Massive
-        assert ib_calls == [["--dry-run", "--asset-class", ac] for ac in ASSET_CLASSES]
+        assert ib_calls == [
+            ["--dry-run", "--asset-class", asset_class]
+            for asset_class in ("futures", "cmdty", "equity")
+        ]
         assert cboe_called == [True]
         assert fx_called == [True]
         assert "cmdty" in ASSET_CLASSES
@@ -926,8 +1104,6 @@ class TestMain:
         assert call.args == (config, ["--dry-run", "--asset-class", "equity"])
         assert call.kwargs["env"] == os.environ.copy()
         assert call.kwargs["completion_scope"] == "equity"
-        # One budget for the whole job, threaded into every lane.
-        assert call.kwargs["deadline"].total_seconds == 4 * 60 * 60
         cboe_mock.assert_not_called()
         fx_mock.assert_not_called()
 
@@ -936,15 +1112,42 @@ class TestMain:
         config = _config(Path("/tmp/test"))
         codes = dict(lane_codes or {})
 
+        def _emit(scope, code):
+            from clients import ledger
+
+            now = datetime.now(UTC)
+            ledger.emit(
+                "lane_results",
+                [{
+                    "run_id": daily_runner.run_id(),
+                    "lane": scope,
+                    "started": now,
+                    "ended": now,
+                    "exit_code": code,
+                    "budget_s": 1.0,
+                    "elapsed_s": 0.0,
+                    "outcome": "done" if code == 0 else "failed",
+                    "blocker": None,
+                }],
+                run_id=daily_runner.run_id(),
+            )
+
         def _run(cfg, args, env, completion_scope=None, **kwargs):
             name = args[args.index("--asset-class") + 1]
             if name in gateway_down:
-                return GATEWAY_DOWN_EXIT_CODE
-            return codes.get(name, 0)
+                code = GATEWAY_DOWN_EXIT_CODE
+            else:
+                code = codes.get(name, 0)
+            _emit(name, code)
+            return code
+
+        def _action(*args, **kwargs):
+            _emit("corporate-actions", action)
+            return action
 
         with (
             patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
-            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=action),
+            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", side_effect=_action),
             patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=_run),
             patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=cboe),
             patch("livewire_scripts.run_daily_update_job.run_fx_sync", return_value=fx),
@@ -988,6 +1191,9 @@ class TestMain:
         rc, silver = self._main_with(gateway_down=("futures", "cmdty"))
         assert rc == 0
         silver.assert_called_once()
+        from clients import ledger
+
+        assert ledger.query("select verdict from runs where verdict is not null") == [{"verdict": "DEGRADED"}]
 
     def test_quality_jobs_run_once_after_silver(self, no_real_quality_spawn):
         """Four asset classes used to mean four coverage runs and four digests.
@@ -1002,31 +1208,6 @@ class TestMain:
         assert no_real_quality_spawn.call_count == 1
 
 
-class TestJobDeadline:
-    """One budget for the WHOLE job.
-
-    `main()` runs seven lanes sequentially (corporate-actions, equity, futures,
-    cmdty, CBOE, FX, Silver), so a per-lane budget of N hours permits a 7N-hour
-    job. Measured whole-job wall clock over 2026-07-01..28: healthy runs peak at
-    3.27h (07-25), anomalies reached 19.44h (07-28). The watchdog checks at
-    +4.5h (06:00 -> 10:30 UTC), so the budget must sit in (3.27h, 4.5h).
-    """
-
-    def test_the_default_clears_the_worst_healthy_run_and_beats_the_watchdog(self, monkeypatch):
-        monkeypatch.delenv("MDW_DAILY_JOB_DEADLINE_SECONDS", raising=False)
-        deadline = daily_runner.JobDeadline.start()
-        assert 3.27 * 3600 < deadline.total_seconds < 4.5 * 3600
-
-    def test_remaining_shrinks_as_the_job_runs(self):
-        clock = iter([1000.0, 4600.0])
-        deadline = daily_runner.JobDeadline.start(total_seconds=7200, clock=lambda: next(clock))
-        assert deadline.remaining() == 7200 - 3600
-
-    def test_the_budget_is_tunable(self, monkeypatch):
-        monkeypatch.setenv("MDW_DAILY_JOB_DEADLINE_SECONDS", "600")
-        assert daily_runner.JobDeadline.start().total_seconds == 600
-
-
 class TestAttemptTimeout:
     def test_a_hung_attempt_is_killed_and_reported_as_timeout(self, tmp_path):
         log_file = tmp_path / "job.log"
@@ -1039,35 +1220,6 @@ class TestAttemptTimeout:
 
         assert result.returncode == daily_runner.TIMEOUT_EXIT_CODE
         assert "process group killed" in log_file.read_text(encoding="utf-8")
-
-    def test_a_lane_started_past_the_deadline_never_runs(self, tmp_path):
-        """Handing subprocess a zero or negative timeout is a crash, not a skip."""
-        log_file = tmp_path / "job.log"
-        called = []
-        deadline = daily_runner.JobDeadline.start(total_seconds=0, clock=lambda: 0.0)
-
-        result = run_daily_update_attempt(
-            ["x"], log_file, runner=lambda cmd, **kw: called.append(cmd), deadline=deadline
-        )
-
-        assert result.returncode == daily_runner.TIMEOUT_EXIT_CODE
-        assert called == []
-
-    def test_a_healthy_attempt_spends_the_remaining_deadline(self, tmp_path):
-        log_file = tmp_path / "job.log"
-        seen = {}
-
-        def runner(cmd, **kwargs):
-            seen.update(kwargs)
-            return SimpleNamespace(returncode=0, stdout="")
-
-        clock = iter([0.0, 600.0])
-        deadline = daily_runner.JobDeadline.start(total_seconds=7200, clock=lambda: next(clock))
-        result = run_daily_update_attempt(["x"], log_file, runner=runner, deadline=deadline)
-
-        assert result.returncode == 0
-        assert seen["timeout"] == 7200 - 600
-
 
 class TestTimeoutPages:
     """send_failure_alert sits at the END of run_with_retries and is reachable
@@ -1231,10 +1383,20 @@ class TestTheEquityLaneFallsBackToMassive:
     @contextlib.contextmanager
     def _lanes(config, daily, silver_code):
         """Everything main() calls except the equity retry under test."""
+        def recorded_daily(*args, **kwargs):
+            code = daily(*args, **kwargs)
+            scope = kwargs.get("completion_scope")
+            _emit_test_lane(scope, code)
+            return code
+
+        def actions(*args, **kwargs):
+            _emit_test_lane("corporate-actions", 0)
+            return 0
+
         with (
             patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
-            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
-            patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=daily),
+            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", side_effect=actions),
+            patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=recorded_daily),
             patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0),
             patch("livewire_scripts.run_daily_update_job.run_fx_sync", return_value=0),
             patch(
