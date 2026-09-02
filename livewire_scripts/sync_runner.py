@@ -11,12 +11,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -26,6 +27,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from clients import ledger
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, parse_last_summary_json
 
@@ -38,6 +40,14 @@ TIMEOUT_EXIT_CODE = 124
 VOL_DAILY_PRESET = "presets/volatility.json"
 EQUITY_INTRADAY_TIMEFRAMES = ("1m", "5m", "1h")
 VOL_INTRADAY_TIMEFRAMES = ("30m", "5m")
+
+
+def _emit_ledger(table: str, rows: list[dict], run: str) -> None:
+    """Keep reporting failures from aborting the market-data work."""
+    try:
+        ledger.emit(table, rows, run_id=run)
+    except Exception as exc:  # pragma: no cover - observable, but non-fatal
+        logger.error("could not write %s ledger row: %s", table, exc)
 
 
 @dataclass(frozen=True)
@@ -138,6 +148,27 @@ def run_phase(
     logger.info("CMD %s: %s", label, _format_command(command))
 
     budget = phase_timeout_seconds() if timeout is None else timeout
+    run = os.environ.get("LW_RUN_ID")
+    started = datetime.now(UTC)
+    if run:
+        _emit_ledger(
+            "lane_results",
+            [
+                {
+                    "run_id": run,
+                    "lane": label,
+                    "started": started,
+                    "ended": None,
+                    "exit_code": None,
+                    "budget_s": float(budget),
+                    "elapsed_s": None,
+                    "outcome": None,
+                    "blocker": None,
+                }
+            ],
+            run,
+        )
+    clock = time.monotonic()
     with log_file.open("a", encoding="utf-8") as fh:
         try:
             result = runner(
@@ -150,9 +181,9 @@ def run_phase(
             )
         except subprocess.TimeoutExpired:
             logger.error("%s exceeded its %ds budget and was killed", label, budget)
-            return TIMEOUT_EXIT_CODE
+            result = subprocess.CompletedProcess(command, TIMEOUT_EXIT_CODE)
 
-    if result.returncode != 0:
+    if result.returncode not in (0, TIMEOUT_EXIT_CODE):
         if allow_completed_summary:
             try:
                 with log_file.open(encoding="utf-8") as fh:
@@ -165,11 +196,39 @@ def run_phase(
                         label,
                         result.returncode,
                     )
-                    return 0
+                    result = subprocess.CompletedProcess(command, 0)
             except FileNotFoundError:
                 pass
-        logger.warning("%s exited with code %d", label, result.returncode)
+        if result.returncode != 0:
+            logger.warning("%s exited with code %d", label, result.returncode)
 
+    if run:
+        code = result.returncode
+        _emit_ledger(
+            "lane_results",
+            [
+                {
+                    "run_id": run,
+                    "lane": label,
+                    "started": started,
+                    "ended": datetime.now(UTC),
+                    "exit_code": code,
+                    "budget_s": float(budget),
+                    "elapsed_s": time.monotonic() - clock,
+                    "outcome": (
+                        "done"
+                        if code == 0
+                        else "timeout"
+                        if code == TIMEOUT_EXIT_CODE
+                        else "blocked"
+                        if code == GATEWAY_DOWN_EXIT_CODE
+                        else "failed"
+                    ),
+                    "blocker": "ib_unreachable" if code == GATEWAY_DOWN_EXIT_CODE else None,
+                }
+            ],
+            run,
+        )
     return result.returncode
 
 
@@ -407,6 +466,8 @@ def run_sync(
 def main(argv: Sequence[str] | None = None) -> int:
     import argparse
 
+    os.environ.setdefault("LW_RUN_ID", ledger.new_run_id("intraday-catchup"))
+
     parser = argparse.ArgumentParser(description="Daily sync runner — routine warehouse catch-up")
     parser.add_argument("--target-date", type=str, default=None)
     parser.add_argument("--intraday-days", type=int, default=None)
@@ -426,7 +487,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     if overrides:
         config = replace(config, **overrides)
 
-    return run_sync(config)
+    started = datetime.now(UTC)
+    run = os.environ["LW_RUN_ID"]
+    run_row = {
+        "run_id": run,
+        "job": "intraday-catchup",
+        "host": socket.gethostname(),
+        "release_sha": os.environ.get("LW_RELEASE_SHA"),
+        "presets_sha": None,
+        "registry_sha": None,
+        "started": started,
+        "ended": None,
+        "exit_code": None,
+        "verdict": None,
+    }
+    _emit_ledger("runs", [run_row], run)
+    try:
+        code = run_sync(config)
+    except BaseException:
+        _emit_ledger(
+            "runs",
+            [run_row | {"ended": datetime.now(UTC), "exit_code": 1, "verdict": "FAILED"}],
+            run,
+        )
+        raise
+    _emit_ledger(
+        "runs",
+        [run_row | {"ended": datetime.now(UTC), "exit_code": code, "verdict": "FAILED" if code else "OK"}],
+        run,
+    )
+    return code
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -36,6 +36,12 @@ def _touch(path: Path, *, days_old: int = 0) -> Path:
     return path
 
 
+def test_the_ledger_is_protected_by_name() -> None:
+    from livewire_scripts.housekeeping import PROTECTED_LAKE_DIRS
+
+    assert "ledger" in PROTECTED_LAKE_DIRS
+
+
 # Checked against BOTH planners. `plan_housekeeping` no longer walks the lake at
 # all, so on its own these would pass vacuously — and a protection test that
 # cannot fail is worse than none, because it reads as coverage.
@@ -54,6 +60,7 @@ def _touch(path: Path, *, days_old: int = 0) -> Path:
         "repairs/adjusted-silver-cutover-20260715-production/A.abc.parquet.bak",
         # the protection must hold for the sidecars inside those trees too
         "raw/massive/us_stocks_sip/day_aggs_v1/date=2021-07-28/._part.parquet",
+        "ledger/runs/date=2026-09-02/r1.parquet",
     ],
 )
 class TestProtectedPathsSurvive:

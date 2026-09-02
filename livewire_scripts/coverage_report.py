@@ -32,6 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
 import pyarrow.parquet as pq
 from rich.console import Console
 
+from clients import ledger
 from clients.corporate_action_store import CorporateActionStore
 from clients.coverage_denominator import DUE_LAG_DAYS, build_denominator, session_due_at
 from clients.gap_engine import (
@@ -158,7 +159,7 @@ def _latest_date_in_parquet(path: Path, column_name: str) -> date | None:
     read-only detector over ~70K files; a single truncated footer used to raise
     out of `pool.map` and abort the whole run. It did, nine times: IGA's
     `5m.parquet` and VSLU's `1m.parquet` (`Parquet magic bytes not found in
-    footer`) took the 11:00 UTC job down repeatedly and coverage logs stop for
+    footer`) took the scheduled job down repeatedly and coverage logs stop for
     days at a time around each one. The lake lives on an external exFAT volume
     that bronze publishes to by `os.replace()`, so a torn file is a normal
     operating condition, not an exceptional one.
@@ -496,6 +497,75 @@ def format_one_liner(target_date: date, results: dict[str, CoverageResult]) -> s
     return f"{target_date} coverage: " + " ".join(parts)
 
 
+def emit_coverage_measurements(results: dict[str, CoverageResult], *, elapsed_s: float) -> None:
+    """Publish coverage ratios and elapsed time as ledger measurements."""
+    now = datetime.now(UTC)
+    run = os.environ["LW_RUN_ID"]
+    rows = [
+        {
+            "name": "coverage_pct",
+            "scope": timeframe,
+            "measured_at": now,
+            "value": float(result.ratio),
+            "unit": "ratio",
+            "source": "measured",
+            "run_id": run,
+        }
+        for timeframe, result in sorted(results.items())
+    ]
+    rows.extend(
+        {
+            "name": "coverage_total",
+            "scope": timeframe,
+            "measured_at": now,
+            "value": float(result.total),
+            "unit": "symbols",
+            "source": "measured",
+            "run_id": run,
+        }
+        for timeframe, result in sorted(results.items())
+    )
+    rows.append(
+        {
+            "name": "coverage_elapsed_s",
+            "scope": "all",
+            "measured_at": now,
+            "value": float(elapsed_s),
+            "unit": "s",
+            "source": "measured",
+            "run_id": run,
+        }
+    )
+    try:
+        ledger.emit("measurements", rows, run_id=run)
+    except Exception as exc:  # pragma: no cover - reporting must not abort coverage
+        log.error("could not write coverage measurements: %s", exc)
+
+
+def emit_coverage_scan_measurement(success: bool) -> None:
+    """Publish whether the classifier half of coverage completed."""
+    now = datetime.now(UTC)
+    run = os.environ["LW_RUN_ID"]
+    try:
+        ledger.emit(
+            "measurements",
+            [
+                {
+                    "name": "coverage_scan_ok",
+                    "scope": "all",
+                    "measured_at": now,
+                    "value": float(success),
+                    "unit": "boolean",
+                    "source": "measured",
+                    "run_id": run,
+                }
+            ],
+            run_id=run,
+        )
+    except Exception as exc:  # pragma: no cover - reporting must not abort coverage
+        log.error("could not write coverage scan measurement: %s", exc)
+
+
 # The classifier window. gap_scan used 30 days; keeping it means the artifacts
 # this produces are comparable to the ones it produced.
 SCAN_WINDOW_DAYS = 30
@@ -687,7 +757,7 @@ def _newest_due_session(target_date: date, lag_days: int, as_of: datetime) -> da
 
     Asking only about `target_date` is what made rates permanently invisible.
     The run targets the previous trading session S and rates are due at S+2
-    10:00 UTC, but the job runs at S+1 11:00 UTC -- so rates scored 0/0 and, the
+    15:00 UTC, but the job runs at S+1 15:30 UTC -- so rates scored 0/0 and, the
     next night, the target had already advanced to S+1. Session S was never
     revisited by any run. 0/0 maps to ratio 1.0, so it read green forever: a
     detector reporting perfect health because it enumerated nothing, which is
@@ -1012,6 +1082,7 @@ def _scan_and_write_artifacts(target: date, as_of: datetime) -> str:
 
 
 def main() -> None:
+    os.environ.setdefault("LW_RUN_ID", ledger.new_run_id("coverage"))
     parser = argparse.ArgumentParser(description="Daily coverage report + auto-recovery")
     parser.add_argument(
         "--target-date",
@@ -1049,12 +1120,14 @@ def main() -> None:
     as_of = datetime.now(UTC)
     # Cached across runs: an unchanged (mtime, size) cannot mean a later max
     # date, and the cold footer walk is what this job's runtime actually is.
+    coverage_started = time.monotonic()
     results = compute_coverage(
         target,
         cache_path=_resolved_log_dir() / "coverage_footer_cache.json",
         as_of=as_of,
     )
     line = format_one_liner(target, results)
+    emit_coverage_measurements(results, elapsed_s=time.monotonic() - coverage_started)
     console.print(line)
     blocks = [*format_missing_blocks(results), *format_terminus_block(results)]
     for block in blocks:
@@ -1085,6 +1158,7 @@ def main() -> None:
     log_path = write_coverage_log(target, line, [*blocks, non_equity_line], results)
 
     scan_line = _scan_and_write_artifacts(target, as_of)
+    emit_coverage_scan_measurement("FAILED" not in scan_line)
     console.print(scan_line)
     with log_path.open("a", encoding="utf-8") as fh:
         fh.write(scan_line + "\n")

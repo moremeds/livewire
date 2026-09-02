@@ -42,8 +42,9 @@ from livewire_scripts.release import prune as prune_releases
 log = logging.getLogger(__name__)
 
 #: Lake subtrees no retention rule may ever enter. Matched on the path's parts,
-#: so `repairs/triage/anything/deeper` is protected too.
-PROTECTED_LAKE_DIRS = frozenset({"raw", "repairs"})
+#: so `repairs/triage/anything/deeper` is protected too. The ledger is the run
+#: record every reader grades against, so pruning it would erase a night.
+PROTECTED_LAKE_DIRS = frozenset({"raw", "repairs", "ledger"})
 
 LOG_RETENTION_DAYS = 60
 KEEP_RELEASES = 3

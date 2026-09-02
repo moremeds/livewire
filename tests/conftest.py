@@ -25,6 +25,7 @@ def _isolate_reliability_artifact_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("MDW_TELEMETRY_PATH", str(tmp_path / "telemetry.jsonl"))
     monkeypatch.setenv("MDW_UNDELIVERED_DIR", str(tmp_path / "quality_alerts_undelivered"))
     monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
 
 
 @pytest.fixture()

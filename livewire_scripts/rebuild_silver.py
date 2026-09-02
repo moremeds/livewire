@@ -320,7 +320,7 @@ def _summary(**values) -> None:
     """Emit the machine-readable run summary on the shared SUMMARY_JSON contract.
 
     This line used to print as bare JSON. `parse_all_summary_json` skips every
-    line without the prefix, so `nightly_digest._silver_section` never found it
+    line without the prefix, so the ledger measurement writer never found it
     and rendered "(not found)" on nights the rebuild had in fact succeeded —
     taking the `window_regressions` warning with it. That warning is the ONLY
     alert for a symbol whose window shrank (the run still exits 0), so the

@@ -61,8 +61,7 @@ warehouse paths.
 | `MDW_ORCHESTRATOR_MAX_ATTEMPTS`     | `3`                                                   | Per-ticker retry budget for `livewire_ingest.py robust`                                            |
 | `MDW_ORCHESTRATOR_COOLDOWN_SECONDS` | `60`                                                  | Sleep between orchestrator retry attempts                                                          |
 | `MDW_LOG_LEVEL`                     | `INFO`                                                | Logger root level for reliability tooling                                                          |
-| `MDW_UNDELIVERED_DIR`               | `~/market-warehouse/logs/quality_alerts_undelivered/` | Where failed per-flag alert HTML bodies are preserved                                              |
-| `MDW_LOG_DIR`                       | `~/market-warehouse/logs/`                            | Where `livewire_quality.py report --email` writes `quality_summary_YYYY-MM-DD.marker`              |
+| `MDW_LOG_DIR`                       | `~/market-warehouse/logs/`                            | Runtime log directory                                                                               |
 | `MDW_SOURCE_EVIDENCE`               | `on`                                                  | Set to `off`/`0`/`false`/`no` to stop `corporate-actions` collecting exact provider response bytes |
 
 ### Massive S3 flat files
@@ -84,7 +83,6 @@ warehouse paths.
 | Variable                           | Default      | Meaning                                                                           |
 | ---------------------------------- | ------------ | --------------------------------------------------------------------------------- |
 | `MDW_SYNC_PHASE_TIMEOUT_SECONDS`   | `21600` (6h) | Hard per-phase budget in `daily-backfill`                                         |
-| `MDW_DAILY_JOB_DEADLINE_SECONDS`   | `14400` (4h) | **Total** wall-clock budget for one `run-daily-job` run, shared across every lane |
 | `MDW_DAILY_BACKFILL_INTRADAY_DAYS` | `7`          | Whole-market flat-file catch-up window in `daily-backfill`                        |
 | `MDW_DAILY_BACKFILL_DAY_AGGS_DAYS` | `7`          | `flatfile-ingest-daily catch-up` window in `daily-backfill`                       |
 | `MDW_COVERAGE_ALERT_THRESHOLD`     | `0.95`       | Coverage ratio below which `coverage` triggers a targeted backfill                |
@@ -636,6 +634,15 @@ Grades nine cheap signals and prints a fix command for anything not OK. It reads
 only what the nightly jobs already produced — it never scans parquet. Exit code is
 always 0. `Verdict` is ordered `OK < UNKNOWN < WARN < BAD`.
 
+### Ledger
+
+```bash
+uv run python scripts/livewire_ops.py ledger query "select lane, outcome, elapsed_s from lane_results order by started desc limit 20"
+uv run python scripts/livewire_ops.py ledger query "select scope, date '1970-01-01' + cast(value as int) as last_session from measurements where name = 'last_session'"
+uv run python scripts/livewire_ops.py ledger emit --table evidence --json '{"evidence_hash":"…","kind":"request","subject":"silver:TSLA","payload_json":"{}","source_url":null,"fetched_at":"2026-09-02T06:00:00+00:00","proposer":"human","run_id":"manual-1"}'
+# LW_LEDGER_ROOT overrides the root (default <lake>/ledger); LW_RUN_ID names the run.
+```
+
 ### Weekly quality summary
 
 Pure parser over the seven daily coverage logs from the previous ISO week.
@@ -684,10 +691,7 @@ sidecar and audit JSONL schemas are in
 python scripts/livewire_quality.py digest --run-date YYYY-MM-DD --email
 ```
 
-Assembles one plain-text report from the per-job `SUMMARY_JSON` lines (outcome
-table per asset class, intraday phase table, coverage line, disk headroom) and
-writes `quality_summary_YYYY-MM-DD.marker` for the watchdog. Reads the newest
-`coverage_*.log` and warns when it is more than 3 days old.
+Renders the same ledger-backed checks as `status`; it does not parse job logs.
 
 ### Watchdog
 
@@ -695,9 +699,7 @@ writes `quality_summary_YYYY-MM-DD.marker` for the watchdog. Reads the newest
 python scripts/livewire_quality.py watchdog
 ```
 
-Runs at 10:30 UTC daily; alerts if the scheduled sync never started or never
-logged a completion marker. It requires the `silver` scope and reads the equity
-`SUMMARY_JSON`.
+Runs at 10:30 UTC daily and pages only when a ledger-backed status check is BAD.
 
 ### Alerts
 
@@ -705,9 +707,8 @@ logged a completion marker. It requires the `silver` scope and reads the equity
 python scripts/livewire_ops.py send-alert
 ```
 
-Nodemailer CLI behind every failure page. Alerts that fail to send are persisted
-to `<log_dir>/alerts_undelivered/`; per-flag quality alerts go to
-`MDW_UNDELIVERED_DIR`. Alert values must use the single-token `--key=value` form.
+Nodemailer CLI behind every failure page. Failed sends are recorded as ledger
+execution rows. Alert values must use the single-token `--key=value` form.
 
 ### Daily-run outcome categories
 
@@ -897,7 +898,6 @@ python scripts/livewire_ingest.py shepherd-universe verify --index <INDEX> --rev
 | Coverage             | `~/market-warehouse/logs/coverage_YYYY-MM-DD.log`                         |
 | Interior gaps        | `~/market-warehouse/logs/interior_gaps_YYYY-MM-DD.log`                    |
 | Weekly summary       | `~/market-warehouse/logs/quality_weekly_YYYY-WW.md`                       |
-| Digest marker        | `~/market-warehouse/logs/quality_summary_YYYY-MM-DD.marker`               |
 | Telemetry            | `~/market-warehouse/logs/telemetry.jsonl`                                 |
 | Quality audit        | `~/market-warehouse/logs/quality_audit.jsonl`                             |
 

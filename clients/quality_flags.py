@@ -13,9 +13,10 @@ import sys
 import tempfile
 import time
 from dataclasses import asdict
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
+from clients import ledger
 from clients.quality_detector import QualityFlag
 from livewire_scripts.paths import log_dir
 
@@ -118,27 +119,6 @@ def _resolve_rate_limit_seconds() -> int:
         return 300
 
 
-def _resolve_undelivered_dir() -> Path:
-    raw = os.environ.get(
-        "MDW_UNDELIVERED_DIR",
-        str(log_dir() / "quality_alerts_undelivered"),
-    )
-    p = Path(raw).expanduser()
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def _render_alert_html(flag: QualityFlag, source: str, ticker: str) -> str:
-    return (
-        f"<html><body>"
-        f"<h2>[Livewire] {flag.severity.upper()} quality flag</h2>"
-        f"<p><b>Source:</b> {source} &nbsp; <b>Ticker:</b> {ticker}</p>"
-        f"<p><b>Category:</b> {flag.category}</p>"
-        f"<pre>{json.dumps(flag.detail, indent=2)}</pre>"
-        f"</body></html>"
-    )
-
-
 def alert_on_flag(
     flag: QualityFlag,
     *,
@@ -177,11 +157,12 @@ def alert_on_flag(
         "--payload",
         json.dumps(payload),
     ]
+    started = datetime.now(UTC)
     try:
         result = subprocess.run(cmd, capture_output=True, timeout=30)
     except (subprocess.SubprocessError, OSError) as exc:
         _logger.error("alert spawn failed: %s", exc)
-        _preserve_undelivered(flag, source, ticker)
+        _record_failed_alert(payload, started, 1, {"error": str(exc)})
         return False
     if result.returncode != 0:
         _logger.error(
@@ -189,16 +170,36 @@ def alert_on_flag(
             result.returncode,
             (result.stderr or b"").decode("utf-8", "replace"),
         )
-        _preserve_undelivered(flag, source, ticker)
+        _record_failed_alert(
+            payload,
+            started,
+            int(result.returncode),
+            {"stderr": (result.stderr or b"").decode("utf-8", "replace")},
+        )
         return False
     return True
 
 
-def _preserve_undelivered(flag: QualityFlag, source: str, ticker: str) -> None:
+def _record_failed_alert(payload: dict, started: datetime, exit_code: int, receipt: dict) -> None:
     try:
-        out_dir = _resolve_undelivered_dir()
-        ts = _utc_iso().replace(":", "-")
-        path = out_dir / f"{ts}_{source}_{ticker}.html"
-        path.write_text(_render_alert_html(flag, source, ticker), encoding="utf-8")
-    except OSError as exc:  # pragma: no cover - last-resort logging only
-        _logger.error("could not preserve undelivered alert: %s", exc)
+        run = os.environ.get("LW_RUN_ID") or ledger.new_run_id("quality-flag")
+        ledger.emit(
+            "executions",
+            [
+                {
+                    "evidence_hash": None,
+                    "script": "send_alert",
+                    "attempt": 1,
+                    "args_json": json.dumps(payload, sort_keys=True),
+                    "release_sha": os.environ.get("LW_RELEASE_SHA", "unknown"),
+                    "started": started,
+                    "ended": datetime.now(UTC),
+                    "exit_code": exit_code,
+                    "receipt_json": json.dumps(receipt, sort_keys=True),
+                    "run_id": run,
+                }
+            ],
+            run_id=run,
+        )
+    except Exception as exc:  # pragma: no cover - alert failure remains non-fatal
+        _logger.error("could not record failed alert: %s", exc)

@@ -83,14 +83,7 @@ def main(argv=None, runner=subprocess.run) -> int:
     print(body)
     if args.email:
         node_bin = os.getenv("MDW_NODE_BIN") or shutil.which("node") or "/opt/homebrew/bin/node"
-        rc = _send_email(body, args.run_date, node_bin, args.log_dir, runner)
-        if rc == 0:
-            # The digest is the post-daily quality artifact; write the marker
-            # only after the email path succeeds so the watchdog cannot mask a failed send.
-            marker = args.log_dir / f"quality_summary_{args.run_date.isoformat()}.marker"
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.write_text(f"nightly digest {args.run_date.isoformat()}\n", encoding="utf-8")
-        return rc
+        return _send_email(body, args.run_date, node_bin, args.log_dir, runner)
     return 0
 
 

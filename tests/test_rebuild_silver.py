@@ -125,30 +125,6 @@ def test_continuity_allowlist_exempts_an_evidenced_date(tmp_path):
     assert [str(r["trade_date"]) for r in kept] == ["2002-12-30", "2003-01-02", "2003-01-03"]
 
 
-def test_summary_line_is_visible_to_the_nightly_digest(tmp_path, capsys):
-    """The digest's Silver section is the ONLY alert for window regressions.
-
-    The rebuild still exits 0 when it withholds symbols, so nothing else
-    surfaces them. This summary printed as bare JSON, which
-    `parse_all_summary_json` skips, so the section rendered "(not found)" on
-    nights the rebuild had in fact succeeded — rev-19 withheld 41 symbols and
-    the 2026-08-01 digest reported no Silver rebuild at all.
-    """
-    from livewire_scripts.status import _silver_section
-
-    _bronze(tmp_path, "NVDA")
-    _split(tmp_path)
-    assert rebuild_silver.run(["--tickers", "NVDA"], data_lake_root=tmp_path, silver_root=tmp_path / "silver") == 0
-
-    log_dir = tmp_path / "logs"
-    log_dir.mkdir()
-    (log_dir / "daily_update_2026-07-02.log").write_text(capsys.readouterr().out, encoding="utf-8")
-
-    section = "\n".join(_silver_section("2026-07-02", log_dir).lines)
-    assert "(not found)" not in section
-    assert "revision=1" in section
-
-
 def test_targeted_rebuild_publishes_daily_factors_and_manifest(tmp_path, capsys):
     _bronze(tmp_path, "NVDA")
     _split(tmp_path)

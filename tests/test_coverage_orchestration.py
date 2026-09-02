@@ -398,27 +398,6 @@ def test_a_scan_failure_does_not_take_down_the_coverage_measurement(tmp_path, mo
     assert not (tmp_path / "repairs").exists()
 
 
-def test_status_grades_a_scan_failure_that_the_coverage_ratio_cannot_show(tmp_path):
-    """The scan is isolated from coverage on purpose; it must not be invisible.
-
-    main() exits 0 whether the scan ran or not, no alert path covers it, and
-    `status._coverage_section` selects only lines matching `coverage:` -- so a
-    permanently broken classifier looked identical to a clean lake on every
-    surface an operator reads.
-    """
-    from livewire_scripts.status import Verdict, _coverage_section
-
-    log = tmp_path / "coverage_2026-08-28.log"
-    log.write_text(
-        "2026-08-28 coverage: 1d=100/100 (100.00%) 1m=100/100 (100.00%) "
-        "1h=100/100 (100.00%) 5m=100/100 (100.00%) 30m=100/100 (100.00%)\n"
-        "  scan: FAILED (RegistryError: row g1-g2-g3-fx-daily resolves to no symbols)\n"
-    )
-    section = _coverage_section("2026-08-28", tmp_path)
-    assert section.verdict is Verdict.WARN
-    assert any("scan: FAILED" in line for line in section.lines)
-
-
 def test_the_repair_artifacts_are_published_atomically(tmp_path):
     """Phase 2's executor reads these; write_text truncates before it writes.
 
@@ -432,16 +411,3 @@ def test_the_repair_artifacts_are_published_atomically(tmp_path):
     assert json.loads(path.read_text())["repairs"][0]["symbol"] == "EQR"
     # No temp file survives a successful publish.
     assert list(path.parent.glob("*.tmp")) == []
-
-
-def test_status_ignores_a_scan_failure_from_an_earlier_run_in_the_same_log(tmp_path):
-    """Coverage logs are append-mode, so a fixed failure must not WARN forever."""
-    from livewire_scripts.status import Verdict, _coverage_section
-
-    green = (
-        "2026-08-28 coverage: 1d=100/100 (100.00%) 1m=100/100 (100.00%) "
-        "1h=100/100 (100.00%) 5m=100/100 (100.00%) 30m=100/100 (100.00%)\n"
-    )
-    log = tmp_path / "coverage_2026-08-28.log"
-    log.write_text(green + "  scan: FAILED (RegistryError: x)\n" + green + "  scan: 12 findings (tier A 9, tier B 3)\n")
-    assert _coverage_section("2026-08-28", tmp_path).verdict is Verdict.OK

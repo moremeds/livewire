@@ -41,13 +41,14 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
 import duckdb
+import pyarrow as pa
 
 from clients.symbol_paths import canonical_symbol, encode_symbol
 from livewire_scripts.paths import data_lake_dir, silver_dir, warehouse_dir
@@ -147,6 +148,31 @@ def view_names() -> list[str]:
 def default_database() -> Path:
     """Return the catalog database path."""
     return Path(os.environ.get("MDW_DUCKDB_PATH", warehouse_dir() / "analytics.duckdb")).expanduser()
+
+
+_LEDGER_VIEW_SQL = "CREATE OR REPLACE TEMP VIEW {name} AS SELECT * FROM read_parquet({glob!r}, union_by_name=true)"
+
+
+def ledger_query(
+    sql: str,
+    *,
+    root: Path,
+    tables: Mapping[str, pa.Schema],
+) -> list[dict]:
+    """Run SQL over append-only ledger parquet in a read-only memory database."""
+    con = duckdb.connect(":memory:")
+    try:
+        for name in tables:
+            directory = Path(root) / name
+            if any(directory.glob("*/*.parquet")):
+                con.execute(_LEDGER_VIEW_SQL.format(name=name, glob=f"{directory}/*/*.parquet"))
+            else:
+                con.register(name, pa.Table.from_batches([], schema=tables[name]))
+        cursor = con.execute(sql)
+        columns = [description[0] for description in cursor.description]
+        return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+    finally:
+        con.close()
 
 
 def connect(

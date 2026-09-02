@@ -519,7 +519,10 @@ class TestRunSync:
 
 class TestMain:
     def test_default_args(self, tmp_path, monkeypatch):
+        from clients import ledger
+
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
+        monkeypatch.setenv("LW_RUN_ID", "intraday-catchup-main-test")
         monkeypatch.delenv("MDW_DAILY_BACKFILL_TARGET_DATE", raising=False)
 
         with patch("livewire_scripts.sync_runner.run_sync", return_value=0) as mock:
@@ -527,6 +530,10 @@ class TestMain:
         assert rc == 0
         config = mock.call_args[0][0]
         assert config.target_date == "2026-05-28"
+        assert ledger.query("select job, verdict from runs order by ended nulls first") == [
+            {"job": "intraday-catchup", "verdict": None},
+            {"job": "intraday-catchup", "verdict": "OK"},
+        ]
 
     def test_all_overrides(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
@@ -581,6 +588,25 @@ class TestPhaseTimeout:
         sync_runner.run_phase("ok", ["true"], tmp_path, runner=fake_runner, timeout=42)
 
         assert seen["timeout"] == 42
+
+    def test_phase_writes_entry_and_terminal_ledger_rows(self, tmp_path, monkeypatch):
+        from clients import ledger
+
+        monkeypatch.setenv("LW_RUN_ID", "intraday-catchup-test")
+        assert (
+            sync_runner.run_phase(
+                "equity_1m",
+                ["ok"],
+                tmp_path,
+                runner=lambda *a, **k: CompletedProcess(a[0], 0),
+                timeout=10,
+            )
+            == 0
+        )
+        assert ledger.query("select outcome from lane_results order by ended nulls first") == [
+            {"outcome": None},
+            {"outcome": "done"},
+        ]
 
     def test_budget_is_env_tunable(self, monkeypatch):
         monkeypatch.setenv("MDW_SYNC_PHASE_TIMEOUT_SECONDS", "900")
