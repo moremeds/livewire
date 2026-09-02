@@ -152,6 +152,38 @@ def _raw_symbols_for_date(target_date: date, bronze_root: Path) -> set[str]:
 
 
 def _latest_date_in_parquet(path: Path, column_name: str) -> date | None:
+    """Return the latest date in *column_name*, or None if the file cannot be read.
+
+    ⚠️ **One unreadable parquet must never kill the scan.** Coverage is a
+    read-only detector over ~70K files; a single truncated footer used to raise
+    out of `pool.map` and abort the whole run. It did, nine times: IGA's
+    `5m.parquet` and VSLU's `1m.parquet` (`Parquet magic bytes not found in
+    footer`) took the 11:00 UTC job down repeatedly and coverage logs stop for
+    days at a time around each one. The lake lives on an external exFAT volume
+    that bronze publishes to by `os.replace()`, so a torn file is a normal
+    operating condition, not an exceptional one.
+
+    Unreadable resolves to None, which is the **conservative** direction and
+    needs no new plumbing: `present_symbols` requires `latest >= target_date`,
+    so the symbol reads MISSING, enters the ratio, the `missing:` log line and
+    the alert. This is the same argument the stale-cache-entry case already
+    rests on — it over-reports gaps, it cannot hide one. It is emphatically not
+    a swallowed warning: nothing is downgraded to silence, and the ERROR below
+    names the exact path so the operator can quarantine or refetch it.
+
+    The detector never repairs. Moving the file aside is
+    `flatfile_publisher.quarantine_corrupt_parquet`'s job, on the write path
+    that owns the data — a read-only scan that mutates bronze is a worse bug
+    than the one it fixes.
+    """
+    try:
+        return _read_latest_date_in_parquet(path, column_name)
+    except Exception as exc:  # noqa: BLE001 - any single-file read failure, see above
+        log.error("unreadable parquet, counted as missing: %s: %s", path, exc)
+        return None
+
+
+def _read_latest_date_in_parquet(path: Path, column_name: str) -> date | None:
     """Return the latest value in *column_name* using parquet footer statistics.
 
     Reads only the file's footer (row-group min/max stats) instead of the full
