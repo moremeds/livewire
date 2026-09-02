@@ -93,3 +93,30 @@ def test_the_default_root_is_under_the_lake(tmp_path: Path, monkeypatch) -> None
 def test_a_run_id_carries_job_and_pid() -> None:
     rid = ledger.new_run_id("daily-update")
     assert rid.startswith("daily-update-") and rid.endswith(f"-{os.getpid()}")
+
+
+def test_query_reads_back_emitted_rows(root: Path) -> None:
+    ledger.emit("runs", [_run_row()], run_id="r1")
+    assert ledger.query("select job, verdict from runs") == [{"job": "daily-update", "verdict": None}]
+
+
+def test_a_table_with_no_files_is_an_empty_view_not_a_sql_error(root: Path) -> None:
+    """A check against a table nothing wrote must read UNKNOWN, not explode."""
+    ledger.emit("runs", [_run_row()], run_id="r1")
+    assert ledger.query("select lane, outcome from lane_results") == []
+
+
+def test_every_table_is_queryable_on_a_completely_empty_root(root: Path) -> None:
+    for table in ledger.LEDGER_TABLES:
+        assert ledger.query(f"select * from {table}") == []
+
+
+def test_files_from_two_dates_are_one_view(root: Path) -> None:
+    import shutil
+
+    ledger.emit("runs", [_run_row()], run_id="r1")
+    source = next((root / "runs").glob("date=*/*.parquet"))
+    later = root / "runs" / "date=2099-01-01"
+    later.mkdir(parents=True)
+    shutil.copy(source, later / "r2.parquet")
+    assert len(ledger.query("select run_id from runs")) == 2

@@ -174,3 +174,10 @@ def emit(table: str, rows: list[dict], *, run_id: str) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     with symbol_lock(directory / f"{table}.dir"):
         return publish_parquet(_next_path(directory, run_id), arrow, sort_column=SEQ_COLUMN)
+
+
+def query(sql: str) -> list[dict]:
+    """Read the ledger, treating every unwritten table as empty, not missing."""
+    from clients.duckdb_catalog import ledger_query
+
+    return ledger_query(sql, root=ledger_root(), tables=LEDGER_TABLES)
