@@ -150,7 +150,17 @@ def default_database() -> Path:
     return Path(os.environ.get("MDW_DUCKDB_PATH", warehouse_dir() / "analytics.duckdb")).expanduser()
 
 
-_LEDGER_VIEW_SQL = "CREATE OR REPLACE TEMP VIEW {name} AS SELECT * FROM read_parquet({glob!r}, union_by_name=true)"
+_LEDGER_VIEW_SQL = "CREATE OR REPLACE TEMP VIEW {name} AS SELECT * FROM read_parquet({files!r}, union_by_name=true)"
+
+
+def _ledger_files(directory: Path) -> list[str]:
+    """Return the real parquet under `directory`, minus macOS AppleDouble sidecars.
+
+    The lake is exFAT, so every `x.parquet` may have a `._x.parquet` beside it.
+    DuckDB reads whatever the glob matches and fails the whole query on the
+    first sidecar, so the glob is resolved here rather than handed to DuckDB.
+    """
+    return sorted(str(path) for path in directory.glob("*/*.parquet") if not path.name.startswith("._"))
 
 
 def ledger_query(
@@ -163,9 +173,9 @@ def ledger_query(
     con = duckdb.connect(":memory:")
     try:
         for name in tables:
-            directory = Path(root) / name
-            if any(directory.glob("*/*.parquet")):
-                con.execute(_LEDGER_VIEW_SQL.format(name=name, glob=f"{directory}/*/*.parquet"))
+            files = _ledger_files(Path(root) / name)
+            if files:
+                con.execute(_LEDGER_VIEW_SQL.format(name=name, files=files))
             else:
                 con.register(name, pa.Table.from_batches([], schema=tables[name]))
         cursor = con.execute(sql)
