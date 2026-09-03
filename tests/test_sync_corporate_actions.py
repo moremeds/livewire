@@ -526,9 +526,7 @@ def test_a_run_that_measured_nothing_emits_nothing(tmp_path, monkeypatch):
     must skip the emit rather than abort a lane that otherwise succeeded."""
     monkeypatch.setenv("LW_RUN_ID", "manual-20260903T000000Z-1")
 
-    rc = sync_corporate_actions.run(
-        ["--tickers", "AAPL"], client=_Client(), store=_Store(), data_lake_root=tmp_path
-    )
+    rc = sync_corporate_actions.run(["--tickers", "AAPL"], client=_Client(), store=_Store(), data_lake_root=tmp_path)
 
     assert rc == 0
     assert ledger.query("select count(*) as n from measurements")[0]["n"] == 0
