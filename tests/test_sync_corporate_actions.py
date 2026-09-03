@@ -8,9 +8,11 @@ from types import SimpleNamespace
 import pytest
 import responses
 
+from clients import ledger
 from clients.corporate_action_store import CorporateActionStore
 from clients.massive_client import MassiveAuthError, MassiveResponseCapture
 from clients.source_evidence import SourceEvidenceStore
+from clients.telemetry import MassiveTelemetry
 from livewire_scripts import sync_corporate_actions
 
 
@@ -43,6 +45,10 @@ class _Client:
     def __init__(self, *, fail=None):
         self.fail = {fail} if isinstance(fail, str) else set(fail or ())
         self.calls: list[tuple[str, str]] = []
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def get_splits(self, ticker):
         self.calls.append(("splits", ticker))
@@ -452,3 +458,75 @@ def test_one_buffer_is_shared_by_every_worker(tmp_path):
     buffer.flush()
 
     assert len(SourceEvidenceStore(tmp_path).list_verified()) == 4
+
+
+def test_provider_totals_reach_the_ledger_not_just_the_log(tmp_path, monkeypatch):
+    """2026-09-03: the lane ran 2h15m and nothing on disk said whether it was
+    rate-limited, timing out, or just slow — telemetry was never passed."""
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-20260903T060005Z-49009")
+    telemetry = MassiveTelemetry(jsonl_path=None)
+    telemetry.record_request(endpoint="/v3/reference/splits", status=200, dt_ms=120)
+    telemetry.record_request(endpoint="/v3/reference/splits", status=429, dt_ms=90)
+    telemetry.record_wait(4.25)
+
+    rc = sync_corporate_actions.run(
+        ["--tickers", "AAPL", "--workers", "1"],
+        client=_Client(),
+        store=_Store(),
+        data_lake_root=tmp_path,
+        telemetry=telemetry,
+    )
+
+    assert rc == 0
+    rows = ledger.query(
+        "select name, scope, source, unit, value from measurements "
+        "where run_id = 'daily-update-20260903T060005Z-49009' order by name"
+    )
+    assert [row["name"] for row in rows] == [
+        "provider_errors",
+        "provider_latency_p95_ms",
+        "provider_requests",
+        "provider_throttled",
+        "provider_wait_s",
+    ]
+    assert {row["scope"] for row in rows} == {"corporate-actions"}
+    assert {row["source"] for row in rows} == {"measured"}
+    by_name = {row["name"]: row["value"] for row in rows}
+    assert by_name["provider_requests"] == 2.0
+    assert by_name["provider_throttled"] == 1.0
+    assert by_name["provider_wait_s"] == 4.25
+
+
+def test_the_default_client_factory_actually_attaches_the_telemetry(tmp_path, monkeypatch):
+    """The seam the injected-factory tests skip: production goes through
+    default_client_factory, and that is the only place the wiring exists."""
+    monkeypatch.setenv("MASSIVE_API_KEY", "fixture-token")
+    built: list[dict] = []
+
+    class _Recorder(_Client):
+        def __init__(self, **kwargs):
+            super().__init__()
+            built.append(kwargs)
+
+    monkeypatch.setattr(sync_corporate_actions, "MassiveClient", _Recorder)
+    telemetry = MassiveTelemetry(jsonl_path=None)
+
+    sync_corporate_actions.run(
+        ["--tickers", "AAPL", "--workers", "1"],
+        store=_Store(),
+        data_lake_root=tmp_path,
+        telemetry=telemetry,
+    )
+
+    assert built and built[0]["telemetry"] is telemetry
+
+
+def test_a_run_that_measured_nothing_emits_nothing(tmp_path, monkeypatch):
+    """ledger.emit refuses zero rows; a run that made no measured request
+    must skip the emit rather than abort a lane that otherwise succeeded."""
+    monkeypatch.setenv("LW_RUN_ID", "manual-20260903T000000Z-1")
+
+    rc = sync_corporate_actions.run(["--tickers", "AAPL"], client=_Client(), store=_Store(), data_lake_root=tmp_path)
+
+    assert rc == 0
+    assert ledger.query("select count(*) as n from measurements")[0]["n"] == 0
