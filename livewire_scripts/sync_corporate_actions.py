@@ -15,11 +15,13 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Lock
 
+from clients import ledger
 from clients.corporate_action_store import CorporateActionStore, ProviderEvent
 from clients.ingestion_common import load_preset
 from clients.massive_client import MassiveAuthError, MassiveClient, MassivePageEvidence
 from clients.source_evidence import SourceEvidence, SourceEvidenceStore
 from clients.symbol_paths import canonical_symbol, decode_symbol
+from clients.telemetry import MassiveTelemetry
 from livewire_scripts.corporate_action_cursor import build_identity, default_cursor_path, open_cursor
 from livewire_scripts.paths import data_lake_dir
 
@@ -239,6 +241,7 @@ def run(
     client_factory: Callable[[], MassiveClient] | None = None,
     store: CorporateActionStore | None = None,
     data_lake_root: Path | None = None,
+    telemetry: MassiveTelemetry | None = None,
 ) -> int:
     args = parse_args(argv)
     root = Path(data_lake_root) if data_lake_root is not None else data_lake_dir()
@@ -249,9 +252,17 @@ def run(
     action_store = store or CorporateActionStore(root)
 
     evidence = _EvidenceBuffer(root) if evidence_enabled() else None
+    # One telemetry for every worker: _fetch_parallel builds one client per
+    # worker and the totals only mean anything summed across the lane. It is a
+    # parameter rather than a local because default_client_factory is bypassed
+    # whenever a caller injects a client or a factory — which is every test.
+    telemetry = telemetry or MassiveTelemetry(jsonl_path=None)
 
     def default_client_factory() -> MassiveClient:
-        return MassiveClient(response_evidence_recorder=None if evidence is None else evidence.recorder())
+        return MassiveClient(
+            response_evidence_recorder=None if evidence is None else evidence.recorder(),
+            telemetry=telemetry,
+        )
 
     identity = build_identity(
         root,
@@ -348,6 +359,7 @@ def run(
         "resumed": resumed,
     }
     print(json.dumps(summary, sort_keys=True))
+    _emit_provider_measurements(telemetry)
 
     # Rate, not a binary. `run_daily_update_job.main()` gates the Silver rebuild on
     # this lane (`silver_inputs_ok = action_code == 0`), so `1 if failed` meant a
@@ -370,6 +382,45 @@ def run(
     if failed and (attempted == failed or failed > FAILURE_RATE_TOLERANCE * attempted):
         return 1
     return 0
+
+
+_PROVIDER_MEASUREMENTS = (
+    ("provider_requests", "requests", "count"),
+    ("provider_throttled", "throttled", "count"),
+    ("provider_errors", "errors", "count"),
+    ("provider_wait_s", "wait_s", "s"),
+    ("provider_latency_p95_ms", "latency_p95_ms", "ms"),
+)
+
+
+def _emit_provider_measurements(telemetry: MassiveTelemetry) -> None:
+    """Publish what the provider cost this lane. Never aborts the run.
+
+    2026-09-03: corporate-actions ran 2h15m of its 3h budget and nothing
+    durable recorded whether it was throttled, timing out, or simply slow,
+    because the client was built with telemetry=None.
+    """
+    totals = telemetry.summary()
+    if not totals["requests"]:
+        return
+    now = datetime.now(UTC)
+    run = os.environ.get("LW_RUN_ID") or ledger.new_run_id("corporate-actions")
+    rows = [
+        {
+            "name": name,
+            "scope": "corporate-actions",
+            "measured_at": now,
+            "value": float(totals[key]),
+            "unit": unit,
+            "source": "measured",
+            "run_id": run,
+        }
+        for name, key, unit in _PROVIDER_MEASUREMENTS
+    ]
+    try:
+        ledger.emit("measurements", rows, run_id=run)
+    except Exception as exc:  # pragma: no cover - telemetry must not fail a good run
+        print(f"WARNING: could not write provider measurements: {exc}", file=sys.stderr)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
