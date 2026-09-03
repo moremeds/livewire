@@ -281,7 +281,19 @@ class BronzeClient:
         return decode_symbol(path.parent.name.split("=", 1)[1])
 
     def _read_trade_dates(self, path: Path) -> list[date]:
-        table = pq.read_table(path, columns=["trade_date"])
+        # Unreadable resolves to "no dates", the conservative direction: every
+        # caller (get_summary, get_latest_dates, get_trade_dates_by_symbol)
+        # already skips a symbol with an empty list, so this counts the
+        # symbol missing rather than aborting the whole scan for every other
+        # symbol behind it. The detector never repairs — quarantining a
+        # corrupt file is the publisher's job, not a reader's.
+        # See livewire_scripts/coverage_report.py's _read_latest_date_in_parquet
+        # for the same idiom against the same disease (pm:2026-07-14-corrupt-parquet-aborted-publish).
+        try:
+            table = pq.read_table(path, columns=["trade_date"])
+        except Exception as exc:  # noqa: BLE001 - any single-file read failure, see above
+            log.error("unreadable parquet, counted as missing: %s: %s", path, exc)
+            return []
         return sorted(self._normalize_trade_date(value) for value in table.column("trade_date").to_pylist())
 
     def _normalize_rows(self, rows: list[dict[str, Any]], symbol: str) -> list[dict[str, Any]]:
