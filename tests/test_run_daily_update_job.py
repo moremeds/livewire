@@ -190,6 +190,26 @@ class TestPerLaneBudgets:
         assert rows[0]["exit_code"] == 1
         assert rows[0]["verdict"] == "FAILED"
 
+    def test_a_systemexit_also_closes_the_run_as_failed(self, tmp_path, monkeypatch):
+        # 2026-09-03: daily-update-20260903T060005Z-49009 left runs.ended null
+        # with no traceback anywhere in the log — a plain Exception reaching
+        # `except Exception:` always prints a traceback when it escapes
+        # main(), so whatever killed that run wasn't one. SystemExit is the
+        # one Python-catchable candidate that doesn't: it exits silently.
+        from clients import ledger
+
+        monkeypatch.setattr(daily_runner, "build_config", lambda: _config(tmp_path))
+        monkeypatch.setattr(
+            daily_runner, "run_with_retries", lambda *args, **kwargs: (_ for _ in ()).throw(SystemExit(1))
+        )
+        with pytest.raises(SystemExit):
+            daily_runner.main([])
+        rows = ledger.query("select ended, exit_code, verdict from runs where verdict is not null")
+        assert len(rows) == 1
+        assert rows[0]["ended"] is not None
+        assert rows[0]["exit_code"] == 1
+        assert rows[0]["verdict"] == "FAILED"
+
     def test_the_silver_gate_reads_the_equity_lane_row_not_an_in_process_dict(self):
         from clients import ledger
 
