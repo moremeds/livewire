@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import time
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
-import time
 from unittest.mock import patch
 
 import pytest
