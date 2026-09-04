@@ -608,6 +608,37 @@ class TestPhaseTimeout:
             {"outcome": "done"},
         ]
 
+    def test_run_phase_also_writes_a_measured_lane_budget_row(self, tmp_path, monkeypatch):
+        """The twin of run_daily_update_job._emit_lane (CLAUDE.md rule 5)."""
+        from clients import ledger
+
+        monkeypatch.setenv("LW_RUN_ID", "intraday-catchup-measured")
+        assert (
+            sync_runner.run_phase(
+                "equity_1m",
+                ["ok"],
+                tmp_path,
+                runner=lambda *a, **k: CompletedProcess(a[0], 0),
+                timeout=10,
+            )
+            == 0
+        )
+        lane = ledger.query("select lane, elapsed_s, run_id from lane_results where elapsed_s is not null")
+        measured = ledger.query(
+            "select name, scope, value, unit, source, run_id from measurements where source = 'measured'"
+        )
+        assert measured == [
+            {
+                "name": "lane_budget_s",
+                "scope": "equity_1m",
+                # the same number the lane_results row carries, not a second clock read
+                "value": lane[0]["elapsed_s"],
+                "unit": "s",
+                "source": "measured",
+                "run_id": "intraday-catchup-measured",
+            }
+        ]
+
     def test_budget_is_env_tunable(self, monkeypatch):
         monkeypatch.setenv("MDW_SYNC_PHASE_TIMEOUT_SECONDS", "900")
         assert sync_runner.phase_timeout_seconds() == 900

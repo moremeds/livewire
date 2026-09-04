@@ -204,6 +204,7 @@ def run_phase(
 
     if run:
         code = result.returncode
+        elapsed_s = time.monotonic() - clock
         _emit_ledger(
             "lane_results",
             [
@@ -214,7 +215,7 @@ def run_phase(
                     "ended": datetime.now(UTC),
                     "exit_code": code,
                     "budget_s": float(budget),
-                    "elapsed_s": time.monotonic() - clock,
+                    "elapsed_s": elapsed_s,
                     "outcome": (
                         "done"
                         if code == 0
@@ -225,6 +226,24 @@ def run_phase(
                         else "failed"
                     ),
                     "blocker": "ib_unreachable" if code == GATEWAY_DOWN_EXIT_CODE else None,
+                }
+            ],
+            run,
+        )
+        # The twin of run_daily_update_job._emit_lane: the same elapsed number,
+        # not a second clock read, or the drift check grades a different value
+        # than the budget check does.
+        _emit_ledger(
+            "measurements",
+            [
+                {
+                    "name": "lane_budget_s",
+                    "scope": label,
+                    "measured_at": datetime.now(UTC),
+                    "value": float(elapsed_s),
+                    "unit": "s",
+                    "source": "measured",
+                    "run_id": run,
                 }
             ],
             run,

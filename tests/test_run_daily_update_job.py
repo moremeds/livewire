@@ -175,6 +175,44 @@ class TestPerLaneBudgets:
         assert runs[0]["verdict"] is None and runs[1]["verdict"] == "OK"
         assert runs[0]["host"] == socket.gethostname()
 
+    def test_main_emits_every_declared_constant_as_a_measurement(self, tmp_path, monkeypatch):
+        from clients import constants, ledger
+
+        monkeypatch.setattr(daily_runner, "build_config", lambda: _config(tmp_path))
+        monkeypatch.setattr(daily_runner, "run_with_retries", lambda *args, **kwargs: 0)
+        monkeypatch.setattr(daily_runner, "_run_scheduled_lane", lambda *args, **kwargs: 0)
+        assert daily_runner.main([]) == 0
+        rows = ledger.query(
+            "select name, scope, value, unit from measurements where source = 'declared' order by name, scope"
+        )
+        expected = {
+            constants.split_scope(key): (float(value), unit) for key, (value, unit) in constants.DECLARED.items()
+        }
+        seen = {(row["name"], row["scope"]): (row["value"], row["unit"]) for row in rows}
+        assert seen == expected
+
+    def test_emit_lane_also_writes_a_measured_lane_budget_row(self):
+        """The declared budget is only gradeable if the lane also measures itself."""
+        from clients import ledger
+
+        now = datetime.now(UTC)
+        daily_runner._emit_lane("equity", started=now, ended=now, exit_code=0, elapsed_s=1234.0, outcome="done")
+        lanes = ledger.query("select lane, elapsed_s, run_id from lane_results")
+        measured = ledger.query(
+            "select name, scope, value, unit, source, run_id from measurements where source = 'measured'"
+        )
+        assert lanes == [{"lane": "equity", "elapsed_s": 1234.0, "run_id": "daily-update-20260902T060000Z-1"}]
+        assert measured == [
+            {
+                "name": "lane_budget_s",
+                "scope": "equity",
+                "value": 1234.0,
+                "unit": "s",
+                "source": "measured",
+                "run_id": lanes[0]["run_id"],
+            }
+        ]
+
     def test_an_unexpected_crash_closes_the_run_as_failed(self, tmp_path, monkeypatch):
         from clients import ledger
 

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from clients import ledger
+from clients import constants, ledger
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts.paths import warehouse_dir as resolve_warehouse_dir
 from livewire_scripts.sync_runner import TIMEOUT_EXIT_CODE
@@ -166,6 +166,23 @@ def _emit_lane(
                     "elapsed_s": elapsed_s,
                     "outcome": outcome,
                     "blocker": blocker,
+                }
+            ],
+            run_id=run_id(),
+        )
+        if elapsed_s is None:
+            return  # an entry row measures nothing; only the terminal row does
+        ledger.emit(
+            "measurements",
+            [
+                {
+                    "name": "lane_budget_s",
+                    "scope": scope,
+                    "measured_at": _utc_now(),
+                    "value": float(elapsed_s),
+                    "unit": "s",
+                    "source": "measured",
+                    "run_id": run_id(),
                 }
             ],
             run_id=run_id(),
@@ -926,6 +943,23 @@ def _run_main(argv: Sequence[str] | None = None) -> int:
         "verdict": None,
     }
     ledger.emit("runs", [run_row], run_id=run_id())
+    ledger.emit(
+        "measurements",
+        [
+            {
+                "name": name,
+                "scope": scope,
+                "measured_at": _utc_now(),
+                "value": float(value),
+                "unit": unit,
+                "source": "declared",
+                "run_id": run_id(),
+            }
+            for key, (value, unit) in constants.DECLARED.items()
+            for name, scope in [constants.split_scope(key)]
+        ],
+        run_id=run_id(),
+    )
 
     def close_run(code: int, *, degraded: bool = False) -> int:
         verdict = "DEGRADED" if degraded else ("FAILED" if code else "OK")
