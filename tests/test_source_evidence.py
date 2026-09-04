@@ -57,6 +57,26 @@ def test_duplicate_bytes_and_manifest_row_are_idempotent(tmp_path):
     assert store.list_verified() == [row]
 
 
+def test_repeat_persist_within_one_run_skips_the_disk_reverify(tmp_path):
+    """A digest this process already confirmed on disk is not re-read+rehashed.
+
+    Corporate-actions responses are heavily duplicated within one run (e.g.
+    thousands of tickers sharing one empty-results body); re-verifying an
+    already-known digest from disk on every call turned that duplication into
+    O(responses) reads against a single mechanical drive. Corrupting the file
+    out from under the cache and confirming persist_raw still succeeds proves
+    the second call never touched disk.
+    """
+    store = SourceEvidenceStore(tmp_path)
+    first = store.persist_raw(b"shared body")
+    store.raw_path(first.sha256).write_bytes(b"corrupted")
+
+    second = store.persist_raw(b"shared body")
+
+    assert second == first
+    assert store.raw_path(first.sha256).read_bytes() == b"corrupted"
+
+
 def test_later_retrieval_of_same_source_revision_preserves_first_known_time(tmp_path):
     store = SourceEvidenceStore(tmp_path)
     artifact = store.persist_raw(b"same revision")

@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -89,6 +90,13 @@ class SourceEvidenceStore:
         self.manifest_path = self.data_lake_root / "raw" / "shepherd" / "source_evidence.parquet"
         self.raw_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.raw_root, 0o700)
+        # Digests this process has already confirmed on disk. Content-addressed
+        # storage is immutable, so a digest verified once needs no second
+        # read+rehash for the rest of the run -- skipping it is what turns a
+        # mostly-duplicate-response run (e.g. yesterday's unchanged filings)
+        # from O(responses) disk reads into O(distinct payloads).
+        self._known_lock = Lock()
+        self._known: set[str] = set()
 
     def raw_path(self, sha256: str) -> Path:
         if re.fullmatch(r"[0-9a-f]{64}", sha256) is None:
@@ -99,6 +107,11 @@ class SourceEvidenceStore:
         digest = hashlib.sha256(payload).hexdigest()
         if expected_sha256 is not None and expected_sha256 != digest:
             raise ValueError("declared sha256 does not match exact payload")
+
+        with self._known_lock:
+            already_known = digest in self._known
+        if already_known:
+            return RawArtifact(ref=f"artifact://sha256/{digest}", sha256=digest, size=len(payload))
 
         destination = self.raw_path(digest)
         lock_path = self.raw_root / f".{digest}.lock"
@@ -119,6 +132,8 @@ class SourceEvidenceStore:
                     _fsync_directory(self.raw_root)
                 finally:
                     temp_path.unlink(missing_ok=True)
+        with self._known_lock:
+            self._known.add(digest)
         return RawArtifact(ref=f"artifact://sha256/{digest}", sha256=digest, size=len(payload))
 
     def record(self, evidence: SourceEvidence) -> None:
