@@ -42,22 +42,26 @@ def _body_file_from_cmd(cmd) -> Path:
 
 
 def test_disk_tripwire_warns_under_reserve(tmp_path, monkeypatch):
-    monkeypatch.setenv("MDW_FLATFILE_MIN_FREE_GB", "25")
-    import importlib
+    """The reserve is read at call time, so the override bites without a reload.
+
+    150 GiB free is far above the declared 25 GiB reserve; only an override
+    read after this module was imported can turn it into a warning.
+    """
+    monkeypatch.setenv("LW_DECLARED_FLATFILE_MIN_FREE_GB", "100")
 
     from livewire_scripts import nightly_digest
 
-    importlib.reload(nightly_digest)
-
     class _Usage:
-        total = 200 * (1024**3)
-        used = 170 * (1024**3)
-        free = 30 * (1024**3)  # 30 GiB < 2*25
+        total = 400 * (1024**3)
+        used = 250 * (1024**3)
+        free = 150 * (1024**3)  # 150 GiB < 2*100, but well over 2*25
 
     monkeypatch.setattr(nightly_digest.shutil, "disk_usage", lambda p: _Usage())
     out = nightly_digest.build_digest(date(2026, 7, 2), tmp_path / "logs", tmp_path)
     assert "⚠" in out and "raw retention deferred" in out
-    importlib.reload(nightly_digest)
+
+    monkeypatch.delenv("LW_DECLARED_FLATFILE_MIN_FREE_GB")
+    assert "raw retention deferred" not in nightly_digest.build_digest(date(2026, 7, 2), tmp_path / "logs", tmp_path)
 
 
 def test_main_prints_and_no_email_by_default(tmp_path, capsys):

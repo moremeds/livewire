@@ -15,7 +15,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Lock
 
-from clients import ledger
+from clients import constants, ledger
 from clients.corporate_action_store import CorporateActionStore, ProviderEvent
 from clients.ingestion_common import load_preset
 from clients.massive_client import MassiveAuthError, MassiveClient, MassivePageEvidence
@@ -26,7 +26,7 @@ from livewire_scripts.corporate_action_cursor import build_identity, default_cur
 from livewire_scripts.paths import data_lake_dir
 
 # Share of attempted symbols that may fail before the run counts as systemic.
-FAILURE_RATE_TOLERANCE = 0.05
+FAILURE_RATE_TOLERANCE = constants.declared("failure_rate_tolerance")
 
 # Values of MDW_SOURCE_EVIDENCE that turn response-evidence collection off.
 _EVIDENCE_OFF = frozenset({"0", "off", "false", "no"})

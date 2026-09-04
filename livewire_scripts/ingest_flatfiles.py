@@ -8,6 +8,7 @@ import os
 from collections.abc import Sequence
 from datetime import date, timedelta
 
+from clients import constants
 from clients.massive_flatfile_client import MassiveFlatfileClient, require_flatfile_credentials
 from clients.massive_flatfile_state import MassiveFlatfileState
 from clients.massive_flatfile_store import MassiveFlatfileStore
@@ -156,7 +157,7 @@ def verify_publish_coverage(
         )
         return 1
 
-    ratio_floor = min_ratio if min_ratio is not None else float(os.getenv("MDW_FLATFILE_MIN_PUBLISH_RATIO", "0.9"))
+    ratio_floor = min_ratio if min_ratio is not None else constants.declared("flatfile_min_publish_ratio")
     # Tickers skipped as already complete were published by an earlier run of this
     # scope, so they count as covered. Whole buckets skipped were never enumerated,
     # so scale the floor by the share of the window this run could actually see

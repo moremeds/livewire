@@ -45,16 +45,8 @@ ASSET_CLASSES = ["equity", "futures", "cmdty"]
 FX_CATCHUP_DAYS = 7
 
 LANE_ORDER = ("futures", "cmdty", "cboe", "fx", "corporate-actions", "equity", "silver")
-LANE_BUDGET_S: dict[str, float] = {
-    "futures": 30 * 60,
-    "cmdty": 30 * 60,
-    "cboe": 30 * 60,
-    "fx": 30 * 60,
-    "corporate-actions": 3 * 60 * 60,
-    "equity": 2 * 60 * 60,
-    "silver": 2 * 60 * 60,
-}
-DEFAULT_LANE_BUDGET_S = 30 * 60
+LANE_BUDGET_S: dict[str, float] = {lane: constants.declared(f"lane_budget_s/{lane}") for lane in LANE_ORDER}
+DEFAULT_LANE_BUDGET_S = constants.declared("lane_budget_s/default")
 _OUTCOME_BY_EXIT = {0: "done", TIMEOUT_EXIT_CODE: "timeout", GATEWAY_DOWN_EXIT_CODE: "blocked"}
 _EPOCH = date(1970, 1, 1)
 

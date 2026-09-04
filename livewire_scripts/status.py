@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import enum
-import os
 import shutil
 import subprocess
 import sys
@@ -20,16 +19,14 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from clients import ledger
+from clients import constants, ledger
 from livewire_scripts.paths import data_lake_dir
 from livewire_scripts.paths import log_dir as default_log_dir
 
-_MIN_FREE_GB = float(os.getenv("MDW_FLATFILE_MIN_FREE_GB", "25"))
 _GIB = 1024**3
 #: Coverage is daily and the digest reads yesterday's by design, so 3 absorbs
 #: one missed run without absorbing a job that has stopped firing entirely.
 _COVERAGE_STALE_DAYS = 3
-_COVERAGE_THRESHOLD = float(os.getenv("MDW_COVERAGE_ALERT_THRESHOLD", "0.95"))
 _SILVER_FIX = "python scripts/livewire_store.py rebuild-silver --full --dry-run --failure-output /tmp/silver-dry.json"
 
 
@@ -333,20 +330,24 @@ def _disk_section(data_lake: Path, warehouse: Path | None = None) -> Section:
     # deployment keeps reading plain "Disk:", which is also what it means.
     lines: list[str] = []
     tightest = None
+    # Read at call time, never at import: an import-time read is fixed for the
+    # life of the process, so an operator's one-run LW_DECLARED_ override (and
+    # any test that sets it after importing this module) is silently ignored.
+    min_free_gb = constants.declared("flatfile_min_free_gb")
     for label, (total, used, free) in volumes:
         free_gib = free / _GIB
         tightest = free_gib if tightest is None else min(tightest, free_gib)
         suffix = "" if len(volumes) == 1 else f" [{label}]"
         line = f"Disk{suffix}: {free_gib:.1f} GiB free ({100.0 * used / total:.0f}% used)"
-        if free_gib < 2 * _MIN_FREE_GB:
-            line += f"  ⚠ raw retention deferred — free space under {2 * _MIN_FREE_GB:.0f} GiB"
+        if free_gib < 2 * min_free_gb:
+            line += f"  ⚠ raw retention deferred — free space under {2 * min_free_gb:.0f} GiB"
         lines.append(line)
     # The existing numbers, newly graded. Today the digest prints a ⚠ below 2×
     # the reserve and says nothing at all below 1× — the more serious state was
     # the quieter one.
-    if tightest is not None and tightest < _MIN_FREE_GB:
+    if tightest is not None and tightest < min_free_gb:
         return Section("Disk", Verdict.BAD, lines, fix="python scripts/livewire_ops.py housekeeping")
-    if tightest is not None and tightest < 2 * _MIN_FREE_GB:
+    if tightest is not None and tightest < 2 * min_free_gb:
         return Section("Disk", Verdict.WARN, lines, fix="python scripts/livewire_ops.py housekeeping")
     return Section("Disk", Verdict.OK, lines)
 
@@ -573,7 +574,7 @@ def collect(
         "open_run": open_run,
         "main_sha": main_sha or "__missing__",
         "ib_slack_days": str(IB_LANE_SLACK_DAYS),
-        "coverage_threshold": str(_COVERAGE_THRESHOLD),
+        "coverage_threshold": str(constants.declared("coverage_alert_threshold")),
         "coverage_stale_days": str(_COVERAGE_STALE_DAYS),
     }
     return [

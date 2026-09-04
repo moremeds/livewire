@@ -767,7 +767,7 @@ class TestRunWithRetries:
 
         assert rc == 0
         log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(encoding="utf-8")
-        assert "Runner config: attempts=3 retry_delay_seconds=300 budget_s=1800 hostname=warehouse.local" in log_text
+        assert "Runner config: attempts=3 retry_delay_seconds=300 budget_s=1800.0 hostname=warehouse.local" in log_text
         assert "=== Done daily 2026-03-11T20:05:09Z (attempt 1/3) ===" in log_text
 
     def test_retry_then_success(self, tmp_path):
