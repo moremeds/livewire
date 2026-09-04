@@ -195,6 +195,26 @@ CHECKS: list[tuple[str, str]] = [
         "  qualify row_number() over (partition by expected.lane order by m.measured_at desc) = 1"
         ")",
     ),
+    (
+        "Declared constants match reality",
+        "select case when _n = 0 then 'UNKNOWN' "
+        "when declared_value > 2 * measured_p95 or measured_p95 > 2 * declared_value "
+        "then 'WARN' else 'OK' end as verdict, "
+        "name, scope, declared_value, measured_p95 from ("
+        "  select name, scope, "
+        "    max(value) filter (where source = 'declared') as declared_value, "
+        "    quantile_cont(value, 0.95) filter (where source = 'measured') as measured_p95, "
+        "    count(*) filter (where source = 'measured') as _n "
+        "  from measurements "
+        "  where measured_at >= today() - interval 14 day "
+        "    and name = 'lane_budget_s' and scope <> 'default' "
+        "  group by name, scope"
+        ") "
+        "where declared_value is not null "
+        "order by case when _n = 0 then 1 "
+        "  when declared_value > 2 * measured_p95 or measured_p95 > 2 * declared_value "
+        "  then 0 else 2 end, name, scope limit 1",
+    ),
 ]
 
 _EMPTY_IS_OK = {
@@ -226,7 +246,7 @@ _FIXES = {
     ),
     "Release matches main": "python scripts/livewire_ops.py release promote",
     "Lanes within budget": (
-        "raise the lane's LANE_BUDGET_S only after measuring it cold; see run_daily_update_job.LANE_BUDGET_S"
+        "raise the lane's budget only after measuring it cold; see clients/constants.py (lane_budget_s/<lane>)"
     ),
     "IB-only lanes behind": (
         "nc -z 127.0.0.1 4001 && echo up || echo down   # then 2FA by hand; rerun: "
