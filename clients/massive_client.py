@@ -377,6 +377,7 @@ class MassiveClient:
                 resp = self._session.get(url, params=params, timeout=self._timeout)
             except (ReqConnectionError, ReqTimeout) as exc:
                 last_exc = exc
+                self._record_request(endpoint, 0, started)  # status 0: no response at all
                 if attempt < self._max_retries:
                     self._sleep_backoff(attempt)
                     continue
@@ -481,17 +482,30 @@ class MassiveClient:
             wait = self._min_interval_seconds - (time.monotonic() - self._last_request_at)
             if wait > 0:
                 time.sleep(wait)
+                self._record_wait(wait)
         self._last_request_at = time.monotonic()
 
     def _sleep_backoff(self, attempt: int, resp: requests.Response | None = None) -> None:
         retry_after = None if resp is None else resp.headers.get("Retry-After")
+        delay = self._backoff_factor * (2**attempt)
         if retry_after is not None:
             try:
-                time.sleep(float(retry_after))
-                return
+                delay = float(retry_after)
             except (TypeError, ValueError):
                 pass
-        time.sleep(self._backoff_factor * (2**attempt))
+        time.sleep(delay)
+        self._record_wait(delay)
+
+    def _record_wait(self, seconds: float) -> None:
+        """Record time slept in pacing or backoff.
+
+        `record_request` cannot see it: `_throttle` runs before the request
+        clock starts and `_sleep_backoff` runs after the request is recorded,
+        so without this the lane's own waiting is invisible in the ledger.
+        """
+        if self._telemetry is None:
+            return
+        self._telemetry.record_wait(seconds)
 
     def _record_request(self, endpoint: str, status: int, started: float) -> None:
         if self._telemetry is None:

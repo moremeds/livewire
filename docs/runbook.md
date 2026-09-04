@@ -403,6 +403,29 @@ python scripts/livewire_ingest.py corporate-actions --dry-run                   
 Targeted runs never infer disappearance by default; full reconciliations may
 append cancellation revisions.
 
+#### Why was corporate-actions slow last night?
+
+```bash
+uv run python scripts/livewire_ops.py ledger query "select name, value, unit from measurements where scope = 'corporate-actions' and run_id = '<run_id>' order by name"
+```
+
+Read them together; no single one of them answers the question.
+
+- `provider_wait_s` large → the lane is asleep, not working: throttled or
+  retrying. More `--workers` will not help.
+- `provider_throttled` large → the provider is pushing back. More workers make
+  it worse; the lane needs preemptive pacing (`min_interval_seconds`) like fx
+  has. The 5 req/min figure elsewhere in this repo is **fx-scoped**; this
+  lane's ceiling has never been measured.
+- `provider_errors` large → attempts that never got a response. Each costs a
+  full request timeout plus a backoff and is invisible in response counts.
+- `provider_latency_p95_ms` high with the three above near zero → the endpoint
+  itself is slow. This is the only case where more `--workers` is the lever.
+
+`provider_latency_p95_ms` is socket time per attempt only; it does not include
+`provider_wait_s`, by construction — the sleeps happen outside the measured
+window. Join on `run_id` to `lane_results.elapsed_s` for the lane's wall-clock.
+
 ### Silver rebuild
 
 Silver artifacts publish beneath `MDW_SILVER_DIR` (default `data-lake/silver`).

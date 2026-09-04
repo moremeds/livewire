@@ -11,6 +11,8 @@ import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from statistics import quantiles
+from threading import Lock
 
 from livewire_scripts.paths import log_dir
 
@@ -214,17 +216,36 @@ class UWTelemetry(BaseTelemetry):
 
 
 class MassiveTelemetry(BaseTelemetry):
-    """Massive.io telemetry. Stub interface for Sub-A."""
+    """Massive.io telemetry: per-request JSONL (optional) plus run totals.
+
+    The totals are kept outside `_emit` on purpose. Production constructs this
+    with `jsonl_path=None`, and `_fetch_parallel` never enters the client as a
+    context manager, so `_started` stays False — both of which make `_emit` a
+    no-op. Counting there would silently record nothing.
+    """
 
     def __init__(self, *, jsonl_path: Path | None, source: str = "massive"):
         super().__init__(source=source, jsonl_path=jsonl_path)
+        self._totals_lock = Lock()
+        self._requests = 0
+        self._throttled = 0
+        self._errors = 0
+        self._wait_s = 0.0
+        self._latencies_ms: list[int] = []
 
     def start(self) -> None:
         super().start()
         if not self._disabled:
-            _logger.info("MassiveTelemetry started (stub; Sub-C activates record_request)")
+            _logger.info("MassiveTelemetry started")
 
     def record_request(self, endpoint: str, status: int, dt_ms: int) -> None:
+        with self._totals_lock:
+            self._requests += 1
+            if status == 429:
+                self._throttled += 1
+            elif status == 0:  # never got a response: connection or read timeout
+                self._errors += 1
+            self._latencies_ms.append(int(dt_ms))
         self._emit(
             {
                 "event": "massive_request",
@@ -234,6 +255,16 @@ class MassiveTelemetry(BaseTelemetry):
             }
         )
 
+    def record_wait(self, seconds: float) -> None:
+        """Accumulate time slept in pacing or retry backoff.
+
+        This is the half of the lane's elapsed time that `record_request` cannot
+        see: `_throttle()` runs before the clock starts and `_sleep_backoff`
+        runs after the request is recorded.
+        """
+        with self._totals_lock:
+            self._wait_s += float(seconds)
+
     def record_rate_limit(self, remaining: int, reset_at: int) -> None:
         self._emit(
             {
@@ -242,3 +273,23 @@ class MassiveTelemetry(BaseTelemetry):
                 "reset_at": int(reset_at),
             }
         )
+
+    def summary(self) -> dict[str, float]:
+        """Return run totals. `latency_p95_ms` is 0.0 when nothing was measured."""
+        with self._totals_lock:
+            requests = self._requests
+            throttled = self._throttled
+            errors = self._errors
+            wait_s = self._wait_s
+            samples = sorted(self._latencies_ms)
+        if len(samples) < 2:
+            p95 = float(samples[0]) if samples else 0.0
+        else:
+            p95 = float(quantiles(samples, n=20, method="inclusive")[18])
+        return {
+            "requests": requests,
+            "throttled": throttled,
+            "errors": errors,
+            "wait_s": round(wait_s, 3),
+            "latency_p95_ms": p95,
+        }

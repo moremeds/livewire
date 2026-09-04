@@ -1071,10 +1071,20 @@ def _run_main(argv: Sequence[str] | None = None) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the job and close an opened ledger run even on an unexpected crash."""
+    """Run the job and close an opened ledger run even on an unexpected crash.
+
+    Catches BaseException, not just Exception: the 2026-09-03 run
+    (daily-update-20260903T060005Z-49009) left `runs.ended` null with no
+    traceback anywhere in the log, which rules out a plain Exception ever
+    reaching this handler — `except Exception` cannot explain a silent stop.
+    The remaining candidates this repo's process can still raise as Python
+    exceptions rather than an untrappable OS-level kill are SystemExit and
+    KeyboardInterrupt, so this widens the net to them; a real SIGKILL/segfault
+    still leaves `runs.ended` null and no traceback, same as before.
+    """
     try:
         return _run_main(argv)
-    except Exception:
+    except BaseException:  # noqa: BLE001 - see docstring; must still close the run on SystemExit/KeyboardInterrupt
         active_run = os.environ.get("LW_RUN_ID")
         if active_run:
             try:

@@ -24,6 +24,7 @@ from clients.duckdb_catalog import (
     ensure_pit_views,
     ensure_shepherd_metadata_view,
     ensure_view,
+    ledger_query,
     read_symbols,
     symbol_files,
     view_names,
@@ -675,3 +676,38 @@ def test_pit_coverage_view_is_bound_to_the_manifest_input_hash(tmp_path: Path) -
     }
     assert all(row[0] == manifest["input_hash"] and row[2] == "VERIFIED" for row in rows)
     assert not {"1" * 64, "2" * 64, "3" * 64} & {row[3] for row in rows}
+
+
+def test_ledger_query_ignores_appledouble_shadow_files(tmp_path):
+    """The lake is exFAT: macOS drops a `._x.parquet` beside every `x.parquet`,
+    and DuckDB dies on it with "No magic bytes found at end of file"."""
+    directory = tmp_path / "runs" / "date=2026-09-03"
+    directory.mkdir(parents=True)
+    pq.write_table(pa.table({"run_id": ["daily-update-1"]}), directory / "runs.parquet")
+    (directory / "._runs.parquet").write_bytes(b"Mac OS X AppleDouble stub")
+
+    rows = ledger_query(
+        "select run_id, date from runs",
+        root=tmp_path,
+        tables={"runs": pa.schema([("run_id", pa.string())])},
+    )
+
+    assert [row["run_id"] for row in rows] == ["daily-update-1"]
+    # The hive partition column has to survive the switch to an explicit file list.
+    assert [row["date"] for row in rows] == [date(2026, 9, 3)]
+
+
+def test_ledger_query_treats_a_shadow_only_directory_as_empty(tmp_path):
+    """A directory holding nothing but sidecars has no rows — it is not an error,
+    and it must not build a view over an empty file list."""
+    directory = tmp_path / "runs" / "date=2026-09-03"
+    directory.mkdir(parents=True)
+    (directory / "._runs.parquet").write_bytes(b"Mac OS X AppleDouble stub")
+
+    rows = ledger_query(
+        "select run_id from runs",
+        root=tmp_path,
+        tables={"runs": pa.schema([("run_id", pa.string())])},
+    )
+
+    assert rows == []

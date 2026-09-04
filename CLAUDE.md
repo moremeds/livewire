@@ -161,9 +161,10 @@ session archaeology of 2026-09-02.
 
 ## Testing
 
-`uv run pytest tests/ -v` (what CI runs) with `--cov=clients --cov=scripts
---cov-fail-under=95`; run `-W error::RuntimeWarning` once when mocking async
-runners. `npm run test:alerts` for the Node alert suite (CI runs it too). All new code in `clients/` and
+`uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning` —
+`.github/workflows/ci.yml:53` verbatim. Bare `--cov` takes its `source` from
+`pyproject.toml` (`clients` + `livewire_scripts`); passing `--cov=<pkg>`
+overrides that and silently measures the wrong tree. `npm run test:alerts` for the Node alert suite (CI runs it too). All new code in `clients/` and
 `livewire_scripts/` gets tests; mock external I/O; temp parquet roots for
 storage; `@pytest.mark.integration` for DB tests. Pre-commit secrets scanner:
 `ln -sf ../../tools/pre-commit-secrets-scan.sh .git/hooks/pre-commit`.
