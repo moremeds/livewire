@@ -77,6 +77,7 @@ gap      = expected − actual
 - The unresolved ledger (`<lake>/repairs/unresolved.json`) records permanently unsourceable `(symbol, session)` pairs with a reason so nothing is re-litigated nightly. → pm:2026-09-01-unresolved-ledger-key
 - Phase 1 is read-only: the scan writes two artifacts and mutates nothing; the Tier A manifest is not yet fed to `shepherd_repair`. Nothing outside livewire cron ever writes the lake; an agent produces evidence and queue entries, never rows. `shepherd_repair` requires `source_evidence` (a `HashedRef`). → spec §9
 - Silver publishes the longest silver-grade suffix of each symbol. Short and right beats long and wrong; a window that would start _later_ than the served revision is withheld. Holes are meant to ship as `INCOMPLETE_HISTORY` + `known_holes[]` (spec §7 — **designed, not yet implemented**; today silver still trims). → test: `tests/test_rebuild_silver.py` · pm:2026-07-18-window-regressions-withheld
+- Every operating constant is one `DECLARED` key in `clients/constants.py`, emitted as `measurements(source='declared')` each run and compared against the 14-day p95 of `source='measured'`; a >2x drift is a `status` WARN. Override for one run with `LW_DECLARED_<KEY>`. → test: `tests/test_constants.py`, `tests/test_status.py`
 - IB is a gate, never a source, for basis reconstruction: publish only what a post-last-split IB window confirms (`resolve-yahoo-basis --apply` requires `--ib-verify`). → pm:2026-07-18-unknown-price-basis-population
 
 ## Hard rules

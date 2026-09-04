@@ -29,11 +29,11 @@ if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
 
 from clients import ledger
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
+from livewire_scripts.backfill_runner import EQUITY_PRESETS  # re-exported: ingest_daily_flatfiles imports it from here
 from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, parse_last_summary_json
 
 logger = logging.getLogger("livewire.sync_runner")
 
-EQUITY_PRESETS = ("presets/sp500.json", "presets/ndx100.json", "presets/r2k.json")
 VOL_PRESET = "presets/volatility-intraday.json"
 # Distinct so the digest and failure summary can name a stall as a stall.
 TIMEOUT_EXIT_CODE = 124
