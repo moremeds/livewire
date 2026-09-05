@@ -106,14 +106,20 @@ class SourceEvidenceStore:
             raise ValueError("invalid artifact sha256")
         return self.raw_root / sha256[0:2] / sha256[2:4] / sha256
 
+    #: Where the pre-2026-09-05 flat directory lands once an operator renames it
+    #: aside. One `mv` retires 275k entries -- including 137k orphan lock files --
+    #: without unlinking them one by one on exFAT; the artifacts inside are
+    #: provider bytes that can never be refetched, so they must stay readable.
+    _LEGACY_DIR_NAME = "sha256-legacy"
+
     def raw_path(self, sha256: str) -> Path:
-        """Resolve a digest to its artifact: sharded first, legacy flat second.
+        """Resolve a digest to its artifact: sharded, then flat, then renamed-aside flat.
 
         Artifacts written before 2026-09-05 sit directly in `raw_root`; 137,504
         of them, and they are provider bytes that can never be refetched, so
-        they stay readable in place rather than being migrated on a hot path.
-        A digest with neither file resolves to the sharded path, which is where
-        a new artifact is written.
+        they stay readable in place rather than being migrated on a hot path --
+        wherever the operator left them. A digest with none of the three
+        resolves to the sharded path, which is where a new artifact is written.
         """
         sharded = self._shard_path(sha256)
         if sharded.exists():
@@ -121,6 +127,9 @@ class SourceEvidenceStore:
         legacy = self.raw_root / sha256
         if legacy.exists():
             return legacy
+        renamed = self.raw_root.parent / self._LEGACY_DIR_NAME / sha256
+        if renamed.exists():
+            return renamed
         return sharded
 
     def persist_raw(self, payload: bytes, expected_sha256: str | None = None) -> RawArtifact:

@@ -294,6 +294,26 @@ class TestShardedCas:
         assert store.list_verified() == [row]
         assert not (store.raw_root / digest[0:2] / digest[2:4] / digest).exists()
 
+    def test_the_renamed_aside_flat_directory_is_still_resolved_and_verified(self, tmp_path):
+        """Retiring the 275k-entry flat directory is one `mv`, not 275k unlinks.
+
+        The artifacts it holds are provider bytes that can never be refetched,
+        so `sha256-legacy/` has to stay readable exactly like `sha256/` did.
+        """
+        store = SourceEvidenceStore(tmp_path)
+        payload = b'{"legacy":"moved aside by one mv"}'
+        digest = hashlib.sha256(payload).hexdigest()
+        renamed = store.raw_root.parent / "sha256-legacy"
+        renamed.mkdir(parents=True)
+        (renamed / digest).write_bytes(payload)
+
+        assert store.raw_path(digest) == renamed / digest
+        row = evidence(f"artifact://sha256/{digest}", digest)
+        store.record_many([row])
+
+        assert store.read(row.ref) == payload
+        assert store.list_verified() == [row]
+
     def test_a_corrupt_legacy_artifact_still_fails_closed(self, tmp_path):
         store = SourceEvidenceStore(tmp_path)
         digest = hashlib.sha256(b"claimed").hexdigest()

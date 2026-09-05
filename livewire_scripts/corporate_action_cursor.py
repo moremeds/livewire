@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -134,13 +135,27 @@ def open_cursor(
     resume: bool,
     now: datetime,
 ) -> CorporateActionCursor:
+    """Return the cursor to work from; ``resume`` never fails the caller.
+
+    The nightly lane passes ``--resume`` every night, so a cursor that cannot be
+    continued -- a universe refresh changed the ticker set, last night finished
+    the pass, the file is unreadable -- must degrade to a fresh cursor. Raising
+    here killed the lane for the whole night, which is exactly the outcome the
+    cursor exists to prevent.
+    """
     if resume and path.exists():
-        cursor = CorporateActionCursor.from_json(path)
-        if cursor.identity != identity:
-            raise ValueError(f"corporate-action cursor is incompatible with this run: {path}")
-        if cursor.run_completed_at is not None:
-            raise ValueError(f"corporate-action cursor is already complete: {path}")
-        return cursor
+        try:
+            cursor = CorporateActionCursor.from_json(path)
+        except ValueError as exc:
+            reason = str(exc)
+        else:
+            if cursor.identity != identity:
+                reason = f"scope no longer matches this run: {path}"
+            elif cursor.run_completed_at is not None:
+                reason = f"previous pass already complete: {path}"
+            else:
+                return cursor
+        print(f"corporate-action cursor: starting a fresh pass ({reason})", file=sys.stderr)
 
     cursor = CorporateActionCursor(
         path=path,

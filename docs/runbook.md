@@ -410,6 +410,17 @@ python scripts/livewire_ingest.py corporate-actions --dry-run                   
 Targeted runs never infer disappearance by default; full reconciliations may
 append cancellation revisions.
 
+`--resume` is what the nightly lane passes, every night. It continues the
+per-symbol cursor for this exact scope (lake root, ticker set, `--full-reconcile`,
+`--dry-run`); a cursor from a different scope, a finished pass, or an unreadable
+file starts a fresh pass and says so on stderr rather than failing. When a resumed
+tail finishes and there is budget left, the same invocation opens a new cursor and
+does a full pass, so a night that catches up still reconciles the whole universe.
+`cycles` in the JSON summary says how many passes ran. Progress is heartbeat to
+`measurements(scope='corporate-actions', name='progress'|'progress_total')` every
+500 symbols, so a lane killed at its budget still records how far it got —
+`livewire_ops.py status` renders it as `Corporate-action progress`.
+
 #### Why was corporate-actions slow last night?
 
 ```bash

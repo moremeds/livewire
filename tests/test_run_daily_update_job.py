@@ -482,11 +482,13 @@ class TestHelpers:
             "/usr/bin/python3",
             str(daily_runner.INGEST_SCRIPT),
             "corporate-actions",
+            "--resume",
         ]
         assert build_corporate_action_command(config, full_reconcile=True, dry_run=True)[-2:] == [
             "--full-reconcile",
             "--dry-run",
         ]
+        assert "--resume" in build_corporate_action_command(config, full_reconcile=True, dry_run=True)
         assert build_silver_rebuild_command(config, dry_run=True)[-2:] == ["--full", "--dry-run"]
 
         watchdog_request = AlertRequest(
@@ -1077,6 +1079,7 @@ class TestSilverScheduledLanes:
             == 0
         )
         assert "--full-reconcile" in calls[0]
+        assert "--resume" in calls[0], "the Sunday full reconcile resumes too; it is the longest pass of the week"
 
 
 class TestMain:

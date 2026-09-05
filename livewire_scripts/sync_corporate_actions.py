@@ -282,93 +282,118 @@ def run(
     ticker_set = set(tickers)
     if not cursor.completed <= ticker_set:
         raise ValueError(f"corporate-action cursor contains symbols outside this run: {cursor_path}")
-    pending_tickers = [ticker for ticker in tickers if ticker not in cursor.completed]
     resumed = len(cursor.completed)
     counters = {"inserted": 0, "revised": 0, "cancelled": 0, "unchanged": 0, "failed": 0}
     attempted = 0
+    marked = 0
+    cycles = 0
+    cycle_failed = 0
+    run_id = _lane_run_id()
 
-    owned_client: MassiveClient | None = None
-    active_workers = min(workers, len(pending_tickers))
-    if active_workers == 0:
-        fetches = iter(())
-    elif active_workers == 1:
-        massive = client
-        if massive is None:
-            try:
-                owned_client = (client_factory or default_client_factory)()
-            except Exception as exc:
-                fetches = iter((_FetchResult(ticker=None, error=exc),))
-            else:
-                massive = owned_client
-                fetches = _fetch_sequential(massive, pending_tickers)
-        else:
-            fetches = _fetch_sequential(massive, pending_tickers)
-    else:
-        fetches = _fetch_parallel(
-            pending_tickers,
-            workers=active_workers,
-            client_factory=client_factory or default_client_factory,
+    def open_fetches(pending: list[str]) -> tuple[Iterator[_FetchResult], MassiveClient | None]:
+        active_workers = min(workers, len(pending))
+        if active_workers == 1:
+            massive = client
+            if massive is None:
+                try:
+                    owned = (client_factory or default_client_factory)()
+                except Exception as exc:
+                    return iter((_FetchResult(ticker=None, error=exc),)), None
+                return _fetch_sequential(owned, pending), owned
+            return _fetch_sequential(massive, pending), None
+        return (
+            _fetch_parallel(
+                pending,
+                workers=active_workers,
+                client_factory=client_factory or default_client_factory,
+            ),
+            None,
         )
 
-    try:
-        for fetched in fetches:
-            if fetched.ticker is None:
-                counters["failed"] += 1
-                print(f"provider: {fetched.error}", file=sys.stderr)
-                continue
-            attempted += 1
-            ticker = fetched.ticker
-            if fetched.error is not None:
-                counters["failed"] += 1
-                print(f"{ticker}: {fetched.error}", file=sys.stderr)
-                continue
+    # At most two passes: finish whatever last night left, then -- if there is
+    # budget left -- run this night's own pass. A SIGKILL at the lane budget
+    # simply leaves the current pass resumable tomorrow.
+    while True:
+        # A pass that inherited work is the tail of an earlier night; only that
+        # kind of pass earns a second cycle in the same invocation.
+        continues_an_earlier_night = bool(cursor.completed)
+        pending_tickers = [ticker for ticker in tickers if ticker not in cursor.completed]
+        cycle_failed = 0
+        if pending_tickers:
+            cycles += 1
+            fetches, owned_client = open_fetches(pending_tickers)
             try:
-                fetched_at = datetime.now(UTC)
-                result = action_store.reconcile(
-                    ticker,
-                    fetched.events or [],
-                    fetched_at,
-                    full_reconcile=args.full_reconcile,
-                    dry_run=args.dry_run,
-                )
-                if hasattr(action_store, "record_fetch"):
-                    action_store.record_fetch(
-                        ticker,
-                        fetched.pages or [],
-                        fetched_at,
-                        full_reconcile=args.full_reconcile,
-                        dry_run=args.dry_run,
-                    )
-            except Exception as exc:
-                counters["failed"] += 1
-                print(f"{ticker}: {exc}", file=sys.stderr)
-                continue
-            for key in ("inserted", "revised", "cancelled", "unchanged"):
-                counters[key] += int(getattr(result, key))
-            cursor.mark_completed(ticker, now=datetime.now(UTC))
-            if evidence is not None and attempted % _EVIDENCE_FLUSH_EVERY == 0:
-                evidence.flush()
-    finally:
-        if owned_client is not None:
-            owned_client.close()
-        # Commit whatever was collected even when the run aborted: the bytes are
-        # already on disk and a provider response is not refetchable later.
-        if evidence is not None:
-            evidence.flush()
+                for fetched in fetches:
+                    if fetched.ticker is None:
+                        counters["failed"] += 1
+                        cycle_failed += 1
+                        print(f"provider: {fetched.error}", file=sys.stderr)
+                        continue
+                    attempted += 1
+                    ticker = fetched.ticker
+                    if fetched.error is not None:
+                        counters["failed"] += 1
+                        cycle_failed += 1
+                        print(f"{ticker}: {fetched.error}", file=sys.stderr)
+                        continue
+                    try:
+                        fetched_at = datetime.now(UTC)
+                        result = action_store.reconcile(
+                            ticker,
+                            fetched.events or [],
+                            fetched_at,
+                            full_reconcile=args.full_reconcile,
+                            dry_run=args.dry_run,
+                        )
+                        if hasattr(action_store, "record_fetch"):
+                            action_store.record_fetch(
+                                ticker,
+                                fetched.pages or [],
+                                fetched_at,
+                                full_reconcile=args.full_reconcile,
+                                dry_run=args.dry_run,
+                            )
+                    except Exception as exc:
+                        counters["failed"] += 1
+                        cycle_failed += 1
+                        print(f"{ticker}: {exc}", file=sys.stderr)
+                        continue
+                    for key in ("inserted", "revised", "cancelled", "unchanged"):
+                        counters[key] += int(getattr(result, key))
+                    cursor.mark_completed(ticker, now=datetime.now(UTC))
+                    marked += 1
+                    if attempted % _EVIDENCE_FLUSH_EVERY == 0:
+                        if evidence is not None:
+                            evidence.flush()
+                        _emit_progress(completed=resumed + marked, total=len(tickers), run_id=run_id)
+            finally:
+                if owned_client is not None:
+                    owned_client.close()
+                # Commit whatever was collected even when the run aborted: the bytes are
+                # already on disk and a provider response is not refetchable later.
+                if evidence is not None:
+                    evidence.flush()
 
-    if len(cursor.completed) == len(tickers) and counters["failed"] == 0:
-        cursor.mark_run_completed(now=datetime.now(UTC))
+        complete = len(cursor.completed) == len(tickers) and counters["failed"] == 0
+        if complete:
+            cursor.mark_run_completed(now=datetime.now(UTC))
+        if not (complete and continues_an_earlier_night):
+            break
+        cursor = open_cursor(cursor_path, identity, resume=False, now=datetime.now(UTC))
+
     summary = {
         "attempted": attempted,
         **counters,
         "completed": len(cursor.completed),
         "cursor": str(cursor_path),
-        "pending": len(tickers) - resumed - attempted,
+        "cycles": cycles,
+        # Symbols this invocation never reached, in the pass it ends on.
+        "pending": len(tickers) - len(cursor.completed) - cycle_failed,
         "requested": len(tickers),
         "resumed": resumed,
     }
     print(json.dumps(summary, sort_keys=True))
-    _emit_provider_measurements(telemetry)
+    _emit_provider_measurements(telemetry, run_id)
 
     # Rate, not a binary. `run_daily_update_job.main()` gates the Silver rebuild on
     # this lane (`silver_inputs_ok = action_code == 0`), so `1 if failed` meant a
@@ -402,7 +427,39 @@ _PROVIDER_MEASUREMENTS = (
 )
 
 
-def _emit_provider_measurements(telemetry: MassiveTelemetry) -> None:
+def _lane_run_id() -> str:
+    """The run this lane's ledger rows belong to; the orchestrator supplies it."""
+    return os.environ.get("LW_RUN_ID") or ledger.new_run_id("corporate-actions")
+
+
+def _emit_measurements(rows: list[dict], run_id: str) -> None:
+    try:
+        ledger.emit("measurements", rows, run_id=run_id)
+    except Exception as exc:  # pragma: no cover - telemetry must not fail a good run
+        print(f"WARNING: could not write measurements: {exc}", file=sys.stderr)
+
+
+def _emit_progress(*, completed: int, total: int, run_id: str) -> None:
+    """Heartbeat the universe position so a lane SIGKILLed at its budget still says how far it got."""
+    now = datetime.now(UTC)
+    _emit_measurements(
+        [
+            {
+                "name": name,
+                "scope": "corporate-actions",
+                "measured_at": now,
+                "value": float(value),
+                "unit": "symbols",
+                "source": "measured",
+                "run_id": run_id,
+            }
+            for name, value in (("progress", completed), ("progress_total", total))
+        ],
+        run_id,
+    )
+
+
+def _emit_provider_measurements(telemetry: MassiveTelemetry, run_id: str) -> None:
     """Publish what the provider cost this lane. Never aborts the run.
 
     2026-09-03: corporate-actions ran 2h15m of its 3h budget and nothing
@@ -413,23 +470,21 @@ def _emit_provider_measurements(telemetry: MassiveTelemetry) -> None:
     if not totals["requests"]:
         return
     now = datetime.now(UTC)
-    run = os.environ.get("LW_RUN_ID") or ledger.new_run_id("corporate-actions")
-    rows = [
-        {
-            "name": name,
-            "scope": "corporate-actions",
-            "measured_at": now,
-            "value": float(totals[key]),
-            "unit": unit,
-            "source": "measured",
-            "run_id": run,
-        }
-        for name, key, unit in _PROVIDER_MEASUREMENTS
-    ]
-    try:
-        ledger.emit("measurements", rows, run_id=run)
-    except Exception as exc:  # pragma: no cover - telemetry must not fail a good run
-        print(f"WARNING: could not write provider measurements: {exc}", file=sys.stderr)
+    _emit_measurements(
+        [
+            {
+                "name": name,
+                "scope": "corporate-actions",
+                "measured_at": now,
+                "value": float(totals[key]),
+                "unit": unit,
+                "source": "measured",
+                "run_id": run_id,
+            }
+            for name, key, unit in _PROVIDER_MEASUREMENTS
+        ],
+        run_id,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

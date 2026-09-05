@@ -255,7 +255,12 @@ def build_corporate_action_command(
     full_reconcile: bool,
     dry_run: bool,
 ) -> list[str]:
-    command = [config.python_bin, str(INGEST_SCRIPT), "corporate-actions"]
+    # --resume every night, including Sunday's full reconcile. The lane hit its
+    # 10800s budget three nights running (2026-09-03/04/05) and each night
+    # restarted at symbol 1, so the tail of the ~13.3K universe was never
+    # reached. An incompatible or finished cursor starts a fresh pass rather
+    # than failing, so this is unconditional.
+    command = [config.python_bin, str(INGEST_SCRIPT), "corporate-actions", "--resume"]
     if full_reconcile:
         command.append("--full-reconcile")
     if dry_run:
