@@ -43,6 +43,13 @@ evidence manifest every 500 symbols instead of only at the end;
 275k-entry directory is minutes, and `main()` plans everything before deleting
 anything, so a glob that blows the nightly 600s tail budget would delete nothing).
 
+**Superseded 2026-09-06:** the orphan-lock sweep is not how the flat directory
+gets retired. Listing 275k entries on exFAT to unlink 137k of them costs more
+than it saves; the operator renames the whole directory aside in one `mv`
+(`raw/shepherd/sha256` → `raw/shepherd/sha256-legacy`) and `raw_path` resolves
+artifacts there as a third fallback, so nothing that cannot be refetched becomes
+unreadable.
+
 **Tests:** `tests/test_source_evidence.py::TestShardedCas`,
 `tests/test_sync_corporate_actions.py::TestDistinctResponseBodies`,
 `tests/test_housekeeping.py::TestEvidenceLockSweep`,
