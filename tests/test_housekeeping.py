@@ -269,3 +269,52 @@ def test_a_directory_named_like_a_log_is_never_planned(tmp_path):
     )
 
     assert trap not in [p for _, p in planned]
+
+
+class TestEvidenceLockSweep:
+    """The one sanctioned exception to the raw/ protection, scoped to `*.lock`.
+
+    `persist_raw` created `.<digest>.lock` per response and never unlinked it:
+    137,504 orphans of the 275,006 entries in one flat exFAT directory on
+    2026-09-05, which is what made the corporate-actions lane time out.
+    """
+
+    def _flat_cas(self, tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+        lake = tmp_path / "data-lake"
+        cas = lake / "raw/shepherd/sha256"
+        digest = "a" * 64
+        lock = _touch(cas / f".{digest}.lock")
+        artifact = _touch(cas / digest)
+        sharded = _touch(cas / "ab/cd" / ("ab" + "c" * 62))
+        return lake, lock, artifact, sharded
+
+    def test_the_sweep_is_opt_in_and_the_dry_run_only_lists(self, tmp_path, monkeypatch, caplog):
+        lake, lock, artifact, _sharded = self._flat_cas(tmp_path)
+        monkeypatch.setattr(housekeeping, "prune_releases", lambda keep, dry_run: [])
+
+        housekeeping.main(["--apply", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(lake)])
+        assert lock.exists(), "listing a 275k-entry directory is never part of the default sweep"
+
+        with caplog.at_level("INFO"):
+            rc = housekeeping.main(["--evidence-locks", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(lake)])
+
+        assert rc == 0
+        assert lock.exists(), "dry run by default"
+        assert str(lock) in caplog.text
+        assert str(artifact) not in caplog.text
+
+    def test_apply_deletes_only_the_lock_files(self, tmp_path, monkeypatch):
+        lake, lock, artifact, sharded = self._flat_cas(tmp_path)
+        monkeypatch.setattr(housekeeping, "prune_releases", lambda keep, dry_run: [])
+
+        rc = housekeeping.main(
+            ["--apply", "--evidence-locks", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(lake)]
+        )
+
+        assert rc == 0
+        assert not lock.exists()
+        assert artifact.exists(), "a provider artifact is never refetchable"
+        assert sharded.exists(), "shards are not entered"
+
+    def test_a_lake_without_the_directory_plans_nothing(self, tmp_path):
+        assert housekeeping.plan_evidence_locks(tmp_path / "data-lake") == []
