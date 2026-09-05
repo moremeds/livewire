@@ -14,6 +14,7 @@ from clients.massive_client import MassiveAuthError, MassiveResponseCapture
 from clients.source_evidence import SourceEvidenceStore
 from clients.telemetry import MassiveTelemetry
 from livewire_scripts import sync_corporate_actions
+from livewire_scripts.corporate_action_cursor import build_identity, open_cursor
 
 
 @responses.activate
@@ -164,6 +165,7 @@ def test_explicit_tickers_reconcile_sequentially_with_dry_run(tmp_path, capsys):
         "cancelled": 6,
         "completed": 2,
         "cursor": summary["cursor"],
+        "cycles": 1,
         "failed": 0,
         "inserted": 2,
         "pending": 0,
@@ -332,7 +334,9 @@ def test_failed_symbol_is_not_checkpointed_and_resume_retries_it(tmp_path):
         )
         == 0
     )
-    assert second.fetched_symbols == {"MSFT"}
+    # The resumed pass owes only MSFT; finishing it frees the rest of the
+    # budget, so the same invocation opens a fresh pass over the whole list.
+    assert second.fetch_counts == {"MSFT": 2, "AAPL": 1}
 
 
 def test_auth_failure_stops_new_work_and_reports_pending(tmp_path, capsys):
@@ -581,3 +585,87 @@ def test_a_run_that_measured_nothing_emits_nothing(tmp_path, monkeypatch):
 
     assert rc == 0
     assert ledger.query("select count(*) as n from measurements")[0]["n"] == 0
+
+
+def _seed_cursor(tmp_path, path, tickers, done):
+    """Write a real, compatible, incomplete cursor -- the subject under test."""
+    identity = build_identity(tmp_path, tickers, full_reconcile=False, dry_run=False)
+    cursor = open_cursor(path, identity, resume=False, now=datetime(2026, 9, 4, 6, tzinfo=UTC))
+    for ticker in done:
+        cursor.mark_completed(ticker, now=datetime(2026, 9, 4, 6, tzinfo=UTC))
+    return cursor
+
+
+def test_a_resumed_pass_finishes_its_tail_then_opens_a_new_cycle(tmp_path):
+    """Last night's tail first, then this night's own full pass.
+
+    Resuming alone would leave the head of the universe untouched on a night
+    the previous pass was nearly done; restarting alone was the bug.
+    """
+    tickers = ["AAPL", "MSFT", "NVDA"]
+    cursor_path = tmp_path / "cursor.json"
+    _seed_cursor(tmp_path, cursor_path, tickers, ["AAPL", "MSFT"])
+    client = _Client()
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", *tickers, "--cursor", str(cursor_path), "--resume"],
+            client=client,
+            store=_Store(),
+            data_lake_root=tmp_path,
+        )
+        == 0
+    )
+
+    assert [ticker for kind, ticker in client.calls if kind == "splits"] == [
+        "NVDA",
+        "AAPL",
+        "MSFT",
+        "NVDA",
+    ]
+    assert json.loads(cursor_path.read_text())["run_completed_at"] is not None
+
+
+def test_a_resumed_pass_that_does_not_finish_stays_resumable(tmp_path, capsys):
+    tickers = ["AAPL", "MSFT", "NVDA"]
+    cursor_path = tmp_path / "cursor.json"
+    _seed_cursor(tmp_path, cursor_path, tickers, ["AAPL"])
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", *tickers, "--cursor", str(cursor_path), "--resume"],
+            client=_Client(fail="NVDA"),
+            store=_Store(),
+            data_lake_root=tmp_path,
+        )
+        == 1
+    )
+
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["cycles"] == 1
+    assert summary["resumed"] == 1
+    assert json.loads(cursor_path.read_text())["run_completed_at"] is None
+    assert json.loads(cursor_path.read_text())["completed"] == ["AAPL", "MSFT"]
+
+
+def test_progress_heartbeats_to_the_ledger_at_every_flush(tmp_path, monkeypatch):
+    """A lane SIGKILLed at its budget prints nothing; the ledger still says how far it got."""
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-20260905T060000Z-1")
+    monkeypatch.setattr(sync_corporate_actions, "_EVIDENCE_FLUSH_EVERY", 2)
+    tickers = [f"T{index}" for index in range(4)]
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", *tickers, "--cursor", str(tmp_path / "cursor.json")],
+            client=_Client(),
+            store=_Store(),
+            data_lake_root=tmp_path,
+        )
+        == 0
+    )
+
+    rows = ledger.query("select name, value, unit, run_id from measurements where scope = 'corporate-actions'")
+    assert sorted(row["value"] for row in rows if row["name"] == "progress") == [2.0, 4.0]
+    assert {row["value"] for row in rows if row["name"] == "progress_total"} == {4.0}
+    assert {row["unit"] for row in rows} == {"symbols"}
+    assert {row["run_id"] for row in rows} == {"daily-update-20260905T060000Z-1"}
