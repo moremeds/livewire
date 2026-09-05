@@ -337,9 +337,15 @@ def run_daily_update_attempt(
     runner: callable = _run_in_own_process_group,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess:
+    # Every lane subprocess runs unbuffered. A lane over budget is SIGKILLed, so
+    # anything Python still holds in its 8 KiB stdout block buffer dies with it:
+    # the corporate-actions lane ran 3h and timed out three nights running
+    # (2026-09-03/04/05) and left an empty log each time.
+    lane_env = dict(os.environ if env is None else env)
+    lane_env["PYTHONUNBUFFERED"] = "1"
     with log_file.open("a", encoding="utf-8") as handle:
         try:
-            return runner(list(command), stdout=handle, env=env, timeout=timeout)
+            return runner(list(command), stdout=handle, env=lane_env, timeout=timeout)
         except subprocess.TimeoutExpired:
             spent = "no budget" if timeout is None else f"{timeout:.0f}s"
             append_log(log_file, f"=== Timed out after {spent} (process group killed) ===")

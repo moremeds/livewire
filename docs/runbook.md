@@ -947,10 +947,19 @@ python scripts/livewire_ops.py housekeeping --keep-releases 3
 python scripts/livewire_ops.py housekeeping --keep-evicted 2
 python scripts/livewire_ops.py housekeeping --log-dir <path> --data-lake <path>
 python scripts/livewire_ops.py housekeeping --appledouble        # opt-in `._*` sweep
+python scripts/livewire_ops.py housekeeping --evidence-locks     # opt-in orphan `.lock` sweep
 ```
 
 The AppleDouble sweep (`--appledouble`) is opt-in and must **never** go in the
 nightly job — it `rglob`s the whole exFAT volume.
+
+`--evidence-locks` deletes orphan `.<digest>.lock` files left directly in
+`raw/shepherd/sha256/` by the pre-2026-09-05 `persist_raw` (137,504 of them on
+2026-09-05). It is the one sanctioned exception to the `raw/` protection, scoped
+by name to `.*.lock` in that one directory — artifacts and shard subdirectories
+are never touched. Opt-in for the same reason as `--appledouble`: listing that
+275k-entry directory takes minutes, and `main()` plans before it deletes, so a
+glob that blows the nightly 600s tail budget would delete nothing at all.
 
 ---
 

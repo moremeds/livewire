@@ -117,6 +117,7 @@ gap      = expected − actual
 - coverage/weekly/digest run once, after Silver. The watchdog pages only on `BAD`; a run still in flight at 10:30Z is `WARN` (lane budgets sum to 9h, so completion is no longer guaranteed) and every lane check reads UNKNOWN until the run has a close row. → test: `tests/test_check_daily_update_watchdog.py` · pm:2026-07-22-coverage-weekly-digest-ordering, pm:2026-08-16-watchdog-raced-quality-marker
 - `housekeeping` protects `raw/` and `repairs/` by name, dry-runs by default, previews releases too; `--appledouble` is opt-in and never nightly (34 min, 97.5% I/O wait). → test: `tests/test_housekeeping.py` · pm:2026-08-10-appledouble-sweep-cost
 - `MDW_SOURCE_EVIDENCE` is committed once per run, never per response (41 min/night otherwise). → pm:2026-08-31-source-evidence-per-response-cost
+- Source evidence is a **sharded** CAS (`sha256/<d[0:2]>/<d[2:4]>/`) with no per-artifact lock file and one directory fsync per commit; one flat exFAT directory (275,006 entries, 137,504 orphan locks, 25 GB) timed the corporate-actions lane out 3 nights, and every lane subprocess now runs `PYTHONUNBUFFERED=1`. → test: `tests/test_source_evidence.py::TestShardedCas`, `tests/test_sync_corporate_actions.py::TestDistinctResponseBodies` · pm:2026-09-05-source-evidence-flat-exfat-directory
 
 ### Alerts and the digest
 

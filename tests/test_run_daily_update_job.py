@@ -1768,3 +1768,44 @@ class TestHousekeepingRunsAfterTheDigest:
         run_post_success_quality(_config(tmp_path), log_file, runner=fake_runner)
 
         assert "WARNING: housekeeping failed" in log_file.read_text(encoding="utf-8")
+
+
+class TestLaneSubprocessesRunUnbuffered:
+    """A lane killed at its budget takes its stdout buffer with it.
+
+    corporate-actions hit the 10800s budget on 2026-09-03/04/05 and each night
+    the log file was empty: block-buffered stdout, SIGKILL, nothing flushed.
+    """
+
+    def test_the_shared_attempt_seam_sets_pythonunbuffered(self, tmp_path):
+        seen: dict = {}
+
+        def _runner(command, stdout=None, env=None, timeout=None, **_):
+            seen["env"] = env
+            return CompletedProcess(command, 0)
+
+        run_daily_update_attempt(["true"], tmp_path / "lane.log", env={"MDW_X": "1"}, runner=_runner, timeout=None)
+
+        assert seen["env"]["PYTHONUNBUFFERED"] == "1"
+        assert seen["env"]["MDW_X"] == "1", "the caller's env is carried, not replaced"
+
+    def test_a_lane_inheriting_the_process_env_is_unbuffered_too(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+        monkeypatch.setenv("LW_RUN_ID", "daily-update-20260905T060000Z-1")
+        seen: dict = {}
+
+        def _runner(command, stdout=None, env=None, timeout=None, **_):
+            seen["env"] = env
+            return CompletedProcess(command, 0)
+
+        daily_runner._run_scheduled_lane(
+            _config(tmp_path),
+            ["true"],
+            "Corporate Action Sync",
+            "corporate-actions",
+            env=None,
+            runner=_runner,
+            now_fn=_utc_now,
+        )
+
+        assert seen["env"]["PYTHONUNBUFFERED"] == "1"

@@ -59,7 +59,7 @@ def test_raw_bytes_survive_a_parse_failure(tmp_path):
     store = SourceEvidenceStore(tmp_path)
     with pytest.raises(MediaWikiFetchError, match="revision payload"):
         MediaWikiClient(store).snapshot("Broken")
-    raw_files = [path for path in store.raw_root.iterdir() if path.name.endswith(".lock") is False]
+    raw_files = [path for path in store.raw_root.rglob("*") if path.is_file()]
     assert len(raw_files) == 1
     assert raw_files[0].read_bytes() == b"not html metadata"
     assert store.manifest_path.exists() is False
@@ -87,4 +87,4 @@ def test_http_error_is_bounded_and_does_not_create_evidence(tmp_path):
     with pytest.raises(MediaWikiFetchError, match="503"):
         MediaWikiClient(store, timeout=7).snapshot("List of S&P 500 companies")
     assert responses.calls[0].request.url == rest_url("List of S&P 500 companies")
-    assert list(store.raw_root.glob("[0-9a-f]*")) == []
+    assert [path for path in store.raw_root.rglob("*") if path.is_file()] == []

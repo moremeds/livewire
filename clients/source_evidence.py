@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from threading import Lock
+from threading import Lock, get_ident
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -97,11 +97,31 @@ class SourceEvidenceStore:
         # from O(responses) disk reads into O(distinct payloads).
         self._known_lock = Lock()
         self._known: set[str] = set()
+        # Shard directories written since the last commit, fsynced in one pass
+        # by `record_many`. See `persist_raw` for what that trades.
+        self._unsynced_dirs: set[Path] = set()
 
-    def raw_path(self, sha256: str) -> Path:
+    def _shard_path(self, sha256: str) -> Path:
         if re.fullmatch(r"[0-9a-f]{64}", sha256) is None:
             raise ValueError("invalid artifact sha256")
-        return self.raw_root / sha256
+        return self.raw_root / sha256[0:2] / sha256[2:4] / sha256
+
+    def raw_path(self, sha256: str) -> Path:
+        """Resolve a digest to its artifact: sharded first, legacy flat second.
+
+        Artifacts written before 2026-09-05 sit directly in `raw_root`; 137,504
+        of them, and they are provider bytes that can never be refetched, so
+        they stay readable in place rather than being migrated on a hot path.
+        A digest with neither file resolves to the sharded path, which is where
+        a new artifact is written.
+        """
+        sharded = self._shard_path(sha256)
+        if sharded.exists():
+            return sharded
+        legacy = self.raw_root / sha256
+        if legacy.exists():
+            return legacy
+        return sharded
 
     def persist_raw(self, payload: bytes, expected_sha256: str | None = None) -> RawArtifact:
         digest = hashlib.sha256(payload).hexdigest()
@@ -113,25 +133,43 @@ class SourceEvidenceStore:
         if already_known:
             return RawArtifact(ref=f"artifact://sha256/{digest}", sha256=digest, size=len(payload))
 
-        destination = self.raw_path(digest)
-        lock_path = self.raw_root / f".{digest}.lock"
-        with _exclusive_lock(lock_path):
-            if destination.exists():
-                self._verify_path(destination, digest)
-            else:
-                temp_path = self.raw_root / f".{digest}.{os.getpid()}.{time.time_ns()}.tmp"
-                try:
-                    with temp_path.open("xb") as output:
-                        os.chmod(temp_path, 0o600)
-                        output.write(payload)
-                        output.flush()
-                        os.fsync(output.fileno())
-                    self._verify_path(temp_path, digest)
-                    os.replace(temp_path, destination)
-                    os.chmod(destination, 0o600)
-                    _fsync_directory(self.raw_root)
-                finally:
-                    temp_path.unlink(missing_ok=True)
+        # Sharded path only, deliberately: a `raw_path` fallback here would put a
+        # lookup in the 137k-entry legacy directory back on the write path, and
+        # an exFAT directory op is linear in entry count -- the whole cost this
+        # sharding removes. An artifact that already exists flat is simply
+        # written again into its shard; the bytes are identical by construction.
+        destination = self._shard_path(digest)
+        if destination.exists():
+            self._verify_path(destination, digest)
+        else:
+            shard = destination.parent
+            shard.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # No per-artifact lock file. Content-addressed writes are idempotent,
+            # so two racing writers produce byte-identical files and `os.replace`
+            # is atomic; the lock only ever serialized them. The old lock file was
+            # never unlinked -- 137,504 orphans, swept by `housekeeping
+            # --evidence-locks`.
+            temp_path = shard / f".{digest}.{os.getpid()}.{get_ident()}.{time.time_ns()}.tmp"
+            try:
+                with temp_path.open("xb") as output:
+                    os.chmod(temp_path, 0o600)
+                    output.write(payload)
+                    output.flush()
+                    os.fsync(output.fileno())
+                self._verify_path(temp_path, digest)
+                os.replace(temp_path, destination)
+                os.chmod(destination, 0o600)
+            finally:
+                temp_path.unlink(missing_ok=True)
+            # ponytail: the directory entry is fsynced once per commit instead of
+            # once per artifact. Trade: a power loss between the write and the
+            # commit can lose the *link* to bytes that are themselves durable, and
+            # the manifest row that would have referenced them is lost with it --
+            # so the lake stays self-consistent and the response is refetched.
+            # Per-artifact it cost 29.6k directory fsyncs a night against one
+            # exFAT directory.
+            with self._known_lock:
+                self._unsynced_dirs.add(shard)
         with self._known_lock:
             self._known.add(digest)
         return RawArtifact(ref=f"artifact://sha256/{digest}", sha256=digest, size=len(payload))
@@ -149,13 +187,21 @@ class SourceEvidenceStore:
         for the ~29.6k corporate-action responses against a ~29.6k-row manifest.
         Batching makes the same run pay that cost once.
         """
+        self._sync_written_dirs()
         if not evidence:
             return
         for item in evidence:
             digest = self._digest_from_ref(item.ref)
             if digest != item.sha256:
                 raise ValueError("evidence ref and sha256 disagree")
-            self._verify_path(self.raw_path(digest), digest)
+            with self._known_lock:
+                known = digest in self._known
+            # A digest this process wrote and verified needs no second
+            # read+rehash: content-addressed storage is immutable, and re-reading
+            # every pending artifact at commit was a second full pass over the
+            # night's 29.6k responses.
+            if not known:
+                self._verify_path(self.raw_path(digest), digest)
 
         lock_path = self.manifest_path.with_suffix(".parquet.lock")
         with _exclusive_lock(lock_path):
@@ -211,6 +257,14 @@ class SourceEvidenceStore:
                 raise ValueError("evidence ref and sha256 disagree")
             self._verify_path(self.raw_path(digest), digest)
         return evidence
+
+    def _sync_written_dirs(self) -> None:
+        """fsync every shard directory written since the last commit."""
+        with self._known_lock:
+            pending = sorted(self._unsynced_dirs)
+            self._unsynced_dirs.clear()
+        for directory in pending:
+            _fsync_directory(directory)
 
     @staticmethod
     def _digest_from_ref(ref: str) -> str:

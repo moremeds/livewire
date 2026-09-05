@@ -28,6 +28,13 @@ from livewire_scripts.paths import data_lake_dir
 # Share of attempted symbols that may fail before the run counts as systemic.
 FAILURE_RATE_TOLERANCE = constants.declared("failure_rate_tolerance")
 
+# Symbols between evidence-manifest commits. A commit is O(manifest), so per
+# response it cost 41 min a night; once per run it is free but a lane SIGKILLed
+# at its budget (three nights running, 2026-09-03/04/05) loses every manifest row
+# for bytes already on disk. 500 pays ~1/500 of the per-response cost and caps
+# the loss at 500 rows.
+_EVIDENCE_FLUSH_EVERY = 500
+
 # Values of MDW_SOURCE_EVIDENCE that turn response-evidence collection off.
 _EVIDENCE_OFF = frozenset({"0", "off", "false", "no"})
 
@@ -339,6 +346,8 @@ def run(
             for key in ("inserted", "revised", "cancelled", "unchanged"):
                 counters[key] += int(getattr(result, key))
             cursor.mark_completed(ticker, now=datetime.now(UTC))
+            if evidence is not None and attempted % _EVIDENCE_FLUSH_EVERY == 0:
+                evidence.flush()
     finally:
         if owned_client is not None:
             owned_client.close()

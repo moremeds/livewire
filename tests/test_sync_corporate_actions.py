@@ -364,6 +364,57 @@ def _stub_endpoints(tickers):
             )
 
 
+def _stub_distinct_endpoints(tickers):
+    """Production shape: every response body differs, so nothing dedupes.
+
+    `_stub_endpoints` returns one byte-identical empty body, which every write
+    after the first answers from the in-process digest cache -- that is what hid
+    the flat-directory cost until the lane timed out three nights running.
+    """
+    for ticker in tickers:
+        for resource in ("splits", "dividends"):
+            responses.add(
+                responses.GET,
+                f"https://api.massive.com/v3/reference/{resource}",
+                json={"status": "OK", "request_id": f"{ticker}-{resource}", "results": []},
+                status=200,
+            )
+
+
+class TestDistinctResponseBodies:
+    @responses.activate
+    def test_every_artifact_is_sharded_and_no_lock_file_is_left_behind(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MASSIVE_API_KEY", "fixture-token")
+        tickers = ["AAPL", "MSFT", "NVDA"]
+        _stub_distinct_endpoints(tickers)
+
+        assert sync_corporate_actions.run(["--tickers", *tickers, "--workers", "1"], data_lake_root=tmp_path) == 0
+
+        store = SourceEvidenceStore(tmp_path)
+        assert len(store.list_verified()) == 2 * len(tickers)
+        assert list(store.raw_root.rglob(".*.lock")) == []
+        assert [path for path in store.raw_root.iterdir() if path.is_file()] == []
+
+    @responses.activate
+    def test_the_manifest_is_committed_during_the_run_not_only_at_the_end(self, tmp_path, monkeypatch):
+        """A lane SIGKILLed at its budget never reaches the `finally`."""
+        monkeypatch.setenv("MASSIVE_API_KEY", "fixture-token")
+        monkeypatch.setattr(sync_corporate_actions, "_EVIDENCE_FLUSH_EVERY", 1)
+        tickers = ["AAPL", "MSFT", "NVDA"]
+        _stub_distinct_endpoints(tickers)
+        publishes = []
+        real_publish = SourceEvidenceStore._publish_manifest
+        monkeypatch.setattr(
+            SourceEvidenceStore,
+            "_publish_manifest",
+            lambda self, rows: (publishes.append(len(rows)), real_publish(self, rows))[1],
+        )
+
+        assert sync_corporate_actions.run(["--tickers", *tickers, "--workers", "1"], data_lake_root=tmp_path) == 0
+
+        assert publishes == [2, 4, 6], "one commit per ticker, each carrying the whole manifest"
+
+
 class TestEvidenceIsCommittedOncePerRun:
     """The manifest is rewritten whole, so a per-response commit is O(N * manifest)."""
 

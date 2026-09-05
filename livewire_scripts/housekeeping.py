@@ -122,6 +122,27 @@ def plan_appledouble(data_lake: Path) -> list[tuple[str, Path]]:
     ]
 
 
+def plan_evidence_locks(data_lake: Path) -> list[tuple[str, Path]]:
+    """Opt-in sweep of orphan `.<digest>.lock` files in the flat evidence CAS.
+
+    The one sanctioned exception to the `raw/` protection, and scoped by name to
+    `.*.lock` files sitting directly in `raw/shepherd/sha256/`: those are not
+    provider bytes, they are the lock files `persist_raw` created and never
+    unlinked -- 137,504 of them, half the 275,006 entries in that one directory,
+    on 2026-09-05. An artifact is never matched, and no subdirectory (a shard) is
+    entered.
+
+    Opt-in, like `--appledouble` and for the same reason: listing a
+    275k-entry directory on exFAT is minutes of cold I/O, and `main()` plans
+    everything before it deletes anything, so a glob that blows the nightly
+    tail's 600s budget would delete nothing at all.
+    """
+    flat = data_lake / "raw" / "shepherd" / "sha256"
+    if not flat.is_dir():
+        return []
+    return [("orphan source-evidence lock", path) for path in sorted(flat.glob(".*.lock")) if path.is_file()]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Warehouse retention sweeps")
     parser.add_argument("--apply", action="store_true", help="Actually delete (default: dry run)")
@@ -129,6 +150,11 @@ def main(argv: list[str] | None = None) -> int:
         "--appledouble",
         action="store_true",
         help="Also sweep exFAT ._* sidecars. Walks the whole lake — minutes. Not for the nightly job.",
+    )
+    parser.add_argument(
+        "--evidence-locks",
+        action="store_true",
+        help="Also sweep orphan source-evidence .lock files. Lists a 275k-entry directory — minutes.",
     )
     parser.add_argument("--log-retention-days", type=int, default=LOG_RETENTION_DAYS)
     parser.add_argument("--keep-releases", type=int, default=KEEP_RELEASES)
@@ -149,6 +175,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.appledouble:
         planned += plan_appledouble(resolved_lake)
+    if args.evidence_locks:
+        planned += plan_evidence_locks(resolved_lake)
     for reason, path in planned:
         log.info("%s %s (%s)", "DELETE" if args.apply else "would delete", path, reason)
 
