@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from clients import ledger
+from clients import constants, ledger
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts.paths import warehouse_dir as resolve_warehouse_dir
 from livewire_scripts.sync_runner import TIMEOUT_EXIT_CODE
@@ -45,16 +45,8 @@ ASSET_CLASSES = ["equity", "futures", "cmdty"]
 FX_CATCHUP_DAYS = 7
 
 LANE_ORDER = ("futures", "cmdty", "cboe", "fx", "corporate-actions", "equity", "silver")
-LANE_BUDGET_S: dict[str, float] = {
-    "futures": 30 * 60,
-    "cmdty": 30 * 60,
-    "cboe": 30 * 60,
-    "fx": 30 * 60,
-    "corporate-actions": 3 * 60 * 60,
-    "equity": 2 * 60 * 60,
-    "silver": 2 * 60 * 60,
-}
-DEFAULT_LANE_BUDGET_S = 30 * 60
+LANE_BUDGET_S: dict[str, float] = {lane: constants.declared(f"lane_budget_s/{lane}") for lane in LANE_ORDER}
+DEFAULT_LANE_BUDGET_S = constants.declared("lane_budget_s/default")
 _OUTCOME_BY_EXIT = {0: "done", TIMEOUT_EXIT_CODE: "timeout", GATEWAY_DOWN_EXIT_CODE: "blocked"}
 _EPOCH = date(1970, 1, 1)
 
@@ -166,6 +158,25 @@ def _emit_lane(
                     "elapsed_s": elapsed_s,
                     "outcome": outcome,
                     "blocker": blocker,
+                }
+            ],
+            run_id=run_id(),
+        )
+        if elapsed_s is None or outcome == "blocked":
+            # an entry row measures nothing; only the terminal row does, and a
+            # blocked lane exits in seconds -- it would drag the p95 toward 0.
+            return
+        ledger.emit(
+            "measurements",
+            [
+                {
+                    "name": "lane_budget_s",
+                    "scope": scope,
+                    "measured_at": _utc_now(),
+                    "value": float(elapsed_s),
+                    "unit": "s",
+                    "source": "measured",
+                    "run_id": run_id(),
                 }
             ],
             run_id=run_id(),
@@ -926,6 +937,23 @@ def _run_main(argv: Sequence[str] | None = None) -> int:
         "verdict": None,
     }
     ledger.emit("runs", [run_row], run_id=run_id())
+    ledger.emit(
+        "measurements",
+        [
+            {
+                "name": name,
+                "scope": scope,
+                "measured_at": _utc_now(),
+                "value": constants.declared(key),
+                "unit": unit,
+                "source": "declared",
+                "run_id": run_id(),
+            }
+            for key, (_value, unit) in constants.DECLARED.items()
+            for name, scope in [constants.split_scope(key)]
+        ],
+        run_id=run_id(),
+    )
 
     def close_run(code: int, *, degraded: bool = False) -> int:
         verdict = "DEGRADED" if degraded else ("FAILED" if code else "OK")

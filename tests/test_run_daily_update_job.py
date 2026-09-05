@@ -175,6 +175,59 @@ class TestPerLaneBudgets:
         assert runs[0]["verdict"] is None and runs[1]["verdict"] == "OK"
         assert runs[0]["host"] == socket.gethostname()
 
+    def test_main_emits_every_declared_constant_as_a_measurement(self, tmp_path, monkeypatch):
+        from clients import constants, ledger
+
+        # an override is what the lane will actually honour, so it is what gets recorded
+        monkeypatch.setenv("LW_DECLARED_LANE_BUDGET_S_EQUITY", "14400")
+        monkeypatch.setattr(daily_runner, "build_config", lambda: _config(tmp_path))
+        monkeypatch.setattr(daily_runner, "run_with_retries", lambda *args, **kwargs: 0)
+        monkeypatch.setattr(daily_runner, "_run_scheduled_lane", lambda *args, **kwargs: 0)
+        assert daily_runner.main([]) == 0
+        rows = ledger.query(
+            "select name, scope, value, unit from measurements where source = 'declared' order by name, scope"
+        )
+        expected = {
+            constants.split_scope(key): (constants.declared(key), unit)
+            for key, (_value, unit) in constants.DECLARED.items()
+        }
+        seen = {(row["name"], row["scope"]): (row["value"], row["unit"]) for row in rows}
+        assert seen == expected
+        assert seen[("lane_budget_s", "equity")] == (14400.0, "s")
+
+    def test_a_blocked_lane_measures_nothing(self):
+        """A blocked lane exits in seconds; measuring it drags the p95 toward 0."""
+        from clients import ledger
+
+        now = datetime.now(UTC)
+        daily_runner._emit_lane(
+            "futures", started=now, ended=now, exit_code=86, elapsed_s=3.0, outcome="blocked", blocker="ib_unreachable"
+        )
+        assert ledger.query("select lane, outcome from lane_results") == [{"lane": "futures", "outcome": "blocked"}]
+        assert ledger.query("select name from measurements where source = 'measured'") == []
+
+    def test_emit_lane_also_writes_a_measured_lane_budget_row(self):
+        """The declared budget is only gradeable if the lane also measures itself."""
+        from clients import ledger
+
+        now = datetime.now(UTC)
+        daily_runner._emit_lane("equity", started=now, ended=now, exit_code=0, elapsed_s=1234.0, outcome="done")
+        lanes = ledger.query("select lane, elapsed_s, run_id from lane_results")
+        measured = ledger.query(
+            "select name, scope, value, unit, source, run_id from measurements where source = 'measured'"
+        )
+        assert lanes == [{"lane": "equity", "elapsed_s": 1234.0, "run_id": "daily-update-20260902T060000Z-1"}]
+        assert measured == [
+            {
+                "name": "lane_budget_s",
+                "scope": "equity",
+                "value": 1234.0,
+                "unit": "s",
+                "source": "measured",
+                "run_id": lanes[0]["run_id"],
+            }
+        ]
+
     def test_an_unexpected_crash_closes_the_run_as_failed(self, tmp_path, monkeypatch):
         from clients import ledger
 
@@ -729,7 +782,7 @@ class TestRunWithRetries:
 
         assert rc == 0
         log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(encoding="utf-8")
-        assert "Runner config: attempts=3 retry_delay_seconds=300 budget_s=1800 hostname=warehouse.local" in log_text
+        assert "Runner config: attempts=3 retry_delay_seconds=300 budget_s=1800.0 hostname=warehouse.local" in log_text
         assert "=== Done daily 2026-03-11T20:05:09Z (attempt 1/3) ===" in log_text
 
     def test_retry_then_success(self, tmp_path):

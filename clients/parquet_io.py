@@ -97,7 +97,10 @@ def validate_parquet_file(
         raise ValueError(f"{path}: expected {expected_rows} rows, found {table.num_rows}")
 
     raw_values = table.column(sort_column).to_pylist()
-    values = [v.isoformat() if isinstance(v, (date, datetime)) else str(v) for v in raw_values]
+    # Dates become ISO text (string-sortable); everything else keeps its own
+    # type. str() on an int sorted "10" before "2", so an 11-row ledger emit
+    # was unpublishable and a genuinely unsorted [1, 10, 2] validated clean.
+    values = [v.isoformat() if isinstance(v, (date, datetime)) else v for v in raw_values]
     if values != sorted(values):
         raise ValueError(f"{path}: {sort_column} values are not sorted ascending")
     if len(values) != len(set(values)):

@@ -138,6 +138,20 @@ class TestValidateParquetFile:
         with pytest.raises(ValueError, match="not sorted"):
             validate_parquet_file(out, expected_rows=2, sort_column="trade_date")
 
+    def test_an_integer_sort_column_is_compared_as_a_number_not_as_text(self, tmp_path):
+        """11 ascending ints used to fail: str() sorts "10" before "2"."""
+        out = tmp_path / "data.parquet"
+        rows = [{"trade_date": date(2026, 1, 5), "symbol_id": i, "value": 1.0} for i in range(11)]
+        pq.write_table(_table(rows), out)
+        validate_parquet_file(out, expected_rows=11, sort_column="symbol_id")
+
+    def test_an_out_of_order_integer_sort_column_still_raises(self, tmp_path):
+        out = tmp_path / "data.parquet"
+        rows = [{"trade_date": date(2026, 1, 5), "symbol_id": i, "value": 1.0} for i in (1, 10, 2)]
+        pq.write_table(_table(rows), out)
+        with pytest.raises(ValueError, match="not sorted"):
+            validate_parquet_file(out, expected_rows=3, sort_column="symbol_id")
+
     def test_duplicates_raise(self, tmp_path):
         out = tmp_path / "data.parquet"
         rows = [

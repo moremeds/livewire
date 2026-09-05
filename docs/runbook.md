@@ -73,8 +73,6 @@ warehouse paths.
 | `MDW_FLATFILE_LOOKBACK_DAYS`      | `7`          | Direct `flatfile-ingest catch-up` lookback                                                                     |
 | `MDW_FLATFILE_BUCKETS`            | `256`        | Raw ticker buckets per trading day                                                                             |
 | `MDW_FLATFILE_STORAGE_MULTIPLIER` | `8`          | Capacity-planning multiplier for a full build                                                                  |
-| `MDW_FLATFILE_MIN_FREE_GB`        | `25`         | Required free-space reserve after a full build                                                                 |
-| `MDW_FLATFILE_MIN_PUBLISH_RATIO`  | `0.9`        | Minimum share of the raw file's ticker set a publish must cover before the run fails. Skipped on a resumed run |
 | `MDW_FLATFILE_DAILY_WORKERS`      | `4`          | Process-pool size for the `flatfile-ingest-daily` publish phase (also `--workers`)                             |
 | `MDW_FLATFILE_DAILY_BUCKETS`      | `32`         | Ticker buckets per day for `flatfile-ingest-daily` (also `--buckets`)                                          |
 
@@ -85,7 +83,16 @@ warehouse paths.
 | `MDW_SYNC_PHASE_TIMEOUT_SECONDS`   | `21600` (6h) | Hard per-phase budget in `daily-backfill`                                         |
 | `MDW_DAILY_BACKFILL_INTRADAY_DAYS` | `7`          | Whole-market flat-file catch-up window in `daily-backfill`                        |
 | `MDW_DAILY_BACKFILL_DAY_AGGS_DAYS` | `7`          | `flatfile-ingest-daily catch-up` window in `daily-backfill`                       |
-| `MDW_COVERAGE_ALERT_THRESHOLD`     | `0.95`       | Coverage ratio below which `coverage` triggers a targeted backfill                |
+
+### Declared constants (`clients/constants.py`)
+
+| Variable            | Default                    | Meaning                                                                                                                                                                                                       |
+| ------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LW_DECLARED_<KEY>` | see `clients/constants.py` | Overrides any declared constant for one run. `<KEY>` is the `DECLARED` key upper-cased with `/` and `-` as `_` — e.g. `LW_DECLARED_FAILURE_RATE_TOLERANCE=0.10`, `LW_DECLARED_LANE_BUDGET_S_CORPORATE_ACTIONS=7200` |
+
+Every key is emitted to the ledger as `measurements(source='declared')` at run
+start; `status` WARNs when a lane's 14-day p95 `source='measured'` elapsed time
+drifts more than 2× from its declared budget.
 
 ### DuckDB catalog
 
@@ -622,7 +629,7 @@ python scripts/livewire_quality.py coverage --target-date 2026-08-28
 # plus the `scan:` line in <log_dir>/coverage_<date>.log
 ```
 
-- Below `MDW_COVERAGE_ALERT_THRESHOLD` (default `0.95`) it triggers a targeted
+- Below the declared `coverage_alert_threshold` (default `0.95`) it triggers a targeted
   backfill subprocess and re-checks. 1d recovery uses Massive daily REST; intraday
   recovery republishes the whole target-day flat file with
   `flatfile-ingest repair --dates <date>`.

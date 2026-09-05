@@ -128,6 +128,85 @@ def _section(name, **kw):
     return next(section for section in sections if section.name == name)
 
 
+def _declared_or_measured(name, scope, value, source, run_id=RUN, unit="s", measured_at=None):
+    ledger.emit(
+        "measurements",
+        [
+            {
+                "name": name,
+                "scope": scope,
+                "measured_at": measured_at or NOW,
+                "value": float(value),
+                "unit": unit,
+                "source": source,
+                "run_id": run_id,
+            }
+        ],
+        run_id=run_id,
+    )
+
+
+def _seed_drift(name, scope, declared_value, measured_values, unit="s"):
+    _declared_or_measured(name, scope, declared_value, "declared", unit=unit)
+    for index, value in enumerate(measured_values):
+        _declared_or_measured(name, scope, value, "measured", run_id=f"{RUN}-{index}", unit=unit)
+
+
+_DRIFT = "Declared constants match reality"
+
+
+def test_declared_vs_measured_warns_on_a_2x_drift():
+    _seed_drift("lane_budget_s", "corporate-actions", 10800.0, [25000.0] * 5)
+    assert _section(_DRIFT).verdict is Verdict.WARN
+
+
+def test_declared_vs_measured_is_ok_within_2x():
+    _seed_drift("lane_budget_s", "corporate-actions", 10800.0, [9000.0] * 5)
+    assert _section(_DRIFT).verdict is Verdict.OK
+
+
+def test_declared_vs_measured_is_unknown_when_a_lane_stopped_running():
+    # a declared lane budget with no elapsed_s in the window = that lane did not run
+    _seed_drift("lane_budget_s", "cmdty", 1800.0, [])
+    assert _section(_DRIFT).verdict is Verdict.UNKNOWN
+
+
+def test_declared_vs_measured_reports_the_worst_drift_first():
+    _seed_drift("lane_budget_s", "equity", 7200.0, [7000.0] * 5)
+    _seed_drift("lane_budget_s", "corporate-actions", 10800.0, [25000.0] * 5)
+    section = _section(_DRIFT)
+    assert section.verdict is Verdict.WARN
+    assert "corporate-actions" in section.lines[1]
+
+
+def test_declared_vs_measured_ignores_a_threshold_with_no_measurable_counterpart():
+    _seed_drift("failure_rate_tolerance", "", 0.05, [], unit="ratio")
+    _seed_drift("lane_budget_s", "equity", 7200.0, [7000.0] * 5)
+    assert _section(_DRIFT).verdict is Verdict.OK
+
+
+def test_declared_vs_measured_ignores_the_default_lane_budget_fallback():
+    # no lane is named 'default', so it can never have a measured counterpart
+    _seed_drift("lane_budget_s", "default", 1800.0, [])
+    _seed_drift("lane_budget_s", "equity", 7200.0, [7000.0] * 5)
+    assert _section(_DRIFT).verdict is Verdict.OK
+
+
+def test_declared_vs_measured_ignores_rows_older_than_the_window():
+    _declared_or_measured("lane_budget_s", "equity", 7200.0, "declared")
+    _declared_or_measured("lane_budget_s", "equity", 7000.0, "measured", measured_at=NOW - timedelta(days=15))
+    assert _section(_DRIFT).verdict is Verdict.UNKNOWN
+
+
+def test_the_latest_declared_value_is_the_one_graded():
+    # the constant was lowered; max() would keep grading against the old, higher one
+    _declared_or_measured("lane_budget_s", "equity", 30000.0, "declared", measured_at=NOW - timedelta(days=3))
+    _declared_or_measured("lane_budget_s", "equity", 7200.0, "declared")
+    for index in range(5):
+        _declared_or_measured("lane_budget_s", "equity", 25000.0, "measured", run_id=f"{RUN}-{index}")
+    assert _section(_DRIFT).verdict is Verdict.WARN
+
+
 def test_no_run_row_at_all_is_unknown_not_ok():
     assert _section("Daily update ran").verdict is Verdict.UNKNOWN
 

@@ -232,10 +232,13 @@ coverage elapsed seconds, lane `elapsed_s`, corporate-actions per-symbol cost,
 Massive's actual earliest available date.
 
 **One check:** declared value vs the 14-day p95 of measured rows with the same
-name and scope; differ by more than 2× → WARN, printing both numbers. This is
-bucket C's closure — the 600s and then 1800s coverage budgets, each guessed and
-each silently expired against a 1400–2860s cold scan, would have been flagged on
-night one.
+name and scope; differ by more than 2× → WARN, printing both numbers. Known
+limit: a lane killed at its budget measures ≈ budget, so the p95 can never
+exceed 2× — this check sees only a budget that is too *generous*. A budget that
+is too small (the 600s/1800s coverage guesses, each expired against a
+1400–2860s cold scan) is caught the same night by "Lanes within budget", not
+here. Blocked lanes (exit 86) write no measured row, so an IB-down fortnight
+cannot drag the p95 to zero.
 
 Env override collapses to one prefix: `LW_DECLARED_<name>`. Deleted: the
 scattered constants and their per-module `os.getenv` reads

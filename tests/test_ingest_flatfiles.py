@@ -154,6 +154,14 @@ class TestVerifyPublishCoverage:
         )
         assert rc == 1
 
+    def test_lw_declared_flatfile_min_publish_ratio_overrides_the_floor(self, monkeypatch):
+        """The floor had no test at all under its old per-module env-var name."""
+        store = self._Store({f"T{i}" for i in range(100)})
+        stats = {"tickers": 60, "resumed": 0}
+        assert ingest_flatfiles.verify_publish_coverage(store, [date(2026, 6, 5)], dict(stats)) == 1
+        monkeypatch.setenv("LW_DECLARED_FLATFILE_MIN_PUBLISH_RATIO", "0.5")
+        assert ingest_flatfiles.verify_publish_coverage(store, [date(2026, 6, 5)], dict(stats)) == 0
+
     def test_fully_resumed_window_is_a_genuine_noop(self):
         store = self._Store({f"T{i}" for i in range(100)})
         rc = ingest_flatfiles.verify_publish_coverage(

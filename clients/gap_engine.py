@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
+from clients import constants
 from clients.coverage_denominator import ExpectedSeries
 
 DATE_COLUMN = "trade_date"
@@ -18,7 +19,7 @@ DATE_COLUMN = "trade_date"
 # 2021-07-27 -> 403, 2021-07-28 -> OK, i.e. exactly 1827 days (5.00y) before the
 # probe date. Deriving it from `as_of` keeps tier routing and heal_by ordering
 # true as the window rolls; a constant silently rots one day per day.
-MASSIVE_WINDOW_DAYS = 1827
+MASSIVE_WINDOW_DAYS = int(constants.declared("massive_window_days"))
 
 # Repair source per asset class, from CLAUDE.md. An IB-sourced lane can never be
 # Tier A: IB is 2FA-gated and never auto-retries, so its repair is a decision,

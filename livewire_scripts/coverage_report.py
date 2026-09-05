@@ -32,7 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
 import pyarrow.parquet as pq
 from rich.console import Console
 
-from clients import ledger
+from clients import constants, ledger
 from clients.corporate_action_store import CorporateActionStore
 from clients.coverage_denominator import DUE_LAG_DAYS, build_denominator, session_due_at
 from clients.gap_engine import (
@@ -68,7 +68,7 @@ _INGEST_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ingest.py"
 _OPS_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ops.py"
 
 TIMEFRAMES: tuple[str, ...] = ("1d", "1m", "1h", "5m", "30m")
-DEFAULT_THRESHOLD = float(os.getenv("MDW_COVERAGE_ALERT_THRESHOLD", "0.95"))
+DEFAULT_THRESHOLD = constants.declared("coverage_alert_threshold")
 DEFAULT_SAFETY_CAP = 100
 
 # Threads for the per-file footer pass. Measured 2026-08-02 over the 13,270

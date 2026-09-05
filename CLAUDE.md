@@ -77,6 +77,7 @@ gap      = expected − actual
 - The unresolved ledger (`<lake>/repairs/unresolved.json`) records permanently unsourceable `(symbol, session)` pairs with a reason so nothing is re-litigated nightly. → pm:2026-09-01-unresolved-ledger-key
 - Phase 1 is read-only: the scan writes two artifacts and mutates nothing; the Tier A manifest is not yet fed to `shepherd_repair`. Nothing outside livewire cron ever writes the lake; an agent produces evidence and queue entries, never rows. `shepherd_repair` requires `source_evidence` (a `HashedRef`). → spec §9
 - Silver publishes the longest silver-grade suffix of each symbol. Short and right beats long and wrong; a window that would start _later_ than the served revision is withheld. Holes are meant to ship as `INCOMPLETE_HISTORY` + `known_holes[]` (spec §7 — **designed, not yet implemented**; today silver still trims). → test: `tests/test_rebuild_silver.py` · pm:2026-07-18-window-regressions-withheld
+- Every operating constant is one `DECLARED` key in `clients/constants.py`, emitted as `measurements(source='declared')` each run and compared against the 14-day p95 of `source='measured'`; a >2x drift is a `status` WARN. Override for one run with `LW_DECLARED_<KEY>`. → test: `tests/test_constants.py`, `tests/test_status.py`
 - IB is a gate, never a source, for basis reconstruction: publish only what a post-last-split IB window confirms (`resolve-yahoo-basis --apply` requires `--ib-verify`). → pm:2026-07-18-unknown-price-basis-population
 
 ## Hard rules
@@ -97,7 +98,7 @@ gap      = expected − actual
 - Massive REST FX: 2-year floor, 5 req/min with no `Retry-After` — pace preemptively. That 5/min is FX-scoped; every rate-limit number in this repo carries a scope. DXY exists only on Yahoo; Yahoo owns `asset_class=fx`; intraday fx files are merged, never replaced. → pm:2026-07-27-fx-dxy-provider-floors
 - `/v2/aggs` is entitled ~5 years, so older breaks are `inconclusive` forever; the triage verdict store (`repairs/triage/current.json`) is durable and never deleted to "force a re-triage". → pm:2026-07-17-triage-aggs-entitlement-floor
 - ~90% of equity bronze is `price_basis='unknown'`; a new split against that population quarantines the symbol. Standing threat, not hypothetical. → test: `tests/test_adjustment_engine.py::test_unknown_split_affected_row_blocks_factor_construction` · pm:2026-07-18-unknown-price-basis-population
-- `MDW_FLATFILE_MIN_PUBLISH_RATIO` (0.9) is the only thing between "raw file held 12,000 symbols, published 40" and exit 0. → guard only, **no test** · pm:2026-07-22-flatfile-min-publish-ratio
+- `constants.declared("flatfile_min_publish_ratio")` (0.9) is the only thing between "raw file held 12,000 symbols, published 40" and exit 0. → test: `tests/test_ingest_flatfiles.py::TestVerifyPublishCoverage::test_lw_declared_flatfile_min_publish_ratio_overrides_the_floor` · pm:2026-07-22-flatfile-min-publish-ratio
 
 ### Scheduled jobs
 

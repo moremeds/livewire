@@ -29,6 +29,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from clients import constants
 from clients.bronze_client import BronzeClient
 from clients.intraday_bronze_client import IntradayBronzeClient
 from clients.massive_client import MassiveAPIError, MassiveAuthError, MassiveClient
@@ -54,7 +55,7 @@ MASSIVE_SEED_DAYS = 760
 #: and no Retry-After header is sent). Every request therefore costs 12 seconds, so chunk
 #: spans are sized to put as many bars in one response as the 50,000-row page allows —
 #: FX trades ~24h/day, so bars/day is 1440, 288, 48 and 24 respectively.
-MASSIVE_REQUESTS_PER_MINUTE = 5
+MASSIVE_REQUESTS_PER_MINUTE = constants.declared("massive_requests_per_minute/fx")
 MASSIVE_MIN_INTERVAL_SECONDS = 60.0 / MASSIVE_REQUESTS_PER_MINUTE
 MASSIVE_CHUNK_DAYS = {"1m": 30, "5m": 150, "30m": 240}
 
