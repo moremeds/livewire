@@ -92,7 +92,7 @@ class TestFetchSP500:
         )
         result = fetch_sp500()
         assert result == {"AAPL", "MSFT", "BRK.B"}
-        assert list((tmp_path / "raw" / "shepherd" / "sha256").glob("[0-9a-f]" * 64))
+        assert list((tmp_path / "raw" / "shepherd" / "sha256").glob("[0-9a-f][0-9a-f]/[0-9a-f][0-9a-f]/*"))
 
     @responses.activate
     def test_http_error_raises(self, tmp_path, monkeypatch):

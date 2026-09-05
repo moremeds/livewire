@@ -253,3 +253,94 @@ class TestBatchedCommit:
         with pytest.raises(ValueError, match="artifact missing"):
             store.record_many([good, missing])
         assert not store.manifest_path.exists()
+
+
+class TestShardedCas:
+    """One flat directory on exFAT is a linear scan per write.
+
+    Production 2026-09-05: 275,006 entries in `raw/shepherd/sha256/`, 137,504 of
+    them orphan lock files, 25 GB — and the corporate-actions lane timing out at
+    its 10800s budget three nights running. The fixtures that hid it reused one
+    byte-identical body, so every write after the first was an in-process cache
+    hit; these use distinct bodies, which is what production sends.
+    """
+
+    def test_distinct_bodies_land_in_shards_and_no_lock_file_is_created(self, tmp_path):
+        store = SourceEvidenceStore(tmp_path)
+        for index in range(20):
+            payload = f'{{"results":[{index}]}}'.encode()
+            artifact = store.persist_raw(payload)
+            digest = artifact.sha256
+            assert store.raw_path(digest) == store.raw_root / digest[0:2] / digest[2:4] / digest
+            assert store.read(artifact.ref) == payload
+
+        assert list(store.raw_root.glob("*")) != []
+        assert [path.name for path in store.raw_root.rglob(".*.lock")] == []
+        # Nothing lands directly in the flat root any more.
+        assert [path for path in store.raw_root.iterdir() if path.is_file()] == []
+
+    def test_a_legacy_flat_artifact_is_still_resolved_and_verified(self, tmp_path):
+        store = SourceEvidenceStore(tmp_path)
+        payload = b'{"legacy":"written before sharding"}'
+        digest = hashlib.sha256(payload).hexdigest()
+        legacy = store.raw_root / digest
+        legacy.write_bytes(payload)
+
+        assert store.raw_path(digest) == legacy
+        row = evidence(f"artifact://sha256/{digest}", digest)
+        store.record_many([row])
+
+        assert store.read(row.ref) == payload
+        assert store.list_verified() == [row]
+        assert not (store.raw_root / digest[0:2] / digest[2:4] / digest).exists()
+
+    def test_a_corrupt_legacy_artifact_still_fails_closed(self, tmp_path):
+        store = SourceEvidenceStore(tmp_path)
+        digest = hashlib.sha256(b"claimed").hexdigest()
+        (store.raw_root / digest).write_bytes(b"tampered")
+
+        with pytest.raises(ValueError, match="hash mismatch"):
+            store.record_many([evidence(f"artifact://sha256/{digest}", digest)])
+
+    def test_record_many_does_not_rehash_a_digest_this_process_wrote(self, tmp_path, monkeypatch):
+        store = SourceEvidenceStore(tmp_path)
+        written = store.persist_raw(b'{"fresh":"body"}')
+        foreign_payload = b'{"another process":"wrote this"}'
+        foreign_digest = hashlib.sha256(foreign_payload).hexdigest()
+        (store.raw_root / foreign_digest[0:2] / foreign_digest[2:4]).mkdir(parents=True)
+        (store.raw_root / foreign_digest[0:2] / foreign_digest[2:4] / foreign_digest).write_bytes(foreign_payload)
+
+        verified: list[str] = []
+        real_verify = SourceEvidenceStore._verify_path
+        monkeypatch.setattr(
+            SourceEvidenceStore,
+            "_verify_path",
+            staticmethod(lambda path, digest: (verified.append(digest), real_verify(path, digest))[1]),
+        )
+        store.record_many(
+            [
+                evidence(written.ref, written.sha256),
+                evidence(f"artifact://sha256/{foreign_digest}", foreign_digest),
+            ]
+        )
+
+        assert verified == [foreign_digest]
+        assert len(store.list_verified()) == 2
+
+    def test_the_shard_directory_is_fsynced_once_per_commit_not_per_artifact(self, tmp_path, monkeypatch):
+        store = SourceEvidenceStore(tmp_path)
+        synced: list[str] = []
+        monkeypatch.setattr(
+            "clients.source_evidence._fsync_directory",
+            lambda path: synced.append(str(path)),
+        )
+        rows = [evidence(a.ref, a.sha256) for a in (store.persist_raw(f"body-{i}".encode()) for i in range(8))]
+
+        assert synced == []
+        store.record_many(rows)
+
+        # Eight artifacts, at most eight shard directories, then the manifest's
+        # own parent -- never one directory fsync per artifact write.
+        assert 0 < len(synced) <= 9
+        store.record_many(rows)
+        assert len(synced) <= 10
