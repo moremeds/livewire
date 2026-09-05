@@ -178,6 +178,8 @@ class TestPerLaneBudgets:
     def test_main_emits_every_declared_constant_as_a_measurement(self, tmp_path, monkeypatch):
         from clients import constants, ledger
 
+        # an override is what the lane will actually honour, so it is what gets recorded
+        monkeypatch.setenv("LW_DECLARED_LANE_BUDGET_S_EQUITY", "14400")
         monkeypatch.setattr(daily_runner, "build_config", lambda: _config(tmp_path))
         monkeypatch.setattr(daily_runner, "run_with_retries", lambda *args, **kwargs: 0)
         monkeypatch.setattr(daily_runner, "_run_scheduled_lane", lambda *args, **kwargs: 0)
@@ -186,10 +188,23 @@ class TestPerLaneBudgets:
             "select name, scope, value, unit from measurements where source = 'declared' order by name, scope"
         )
         expected = {
-            constants.split_scope(key): (float(value), unit) for key, (value, unit) in constants.DECLARED.items()
+            constants.split_scope(key): (constants.declared(key), unit)
+            for key, (_value, unit) in constants.DECLARED.items()
         }
         seen = {(row["name"], row["scope"]): (row["value"], row["unit"]) for row in rows}
         assert seen == expected
+        assert seen[("lane_budget_s", "equity")] == (14400.0, "s")
+
+    def test_a_blocked_lane_measures_nothing(self):
+        """A blocked lane exits in seconds; measuring it drags the p95 toward 0."""
+        from clients import ledger
+
+        now = datetime.now(UTC)
+        daily_runner._emit_lane(
+            "futures", started=now, ended=now, exit_code=86, elapsed_s=3.0, outcome="blocked", blocker="ib_unreachable"
+        )
+        assert ledger.query("select lane, outcome from lane_results") == [{"lane": "futures", "outcome": "blocked"}]
+        assert ledger.query("select name from measurements where source = 'measured'") == []
 
     def test_emit_lane_also_writes_a_measured_lane_budget_row(self):
         """The declared budget is only gradeable if the lane also measures itself."""

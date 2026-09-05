@@ -199,7 +199,7 @@ CHECKS: list[tuple[str, str]] = [
         "then 'WARN' else 'OK' end as verdict, "
         "name, scope, declared_value, measured_p95 from ("
         "  select name, scope, "
-        "    max(value) filter (where source = 'declared') as declared_value, "
+        "    arg_max(value, measured_at) filter (where source = 'declared') as declared_value, "
         "    quantile_cont(value, 0.95) filter (where source = 'measured') as measured_p95, "
         "    count(*) filter (where source = 'measured') as _n "
         "  from measurements "
@@ -244,6 +244,10 @@ _FIXES = {
     "Release matches main": "python scripts/livewire_ops.py release promote",
     "Lanes within budget": (
         "raise the lane's budget only after measuring it cold; see clients/constants.py (lane_budget_s/<lane>)"
+    ),
+    "Declared constants match reality": (
+        "re-measure the lane cold on the real lake, then change the value in "
+        "clients/constants.py (lane_budget_s/<lane>) -- not an LW_DECLARED_* override"
     ),
     "IB-only lanes behind": (
         "nc -z 127.0.0.1 4001 && echo up || echo down   # then 2FA by hand; rerun: "

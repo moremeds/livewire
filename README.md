@@ -563,7 +563,7 @@ default used by scheduled jobs (daily intraday catch-up and full-backfill).
 
 Requires `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY`. Capacity planning
 uses `MDW_FLATFILE_STORAGE_MULTIPLIER` (default `8`) and preserves at least
-`MDW_FLATFILE_MIN_FREE_GB` (default `25`) after a full build. Raw partitions
+`LW_DECLARED_FLATFILE_MIN_FREE_GB` (default `25`) after a full build. Raw partitions
 live under
 `data-lake/raw/massive/us_stocks_sip/minute_aggs_v1/date=YYYY-MM-DD/`.
 
@@ -791,7 +791,7 @@ python scripts/livewire_store.py migrate-parquet
 | `MDW_FLATFILE_LOOKBACK_DAYS` | `7` | Default direct `flatfile-ingest catch-up` lookback |
 | `MDW_FLATFILE_BUCKETS` | `256` | Raw ticker buckets per Massive trading-day partition |
 | `MDW_FLATFILE_STORAGE_MULTIPLIER` | `8` | Full-build storage projection multiplier |
-| `MDW_FLATFILE_MIN_FREE_GB` | `25` | Required free-space reserve after a full build |
+| `LW_DECLARED_FLATFILE_MIN_FREE_GB` | `25` | Required free-space reserve after a full build |
 | `MDW_FLATFILE_WORKERS` | `4` (scheduled jobs); `1` (manual CLI) | Parallel worker count for download+stage and per-bucket publish |
 
 ---

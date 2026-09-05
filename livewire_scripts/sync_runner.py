@@ -230,24 +230,6 @@ def run_phase(
             ],
             run,
         )
-        # The twin of run_daily_update_job._emit_lane: the same elapsed number,
-        # not a second clock read, or the drift check grades a different value
-        # than the budget check does.
-        _emit_ledger(
-            "measurements",
-            [
-                {
-                    "name": "lane_budget_s",
-                    "scope": label,
-                    "measured_at": datetime.now(UTC),
-                    "value": float(elapsed_s),
-                    "unit": "s",
-                    "source": "measured",
-                    "run_id": run,
-                }
-            ],
-            run,
-        )
     return result.returncode
 
 

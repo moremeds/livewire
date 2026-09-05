@@ -198,6 +198,15 @@ def test_declared_vs_measured_ignores_rows_older_than_the_window():
     assert _section(_DRIFT).verdict is Verdict.UNKNOWN
 
 
+def test_the_latest_declared_value_is_the_one_graded():
+    # the constant was lowered; max() would keep grading against the old, higher one
+    _declared_or_measured("lane_budget_s", "equity", 30000.0, "declared", measured_at=NOW - timedelta(days=3))
+    _declared_or_measured("lane_budget_s", "equity", 7200.0, "declared")
+    for index in range(5):
+        _declared_or_measured("lane_budget_s", "equity", 25000.0, "measured", run_id=f"{RUN}-{index}")
+    assert _section(_DRIFT).verdict is Verdict.WARN
+
+
 def test_no_run_row_at_all_is_unknown_not_ok():
     assert _section("Daily update ran").verdict is Verdict.UNKNOWN
 

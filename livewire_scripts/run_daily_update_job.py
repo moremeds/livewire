@@ -162,8 +162,10 @@ def _emit_lane(
             ],
             run_id=run_id(),
         )
-        if elapsed_s is None:
-            return  # an entry row measures nothing; only the terminal row does
+        if elapsed_s is None or outcome == "blocked":
+            # an entry row measures nothing; only the terminal row does, and a
+            # blocked lane exits in seconds -- it would drag the p95 toward 0.
+            return
         ledger.emit(
             "measurements",
             [
@@ -942,12 +944,12 @@ def _run_main(argv: Sequence[str] | None = None) -> int:
                 "name": name,
                 "scope": scope,
                 "measured_at": _utc_now(),
-                "value": float(value),
+                "value": constants.declared(key),
                 "unit": unit,
                 "source": "declared",
                 "run_id": run_id(),
             }
-            for key, (value, unit) in constants.DECLARED.items()
+            for key, (_value, unit) in constants.DECLARED.items()
             for name, scope in [constants.split_scope(key)]
         ],
         run_id=run_id(),

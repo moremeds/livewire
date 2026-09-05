@@ -98,7 +98,7 @@ gap      = expected − actual
 - Massive REST FX: 2-year floor, 5 req/min with no `Retry-After` — pace preemptively. That 5/min is FX-scoped; every rate-limit number in this repo carries a scope. DXY exists only on Yahoo; Yahoo owns `asset_class=fx`; intraday fx files are merged, never replaced. → pm:2026-07-27-fx-dxy-provider-floors
 - `/v2/aggs` is entitled ~5 years, so older breaks are `inconclusive` forever; the triage verdict store (`repairs/triage/current.json`) is durable and never deleted to "force a re-triage". → pm:2026-07-17-triage-aggs-entitlement-floor
 - ~90% of equity bronze is `price_basis='unknown'`; a new split against that population quarantines the symbol. Standing threat, not hypothetical. → test: `tests/test_adjustment_engine.py::test_unknown_split_affected_row_blocks_factor_construction` · pm:2026-07-18-unknown-price-basis-population
-- `MDW_FLATFILE_MIN_PUBLISH_RATIO` (0.9) is the only thing between "raw file held 12,000 symbols, published 40" and exit 0. → guard only, **no test** · pm:2026-07-22-flatfile-min-publish-ratio
+- `constants.declared("flatfile_min_publish_ratio")` (0.9) is the only thing between "raw file held 12,000 symbols, published 40" and exit 0. → test: `tests/test_ingest_flatfiles.py::TestVerifyPublishCoverage::test_lw_declared_flatfile_min_publish_ratio_overrides_the_floor` · pm:2026-07-22-flatfile-min-publish-ratio
 
 ### Scheduled jobs
 
