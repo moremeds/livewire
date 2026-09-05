@@ -517,8 +517,13 @@ def build_coverage(
             try:
                 ensure_view(con, view_name, lake_root=lake_root, silver_root=silver_root)
                 con.execute(_coverage_insert(view_name, date_column))
-            except duckdb.IOException:
-                # No files behind this view yet; leave it out rather than abort.
+            except (duckdb.IOException, duckdb.InvalidInputException):
+                # IOException: no files behind this view yet. InvalidInputException:
+                # a corrupt/truncated parquet file in the glob (e.g. "No magic bytes
+                # found") -- read_parquet has no per-file skip in DuckDB 1.5, so one
+                # bad file fails the whole view's read. Either way, leave this view
+                # out of the build rather than aborting every other view along with
+                # it. -> pm:2026-09-06-duckdb-coverage-corrupt-parquet-aborted-build
                 counts[view_name] = 0
                 continue
             counted = con.execute("SELECT count(*) FROM coverage WHERE view_name = ?", [view_name]).fetchone()

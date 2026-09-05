@@ -355,6 +355,26 @@ def test_build_coverage_tolerates_individually_absent_asset_classes(tmp_path: Pa
     assert counts["bronze_equity_1d"] == 2
 
 
+def test_build_coverage_tolerates_a_corrupt_parquet_in_the_glob(tmp_path: Path, lake: Path, silver: Path) -> None:
+    """One truncated file ("No magic bytes found") took the whole nightly duckdb
+    build down for three straight releases (7e11244/c58036d/7cc33b5b), 2026-09-03
+    through -05 -- every other asset class and silver went missing along with it.
+    DuckDB 1.5's read_parquet has no per-file skip for a glob (verified: passing
+    ignore_errors raises BinderException, it is not a real parameter), so the
+    view carrying the corrupt file still comes back empty; the fix is that it no
+    longer takes every *other* view down with it.
+    """
+    corrupt = lake / "bronze" / "asset_class=equity" / "symbol=HON" / "1d.parquet"
+    corrupt.write_bytes(corrupt.read_bytes()[:-8])
+
+    dest = tmp_path / "analytics.duckdb"
+    counts = build_coverage(dest, lake_root=lake, silver_root=silver)
+
+    assert counts["bronze_equity_1d"] == 0
+    assert counts["silver_equity_1d"] == 1
+    assert dest.exists()
+
+
 def test_coverage_sources_are_daily_only() -> None:
     """Intraday must stay out: a coverage pass over it would scan 23.57 GB."""
     names = [name for name, _ in COVERAGE_SOURCES]
