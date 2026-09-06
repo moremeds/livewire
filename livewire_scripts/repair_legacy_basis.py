@@ -24,6 +24,7 @@ from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.ib_client import IBClient, IBConnectionError
 from clients.ingestion_common import load_preset
+from clients.parquet_io import write_json_atomic
 from clients.price_basis import prepare_ib_rows_for_publish
 from clients.seed_boundary import check_seed_boundary
 from clients.silver_continuity import check_adjusted_continuity
@@ -56,13 +57,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _write_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def backup_symbol(bronze: BronzeClient, symbol: str, backup_dir: Path) -> dict:
@@ -169,7 +163,7 @@ def _repair_one(
     # symbols a sidecar names — i.e. a mutation that cannot be undone by the supplied
     # command. Record where the undo lives BEFORE taking the action that needs undoing.
     # The caller atomically replaces this with the terminal sidecar.
-    _write_atomic(
+    write_json_atomic(
         backup_dir.parent / "symbols" / f"{encode_symbol(symbol)}.json",
         {
             "symbol": symbol,
@@ -280,7 +274,7 @@ def run(
             except Exception as exc:  # non-connection per-symbol failure — mark, continue
                 status, sidecar = "failed", {"symbol": symbol, "reason": f"exception: {exc}"}
             sidecar_path = args.output_dir / "symbols" / f"{encode_symbol(symbol)}.json"
-            _write_atomic(
+            write_json_atomic(
                 sidecar_path,
                 {
                     **sidecar,
@@ -293,7 +287,7 @@ def run(
                 "source_sha256": next((i["source_sha256"] for i in audit["symbols"] if i["symbol"] == symbol), None),
                 "status": status,
             }
-            _write_atomic(cursor_path, cursor)
+            write_json_atomic(cursor_path, cursor)
             counts[status] = counts.get(status, 0) + 1
             if aborting:
                 break  # remaining symbols stay unprocessed; --resume continues later
@@ -303,7 +297,7 @@ def run(
             if callable(disconnect):
                 disconnect()
 
-    _write_atomic(
+    write_json_atomic(
         args.output_dir / "summary.json",
         {
             "audit_sha256": audit_sha256,

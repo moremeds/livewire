@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import date, datetime
@@ -14,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
+from clients.parquet_io import write_json_atomic
 from clients.price_basis import classify_split_events
 from livewire_scripts.paths import data_lake_dir
 
@@ -29,16 +29,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--data-lake-root", type=Path)
     parser.add_argument("--as-of", type=date.fromisoformat)
     return parser.parse_args(list(argv) if argv is not None else None)
-
-
-def _write_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        temp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
 
 
 def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None) -> int:
@@ -73,7 +63,7 @@ def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None
         "passed": passed,
         "symbols": reports,
     }
-    _write_atomic(args.output, payload)
+    write_json_atomic(args.output, payload)
     print(json.dumps({"output": str(args.output), "passed": passed, "symbols": len(symbols)}, sort_keys=True))
     return 0 if passed else 1
 

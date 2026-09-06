@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import sys
 from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
@@ -22,6 +21,7 @@ from typing import Any
 
 from clients.break_triage import DEFAULT_TOLERANCE, RetryableProviderError, triage_break
 from clients.massive_client import MassiveAuthError, MassiveClient
+from clients.parquet_io import write_json_atomic
 from livewire_scripts.paths import data_lake_dir
 
 SCHEMA_VERSION = 1
@@ -44,13 +44,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _write_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def _key(candidate: dict) -> str:
@@ -158,11 +151,11 @@ def run(
                     aborted = True
                     break
                 cursor["verdicts"][_key(candidate)] = verdict
-                _write_atomic(cursor_path, cursor)  # checkpoint per break, not per run
+                write_json_atomic(cursor_path, cursor)  # checkpoint per break, not per run
 
     verdicts = [cursor["verdicts"][_key(c)] for c in candidates if _key(c) in cursor["verdicts"]]
     counts = {name: sum(v["verdict"] == name for v in verdicts) for name in VERDICTS}
-    _write_atomic(
+    write_json_atomic(
         args.output,
         {
             "schema_version": SCHEMA_VERSION,

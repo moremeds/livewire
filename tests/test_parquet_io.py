@@ -186,3 +186,42 @@ def test_every_directory_fsync_comes_from_parquet_io():
     ]
 
     assert offenders == []
+
+
+def test_write_json_atomic_publishes_and_leaves_no_temp(tmp_path):
+    from clients import parquet_io
+
+    target = tmp_path / "nested" / "report.json"
+    parquet_io.write_json_atomic(target, {"b": 2, "a": [1, 2]})
+
+    assert target.read_text(encoding="utf-8") == '{\n  "a": [\n    1,\n    2\n  ],\n  "b": 2\n}\n'
+    assert [p.name for p in target.parent.iterdir()] == ["report.json"]
+
+
+def test_write_json_atomic_serialises_dates_rather_than_raising(tmp_path):
+    import json
+    from datetime import date
+
+    from clients import parquet_io
+
+    target = tmp_path / "report.json"
+    parquet_io.write_json_atomic(target, {"session": date(2026, 9, 5)})
+
+    assert json.loads(target.read_text(encoding="utf-8")) == {"session": "2026-09-05"}
+
+
+@pytest.mark.xfail(reason="green once the dead-code plan deletes both modules", strict=True)
+def test_no_module_hand_rolls_an_atomic_json_writer():
+    """Twelve copies preceded this; parquet_io is the blessed publish primitive."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    offenders = [
+        f"{path.name}:{name}"
+        for package in ("clients", "livewire_scripts")
+        for path in sorted((root / package).glob("*.py"))
+        for name in ("_write_atomic", "_write_json_atomic", "_write_json")
+        if f"def {name}(" in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []

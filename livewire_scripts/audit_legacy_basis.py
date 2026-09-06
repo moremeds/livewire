@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -22,6 +21,7 @@ from clients.adjustment_engine import adjust_daily_rows, build_factor_intervals
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.ingestion_common import load_preset
+from clients.parquet_io import write_json_atomic
 from clients.seed_boundary import classify_seed_boundary
 from clients.silver_continuity import ContinuityBreak, check_adjusted_continuity
 from clients.silver_window import find_breaks
@@ -45,13 +45,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _write_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def _classify(bronze: BronzeClient, store: CorporateActionStore, symbol: str, as_of: date, threshold: float) -> dict:
@@ -153,7 +146,7 @@ def run(
         "symbols": sorted(entries, key=lambda e: e["symbol"]),
         "counts": counts,
     }
-    _write_atomic(args.output, manifest)
+    write_json_atomic(args.output, manifest)
     print(json.dumps({**counts, "output": str(args.output)}, sort_keys=True))
     return 0
 

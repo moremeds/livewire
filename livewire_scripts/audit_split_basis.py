@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 from collections.abc import Sequence
 from dataclasses import asdict, replace
 from datetime import date, datetime
@@ -15,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
+from clients.parquet_io import write_json_atomic
 from clients.price_basis import classify_split_events, normalize_ib_rows
 from clients.split_basis_evidence import (
     classify_reference_basis,
@@ -47,16 +47,6 @@ def _classification_payload(item) -> dict:
     payload["ex_date"] = item.ex_date.isoformat()
     payload["split_factor"] = str(item.split_factor)
     return payload
-
-
-def _write_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        temp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
 
 
 def run(
@@ -189,7 +179,7 @@ def run(
         "schema_version": 1,
         "symbols": manifest_symbols,
     }
-    _write_atomic(args.output, payload)
+    write_json_atomic(args.output, payload)
     print(json.dumps({"failed": failed, "output": str(args.output), "symbols": len(symbols)}, sort_keys=True))
     return 1 if failed else 0
 

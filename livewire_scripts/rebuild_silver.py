@@ -19,6 +19,7 @@ import pyarrow.parquet as pq
 from clients.adjustment_engine import FactorInterval, adjust_daily_rows, build_factor_intervals
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateAction, CorporateActionStore
+from clients.parquet_io import write_json_atomic
 from clients.seed_boundary import classify_seed_boundary
 from clients.silver_client import PublishedArtifact, SilverClient
 from clients.silver_revision import AffectedSymbol, ManifestArtifact, SilverRevision, SilverRevisionPublisher
@@ -370,20 +371,6 @@ def _failure(
     }
 
 
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    destination = path.expanduser().resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
-    try:
-        with temporary.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, sort_keys=True)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, destination)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def run(
     argv: Sequence[str] | None = None,
     *,
@@ -508,7 +495,7 @@ def run(
     )
 
     if args.failure_output is not None:
-        _write_json_atomic(
+        write_json_atomic(
             args.failure_output,
             {
                 "schema_version": 2,

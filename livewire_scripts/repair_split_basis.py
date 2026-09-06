@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from clients.bronze_client import BronzeClient
-from clients.parquet_io import symbol_lock
+from clients.parquet_io import symbol_lock, write_json_atomic
 from livewire_scripts.paths import data_lake_dir
 
 
@@ -28,15 +28,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _write_atomic(path: Path, payload: dict) -> None:
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        temp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
 
 
 def _restore_exact(backup: Path, target: Path) -> None:
@@ -107,7 +98,7 @@ def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None
                 item["backup_path"] = str(backup)
                 item["applied_sha256"] = _sha256(target)
             changed += 1
-    _write_atomic(manifest_path, payload)
+    write_json_atomic(manifest_path, payload)
     print(json.dumps({"changed": changed, "rollback": bool(args.rollback)}, sort_keys=True))
     return 0
 
