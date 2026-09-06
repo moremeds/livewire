@@ -67,6 +67,35 @@ def write_json_atomic(path: Path, payload: object) -> None:
 
 
 @contextmanager
+def path_lock(lock_path: Path, *, blocking: bool = True) -> Iterator[bool]:
+    """Hold a POSIX flock on `lock_path`, creating it and its parent on demand.
+
+    Yields True while the lock is held; yields False, having taken nothing, when
+    `blocking=False` and another open file description holds it. flock is
+    released with the fd -- SIGKILL included -- so there is no cleanup path to
+    write and none to get wrong.
+
+    One primitive, two scopes: `symbol_lock` serializes writers to one parquet
+    path, and `livewire_scripts.job_runner_common.lake_lock` serializes whole
+    lanes against the lake (spec 2026-09-06-tiered-nightly-pipeline-design.md
+    section 3). A second implementation would be a second lock domain, which is
+    the same as no lock.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), flags)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
 def symbol_lock(parquet_path: Path) -> Iterator[Path]:
     """Serialize writers for one parquet path using a local POSIX lock.
 
@@ -75,13 +104,8 @@ def symbol_lock(parquet_path: Path) -> Iterator[Path]:
     with working ``flock`` semantics; verified on the production exFAT data lake.
     """
     lock_path = parquet_path.with_suffix(parquet_path.suffix + ".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            yield lock_path
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    with path_lock(lock_path):
+        yield lock_path
 
 
 def publish_parquet(
