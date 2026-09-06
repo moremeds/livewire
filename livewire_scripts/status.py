@@ -115,11 +115,17 @@ CHECKS: list[tuple[str, str]] = [
         "Lanes blocked",
         # Aggregated, so the check always returns exactly one row: a zero-row
         # shape here read `none` in _EMPTY_IS_OK even when no run had resolved.
+        # Both scheduled jobs write the lake, so both can be the deferred one.
         "select case when '$run' = '' then 'UNKNOWN' "
         "when count(*) = 0 then 'OK' else 'WARN' end as verdict, "
-        "count(*) as blocked, string_agg(lane, ', ' order by lane) as lanes "
-        "from lane_results where run_id = '$run' "
-        "and outcome = 'blocked' and blocker = 'lake_lock'",
+        "count(*) as blocked, string_agg(job || ':' || lane, ', ' order by job, lane) as lanes "
+        "from ("
+        "  select 'daily-update' as job, lane from lane_results where run_id = '$run' "
+        "    and outcome = 'blocked' and blocker = 'lake_lock' "
+        "  union all "
+        "  select 'intraday-catchup' as job, lane from lane_results where run_id = '$intraday_run' "
+        "    and outcome = 'blocked' and blocker = 'lake_lock'"
+        ")",
     ),
     (
         "Corporate-action progress",
@@ -304,11 +310,11 @@ def run_check(name: str, sql: str, params: dict[str, str]) -> Section:
     return Section(name, verdict, lines, fix=fix if verdict is not Verdict.OK else None)
 
 
-def _last_run_id(today: str, *, closed: bool) -> str:
-    """Return today's latest daily-update run id, optionally requiring closure."""
+def _last_run_id(today: str, *, closed: bool, job: str = "daily-update") -> str:
+    """Return today's latest run id for `job`, optionally requiring closure."""
     clause = "and ended is not null " if closed else ""
     rows = ledger.query(
-        "select run_id from runs where job = 'daily-update' "
+        f"select run_id from runs where job = '{job}' "
         f"and date(started) = date '{today}' {clause}order by started desc limit 1"
     )
     return str(rows[0]["run_id"]) if rows else ""
@@ -597,12 +603,16 @@ def collect(
     try:
         closed_run = _last_run_id(today, closed=True)
         open_run = _last_run_id(today, closed=False)
+        # Not closure-gated: an intraday phase that lost the lock is recorded
+        # while the run is still in flight, and that is when it needs surfacing.
+        intraday_run = _last_run_id(today, closed=False, job="intraday-catchup")
     except Exception:
-        closed_run = open_run = ""
+        closed_run = open_run = intraday_run = ""
     params = {
         "today": today,
         "run": closed_run,
         "open_run": open_run,
+        "intraday_run": intraday_run,
         "main_sha": main_sha or "__missing__",
         "ib_slack_days": str(IB_LANE_SLACK_DAYS),
         "coverage_threshold": str(constants.declared("coverage_alert_threshold")),

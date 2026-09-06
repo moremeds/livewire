@@ -25,6 +25,7 @@ from livewire_scripts.status import (
 )
 
 RUN = "daily-update-20260902T060000Z-1"
+INTRADAY_RUN = "intraday-catchup-20260902T100000Z-1"
 NOW = datetime.now(UTC)
 EPOCH = date(1970, 1, 1)
 
@@ -694,6 +695,22 @@ def test_no_lane_deferred_by_the_lake_lock_is_ok_not_unknown():
     _all_lanes()
 
     assert _section("Lanes blocked").verdict is status.Verdict.OK
+
+
+def test_an_intraday_lane_deferred_by_the_lake_lock_is_a_warning():
+    """Both scheduled jobs write the lake, so both can be the deferred one.
+
+    Scoping the check to the daily run alone hid every intraday phase that lost
+    the lock -- the exact contention this lock was added for.
+    """
+    _run()
+    _all_lanes()
+    _run(run_id=INTRADAY_RUN, job="intraday-catchup", ended=None)
+    _lane("equity", run_id=INTRADAY_RUN, outcome="blocked", exit_code=None, blocker="lake_lock", elapsed_s=0.0)
+
+    section = _section("Lanes blocked")
+    assert section.verdict is status.Verdict.WARN
+    assert "intraday-catchup:equity" in " ".join(section.lines)
 
 
 def test_a_silver_lane_blocked_by_a_failed_prerequisite_is_not_a_lake_lock_row():
