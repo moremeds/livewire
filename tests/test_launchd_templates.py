@@ -79,3 +79,16 @@ def test_no_other_template_reads_the_repo():
         assert label in ALL_TEMPLATES, f"{label} is untested — add it to JOB_TEMPLATES or REPO_TEMPLATES"
         if label not in REPO_TEMPLATES:
             assert "/path/to/repo" not in command(label)
+
+
+def test_the_two_lake_writers_start_five_hours_apart():
+    """The order is a property of the code (the lake-io lock); the plists agree with it."""
+
+    def _hour(label):
+        payload = plistlib.loads((LAUNCHD_DIR / f"{label}.plist.example").read_bytes())
+        return payload["StartCalendarInterval"]["Hour"]
+
+    # Defaults assume Asia/Hong_Kong (UTC+8, no DST): 13 -> 05:00Z, 18 -> 10:00Z.
+    assert _hour("com.livewire.daily-update") == 13
+    assert _hour("com.livewire.intraday-catchup") == 18
+    assert _hour("com.livewire.intraday-catchup") - _hour("com.livewire.daily-update") == 5
