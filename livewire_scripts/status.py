@@ -113,9 +113,13 @@ CHECKS: list[tuple[str, str]] = [
     ),
     (
         "Lanes blocked",
-        "select 'WARN' as verdict, lane, blocker from lane_results "
-        "where run_id = '$run' and outcome = 'blocked' and blocker = 'lake_lock' "
-        "order by lane",
+        # Aggregated, so the check always returns exactly one row: a zero-row
+        # shape here read `none` in _EMPTY_IS_OK even when no run had resolved.
+        "select case when '$run' = '' then 'UNKNOWN' "
+        "when count(*) = 0 then 'OK' else 'WARN' end as verdict, "
+        "count(*) as blocked, string_agg(lane, ', ' order by lane) as lanes "
+        "from lane_results where run_id = '$run' "
+        "and outcome = 'blocked' and blocker = 'lake_lock'",
     ),
     (
         "Corporate-action progress",
@@ -235,7 +239,6 @@ CHECKS: list[tuple[str, str]] = [
 
 _EMPTY_IS_OK = {
     "Undelivered alerts",
-    "Lanes blocked",
     "Lanes within budget",
     "Daily update finished",
     "Intraday catch-up finished",

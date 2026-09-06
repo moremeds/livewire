@@ -172,9 +172,17 @@ def ledger_query(
     root: Path,
     tables: Mapping[str, pa.Schema],
 ) -> list[dict]:
-    """Run SQL over append-only ledger parquet in a read-only memory database."""
+    """Run SQL over append-only ledger parquet in a read-only memory database.
+
+    The session timezone is pinned to UTC: DuckDB otherwise takes it from the
+    host, and every ledger timestamp is a UTC instant that the callers compare
+    against a UTC date. On the mini (Asia/Hong_Kong) a run started
+    2026-09-06 20:52:01Z read `date(started) = 2026-09-07`, `_last_run_id`
+    returned '' and every run-scoped `status` check went UNKNOWN.
+    """
     con = duckdb.connect(":memory:")
     try:
+        con.execute("SET TimeZone = 'UTC'")
         for name in tables:
             files = _ledger_files(Path(root) / name)
             if files:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import collections
 import importlib
+import os
+import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -120,7 +122,7 @@ def _measurement(name, scope, value, *, measured_at=NOW):
 
 def _section(name, **kw):
     sections = status.collect(
-        date.today(),
+        NOW.date(),
         Path("/nonexistent"),
         Path("/nonexistent"),
         runner=_fake_launchctl,
@@ -350,8 +352,8 @@ def test_a_lane_inside_its_budget_is_ok():
 def test_an_ib_only_lane_days_behind_warns_and_names_its_blocker():
     _run()
     _lane("futures", exit_code=86, outcome="blocked", blocker="ib_unreachable")
-    _last_session("futures", date.today() - timedelta(days=9))
-    _last_session("cmdty", date.today() - timedelta(days=1))
+    _last_session("futures", NOW.date() - timedelta(days=9))
+    _last_session("cmdty", NOW.date() - timedelta(days=1))
     section = _section("IB-only lanes behind")
     assert section.verdict is Verdict.WARN
     body = "\n".join(section.lines)
@@ -361,16 +363,16 @@ def test_an_ib_only_lane_days_behind_warns_and_names_its_blocker():
 def test_an_ib_only_lane_current_is_ok():
     _run()
     _lane("futures")
-    _last_session("futures", date.today() - timedelta(days=1))
-    _last_session("cmdty", date.today() - timedelta(days=1))
+    _last_session("futures", NOW.date() - timedelta(days=1))
+    _last_session("cmdty", NOW.date() - timedelta(days=1))
     assert _section("IB-only lanes behind").verdict is Verdict.OK
 
 
 def test_a_weekend_gap_is_not_a_backlog():
     _run()
     _lane("futures")
-    _last_session("futures", date.today() - timedelta(days=3))
-    _last_session("cmdty", date.today() - timedelta(days=3))
+    _last_session("futures", NOW.date() - timedelta(days=3))
+    _last_session("cmdty", NOW.date() - timedelta(days=3))
     assert _section("IB-only lanes behind").verdict is Verdict.OK
 
 
@@ -381,7 +383,7 @@ def test_an_ib_only_lane_that_never_reported_a_session_is_unknown():
 
 
 def test_one_missing_ib_only_lane_is_unknown_not_green():
-    _last_session("futures", date.today())
+    _last_session("futures", NOW.date())
     assert _section("IB-only lanes behind").verdict is Verdict.UNKNOWN
 
 
@@ -463,7 +465,7 @@ def test_shrinking_silver_failures_are_ok():
 
 def test_a_broken_check_never_takes_the_report_down(monkeypatch):
     monkeypatch.setattr(status.ledger, "query", lambda sql: (_ for _ in ()).throw(RuntimeError("boom")))
-    sections = status.collect(date.today(), Path("/nonexistent"), Path("/nonexistent"), runner=_fake_launchctl)
+    sections = status.collect(NOW.date(), Path("/nonexistent"), Path("/nonexistent"), runner=_fake_launchctl)
     assert any(section.verdict is Verdict.UNKNOWN for section in sections)
 
 
@@ -578,7 +580,7 @@ def _fake_launchctl(_cmd, **_kw):
 def test_main_exits_zero_even_when_everything_is_broken(tmp_path: Path, capsys, monkeypatch) -> None:
     monkeypatch.setattr("livewire_scripts.status.subprocess.run", _fake_launchctl)
     monkeypatch.setattr("livewire_scripts.status._coverage_headline", _no_catalog)
-    rc = main(["--run-date", date.today().isoformat(), "--log-dir", str(tmp_path), "--data-lake", str(tmp_path)])
+    rc = main(["--run-date", NOW.date().isoformat(), "--log-dir", str(tmp_path), "--data-lake", str(tmp_path)])
     assert rc == 0
     assert "Livewire status" in capsys.readouterr().out
 
@@ -645,8 +647,49 @@ def test_a_lane_deferred_by_the_lake_lock_is_a_warning():
     assert "corporate-actions" in " ".join(section.lines)
 
 
+def test_a_run_started_before_midnight_utc_resolves_from_a_host_east_of_utc():
+    """`$today` is UTC; DuckDB must evaluate `date(started)` in UTC too.
+
+    The mini runs Asia/Hong_Kong. A run started 2026-09-06 20:52:01Z is stored
+    `2026-09-07 04:52:01+08:00`, and a session-local `date(started)` read it as
+    the 7th while status asked for the 6th -- so `_last_run_id` returned '' and
+    every run-scoped check went UNKNOWN (macmini dry run, 2026-09-06 20:52Z).
+    """
+    if not hasattr(time, "tzset"):
+        pytest.skip("no time.tzset on this platform")
+    started = datetime(2026, 9, 6, 20, 52, 1, tzinfo=UTC)
+    _run(started=started, ended=started)
+    _all_lanes()
+
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = "Asia/Hong_Kong"
+    time.tzset()
+    try:
+        sections = status.collect(
+            date(2026, 9, 6),
+            Path("/nonexistent"),
+            Path("/nonexistent"),
+            runner=_fake_launchctl,
+            database=None,
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+    terminal = next(section for section in sections if section.name == "Lanes terminal")
+    assert terminal.verdict is status.Verdict.OK
+
+
+def test_lanes_blocked_is_unknown_when_no_run_resolved():
+    """An unresolved run measured nothing; `none` would be a green lie."""
+    assert _section("Lanes blocked").verdict is status.Verdict.UNKNOWN
+
+
 def test_no_lane_deferred_by_the_lake_lock_is_ok_not_unknown():
-    """Zero rows is the good case here, so the name is in _EMPTY_IS_OK."""
+    """Zero blocked lanes on a resolved run is the good case."""
     _run()
     _all_lanes()
 
