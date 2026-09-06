@@ -26,9 +26,9 @@ livewire/                       # git repo
 ├── launchd/                    # *.plist.example templates for the 6 scheduled jobs
 ├── tests/                      # pytest; 95% coverage gate (clients/ib_client.py exempt)
 └── docs/
-    ├── postmortems/            # one file per incident: rule + what it cost + date (49 as of 2026-09-02)
+    ├── postmortems/            # one file per incident: rule + what it cost + date (54 as of 2026-09-06)
     ├── runbook.md              # every operator command, flag and env var, by task
-    ├── superpowers/specs/      # designs; 2026-08-31-livewire-gap-autoheal-design.md is current
+    ├── superpowers/specs/      # designs; 2026-09-02-livewire-ledger-design.md is current
     └── audits/                 # dated read-only findings
 
 ~/market-warehouse/             # data tree (scripts/setup_market_warehouse.sh)
@@ -108,6 +108,7 @@ gap      = expected − actual
 - A release carries no `.env` and no `node_modules`; `promote` runs `npm ci --omit=dev` before `freeze`. → test: `tests/test_release.py` · pm:2026-07-29-release-missing-node-modules
 - Lane budgets are per lane (`LANE_BUDGET_S`), not a total: a lane over budget is killed by process group, recorded `outcome='timeout'`, and **the next lane starts normally**. → test: `tests/test_run_daily_update_job.py::TestPerLaneBudgets` · pm:2026-07-28-daily-job-deadline-is-a-total
 - Lane order is no-fallback-first (futures → cmdty → CBOE → FX → corporate-actions → equity → silver): the IB-only lanes take minutes and cannot be back-sourced, so they never queue behind a 3–8h Massive lane. → test: `::test_main_runs_the_no_fallback_lanes_before_the_expensive_ones`
+- The lane list is declared once (`clients.constants.LANE_ORDER`, `IB_ONLY_LANES`); the job runs it and `status` generates its CHECK SQL from it, so a new lane cannot be run but ungraded. → test: `tests/test_status.py::test_adding_a_lane_makes_it_appear_in_the_lanes_terminal_check`, `tests/test_constants.py::test_declared_lane_budgets_cover_exactly_the_lane_set`
 - The lane runner never runs the alert: `_page_failure` takes no runner parameter; `send_failure_alert` binds `subprocess.run` late. → test: `TestTheLaneRunnerNeverRunsTheAlert` · pm:2026-08-02-lane-runner-ran-the-alert
 - Every lane pages, the timeout branch included; `_run_scheduled_lane` is the single shared lane body (no private copies). → test: `tests/test_run_daily_update_job.py::test_terminal_failure_*` · pm:2026-07-28-lane-alert-paths-missing
 - The corporate-actions lane always resumes (`--resume` is unconditional on the scheduled command, Sunday included): an incompatible or complete cursor starts a fresh pass instead of raising, and a resumed tail that finishes opens one new cycle in the same invocation. Without it three nights (2026-09-03/04/05) each restarted at symbol 1 and the tail of the ~13.3K universe was never reached. → test: `tests/test_sync_corporate_actions.py::test_a_resumed_pass_finishes_its_tail_then_opens_a_new_cycle`, `tests/test_corporate_action_cursor.py::TestResumeNeverFailsTheLane` · pm:2026-09-05-corporate-actions-restarted-from-symbol-one
