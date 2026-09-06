@@ -40,6 +40,20 @@ DECLARED: dict[str, tuple[float, str]] = {
     "lane_budget_s/equity": (2 * 60 * 60, "s"),
     "lane_budget_s/silver": (2 * 60 * 60, "s"),
     "lane_budget_s/default": (30 * 60, "s"),
+    # How long a lane is expected to wait for the lake-io lock. Global on
+    # purpose: this is a property of the lock, not of a lane. 2340s is the
+    # measured lake-alone corporate-actions pass on the mini, 2026-09-04 14:09Z
+    # (14,839 symbols, 39 minutes) -- the longest single hold an intraday phase
+    # can queue behind under the 05:00Z / 10:00Z order. `status` grades it
+    # against the 14-day p95 of the per-lane measured rows and reads UNKNOWN
+    # until those rows exist.
+    "lake_lock_wait_s": (2340, "s"),
+    # Priority, expressed as how often each job looks. The daily job takes a
+    # freed lock within a second; the intraday job looks once a minute, so a
+    # daily lane waiting at the moment of a release wins by 59s of margin. No
+    # queue, no fairness logic (spec 2026-09-06 section 3).
+    "lake_lock_poll_s/daily": (1, "s"),
+    "lake_lock_poll_s/intraday": (60, "s"),
     # Share of attempted symbols that may fail before a run counts as systemic.
     "failure_rate_tolerance": (0.05, "ratio"),
     # Massive flat-file GET floor, rolling. Derived from the scan date, never
