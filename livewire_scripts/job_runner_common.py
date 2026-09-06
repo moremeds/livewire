@@ -7,9 +7,18 @@ pm:2026-07-28-lane-alert-paths-missing describes.
 
 from __future__ import annotations
 
+import os
+import sys
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+from clients import ledger
+from clients.parquet_io import path_lock
+from livewire_scripts.paths import lake_lock_path
 
 
 @dataclass(frozen=True)
@@ -68,3 +77,80 @@ def build_alert_command(
     if request.exit_code is not None:
         command.extend(["--exit-code", str(request.exit_code)])
     return command
+
+
+#: `lane_results.blocker` for a lane that never got the lake-io lock. Not a new
+#: outcome value: `blocked` already means "this lane did not run because
+#: something else stopped it", and `_emit_lane` already declines to measure a
+#: blocked lane, so a zero-length lane cannot drag the budget p95 toward 0.
+LAKE_LOCK_BLOCKER = "lake_lock"
+
+
+def _emit_lake_lock_wait(lane: str, waited_s: float) -> None:
+    """Record the wait. A ledger failure must never kill a lane."""
+    run = os.environ.get("LW_RUN_ID")
+    if not run:
+        return
+    try:
+        ledger.emit(
+            "measurements",
+            [
+                {
+                    "name": "lake_lock_wait_s",
+                    "scope": lane,
+                    "measured_at": utc_now(),
+                    "value": float(waited_s),
+                    "unit": "s",
+                    "source": "measured",
+                    "run_id": run,
+                }
+            ],
+            run_id=run,
+        )
+    except Exception as exc:  # noqa: BLE001 - logged but tolerated, same rule as _emit_lane
+        print(f"WARNING: could not record lake_lock_wait_s for {lane}: {exc}", file=sys.stderr)
+
+
+@contextmanager
+def lake_lock(
+    lane: str,
+    *,
+    poll_s: float,
+    budget_s: float,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> Iterator[float | None]:
+    """Serialize one lane against every other process that writes the lake.
+
+    Yields the seconds spent waiting, with the lock held, or yields None having
+    taken nothing when `budget_s` elapsed without ever acquiring -- the caller
+    then records the lane `outcome='blocked', blocker=LAKE_LOCK_BLOCKER` and
+    moves on. The wait is bounded on BOTH sides on purpose: a blocking flock
+    cannot be bounded without threads or signals, and a daily job blocked
+    forever behind a wedged 6h intraday phase loses a whole night in silence.
+
+    Priority is the poll interval and the arrival order, not a scheduler: the
+    daily job polls at 1s and takes a freed lock at once; the intraday job polls
+    at 60s and is the one that waits (spec
+    2026-09-06-tiered-nightly-pipeline-design.md section 3).
+
+    The wait is NOT part of the lane's `elapsed_s` -- the lane clock starts
+    after this yields. Counting idle time as lane time would teach
+    `status`'s budget-drift check that a lane needs a bigger budget because it
+    spent two hours waiting.
+    """
+    lock_path = lake_lock_path()
+    started = monotonic()
+    while True:
+        with path_lock(lock_path, blocking=False) as held:
+            if held:
+                waited = monotonic() - started
+                _emit_lake_lock_wait(lane, waited)
+                yield waited
+                return
+        waited = monotonic() - started
+        if waited >= budget_s:
+            _emit_lake_lock_wait(lane, waited)
+            yield None
+            return
+        sleep_fn(poll_s)
