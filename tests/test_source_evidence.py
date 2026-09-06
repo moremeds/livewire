@@ -351,7 +351,7 @@ class TestShardedCas:
         store = SourceEvidenceStore(tmp_path)
         synced: list[str] = []
         monkeypatch.setattr(
-            "clients.source_evidence._fsync_directory",
+            "clients.source_evidence.fsync_directory",
             lambda path: synced.append(str(path)),
         )
         rows = [evidence(a.ref, a.sha256) for a in (store.persist_raw(f"body-{i}".encode()) for i in range(8))]

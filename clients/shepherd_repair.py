@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from clients.parquet_io import symbol_lock, validate_parquet_file
+from clients.parquet_io import fsync_directory, symbol_lock, validate_parquet_file
 from clients.security_master import SecurityIdentityEvent, SecurityMaster
 from clients.source_evidence import SourceEvidenceStore
 from clients.symbol_ids import stable_symbol_id
@@ -52,14 +52,6 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
     return value
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 @dataclass(frozen=True)
@@ -966,7 +958,7 @@ class ShepherdRepair:
             with temp.open("rb") as handle:
                 os.fsync(handle.fileno())
             os.replace(temp, path)
-            _fsync_directory(path.parent)
+            fsync_directory(path.parent)
         finally:
             temp.unlink(missing_ok=True)
 
@@ -980,7 +972,7 @@ class ShepherdRepair:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp, path)
-            _fsync_directory(path.parent)
+            fsync_directory(path.parent)
         finally:
             temp.unlink(missing_ok=True)
 
@@ -998,7 +990,7 @@ class ShepherdRepair:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp, path)
-            _fsync_directory(path.parent)
+            fsync_directory(path.parent)
         finally:
             temp.unlink(missing_ok=True)
 

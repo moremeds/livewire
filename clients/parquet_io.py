@@ -29,6 +29,20 @@ PARQUET_COMPRESSION = "zstd"
 PARQUET_COMPRESSION_LEVEL = 3
 
 
+def fsync_directory(path: Path) -> None:
+    """fsync a directory so a rename inside it survives a crash.
+
+    One directory fsync per commit is the rule the sharded CAS was rebuilt
+    around (pm:2026-09-05-source-evidence-flat-exfat-directory); four copies of
+    this function is four chances to forget it.
+    """
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 @contextmanager
 def symbol_lock(parquet_path: Path) -> Iterator[Path]:
     """Serialize writers for one parquet path using a local POSIX lock.

@@ -161,3 +161,28 @@ class TestValidateParquetFile:
         pq.write_table(_table(rows), out)
         with pytest.raises(ValueError, match="duplicate"):
             validate_parquet_file(out, expected_rows=2, sort_column="trade_date")
+
+
+def test_fsync_directory_opens_and_closes_the_directory(tmp_path, monkeypatch):
+    from clients import parquet_io
+
+    synced: list[int] = []
+    monkeypatch.setattr(parquet_io.os, "fsync", synced.append)
+
+    parquet_io.fsync_directory(tmp_path)
+
+    assert len(synced) == 1
+
+
+def test_every_directory_fsync_comes_from_parquet_io():
+    """Four hand-rolled copies preceded this (pm:2026-09-05-source-evidence-flat-exfat-directory)."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    offenders = [
+        path.name
+        for path in sorted((root / "clients").glob("*.py"))
+        if path.name != "parquet_io.py" and "def fsync_directory" in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []

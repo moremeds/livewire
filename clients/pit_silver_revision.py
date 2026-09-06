@@ -14,6 +14,7 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from clients.index_membership_store import IndexMembershipStore
+from clients.parquet_io import fsync_directory
 from clients.security_master import SecurityMaster
 from clients.source_evidence import SourceEvidenceStore
 from clients.trading_calendar import (
@@ -40,14 +41,6 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
     return value
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def daily_bar_cutoff(as_of: datetime) -> date:
@@ -494,8 +487,8 @@ class PitSilverRevisionPublisher:
         quarantine.mkdir(parents=True, exist_ok=True)
         target = quarantine / f"{path.name}.{time.time_ns()}.orphan"
         os.replace(path, target)
-        _fsync_directory(quarantine)
-        _fsync_directory(self.revisions)
+        fsync_directory(quarantine)
+        fsync_directory(self.revisions)
         return target
 
     def _result(self, payload: dict[str, Any], changed_paths: tuple[Path, ...]) -> PitSilverRevision:
@@ -525,7 +518,7 @@ class PitSilverRevisionPublisher:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        _fsync_directory(path.parent)
+        fsync_directory(path.parent)
 
     def _replace_current(self, payload: bytes) -> None:
         temp = self.revisions / f".current.{os.getpid()}.{time.time_ns()}.tmp"
@@ -535,6 +528,6 @@ class PitSilverRevisionPublisher:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp, self.current)
-            _fsync_directory(self.revisions)
+            fsync_directory(self.revisions)
         finally:
             temp.unlink(missing_ok=True)
