@@ -110,6 +110,7 @@ class TestBuildAlertCommand:
         request = AlertRequest(
             run_date="2026-06-05",
             log_file=tmp_path / "log.log",
+            attempts=1,
             exit_code=42,
             error_summary="something broke",
             repo_root=tmp_path / "repo",

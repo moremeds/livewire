@@ -441,7 +441,7 @@ class TestHelpers:
                     return datetime(2026, 4, 6, 1, 0, tzinfo=UTC)
                 return datetime(2026, 4, 5, 18, 0)
 
-        with patch("livewire_scripts.run_daily_update_job.datetime", FrozenDateTime):
+        with patch("livewire_scripts.job_runner_common.datetime", FrozenDateTime):
             assert build_log_file(tmp_path) == tmp_path / "daily_update_2026-04-06.log"
 
     def test_append_log_adds_newline(self, tmp_path):

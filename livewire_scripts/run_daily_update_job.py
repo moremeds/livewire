@@ -14,12 +14,16 @@ import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from clients import constants, ledger
 from clients.constants import LANE_ORDER
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
+from livewire_scripts.job_runner_common import AlertRequest, append_log
+from livewire_scripts.job_runner_common import build_alert_command as _build_alert_command
+from livewire_scripts.job_runner_common import build_log_file as _build_log_file
+from livewire_scripts.job_runner_common import utc_now as _utc_now
 from livewire_scripts.paths import warehouse_dir as resolve_warehouse_dir
 from livewire_scripts.sync_runner import TIMEOUT_EXIT_CODE
 
@@ -61,20 +65,6 @@ class RunnerConfig:
     node_bin: str
     max_attempts: int
     retry_delay_seconds: int
-
-
-@dataclass(frozen=True)
-class AlertRequest:
-    run_date: str
-    log_file: Path
-    attempts: int | None
-    exit_code: int | None
-    error_summary: str
-    repo_root: Path
-
-
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
 
 
 def _read_positive_int_env(name: str, default: int) -> int:
@@ -228,16 +218,7 @@ def _last_session_from_log(log_file: Path, offset: int = 0) -> date | None:
 
 
 def build_log_file(log_dir: Path, now: datetime | None = None) -> Path:
-    current = now or datetime.now(UTC)
-    return log_dir / f"daily_update_{current:%Y-%m-%d}.log"
-
-
-def append_log(log_file: Path, message: str) -> None:
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    with log_file.open("a", encoding="utf-8") as handle:
-        handle.write(message)
-        if not message.endswith("\n"):
-            handle.write("\n")
+    return _build_log_file(log_dir, "daily_update", now)
 
 
 def build_daily_update_command(config: RunnerConfig, daily_update_args: Sequence[str]) -> list[str]:
@@ -276,27 +257,7 @@ def build_silver_rebuild_command(config: RunnerConfig, *, dry_run: bool) -> list
 
 
 def build_alert_command(config: RunnerConfig, request: AlertRequest) -> list[str]:
-    command = [
-        config.python_bin,
-        str(config.alert_script),
-        "send-alert",
-        "--run-date",
-        request.run_date,
-        "--log-file",
-        str(request.log_file),
-        # One token. The two-token form breaks whenever the summary begins with
-        # "--", which is how the 2026-08-08 page was lost.
-        f"--error-summary={request.error_summary}",
-        "--repo-root",
-        str(request.repo_root),
-        "--job-name",
-        "daily_update",
-    ]
-    if request.attempts is not None:
-        command.extend(["--attempts", str(request.attempts)])
-    if request.exit_code is not None:
-        command.extend(["--exit-code", str(request.exit_code)])
-    return command
+    return _build_alert_command(config.python_bin, config.alert_script, request, job_name="daily_update")
 
 
 def node_binary_exists(node_bin: str) -> bool:
