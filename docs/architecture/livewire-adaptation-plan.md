@@ -84,7 +84,7 @@ live on a different disk than `raw/`. Today config is split (hardcoded
   - `MDW_RAW_DIR`, `MDW_GOLD_DIR` likewise.
 - Repoint `_DEFAULT_BRONZE_DIR` in `bronze_client.py` + `intraday_bronze_client.py`
   to the resolver. Replace remaining hardcoded `~/market-warehouse` reads
-  (`check_gaps`, `health_check`, `fetch_fred_rates`, flatfile ingest, etc.).
+  (`health_check`, `fetch_fred_rates`, flatfile ingest, etc.).
 - Constructors keep their `bronze_dir=` override (unchanged); only the *default* moves to the resolver.
 
 **Tests:** env-var resolution, default fallback when unset, override precedence. 95% coverage.

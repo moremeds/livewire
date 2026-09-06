@@ -22,6 +22,9 @@ from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 
+from clients.coverage_denominator import ExpectedSeries
+from clients.gap_engine import classify, massive_floor_for
+from clients.trading_calendar import trading_dates_in_range
 from livewire_scripts.paths import cursor_dir, data_lake_dir, log_dir
 from livewire_scripts.paths import warehouse_dir as resolve_warehouse_dir
 
@@ -176,7 +179,6 @@ def gap_aware_completed(
     try:
         import clients.bronze_client as _bc
         from clients.tag_registry import TagRegistry
-        from livewire_scripts.check_gaps import compute_gaps
 
         registry = TagRegistry(registry_path)
         bdir = bronze_dir or (wh / "data-lake" / "bronze" / "asset_class=equity")
@@ -190,6 +192,8 @@ def gap_aware_completed(
         else:
             tickers = sorted(all_dates.keys())
 
+        today = as_of or date.today()
+        massive_floor = massive_floor_for(today)
         n_no_bounds = 0
         n_with_gaps = 0
         for ticker in tickers:
@@ -199,8 +203,9 @@ def gap_aware_completed(
                 n_no_bounds += 1
                 continue
             bronze_dates = set(all_dates.get(ticker, []))
-            report = compute_gaps(ticker, earliest, bronze_dates, as_of=as_of)
-            if not report.complete:
+            sessions = tuple(trading_dates_in_range(date.fromisoformat(earliest), today))
+            series = ExpectedSeries(ticker, "equity", "1d", sessions)
+            if classify(series, bronze_dates, massive_floor):
                 n_with_gaps += 1
 
         if n_no_bounds > 0:
