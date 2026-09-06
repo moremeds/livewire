@@ -50,12 +50,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients.bronze_client import BronzeClient
-from clients.corporate_action_store import CorporateActionStore
 from clients.daily_bar_fallback import DailyBarFallbackClient
 from clients.ib_client import IBClient
 from clients.ingestion_common import (
     ROOT_EXCHANGE_MAP,  # noqa: F401
     SUPPORTED_IB_FX_PAIRS,  # noqa: F401
+    action_store_for_bronze,
     bars_to_futures_rows,
     bars_to_midpoint_rows,
     bars_to_rows,
@@ -122,11 +122,6 @@ def _optional_massive_client():
 BRONZE_DIR: Path | None = None
 
 console = Console()
-
-
-def _action_store_for_bronze(bronze_dir: Path) -> CorporateActionStore:
-    root = bronze_dir.parent.parent if bronze_dir.parent.name == "bronze" else bronze_dir.parent
-    return CorporateActionStore(root)
 
 
 # ROOT_EXCHANGE_MAP, SUPPORTED_IB_FX_PAIRS, _resolve_fx_pair,
@@ -922,7 +917,7 @@ def main():  # pragma: no cover — only exercised by integration tests
                                 existing_rows=(
                                     bronze.read_symbol_rows(ticker) if hasattr(bronze, "read_symbol_rows") else []
                                 ),
-                                actions=_action_store_for_bronze(bronze_dir).latest_active(ticker),
+                                actions=action_store_for_bronze(bronze_dir).latest_active(ticker),
                                 as_of_date=target,
                             )
                         parquet_path = bronze_dir / f"symbol={ticker}" / "1d.parquet"

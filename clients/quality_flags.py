@@ -18,6 +18,7 @@ from pathlib import Path
 
 from clients import ledger
 from clients.quality_detector import QualityFlag
+from clients.timeutils import utc_iso
 from livewire_scripts.paths import log_dir
 
 _logger = logging.getLogger("livewire.quality")
@@ -53,12 +54,6 @@ def write_sidecar(parquet_path: Path, flags: list[QualityFlag], metadata: dict) 
     return True
 
 
-def _utc_iso() -> str:
-    from datetime import datetime
-
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _resolve_audit_path() -> Path:
     raw = os.environ.get(
         "MDW_QUALITY_AUDIT_PATH",
@@ -79,7 +74,7 @@ def append_audit(
     if source not in _VALID_SOURCES:
         raise ValueError(f"source must be one of {_VALID_SOURCES}, got {source!r}")
     record = {
-        "ts": _utc_iso(),
+        "ts": utc_iso(),
         "source": source,
         "ticker": ticker,
         "timeframe": timeframe,

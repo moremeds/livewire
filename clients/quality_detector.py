@@ -8,10 +8,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+from clients.timeutils import utc_iso
 
 try:
     from clients.trading_calendar import is_trading_day as _default_is_trading_day
@@ -23,16 +25,12 @@ _RANGE_SHORTFALL_CRITICAL_DAYS = 30
 _logger = logging.getLogger("livewire.quality")
 
 
-def _utc_iso() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 @dataclass(frozen=True)
 class QualityFlag:
     category: str
     severity: str
     detail: dict[str, Any] = field(default_factory=dict)
-    ts: str = field(default_factory=_utc_iso)
+    ts: str = field(default_factory=utc_iso)
 
 
 def detect_range_shortfall(

@@ -63,11 +63,12 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients import quality_detector
 from clients.bronze_client import BronzeClient
-from clients.corporate_action_store import CorporateAction, CorporateActionStore
+from clients.corporate_action_store import CorporateAction
 from clients.ib_client import IBClient, IBError
 from clients.ingestion_common import (
     ROOT_EXCHANGE_MAP,  # noqa: F401
     SUPPORTED_IB_FX_PAIRS,  # noqa: F401
+    action_store_for_bronze,
     bars_to_futures_rows,
     bars_to_midpoint_rows,
     bars_to_rows,
@@ -125,11 +126,6 @@ console = Console()
 
 def _resolved_bronze_dir(asset_class: str = "equity") -> Path:
     return BRONZE_DIR or data_lake_dir() / "bronze" / f"asset_class={asset_class}"
-
-
-def _action_store_for_bronze(bronze_dir: Path) -> CorporateActionStore:
-    root = bronze_dir.parent.parent if bronze_dir.parent.name == "bronze" else bronze_dir.parent
-    return CorporateActionStore(root)
 
 
 # load_preset → imported from clients.ingestion_common
@@ -926,7 +922,7 @@ def _run_backfill(
                     bars,
                     bronze,
                     asset_class=asset_class,
-                    corporate_actions=_action_store_for_bronze(_resolved_bronze_dir(asset_class)).latest_active(ticker),
+                    corporate_actions=action_store_for_bronze(_resolved_bronze_dir(asset_class)).latest_active(ticker),
                 )
 
                 if count > 0:
@@ -1174,7 +1170,7 @@ def _run_normal(
                     bars,
                     bronze,
                     asset_class=asset_class,
-                    corporate_actions=_action_store_for_bronze(_resolved_bronze_dir(asset_class)).latest_active(ticker),
+                    corporate_actions=action_store_for_bronze(_resolved_bronze_dir(asset_class)).latest_active(ticker),
                 )
 
                 if count > 0:

@@ -10,6 +10,8 @@ from pathlib import Path
 
 from ib_async import Contract, Forex, Future, Index, Stock
 
+from clients.corporate_action_store import CorporateActionStore
+
 VOLATILITY_EXCHANGE_MAP = {
     "RUT": "RUSSELL",
     "NDX": "NASDAQ",
@@ -209,3 +211,9 @@ def load_preset(path: str | Path) -> tuple[str, list[str], dict[str, str]]:
         return (data["name"], tickers, exchange_map)
 
     return (data["name"], data["tickers"], exchange_map)
+
+
+def action_store_for_bronze(bronze_dir: Path) -> CorporateActionStore:
+    """Resolve the corporate-action store that sits beside a bronze directory."""
+    root = bronze_dir.parent.parent if bronze_dir.parent.name == "bronze" else bronze_dir.parent
+    return CorporateActionStore(root)

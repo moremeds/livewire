@@ -13,6 +13,7 @@ from typing import Literal
 import pyarrow as pa
 
 from clients.revisioned_parquet import AtomicParquetLog
+from clients.timeutils import require_aware
 
 IdentityStatus = Literal["candidate", "verified", "rejected", "unresolved"]
 EvidenceVerifier = Callable[[str, str], bool]
@@ -96,7 +97,7 @@ class SecurityMaster:
         rows = self._log.read()
         items = [_deserialize(row) for row in rows]
         if as_of is not None:
-            _require_aware(as_of, "as_of")
+            require_aware(as_of, "as_of")
             items = [item for item in items if item.known_at <= as_of]
         return items
 
@@ -108,8 +109,8 @@ class SecurityMaster:
         effective_at: datetime,
         as_of: datetime,
     ) -> str | None:
-        _require_aware(effective_at, "effective_at")
-        _require_aware(as_of, "as_of")
+        require_aware(effective_at, "effective_at")
+        require_aware(as_of, "as_of")
         matches = {
             item.security_id
             for item in self._active_events(as_of)
@@ -124,8 +125,8 @@ class SecurityMaster:
         return next(iter(matches), None)
 
     def is_verified(self, security_id: str, effective_at: datetime, as_of: datetime) -> bool:
-        _require_aware(effective_at, "effective_at")
-        _require_aware(as_of, "as_of")
+        require_aware(effective_at, "effective_at")
+        require_aware(as_of, "as_of")
         return any(
             item.security_id == security_id
             and item.status == "verified"
@@ -136,7 +137,7 @@ class SecurityMaster:
     def has_verified_identity(self, security_id: str, as_of: datetime) -> bool:
         """Return whether this opaque identity has any verified claim known then."""
 
-        _require_aware(as_of, "as_of")
+        require_aware(as_of, "as_of")
         return any(item.security_id == security_id and item.status == "verified" for item in self._active_events(as_of))
 
     def _active_events(self, as_of: datetime) -> list[SecurityIdentityEvent]:
@@ -193,10 +194,10 @@ def _validate_event(item: SecurityIdentityEvent, verifier: EvidenceVerifier | No
         value for value in (item.symbol, item.provider, item.exchange_mic, item.currency, item.issuer_name)
     ):
         raise ValueError("identity interval fields must be non-empty")
-    _require_aware(item.effective_from, "effective_from")
-    _require_aware(item.known_at, "known_at")
+    require_aware(item.effective_from, "effective_from")
+    require_aware(item.known_at, "known_at")
     if item.effective_to is not None:
-        _require_aware(item.effective_to, "effective_to")
+        require_aware(item.effective_to, "effective_to")
         if item.effective_to <= item.effective_from:
             raise ValueError("effective_to must be after effective_from")
     if item.status not in {"candidate", "verified", "rejected", "unresolved"}:
@@ -243,11 +244,6 @@ def _deserialize(row: dict[str, object]) -> SecurityIdentityEvent:
             "source_hashes": tuple(row["source_hashes"]),
         }
     )
-
-
-def _require_aware(value: datetime, label: str) -> None:
-    if value.tzinfo is None:
-        raise ValueError(f"{label} must be timezone-aware")
 
 
 def _contains(start: datetime, end: datetime | None, value: datetime) -> bool:
