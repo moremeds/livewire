@@ -429,18 +429,33 @@ def _completion_scope_from_args(args: Sequence[str]) -> str:
 
 
 def silver_is_blocked() -> str | None:
-    """Name the prerequisite lane blocking Silver in this run."""
+    """Name the prerequisite lane blocking Silver in this run.
+
+    Only `outcome='failed'` blocks. A timeout (124) and a down Gateway (86) are
+    slow or absent data, not WRONG data: the corporate-action store and equity
+    bronze still hold yesterday's correct rows, and Silver publishing against
+    them beats Silver not running at all -- Apex resolves silver by path, so a
+    stale symbol renders yesterday's correct chart while a missing one fails
+    closed at HTTP 500 (spec 2026-09-06-tiered-nightly-pipeline-design.md
+    section 4).
+
+    The old test was `exit_code != 0`, which swallowed 124 and 86 into
+    "blocked". Measured on the mini, that withheld the adjusted series for the
+    whole ~13.3k universe on 2026-09-03, 09-04, 09-05 and 09-06, every time
+    because corporate-actions was merely slow
+    (pm:2026-09-06-intraday-and-daily-shared-the-lake).
+    """
     rows = ledger.query(
-        "select lane, exit_code from lane_results "
+        "select lane, outcome from lane_results "
         f"where run_id = '{run_id()}' and outcome is not null "
         "and lane in ('corporate-actions', 'equity') order by ended"
     )
-    by_lane = {row["lane"]: row["exit_code"] for row in rows}
+    by_lane = {row["lane"]: row["outcome"] for row in rows}
     for lane in ("corporate-actions", "equity"):
         # The ledger is the gate's source of truth. A missing terminal fact is
         # not success: if an emit failed, running Silver would silently turn a
         # failed prerequisite into a green adjusted rebuild.
-        if lane not in by_lane or by_lane[lane] != 0:
+        if lane not in by_lane or by_lane[lane] == "failed":
             return lane
     return None
 

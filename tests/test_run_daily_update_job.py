@@ -1918,3 +1918,80 @@ class TestTheLakeLock:
         rows = ledger.query("select lane, elapsed_s from lane_results where outcome is not null")
         assert rows[0]["lane"] == "fx"
         assert rows[0]["elapsed_s"] < 0.25
+
+
+class TestTheSilverGateOnlyBlocksOnFailure:
+    """Four nights of Silver were withheld because a timeout is exit 124 (spec section 4)."""
+
+    @pytest.fixture(autouse=True)
+    def ledger_root(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+        monkeypatch.setenv("LW_RUN_ID", "daily-update-20260906T050000Z-1")
+
+    def _lane(self, lane, outcome, exit_code):
+        from clients import ledger
+
+        now = datetime(2026, 9, 6, 5, 0, tzinfo=UTC)
+        ledger.emit(
+            "lane_results",
+            [
+                {
+                    "run_id": "daily-update-20260906T050000Z-1",
+                    "lane": lane,
+                    "started": now,
+                    "ended": now,
+                    "exit_code": exit_code,
+                    "budget_s": 10800.0,
+                    "elapsed_s": 10800.0,
+                    "outcome": outcome,
+                    "blocker": None,
+                }
+            ],
+            run_id="daily-update-20260906T050000Z-1",
+        )
+
+    def test_a_timed_out_corporate_actions_lane_no_longer_blocks_silver(self):
+        """2026-09-03/04/05/06 on the mini: 10800s, exit 124, Silver skipped all four nights."""
+        self._lane("corporate-actions", "timeout", 124)
+        self._lane("equity", "done", 0)
+
+        assert daily_runner.silver_is_blocked() is None
+
+    def test_an_ib_down_lane_no_longer_blocks_silver(self):
+        self._lane("corporate-actions", "done", 0)
+        self._lane("equity", "blocked", 86)
+
+        assert daily_runner.silver_is_blocked() is None
+
+    def test_a_lane_deferred_by_the_lake_lock_does_not_block_silver(self):
+        self._lane("corporate-actions", "blocked", None)
+        self._lane("equity", "done", 0)
+
+        assert daily_runner.silver_is_blocked() is None
+
+    def test_a_failed_corporate_actions_lane_still_blocks_silver(self):
+        """Wrong data, not slow data. This is the one case that must still stop Silver."""
+        self._lane("corporate-actions", "failed", 1)
+        self._lane("equity", "done", 0)
+
+        assert daily_runner.silver_is_blocked() == "corporate-actions"
+
+    def test_a_failed_equity_lane_still_blocks_silver(self):
+        self._lane("corporate-actions", "done", 0)
+        self._lane("equity", "failed", 1)
+
+        assert daily_runner.silver_is_blocked() == "equity"
+
+    def test_the_gate_still_fails_closed_on_a_missing_terminal_fact(self):
+        """A missing emit is not success: it would turn a failed lane into a green rebuild."""
+        self._lane("equity", "done", 0)
+
+        assert daily_runner.silver_is_blocked() == "corporate-actions"
+
+    def test_the_last_terminal_row_wins_so_the_massive_fallback_counts(self):
+        """equity emits twice when IB is down and Massive answers; the second row is the fact."""
+        self._lane("corporate-actions", "done", 0)
+        self._lane("equity", "blocked", 86)
+        self._lane("equity", "done", 0)
+
+        assert daily_runner.silver_is_blocked() is None
