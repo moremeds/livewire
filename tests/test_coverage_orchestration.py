@@ -385,7 +385,7 @@ def test_a_scan_failure_does_not_take_down_the_coverage_measurement(tmp_path, mo
     the former must not stop the latter's log from being written -- that is the
     four-week detector blindness CLAUDE.md records, rebuilt with new parts.
     """
-    monkeypatch.setattr(coverage_report, "_DATA_LAKE", tmp_path)
+    monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
     monkeypatch.setattr(
         coverage_report,
         "scan_findings",

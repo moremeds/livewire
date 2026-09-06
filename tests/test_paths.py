@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib
 from pathlib import Path
 
@@ -74,3 +75,35 @@ def test_resolvers_read_environment_at_call_time(
 
     assert paths.warehouse_dir() == warehouse
     assert paths.data_lake_dir() == warehouse / "data-lake"
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+#: Module-level names that used to shadow livewire_scripts.paths. A module that
+#: reintroduces one has invented a second lake root that MDW_DATA_LAKE cannot
+#: reach, which is how a test can pass against a path production never uses.
+_FORBIDDEN_OVERRIDES = {"_DATA_LAKE", "DATA_LAKE", "_LOG_DIR", "_WAREHOUSE_DIR"}
+
+
+def test_no_module_shadows_the_path_resolvers():
+    offenders: list[str] = []
+    for package in ("clients", "livewire_scripts"):
+        for path in sorted((_REPO_ROOT / package).glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in tree.body:
+                targets = []
+                if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                    targets = [node.target.id]
+                elif isinstance(node, ast.Assign):
+                    targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                offenders += [f"{path.name}:{name}" for name in targets if name in _FORBIDDEN_OVERRIDES]
+
+    assert offenders == []
+
+
+def test_data_lake_dir_follows_the_warehouse_override(monkeypatch, tmp_path):
+    from livewire_scripts.paths import data_lake_dir
+
+    monkeypatch.delenv("MDW_DATA_LAKE", raising=False)
+    monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
+
+    assert data_lake_dir() == tmp_path / "data-lake"

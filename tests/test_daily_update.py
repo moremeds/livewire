@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1683,7 +1684,7 @@ class TestMain:
                 return_value=mock_fallback,
             ),
             patch("livewire_scripts.daily_update.StorageClient", lambda **kw: storage),
-            patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path),
+            patch.dict(os.environ, {"MDW_DATA_LAKE": str(tmp_path)}),
         ):
             main()
 
@@ -2380,7 +2381,7 @@ class TestMain:
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=kw.get("bronze_dir", vol_bronze_dir)),
             ),
-            patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path / "data-lake"),
+            patch.dict(os.environ, {"MDW_DATA_LAKE": str(tmp_path / "data-lake")}),
         ):
             main()
 
@@ -2454,7 +2455,7 @@ class TestMain:
                     asset_class=kw.get("asset_class", "futures"),
                 ),
             ),
-            patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path / "data-lake"),
+            patch.dict(os.environ, {"MDW_DATA_LAKE": str(tmp_path / "data-lake")}),
         ):
             main()
 
@@ -2521,7 +2522,7 @@ class TestMain:
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
             ),
-            patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path / "data-lake"),
+            patch.dict(os.environ, {"MDW_DATA_LAKE": str(tmp_path / "data-lake")}),
         ):
             main()
 
@@ -2579,7 +2580,7 @@ class TestMain:
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
             ),
-            patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path / "data-lake"),
+            patch.dict(os.environ, {"MDW_DATA_LAKE": str(tmp_path / "data-lake")}),
         ):
             main()
 

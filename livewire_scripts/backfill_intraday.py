@@ -50,8 +50,6 @@ from livewire_scripts.paths import cursor_dir, data_lake_dir, log_dir
 log = logging.getLogger("backfill_intraday")
 console = Console()
 
-_DATA_LAKE: Path | None = None
-_LOG_DIR: Path | None = None
 _CURSOR_DIR: Path | None = None
 
 # IB error codes that mean "skip ticker, do not retry"
@@ -389,7 +387,7 @@ def main() -> None:
     if args.max_tickers is not None:
         pending = pending[: args.max_tickers]
 
-    bronze_dir = (_DATA_LAKE or data_lake_dir()) / "bronze" / f"asset_class={args.asset_class}"
+    bronze_dir = data_lake_dir() / "bronze" / f"asset_class={args.asset_class}"
     bronze = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe=args.timeframe)
     if args.existing_only:
         existing_symbols = bronze.get_existing_symbols()
@@ -418,7 +416,7 @@ def main() -> None:
         console.print("[green]All tickers already completed for this cursor.[/green]")
         return
 
-    resolved_log_dir = _LOG_DIR or log_dir()
+    resolved_log_dir = log_dir()
     resolved_log_dir.mkdir(parents=True, exist_ok=True)
     log_path = resolved_log_dir / f"backfill_intraday_{args.timeframe}_{date.today():%Y-%m-%d}.log"
     log_handler = logging.FileHandler(log_path)

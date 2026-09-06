@@ -405,7 +405,7 @@ class TestFormatters:
 
 class TestWriteCoverageLog:
     def test_appends_when_called_twice(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path)
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path))
         path = write_coverage_log(date(2026, 4, 6), "first line", ["  detail"])
         write_coverage_log(date(2026, 4, 6), "second line", [])
         content = path.read_text()
@@ -667,8 +667,8 @@ class TestMain:
                 main()  # No exception
 
     def test_no_recover_skips_subprocess(self, seeded_bronze, monkeypatch, tmp_path):
-        monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", seeded_bronze.parent)
-        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(seeded_bronze.parent))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
             wraps=lambda d, bronze_root=None, cache_path=None, as_of=None, registry_path=None, presets_dir=None: (
@@ -685,11 +685,11 @@ class TestMain:
         assert mock_run.call_count == 0
 
     def test_above_threshold_no_recovery(self, seeded_bronze, monkeypatch, tmp_path):
-        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         # main() writes the Tier A manifest and the decision queue under
         # <data-lake>/repairs/. Without this the test writes them into the
         # REAL warehouse.
-        monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", tmp_path / "lake")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
         with (
             patch(
                 "livewire_scripts.coverage_report.compute_coverage",
@@ -724,11 +724,11 @@ class TestMain:
         _write_intraday(root, "AAPL", "1h", [target])
         _write_intraday(root, "AAPL", "30m", [target])
         _write_intraday(root, "AAPL", "5m", [date(2026, 3, 1)])  # stale -> triggers recovery
-        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         # main() writes the Tier A manifest and the decision queue under
         # <data-lake>/repairs/. Without this the test writes them into the
         # REAL warehouse.
-        monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", tmp_path / "lake")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
 
         def fake_run(cmd, **kwargs):
             if "livewire_ingest.py" in str(cmd):
@@ -762,11 +762,11 @@ class TestMain:
         # Both stale at 5m (file present, old date)
         _write_intraday(root, "AAPL", "5m", [date(2026, 3, 1)])
         _write_intraday(root, "MSFT", "5m", [date(2026, 3, 1)])
-        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         # main() writes the Tier A manifest and the decision queue under
         # <data-lake>/repairs/. Without this the test writes them into the
         # REAL warehouse.
-        monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", tmp_path / "lake")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
 
         def fake_run(cmd, **kwargs):
             if "livewire_ingest.py" in str(cmd):
@@ -798,11 +798,11 @@ class TestMain:
             _write_daily(root, sym, [target])
             _write_intraday(root, sym, "1h", [target])
             _write_intraday(root, sym, "5m", [date(2026, 3, 1)])
-        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         # main() writes the Tier A manifest and the decision queue under
         # <data-lake>/repairs/. Without this the test writes them into the
         # REAL warehouse.
-        monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", tmp_path / "lake")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
 
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
@@ -1322,8 +1322,8 @@ def test_main_writes_both_repair_artifacts(seeded_bronze, monkeypatch, tmp_path)
     # The Task 7 wiring: without this the classifier exists and nothing scheduled
     # ever calls it, which is the state gap_scan's deletion would have left.
     lake = tmp_path / "lake"
-    monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", lake)
-    monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+    monkeypatch.setenv("MDW_DATA_LAKE", str(lake))
+    monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
     with patch(
         "livewire_scripts.coverage_report.compute_coverage",
         wraps=lambda d, bronze_root=None, cache_path=None, as_of=None, registry_path=None, presets_dir=None: (

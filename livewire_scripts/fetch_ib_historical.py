@@ -102,7 +102,6 @@ def _storage_client():
 
 # ── Config ─────────────────────────────────────────────────────────────
 
-DATA_LAKE: Path | None = None
 BRONZE_DIR: Path | None = None
 CURSOR_DIR: Path | None = None
 
@@ -125,12 +124,8 @@ _QUALITY_ENABLED = True
 # ── Preset & cursor helpers ───────────────────────────────────────────
 
 
-def _resolved_data_lake() -> Path:
-    return DATA_LAKE or data_lake_dir()
-
-
 def _resolved_bronze_dir(asset_class: str = "equity") -> Path:
-    return BRONZE_DIR or _resolved_data_lake() / "bronze" / f"asset_class={asset_class}"
+    return BRONZE_DIR or data_lake_dir() / "bronze" / f"asset_class={asset_class}"
 
 
 def _action_store_for_bronze(bronze_dir: Path) -> CorporateActionStore:

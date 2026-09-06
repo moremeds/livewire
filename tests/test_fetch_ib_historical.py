@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2572,7 +2573,7 @@ class TestMain:
                 "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=kw.get("bronze_dir", vol_bronze_dir)),
             ),
-            patch("livewire_scripts.fetch_ib_historical.DATA_LAKE", tmp_path / "data-lake"),
+            patch.dict(os.environ, {"MDW_DATA_LAKE": str(tmp_path / "data-lake")}),
             patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
         ):
             main()

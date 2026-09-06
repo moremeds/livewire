@@ -37,8 +37,6 @@ from livewire_scripts.paths import data_lake_dir, warehouse_dir
 log = logging.getLogger(__name__)
 console = Console()
 
-_WAREHOUSE_DIR: Path | None = None
-_DATA_LAKE: Path | None = None
 _PRESET_DIR = PROJECT_ROOT / "presets"
 
 INDEX_TAGS = ("sp500", "ndx100", "r2k")
@@ -166,7 +164,7 @@ def main(argv: list[str] | None = None) -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    registry_path = (_WAREHOUSE_DIR or warehouse_dir()) / "registry.json"
+    registry_path = warehouse_dir() / "registry.json"
     registry = TagRegistry(registry_path)
 
     # ── Fetch live constituents ──────────────────────────────────────────
@@ -290,7 +288,7 @@ def main(argv: list[str] | None = None) -> None:
                 if not status.active:
                     log.info("DELISTED: %s (delisted_utc=%s)", ticker, status.delisted_utc)
                     registry.mark_delisted(ticker, delisted_at=status.delisted_utc)
-                    lake = _DATA_LAKE or (_WAREHOUSE_DIR / "data-lake" if _WAREHOUSE_DIR else data_lake_dir())
+                    lake = data_lake_dir()
                     _archive_delisted(ticker, lake)
     elif not args.skip_dead:
         log.info("MASSIVE_API_KEY not set — skipping dead-ticker check")

@@ -157,7 +157,7 @@ def test_body_file_honors_log_dir_override(tmp_path, monkeypatch):
         calls.append(cmd)
         return CompletedProcess(args=cmd, returncode=0)
 
-    monkeypatch.setattr("livewire_scripts.nightly_digest._LOG_DIR", wrong_log_dir)
+    monkeypatch.setenv("MDW_LOG_DIR", str(wrong_log_dir))
 
     rc = main(
         ["--run-date", "2026-07-02", "--email", "--log-dir", str(custom_log_dir), "--data-lake", str(tmp_path)],
