@@ -76,7 +76,7 @@ internal-disk only.
 # who is holding it right now (mini)
 lsof ~/market-warehouse/locks/lake-io.lock
 
-# what each lane waited for it, this run
+# what each lane waited for it, this run (only lanes that acquired it)
 python scripts/livewire_ops.py ledger query "select scope as lane, round(value) as waited_s \
   from measurements where name = 'lake_lock_wait_s' and measured_at >= current_date order by value desc"
 
@@ -123,8 +123,10 @@ drifts more than 2× from its declared budget.
 `lake_lock_wait_s` (global, 2340s) is the expected wait for the lake-io lock;
 `lake_lock_poll_s/daily` (1s) and `lake_lock_poll_s/intraday` (60s) are how often
 each job looks for it. `status` grades the declared wait against the 14-day p95
-of `measurements(name='lake_lock_wait_s')`, one row per lane per run, and reads
-UNKNOWN until those rows exist.
+of `measurements(name='lake_lock_wait_s')`, one row per lane that acquired the
+lock, and reads UNKNOWN until those rows exist. A lane that gave up at its
+budget emits no measurement — its `lane_results` row (`outcome='blocked'`,
+`blocker='lake_lock'`) is the record, and `status`'s `Lanes blocked` grades it.
 
 ### DuckDB catalog
 

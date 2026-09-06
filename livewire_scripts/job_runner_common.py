@@ -125,7 +125,9 @@ def lake_lock(
     Yields the seconds spent waiting, with the lock held, or yields None having
     taken nothing when `budget_s` elapsed without ever acquiring -- the caller
     then records the lane `outcome='blocked', blocker=LAKE_LOCK_BLOCKER` and
-    moves on. The wait is bounded on BOTH sides on purpose: a blocking flock
+    moves on. Only an acquired lock emits `lake_lock_wait_s`: a lane that gave
+    up never measured a wait *for the lock*, and counting the budget as one
+    would inflate the 14-day p95 `status` grades the declared value against. The wait is bounded on BOTH sides on purpose: a blocking flock
     cannot be bounded without threads or signals, and a daily job blocked
     forever behind a wedged 6h intraday phase loses a whole night in silence.
 
@@ -150,7 +152,6 @@ def lake_lock(
                 return
         waited = monotonic() - started
         if waited >= budget_s:
-            _emit_lake_lock_wait(lane, waited)
             yield None
             return
         sleep_fn(poll_s)

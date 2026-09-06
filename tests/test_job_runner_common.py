@@ -127,7 +127,7 @@ class TestTheLakeLock:
             {"scope": "corporate-actions", "value": 60.0}
         ]
 
-    def test_a_wait_past_the_budget_yields_none_and_still_records_the_wait(self):
+    def test_a_wait_past_the_budget_yields_none_and_records_no_measurement(self):
         from clients import ledger
         from clients.parquet_io import path_lock
         from livewire_scripts.job_runner_common import lake_lock
@@ -142,9 +142,10 @@ class TestTheLakeLock:
             with lake_lock("cboe", poll_s=30.0, budget_s=60.0, sleep_fn=_sleep, monotonic=lambda: now[0]) as waited:
                 assert waited is None
 
-        assert ledger.query("select scope, value from measurements where name = 'lake_lock_wait_s'") == [
-            {"scope": "cboe", "value": 60.0}
-        ]
+        # A lane that never held the lock did not measure a wait for it: the
+        # `blocked` lane row is the record, and a timeout row would drag the
+        # 14-day p95 `status` grades the declared wait against.
+        assert ledger.query("select scope, value from measurements where name = 'lake_lock_wait_s'") == []
 
     def test_the_lock_is_released_when_the_lane_body_raises(self):
         import pytest as _pytest
