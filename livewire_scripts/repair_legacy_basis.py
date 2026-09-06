@@ -28,6 +28,7 @@ from clients.parquet_io import write_json_atomic
 from clients.price_basis import prepare_ib_rows_for_publish
 from clients.seed_boundary import check_seed_boundary
 from clients.silver_continuity import check_adjusted_continuity
+from clients.source_evidence import sha256_file
 from clients.symbol_paths import encode_symbol
 from livewire_scripts.adjusted_history_sources import IBHistoryFetcher
 from livewire_scripts.paths import data_lake_dir
@@ -53,10 +54,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--dry-run", action="store_true", help="fetch, classify and self-check, but never write bronze")
     return parser.parse_args(list(argv) if argv is not None else None)
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def backup_symbol(bronze: BronzeClient, symbol: str, backup_dir: Path) -> dict:
@@ -197,7 +194,7 @@ def run(
     store = CorporateActionStore(root)
 
     audit = json.loads(args.audit_manifest.read_text())
-    audit_sha256 = _sha256(args.audit_manifest)
+    audit_sha256 = sha256_file(args.audit_manifest)
     manifest_root = audit.get("data_lake_root")
     # CLAUDE.md repair contract: reject a different active data-lake root before
     # mutation. A manifest with no root recorded cannot be checked → refuse it.

@@ -11,7 +11,6 @@ this manifest.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
@@ -25,6 +24,7 @@ from clients.parquet_io import write_json_atomic
 from clients.seed_boundary import classify_seed_boundary
 from clients.silver_continuity import ContinuityBreak, check_adjusted_continuity
 from clients.silver_window import find_breaks
+from clients.source_evidence import sha256_file
 from livewire_scripts.paths import data_lake_dir
 
 SCHEMA_VERSION = 1
@@ -43,16 +43,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _classify(bronze: BronzeClient, store: CorporateActionStore, symbol: str, as_of: date, threshold: float) -> dict:
     path = bronze.symbol_path(symbol)
     entry: dict = {
         "symbol": symbol,
         "path": str(path),
-        "source_sha256": _sha256(path) if path.is_file() else None,
+        "source_sha256": sha256_file(path) if path.is_file() else None,
         "klass": "clean",
         "max_ratio": None,
         "break_date": None,

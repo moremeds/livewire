@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from collections.abc import Callable, Sequence
@@ -29,6 +28,7 @@ from clients.corporate_action_store import CorporateActionStore
 from clients.ib_client import IBClient
 from clients.massive_client import MassiveClient
 from clients.parquet_io import write_json_atomic
+from clients.source_evidence import sha256_file
 from clients.symbol_paths import decode_symbol, encode_symbol
 from livewire_scripts.adjusted_history_sources import (
     IBHistoryFetcher,
@@ -84,12 +84,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _input_hashes(paths: dict[str, Path]) -> dict[str, str | None]:
-    return {name: _sha256(path) if path.is_file() else None for name, path in paths.items()}
+    return {name: sha256_file(path) if path.is_file() else None for name, path in paths.items()}
 
 
 def _jsonable(value: Any) -> Any:
@@ -320,7 +316,7 @@ def run(
                     and checkpoint
                     and checkpoint.get("input_hashes") == before
                     and detail_path.is_file()
-                    and checkpoint.get("detail_sha256") == _sha256(detail_path)
+                    and checkpoint.get("detail_sha256") == sha256_file(detail_path)
                 ):
                     results.append(json.loads(detail_path.read_text(encoding="utf-8")))
                     continue
@@ -499,7 +495,7 @@ def run(
                 write_json_atomic(detail_path, _jsonable(detail))
                 cursor["completed"][symbol] = {
                     "input_hashes": before,
-                    "detail_sha256": _sha256(detail_path),
+                    "detail_sha256": sha256_file(detail_path),
                     "outcome": detail["outcome"],
                 }
                 write_json_atomic(cursor_path, _jsonable(cursor))

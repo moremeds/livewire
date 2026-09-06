@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import json
 import os
 import time
@@ -16,31 +15,13 @@ from zoneinfo import ZoneInfo
 from clients.index_membership_store import IndexMembershipStore
 from clients.parquet_io import fsync_directory
 from clients.security_master import SecurityMaster
-from clients.source_evidence import SourceEvidenceStore
+from clients.source_evidence import SourceEvidenceStore, canonical_bytes, digest_bytes, jsonable
 from clients.trading_calendar import (
     XNYS_SESSION_POLICY,
     is_trading_day,
     previous_trading_day,
     session_close_time,
 )
-
-
-def _canonical(value: object) -> bytes:
-    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
-
-
-def _digest(payload: bytes) -> str:
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, datetime):
-        return value.astimezone(UTC).isoformat()
-    if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
-    return value
 
 
 def daily_bar_cutoff(as_of: datetime) -> date:
@@ -94,7 +75,7 @@ class PitSilverRevisionPublisher:
         if as_of.tzinfo is None or as_of.utcoffset() is None:
             raise ValueError("as-of must be timezone-aware")
         core = self._build_core(index_id, membership_revision, as_of.astimezone(UTC), actions_receipt)
-        input_hash = f"sha256:{_digest(_canonical(core))}"
+        input_hash = f"sha256:{digest_bytes(canonical_bytes(core))}"
         self.silver_root.mkdir(parents=True, exist_ok=True)
         with self.lock.open("a", encoding="utf-8") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
@@ -109,8 +90,8 @@ class PitSilverRevisionPublisher:
                 status: Literal["PROVEN", "PARTIAL"] = (
                     "PROVEN" if all(item["state"] == "VERIFIED" for item in actions_receipt["symbols"]) else "PARTIAL"
                 )
-                actions_payload = _canonical(actions_receipt)
-                actions_hash = _digest(actions_payload)
+                actions_payload = canonical_bytes(actions_receipt)
+                actions_hash = digest_bytes(actions_payload)
                 evidence_dir = self.revisions / "evidence"
                 evidence_path = evidence_dir / f"actions-{actions_hash}.json"
                 evidence_existed = evidence_path.exists()
@@ -135,7 +116,7 @@ class PitSilverRevisionPublisher:
                 evidence_dir.mkdir(parents=True, exist_ok=True)
                 self._write_immutable(evidence_path, actions_payload)
                 immutable = self.revisions / f"revision={revision}.json"
-                payload = _canonical(manifest)
+                payload = canonical_bytes(manifest)
                 try:
                     self._write_immutable(immutable, payload)
                     self._replace_current(payload)
@@ -182,7 +163,7 @@ class PitSilverRevisionPublisher:
         if not action_path.is_relative_to(self.silver_root.resolve()):
             raise ValueError("corporate-action receipt escapes Silver root")
         action_bytes = action_path.read_bytes()
-        if _digest(action_bytes) != action_input["sha256"]:
+        if digest_bytes(action_bytes) != action_input["sha256"]:
             raise ValueError("corporate-action receipt artifact hash mismatch")
         actions_receipt = json.loads(action_bytes)
         if action_input.get("receipt_hash") != actions_receipt.get("receiptHash"):
@@ -195,7 +176,7 @@ class PitSilverRevisionPublisher:
             security_revision=int(payload["inputs"]["security_master"]["revision"]),
             silver_revision=int(payload["silver_revision"]),
         )
-        expected = f"sha256:{_digest(_canonical(core))}"
+        expected = f"sha256:{digest_bytes(canonical_bytes(core))}"
         if payload["input_hash"] != expected:
             raise ValueError("PIT Silver input hash mismatch")
         if payload["members"] != core["members"]:
@@ -228,7 +209,7 @@ class PitSilverRevisionPublisher:
             "silverRevision": int(payload["silver_revision"]),
             "status": payload["status"],
             "inputHash": expected,
-            "manifestHash": f"sha256:{_digest(path.read_bytes())}",
+            "manifestHash": f"sha256:{digest_bytes(path.read_bytes())}",
             "manifestPath": str(immutable),
             "changedPaths": [],
         }
@@ -245,7 +226,7 @@ class PitSilverRevisionPublisher:
     ) -> dict[str, Any]:
         receipt = dict(actions_receipt)
         claimed_receipt_hash = str(receipt.pop("receiptHash", ""))
-        actual_receipt_hash = f"sha256:{_digest(_canonical(receipt))}"
+        actual_receipt_hash = f"sha256:{digest_bytes(canonical_bytes(receipt))}"
         if claimed_receipt_hash != actual_receipt_hash:
             raise ValueError("corporate-action receipt hash mismatch")
         if actions_receipt.get("mutated") is not False:
@@ -256,7 +237,7 @@ class PitSilverRevisionPublisher:
 
         def verify(ref: str, digest: str) -> bool:
             try:
-                return _digest(evidence.read(ref)) == digest
+                return digest_bytes(evidence.read(ref)) == digest
             except (OSError, ValueError):
                 return False
 
@@ -404,14 +385,14 @@ class PitSilverRevisionPublisher:
             path = (self.silver_root / artifact["path"]).resolve()
             if not path.is_relative_to(self.silver_root.resolve()):
                 raise ValueError("Silver artifact path escapes Silver root")
-            if not path.is_file() or _digest(path.read_bytes()) != artifact["sha256"]:
+            if not path.is_file() or digest_bytes(path.read_bytes()) != artifact["sha256"]:
                 raise ValueError("Silver artifact hash mismatch")
             silver_artifacts.append(dict(artifact))
 
         security_path = self.root / "security_master" / "events.parquet"
         membership_path = self.root / "index_membership" / index_id / "events.parquet"
-        membership_snapshot = _canonical([_jsonable(asdict(event)) for event in prefix])
-        security_snapshot = _canonical([_jsonable(asdict(event)) for event in identity_prefix])
+        membership_snapshot = canonical_bytes([jsonable(asdict(event)) for event in prefix])
+        security_snapshot = canonical_bytes([jsonable(asdict(event)) for event in identity_prefix])
         return {
             "policy_version": "pit-silver-v1",
             "as_of": as_of.isoformat(),
@@ -425,20 +406,20 @@ class PitSilverRevisionPublisher:
             "inputs": {
                 "silver_manifest": {
                     "path": str(immutable.relative_to(self.silver_root)),
-                    "sha256": _digest(immutable.read_bytes()),
+                    "sha256": digest_bytes(immutable.read_bytes()),
                 },
                 "silver_artifacts": silver_artifacts,
                 "security_master": {
                     "path": str(security_path.relative_to(self.root)),
                     "revision": security_revision,
                     "revision_semantics": "append-order-prefix",
-                    "sha256": _digest(security_snapshot),
+                    "sha256": digest_bytes(security_snapshot),
                 },
                 "membership": {
                     "path": str(membership_path.relative_to(self.root)),
                     "revision": membership_revision,
                     "revision_semantics": "append-order-prefix",
-                    "sha256": _digest(membership_snapshot),
+                    "sha256": digest_bytes(membership_snapshot),
                 },
                 "corporate_action_receipt_hash": claimed_receipt_hash,
             },

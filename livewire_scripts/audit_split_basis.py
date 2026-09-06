@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from collections.abc import Sequence
 from dataclasses import asdict, replace
@@ -16,6 +15,7 @@ from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.parquet_io import write_json_atomic
 from clients.price_basis import classify_split_events, normalize_ib_rows
+from clients.source_evidence import sha256_file
 from clients.split_basis_evidence import (
     classify_reference_basis,
     classify_split_from_reference,
@@ -36,10 +36,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--data-lake-root", type=Path)
     parser.add_argument("--evidence-dir", type=Path)
     return parser.parse_args(list(argv) if argv is not None else None)
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _classification_payload(item) -> dict:
@@ -84,7 +80,7 @@ def run(
                     candidate_evidence.get("status") == "resolved"
                     and candidate_evidence.get("symbol") == symbol
                     and Path(candidate_evidence.get("data_lake_root", "")).resolve() == root
-                    and candidate_evidence.get("source_sha256") == _sha256(path)
+                    and candidate_evidence.get("source_sha256") == sha256_file(path)
                 ):
                     evidence = candidate_evidence
                     evidence_path = candidate
@@ -139,7 +135,7 @@ def run(
                 )
             classifications = resolved
         if evidence_path and corrections_replayed and all(item.treatment != "ambiguous" for item in classifications):
-            resolution_evidence_sha256 = _sha256(evidence_path)
+            resolution_evidence_sha256 = sha256_file(evidence_path)
         eligible = all(item.treatment != "ambiguous" for item in classifications)
         replacements = []
         error = None
@@ -169,7 +165,7 @@ def run(
                 "path": str(path),
                 "replacements": replacements,
                 "resolution_evidence_sha256": resolution_evidence_sha256,
-                "source_sha256": _sha256(path),
+                "source_sha256": sha256_file(path),
                 "symbol": symbol,
             }
         )

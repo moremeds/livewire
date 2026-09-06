@@ -11,7 +11,6 @@ rate-limit stall resumes instead of re-spending the whole population.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from collections.abc import Callable, Sequence
@@ -22,6 +21,7 @@ from typing import Any
 from clients.break_triage import DEFAULT_TOLERANCE, RetryableProviderError, triage_break
 from clients.massive_client import MassiveAuthError, MassiveClient
 from clients.parquet_io import write_json_atomic
+from clients.source_evidence import sha256_file
 from livewire_scripts.paths import data_lake_dir
 
 SCHEMA_VERSION = 1
@@ -40,10 +40,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tolerance", type=float, default=DEFAULT_TOLERANCE)
     parser.add_argument("--resume", action="store_true")
     return parser.parse_args(list(argv) if argv is not None else None)
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _key(candidate: dict) -> str:
@@ -94,7 +90,7 @@ def run(
     root = Path(data_lake_root) if data_lake_root is not None else (args.data_lake_root or data_lake_dir())
     as_of = as_of_date or datetime.now(UTC).date()
     audit = json.loads(args.audit_manifest.read_text())
-    audit_sha256 = _sha256(args.audit_manifest)
+    audit_sha256 = sha256_file(args.audit_manifest)
     # Same guard as repair: a manifest audited against another lake must never
     # decide what this lake trims.
     manifest_root = audit.get("data_lake_root")

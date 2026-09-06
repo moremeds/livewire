@@ -22,7 +22,7 @@ import pyarrow.parquet as pq
 
 from clients.parquet_io import fsync_directory, symbol_lock, validate_parquet_file
 from clients.security_master import SecurityIdentityEvent, SecurityMaster
-from clients.source_evidence import SourceEvidenceStore
+from clients.source_evidence import SourceEvidenceStore, canonical_bytes, digest_bytes, jsonable
 from clients.symbol_ids import stable_symbol_id
 from clients.symbol_paths import encode_symbol
 from clients.trading_calendar import XNYS_SESSION_POLICY, session_close_time, trading_dates_in_range
@@ -34,24 +34,6 @@ _HASH = re.compile(r"^[0-9a-f]{64}$")
 _SCOPE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _UTC_ISO = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 _OPERATIONS = {"daily-merge"}
-
-
-def _canonical(value: object) -> bytes:
-    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
-
-
-def _digest(payload: bytes) -> str:
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, datetime):
-        return value.astimezone(UTC).isoformat()
-    if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
-    return value
 
 
 @dataclass(frozen=True)
@@ -254,7 +236,7 @@ class ShepherdRepair:
             candidate_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             candidate = candidate_dir / f"{hashlib.sha256(prior.path.encode()).hexdigest()}.parquet"
             self._write_parquet_candidate(candidate, candidate_table)
-            candidate_hash = _digest(candidate.read_bytes())
+            candidate_hash = digest_bytes(candidate.read_bytes())
             if candidate.stat().st_size > loaded.manifest.max_bytes:
                 candidate.unlink(missing_ok=True)
                 raise ValueError("candidate exceeds manifest byte budget")
@@ -330,7 +312,7 @@ class ShepherdRepair:
                     self._verify_identity(loaded.manifest)
                     self._verify_candidate_path(candidate, state, candidate_hash)
                     candidate_bytes = candidate.read_bytes()
-                    if _digest(candidate_bytes) != candidate_hash:
+                    if digest_bytes(candidate_bytes) != candidate_hash:
                         raise ValueError("candidate artifact changed before publish")
                     self._write_immutable(backup, target.read_bytes())
                     self.failpoint("after-backup")
@@ -396,7 +378,7 @@ class ShepherdRepair:
                     backup,
                     loaded.manifest.source_evidence[0],
                 )
-                expected_hash = self._table_digest(expected)
+                expected_hash = self._tabledigest_bytes(expected)
                 if expected_hash != artifact["publishedSha256"]:
                     raise ValueError("published target does not replay from prior bytes and source evidence")
                 verified_at = (now or datetime.now(UTC)).astimezone(UTC)
@@ -494,7 +476,7 @@ class ShepherdRepair:
             backup = Path(artifact["backupPath"])
             self._verify_state_path(backup, state, artifact["priorSha256"])
             backup_bytes = backup.read_bytes()
-            if _digest(backup_bytes) != artifact["priorSha256"]:
+            if digest_bytes(backup_bytes) != artifact["priorSha256"]:
                 raise ValueError("rollback backup changed before use")
             with symbol_lock(target):
                 if receipt_path.exists():
@@ -678,7 +660,7 @@ class ShepherdRepair:
         if payload["symbolValidTo"] is not None:
             scope["symbolValidTo"] = payload["symbolValidTo"]
         encoded_scope = json.dumps(scope, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-        expected_scope_hash = f"sha256:{_digest(encoded_scope)}"
+        expected_scope_hash = f"sha256:{digest_bytes(encoded_scope)}"
         if payload["scopeHash"] != expected_scope_hash:
             raise ValueError("repair scope hash does not match the canonical security interval")
         if work_unit_id != f"lws-{expected_scope_hash[len('sha256:') :][:32]}":
@@ -724,7 +706,7 @@ class ShepherdRepair:
             for target, item in zip(target_paths, prior, strict=True):
                 if self._path_hash(target) != item.sha256:
                     raise ValueError("prior artifact hash does not match canonical target")
-        return LoadedManifest(manifest, path, _digest(raw), target_paths)
+        return LoadedManifest(manifest, path, digest_bytes(raw), target_paths)
 
     def _verify_source_evidence(self, sources: tuple[HashedRef, ...]) -> None:
         for source in sources:
@@ -732,7 +714,7 @@ class ShepherdRepair:
                 source_bytes = self.evidence.read(source.ref)
             except (OSError, ValueError) as exc:
                 raise ValueError("source evidence is missing or corrupt") from exc
-            if _digest(source_bytes) != source.sha256:
+            if digest_bytes(source_bytes) != source.sha256:
                 raise ValueError("source evidence hash mismatch")
 
     def _verify_identity(self, manifest: RepairManifest) -> dict[str, Any]:
@@ -741,8 +723,8 @@ class ShepherdRepair:
         if manifest.security_master_revision > len(all_events):
             raise ValueError("repair security-master revision exceeds the local append log")
         prefix = all_events[: manifest.security_master_revision]
-        snapshot = _canonical([_jsonable(asdict(event)) for event in prefix])
-        if _digest(snapshot) != manifest.security_master_sha256:
+        snapshot = canonical_bytes([jsonable(asdict(event)) for event in prefix])
+        if digest_bytes(snapshot) != manifest.security_master_sha256:
             raise ValueError("repair security-master append-prefix hash mismatch")
         events = [event for event in prefix if event.known_at <= manifest.identity_as_of]
         superseded = {event.supersedes for event in events if event.supersedes is not None}
@@ -797,7 +779,7 @@ class ShepherdRepair:
             "securityMasterSha256": manifest.security_master_sha256,
             "eventIds": sorted(used),
             "eventHashes": [
-                _digest(_canonical(_jsonable(asdict(event))))
+                digest_bytes(canonical_bytes(jsonable(asdict(event))))
                 for event in sorted(used.values(), key=lambda item: item.event_id)
             ],
             "sourceEvidence": evidence,
@@ -903,7 +885,7 @@ class ShepherdRepair:
     @staticmethod
     def _receipt(payload: dict[str, Any]) -> dict[str, Any]:
         receipt = dict(payload)
-        receipt["receiptHash"] = f"sha256:{_digest(_canonical(receipt))}"
+        receipt["receiptHash"] = f"sha256:{digest_bytes(canonical_bytes(receipt))}"
         return receipt
 
     def _load_receipt(self, path: Path, loaded: LoadedManifest, operation: str) -> dict[str, Any]:
@@ -922,7 +904,7 @@ class ShepherdRepair:
             raise ValueError("repair receipt path is not the canonical operation receipt")
         receipt = json.loads(path.read_bytes())
         claimed = str(receipt.pop("receiptHash", ""))
-        actual = f"sha256:{_digest(_canonical(receipt))}"
+        actual = f"sha256:{digest_bytes(canonical_bytes(receipt))}"
         receipt["receiptHash"] = claimed
         if claimed != actual:
             raise ValueError("repair receipt hash mismatch")
@@ -936,7 +918,7 @@ class ShepherdRepair:
 
     @staticmethod
     def _path_hash(path: Path) -> str | None:
-        return _digest(path.read_bytes()) if path.is_file() else None
+        return digest_bytes(path.read_bytes()) if path.is_file() else None
 
     def _verify_candidate_path(self, path: Path, state: Path, digest: str) -> None:
         if not path.resolve().is_relative_to((state / "candidates").resolve()):
@@ -995,10 +977,10 @@ class ShepherdRepair:
             temp.unlink(missing_ok=True)
 
     def _write_receipt(self, path: Path, receipt: dict[str, Any]) -> None:
-        self._write_immutable(path, _canonical(receipt))
+        self._write_immutable(path, canonical_bytes(receipt))
 
     @staticmethod
-    def _table_digest(table: pa.Table) -> str:
+    def _tabledigest_bytes(table: pa.Table) -> str:
         sink = pa.BufferOutputStream()
         pq.write_table(table, sink, compression="zstd", compression_level=3)
-        return _digest(sink.getvalue().to_pybytes())
+        return digest_bytes(sink.getvalue().to_pybytes())
