@@ -20,7 +20,7 @@ from pathlib import Path
 from clients import constants, ledger
 from clients.constants import LANE_ORDER
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
-from livewire_scripts.job_runner_common import AlertRequest, append_log
+from livewire_scripts.job_runner_common import LAKE_LOCK_BLOCKER, AlertRequest, append_log, lake_lock
 from livewire_scripts.job_runner_common import build_alert_command as _build_alert_command
 from livewire_scripts.job_runner_common import build_log_file as _build_log_file
 from livewire_scripts.job_runner_common import utc_now as _utc_now
@@ -51,6 +51,9 @@ FX_CATCHUP_DAYS = 7
 
 LANE_BUDGET_S: dict[str, float] = {lane: constants.declared(f"lane_budget_s/{lane}") for lane in LANE_ORDER}
 DEFAULT_LANE_BUDGET_S = constants.declared("lane_budget_s/default")
+#: How often this job looks for a free lake-io lock. 1s: the daily job is the
+#: priority holder and takes a freed lock at once (spec section 3).
+LAKE_LOCK_POLL_S = constants.declared("lake_lock_poll_s/daily")
 _OUTCOME_BY_EXIT = {0: "done", TIMEOUT_EXIT_CODE: "timeout", GATEWAY_DOWN_EXIT_CODE: "blocked"}
 _EPOCH = date(1970, 1, 1)
 
@@ -554,81 +557,105 @@ def run_with_retries(
         outcome=None,
         log_file=log_file,
     )
-    clock = time.monotonic()
-    lane_log_offset = log_file.stat().st_size
-
-    final_exit_code = 1
-    for attempt in range(1, config.max_attempts + 1):
-        append_log(
-            log_file,
-            f"=== Attempt {attempt}/{config.max_attempts} {now_fn():%Y-%m-%dT%H:%M:%SZ} ===",
-        )
-        remaining = budget if attempt == 1 else max(0.0, budget - (time.monotonic() - clock))
-        if remaining == 0:
-            result = subprocess.CompletedProcess(list(command), TIMEOUT_EXIT_CODE)
-        else:
-            result = run_daily_update_attempt(command, log_file, env=env, runner=runner, timeout=remaining)
-        final_exit_code = result.returncode
-
-        if result.returncode == GATEWAY_DOWN_EXIT_CODE:
-            # A down Gateway means 2FA, IBKR maintenance, or a session
-            # conflict. Retrying burns 3x the retry delay and never helps, and
-            # this is not a data failure — the caller keeps it out of the gate
-            # for lanes that do not read IB.
+    with lake_lock(done_scope, poll_s=LAKE_LOCK_POLL_S, budget_s=budget) as waited:
+        if waited is None:
+            # Deferred, not failed: another process held the lake for this
+            # lane's whole budget. The ledger row is the verdict; exit 0 keeps
+            # a correctly-deferred lane from failing the run (spec section 1).
             ended_at = now_fn()
             append_log(
                 log_file,
-                f"=== Skipped {done_scope} {ended_at:%Y-%m-%dT%H:%M:%SZ} (IB Gateway unreachable) ===",
+                f"=== Blocked {done_scope} {ended_at:%Y-%m-%dT%H:%M:%SZ} "
+                f"(lake-io lock held for its whole {budget:.0f}s budget) ===",
             )
-            return _finish_lane(
-                done_scope, log_file, started_at, clock, GATEWAY_DOWN_EXIT_CODE, ended_at, lane_log_offset
+            _emit_lane(
+                done_scope,
+                started=started_at,
+                ended=ended_at,
+                exit_code=None,
+                elapsed_s=0.0,
+                outcome="blocked",
+                blocker=LAKE_LOCK_BLOCKER,
+                log_file=log_file,
             )
+            return 0
+        clock = time.monotonic()
+        lane_log_offset = log_file.stat().st_size
 
-        if result.returncode == TIMEOUT_EXIT_CODE:
-            # `break`, NOT `return`: the only send_failure_alert call sits after
-            # this loop, so an early return would make the timeout the one
-            # failure mode that never pages — in the mechanism whose whole
-            # purpose is to page. A wedge is also not transient; retrying just
-            # wastes the rest of the run budget for nothing.
+        final_exit_code = 1
+        for attempt in range(1, config.max_attempts + 1):
             append_log(
                 log_file,
-                f"=== Timed out {done_scope} {now_fn():%Y-%m-%dT%H:%M:%SZ} (no retry) ===",
+                f"=== Attempt {attempt}/{config.max_attempts} {now_fn():%Y-%m-%dT%H:%M:%SZ} ===",
             )
-            final_exit_code = TIMEOUT_EXIT_CODE
-            break
+            remaining = budget if attempt == 1 else max(0.0, budget - (time.monotonic() - clock))
+            if remaining == 0:
+                result = subprocess.CompletedProcess(list(command), TIMEOUT_EXIT_CODE)
+            else:
+                result = run_daily_update_attempt(command, log_file, env=env, runner=runner, timeout=remaining)
+            final_exit_code = result.returncode
 
-        if result.returncode == 0:
-            ended_at = now_fn()
+            if result.returncode == GATEWAY_DOWN_EXIT_CODE:
+                # A down Gateway means 2FA, IBKR maintenance, or a session
+                # conflict. Retrying burns 3x the retry delay and never helps, and
+                # this is not a data failure — the caller keeps it out of the gate
+                # for lanes that do not read IB.
+                ended_at = now_fn()
+                append_log(
+                    log_file,
+                    f"=== Skipped {done_scope} {ended_at:%Y-%m-%dT%H:%M:%SZ} (IB Gateway unreachable) ===",
+                )
+                return _finish_lane(
+                    done_scope, log_file, started_at, clock, GATEWAY_DOWN_EXIT_CODE, ended_at, lane_log_offset
+                )
+
+            if result.returncode == TIMEOUT_EXIT_CODE:
+                # `break`, NOT `return`: the only send_failure_alert call sits after
+                # this loop, so an early return would make the timeout the one
+                # failure mode that never pages — in the mechanism whose whole
+                # purpose is to page. A wedge is also not transient; retrying just
+                # wastes the rest of the run budget for nothing.
+                append_log(
+                    log_file,
+                    f"=== Timed out {done_scope} {now_fn():%Y-%m-%dT%H:%M:%SZ} (no retry) ===",
+                )
+                final_exit_code = TIMEOUT_EXIT_CODE
+                break
+
+            if result.returncode == 0:
+                ended_at = now_fn()
+                append_log(
+                    log_file,
+                    (
+                        f"=== Done {done_scope} {ended_at:%Y-%m-%dT%H:%M:%SZ} (attempt {attempt}/{config.max_attempts}) ==="
+                    ),
+                )
+                return _finish_lane(done_scope, log_file, started_at, clock, 0, ended_at, lane_log_offset)
+
             append_log(
                 log_file,
-                (f"=== Done {done_scope} {ended_at:%Y-%m-%dT%H:%M:%SZ} (attempt {attempt}/{config.max_attempts}) ==="),
+                (
+                    "=== Attempt failed "
+                    f"{now_fn():%Y-%m-%dT%H:%M:%SZ} "
+                    f"(attempt {attempt}/{config.max_attempts}, exit_code={result.returncode}) ==="
+                ),
             )
-            return _finish_lane(done_scope, log_file, started_at, clock, 0, ended_at, lane_log_offset)
 
+            if attempt < config.max_attempts:
+                append_log(
+                    log_file,
+                    f"Retrying in {config.retry_delay_seconds} seconds...",
+                )
+                sleep_fn(config.retry_delay_seconds)
+
+        ended_at = now_fn()
         append_log(
             log_file,
-            (
-                "=== Attempt failed "
-                f"{now_fn():%Y-%m-%dT%H:%M:%SZ} "
-                f"(attempt {attempt}/{config.max_attempts}, exit_code={result.returncode}) ==="
-            ),
+            (f"=== Failed {ended_at:%Y-%m-%dT%H:%M:%SZ} after {config.max_attempts} attempt(s) ==="),
         )
 
-        if attempt < config.max_attempts:
-            append_log(
-                log_file,
-                f"Retrying in {config.retry_delay_seconds} seconds...",
-            )
-            sleep_fn(config.retry_delay_seconds)
-
-    ended_at = now_fn()
-    append_log(
-        log_file,
-        (f"=== Failed {ended_at:%Y-%m-%dT%H:%M:%SZ} after {config.max_attempts} attempt(s) ==="),
-    )
-
-    _page_failure(config, log_file, final_exit_code, attempts=config.max_attempts, env=env)
-    return _finish_lane(done_scope, log_file, started_at, clock, final_exit_code, ended_at, lane_log_offset)
+        _page_failure(config, log_file, final_exit_code, attempts=config.max_attempts, env=env)
+        return _finish_lane(done_scope, log_file, started_at, clock, final_exit_code, ended_at, lane_log_offset)
 
 
 def _finish_lane(done_scope, log_file, started_at, clock, exit_code, ended_at, log_offset=0) -> int:
@@ -760,36 +787,58 @@ def _run_scheduled_lane(
         log_file=log_file,
     )
     budget = LANE_BUDGET_S.get(done_scope, DEFAULT_LANE_BUDGET_S)
-    clock = time.monotonic()
-    lane_log_offset = log_file.stat().st_size
-    result = run_daily_update_attempt(command, log_file, env=env, runner=runner, timeout=budget)
-    ended_at = now_fn()
-    _emit_lane(
-        done_scope,
-        started=started_at,
-        ended=ended_at,
-        exit_code=result.returncode,
-        elapsed_s=time.monotonic() - clock,
-        outcome=_OUTCOME_BY_EXIT.get(result.returncode, "failed"),
-        blocker="ib_unreachable" if result.returncode == GATEWAY_DOWN_EXIT_CODE else None,
-        log_file=log_file,
-    )
-    _emit_last_session(done_scope, _last_session_from_log(log_file, lane_log_offset))
-    if result.returncode == 0:
-        append_log(log_file, f"=== Done {done_scope} {ended_at:%Y-%m-%dT%H:%M:%SZ} ===")
-        return result.returncode
+    with lake_lock(done_scope, poll_s=LAKE_LOCK_POLL_S, budget_s=budget) as waited:
+        if waited is None:
+            # Deferred, not failed: another process held the lake for this
+            # lane's whole budget. The ledger row is the verdict; exit 0 keeps
+            # a correctly-deferred lane from failing the run (spec section 1).
+            ended_at = now_fn()
+            append_log(
+                log_file,
+                f"=== Blocked {done_scope} {ended_at:%Y-%m-%dT%H:%M:%SZ} "
+                f"(lake-io lock held for its whole {budget:.0f}s budget) ===",
+            )
+            _emit_lane(
+                done_scope,
+                started=started_at,
+                ended=ended_at,
+                exit_code=None,
+                elapsed_s=0.0,
+                outcome="blocked",
+                blocker=LAKE_LOCK_BLOCKER,
+                log_file=log_file,
+            )
+            return 0
+        clock = time.monotonic()
+        lane_log_offset = log_file.stat().st_size
+        result = run_daily_update_attempt(command, log_file, env=env, runner=runner, timeout=budget)
+        ended_at = now_fn()
+        _emit_lane(
+            done_scope,
+            started=started_at,
+            ended=ended_at,
+            exit_code=result.returncode,
+            elapsed_s=time.monotonic() - clock,
+            outcome=_OUTCOME_BY_EXIT.get(result.returncode, "failed"),
+            blocker="ib_unreachable" if result.returncode == GATEWAY_DOWN_EXIT_CODE else None,
+            log_file=log_file,
+        )
+        _emit_last_session(done_scope, _last_session_from_log(log_file, lane_log_offset))
+        if result.returncode == 0:
+            append_log(log_file, f"=== Done {done_scope} {ended_at:%Y-%m-%dT%H:%M:%SZ} ===")
+            return result.returncode
 
-    append_log(
-        log_file,
-        f"=== {label} Failed {ended_at:%Y-%m-%dT%H:%M:%SZ} (exit_code={result.returncode}) ===",
-    )
-    # This function had no alert path at all, so a corporate-actions, CBOE, FX
-    # or Silver failure was visible only in a log nobody reads — which is
-    # exactly what happened to the 2026-07-28 corporate-action wedge. A down
-    # Gateway stays silent: degraded is not failed.
-    if result.returncode != GATEWAY_DOWN_EXIT_CODE:
-        _page_failure(config, log_file, result.returncode, attempts=None, env=env)
-    return result.returncode
+        append_log(
+            log_file,
+            f"=== {label} Failed {ended_at:%Y-%m-%dT%H:%M:%SZ} (exit_code={result.returncode}) ===",
+        )
+        # This function had no alert path at all, so a corporate-actions, CBOE, FX
+        # or Silver failure was visible only in a log nobody reads — which is
+        # exactly what happened to the 2026-07-28 corporate-action wedge. A down
+        # Gateway stays silent: degraded is not failed.
+        if result.returncode != GATEWAY_DOWN_EXIT_CODE:
+            _page_failure(config, log_file, result.returncode, attempts=None, env=env)
+        return result.returncode
 
 
 def build_fx_command(config: RunnerConfig) -> list[str]:
