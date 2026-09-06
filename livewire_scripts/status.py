@@ -112,6 +112,12 @@ CHECKS: list[tuple[str, str]] = [
         ")",
     ),
     (
+        "Lanes blocked",
+        "select 'WARN' as verdict, lane, blocker from lane_results "
+        "where run_id = '$run' and outcome = 'blocked' and blocker = 'lake_lock' "
+        "order by lane",
+    ),
+    (
         "Corporate-action progress",
         "select 'OK' as verdict, "
         "max(case when name = 'progress' then value end) as symbols, "
@@ -211,14 +217,14 @@ CHECKS: list[tuple[str, str]] = [
         "when declared_value > 2 * measured_p95 or measured_p95 > 2 * declared_value "
         "then 'WARN' else 'OK' end as verdict, "
         "name, scope, declared_value, measured_p95 from ("
-        "  select name, scope, "
+        "  select name, case when name = 'lake_lock_wait_s' then '' else scope end as scope, "
         "    arg_max(value, measured_at) filter (where source = 'declared') as declared_value, "
         "    quantile_cont(value, 0.95) filter (where source = 'measured') as measured_p95, "
         "    count(*) filter (where source = 'measured') as _n "
         "  from measurements "
         "  where measured_at >= today() - interval 14 day "
-        "    and name = 'lane_budget_s' and scope <> 'default' "
-        "  group by name, scope"
+        "    and ((name = 'lane_budget_s' and scope <> 'default') or name = 'lake_lock_wait_s') "
+        "  group by all"
         ") "
         "where declared_value is not null "
         "order by case when _n = 0 then 1 "
@@ -229,6 +235,7 @@ CHECKS: list[tuple[str, str]] = [
 
 _EMPTY_IS_OK = {
     "Undelivered alerts",
+    "Lanes blocked",
     "Lanes within budget",
     "Daily update finished",
     "Intraday catch-up finished",
@@ -248,6 +255,10 @@ _FIXES = {
     "Lanes terminal": (
         "python scripts/livewire_ops.py ledger query \"select lane, outcome from lane_results where run_id = '$run'\""
     ),
+    "Lanes blocked": (
+        'python scripts/livewire_ops.py ledger query "select scope, value from measurements '
+        "where name = 'lake_lock_wait_s' order by value desc\"   # who held the lake, and for how long"
+    ),
     "Silver advanced": _SILVER_FIX,
     "Post-success tail": "python scripts/livewire_quality.py digest --email",
     "Undelivered alerts": (
@@ -259,8 +270,8 @@ _FIXES = {
         "raise the lane's budget only after measuring it cold; see clients/constants.py (lane_budget_s/<lane>)"
     ),
     "Declared constants match reality": (
-        "re-measure the lane cold on the real lake, then change the value in "
-        "clients/constants.py (lane_budget_s/<lane>) -- not an LW_DECLARED_* override"
+        "re-measure cold on the real lake, then change the value in "
+        "clients/constants.py (lane_budget_s/<lane>, lake_lock_wait_s) -- not an LW_DECLARED_* override"
     ),
     "IB-only lanes behind": (
         "nc -z 127.0.0.1 4001 && echo up || echo down   # then 2FA by hand; rerun: "

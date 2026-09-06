@@ -77,7 +77,8 @@ def _lane(lane, **over):
 
 
 def _all_lanes(**overrides):
-    for lane in ("futures", "cmdty", "cboe", "fx", "corporate-actions", "equity", "silver"):
+    """Seeded from the declared lane order -- the last hand-written copy of it (spec section 7)."""
+    for lane in constants.LANE_ORDER:
         _lane(lane, **overrides.get(lane, {}))
 
 
@@ -151,6 +152,14 @@ def _seed_drift(name, scope, declared_value, measured_values, unit="s"):
     _declared_or_measured(name, scope, declared_value, "declared", unit=unit)
     for index, value in enumerate(measured_values):
         _declared_or_measured(name, scope, value, "measured", run_id=f"{RUN}-{index}", unit=unit)
+
+
+def _declared(name, scope, value):
+    _declared_or_measured(name, scope, value, "declared")
+
+
+def _measured(name, scope, value):
+    _declared_or_measured(name, scope, value, "measured")
 
 
 _DRIFT = "Declared constants match reality"
@@ -624,3 +633,59 @@ def test_the_ib_only_check_counts_exactly_the_ib_only_lanes():
 
     assert status._lane_values(constants.IB_ONLY_LANES) in sql
     assert f"count(last_session) < {len(constants.IB_ONLY_LANES)}" in sql
+
+
+def test_a_lane_deferred_by_the_lake_lock_is_a_warning():
+    _run()
+    _all_lanes()
+    _lane("corporate-actions", outcome="blocked", exit_code=None, blocker="lake_lock", elapsed_s=0.0)
+
+    section = _section("Lanes blocked")
+    assert section.verdict is status.Verdict.WARN
+    assert "corporate-actions" in " ".join(section.lines)
+
+
+def test_no_lane_deferred_by_the_lake_lock_is_ok_not_unknown():
+    """Zero rows is the good case here, so the name is in _EMPTY_IS_OK."""
+    _run()
+    _all_lanes()
+
+    assert _section("Lanes blocked").verdict is status.Verdict.OK
+
+
+def test_a_silver_lane_blocked_by_a_failed_prerequisite_is_not_a_lake_lock_row():
+    """`blocked` is also how a failed prerequisite reads; the blocker is the discriminator."""
+    _run()
+    _all_lanes()
+    _lane("silver", outcome="blocked", exit_code=None, blocker="equity", elapsed_s=0.0)
+
+    assert _section("Lanes blocked").verdict is status.Verdict.OK
+
+
+def test_the_declared_lake_lock_wait_is_graded_against_the_measured_p95():
+    _run()
+    _declared("lake_lock_wait_s", "", 2340.0)
+    for lane in ("corporate-actions", "equity"):
+        _measured("lake_lock_wait_s", lane, 30.0)
+
+    section = _section("Declared constants match reality")
+    assert section.verdict is status.Verdict.WARN
+    assert "lake_lock_wait_s" in " ".join(section.lines)
+
+
+def test_a_lake_lock_wait_near_the_declared_value_is_ok():
+    _run()
+    _declared("lake_lock_wait_s", "", 2340.0)
+    for lane in ("corporate-actions", "equity"):
+        _measured("lake_lock_wait_s", lane, 2000.0)
+
+    assert _section("Declared constants match reality").verdict is status.Verdict.OK
+
+
+def test_the_lane_budget_drift_check_still_works():
+    """Widening the filter must not stop it grading the thing it was written for."""
+    _run()
+    _declared("lane_budget_s", "corporate-actions", 10800.0)
+    _measured("lane_budget_s", "corporate-actions", 100.0)
+
+    assert _section("Declared constants match reality").verdict is status.Verdict.WARN
