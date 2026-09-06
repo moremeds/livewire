@@ -398,3 +398,15 @@ def build_report_for_test(snapshots, *, target_date: date, bronze_root: Path):
         by_asset={},
         by_timeframe={},
     )
+
+
+def test_declared_override_changes_the_thin_verdict(monkeypatch):
+    from livewire_scripts import warehouse_health_report as report
+
+    kwargs = dict(rows=100, stale_days=0, timeframe="1d", has_daily_snapshot=True)
+
+    assert report._status(coverage_ratio=0.96, **kwargs) == "ok"
+
+    monkeypatch.setenv("LW_DECLARED_COVERAGE_ALERT_THRESHOLD", "0.99")
+
+    assert report._status(coverage_ratio=0.96, **kwargs) == "thin"
