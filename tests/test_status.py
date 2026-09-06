@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import collections
+import importlib
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from clients import ledger
+from clients import constants, ledger
 from livewire_scripts import status
 from livewire_scripts.status import (
     _LAUNCHD_JOBS,
@@ -604,3 +605,22 @@ def test_launchctl_missing_is_unknown() -> None:
         raise FileNotFoundError("launchctl")
 
     assert _launchd_section(runner=_runner).verdict is Verdict.UNKNOWN
+
+
+def test_adding_a_lane_makes_it_appear_in_the_lanes_terminal_check(monkeypatch):
+    """The graded surface enumerates LANE_ORDER, not its own copy of the list."""
+    monkeypatch.setattr(constants, "LANE_ORDER", (*constants.LANE_ORDER, "options"))
+    try:
+        reloaded = importlib.reload(status)
+        sql = dict(reloaded.CHECKS)["Lanes terminal"]
+        assert "('options')" in sql
+    finally:
+        monkeypatch.undo()
+        importlib.reload(status)
+
+
+def test_the_ib_only_check_counts_exactly_the_ib_only_lanes():
+    sql = dict(status.CHECKS)["IB-only lanes behind"]
+
+    assert status._lane_values(constants.IB_ONLY_LANES) in sql
+    assert f"count(last_session) < {len(constants.IB_ONLY_LANES)}" in sql

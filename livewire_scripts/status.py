@@ -66,6 +66,11 @@ class Section:
     fix: str | None = None
 
 
+def _lane_values(lanes: tuple[str, ...]) -> str:
+    """Render a lane tuple as a DuckDB VALUES list: `('futures'), ('cmdty')`."""
+    return ", ".join(f"('{lane}')" for lane in lanes)
+
+
 #: Every operational check is one SQL statement over the ledger plus one test.
 CHECKS: list[tuple[str, str]] = [
     (
@@ -100,8 +105,7 @@ CHECKS: list[tuple[str, str]] = [
         "select case when '$run' = '' then 'UNKNOWN' "
         "when count(*) = 0 then 'OK' else 'BAD' end as verdict, "
         "count(*) as unterminated, string_agg(lane, ', ') as lanes from ("
-        "  select expected.lane from (values ('futures'), ('cmdty'), ('cboe'), ('fx'), "
-        "    ('corporate-actions'), ('equity'), ('silver')) as expected(lane) "
+        f"  select expected.lane from (values {_lane_values(constants.LANE_ORDER)}) as expected(lane) "
         "  left join (select lane, outcome from lane_results where run_id = '$run' "
         "    qualify row_number() over (partition by lane order by started desc, ended desc nulls last) = 1"
         "  ) latest using (lane) where latest.outcome is null"
@@ -188,7 +192,7 @@ CHECKS: list[tuple[str, str]] = [
     ),
     (
         "IB-only lanes behind",
-        "select case when count(last_session) < 2 then 'UNKNOWN' "
+        f"select case when count(last_session) < {len(constants.IB_ONLY_LANES)} then 'UNKNOWN' "
         "when max(behind) > $ib_slack_days then 'WARN' else 'OK' end as verdict, "
         "string_agg(lane || '@' || last_session || case when blocker is null then '' "
         "else ' (' || blocker || ')' end, ', ') as lanes, max(behind) as sessions_behind from ("
@@ -196,7 +200,7 @@ CHECKS: list[tuple[str, str]] = [
         "         date_diff('day', date '1970-01-01' + cast(m.value as int), date '$today') as behind, "
         "         (select l.blocker from lane_results l where l.lane = expected.lane "
         "          and l.outcome is not null order by l.ended desc limit 1) as blocker "
-        "  from (values ('futures'), ('cmdty')) as expected(lane) left join measurements m "
+        f"  from (values {_lane_values(constants.IB_ONLY_LANES)}) as expected(lane) left join measurements m "
         "    on m.name = 'last_session' and m.scope = expected.lane "
         "  qualify row_number() over (partition by expected.lane order by m.measured_at desc) = 1"
         ")",

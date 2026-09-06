@@ -18,6 +18,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from clients import constants, ledger
+from clients.constants import LANE_ORDER
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts.paths import warehouse_dir as resolve_warehouse_dir
 from livewire_scripts.sync_runner import TIMEOUT_EXIT_CODE
@@ -44,7 +45,6 @@ ASSET_CLASSES = ["equity", "futures", "cmdty"]
 #: the full rolling history every night.
 FX_CATCHUP_DAYS = 7
 
-LANE_ORDER = ("futures", "cmdty", "cboe", "fx", "corporate-actions", "equity", "silver")
 LANE_BUDGET_S: dict[str, float] = {lane: constants.declared(f"lane_budget_s/{lane}") for lane in LANE_ORDER}
 DEFAULT_LANE_BUDGET_S = constants.declared("lane_budget_s/default")
 _OUTCOME_BY_EXIT = {0: "done", TIMEOUT_EXIT_CODE: "timeout", GATEWAY_DOWN_EXIT_CODE: "blocked"}
