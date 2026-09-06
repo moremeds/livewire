@@ -72,8 +72,7 @@ from clients.ingestion_common import (
 )
 from clients.massive_client import MassiveAPIError, MassiveAuthError, MassiveClient
 from clients.price_basis import prepare_ib_rows_for_publish
-from clients.quality_detector import _normalize_bars_for_detection, detect_all
-from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
+from clients.quality_detector import run_detection
 from clients.trading_calendar import (
     _easter,  # noqa: F401
     get_nyse_holidays,  # noqa: F401
@@ -328,51 +327,6 @@ def validate_bars(
 
 # bars_to_rows, bars_to_futures_rows, bars_to_midpoint_rows
 # → imported from clients.ingestion_common
-
-
-def _run_quality_detection(
-    *,
-    ticker: str,
-    asset_class: str,
-    bars: list,
-    parquet_path: Path,
-    expected_start: date | None = None,
-    source: str = "ib",
-    reference_source: dict | None = None,
-) -> None:
-    """Run daily quality detection and emit flags without blocking publish."""
-    if not bars:
-        return
-    normalized = _normalize_bars_for_detection(bars)
-    metadata = {
-        "asset_class": asset_class,
-        "ticker": ticker,
-        "timeframe": "1d",
-        "source": source,
-        "bars_received": len(bars),
-        "expected_start": expected_start,
-        "ib_head_timestamp": None,
-        "errors_during_fetch": [],
-    }
-    if reference_source is not None:
-        metadata["reference_source"] = reference_source
-    try:
-        flags = detect_all(bars=normalized, metadata=metadata, trading_calendar=None)
-    except Exception:  # pragma: no cover - detect_all wraps individual detectors
-        return
-    if not flags:
-        return
-    parquet_path.parent.mkdir(parents=True, exist_ok=True)
-    write_sidecar(parquet_path, flags, metadata)
-    for flag in flags:
-        append_audit(
-            flag,
-            source=source,
-            ticker=ticker,
-            timeframe="1d",
-            parquet_path=parquet_path,
-        )
-        alert_on_flag(flag, source=source, ticker=ticker)
 
 
 def validate_intraday_bar(
@@ -778,12 +732,14 @@ def main():  # pragma: no cover — only exercised by integration tests
                             # No expected_start on the Massive path: for thin instruments a
                             # later actual_start just means "didn't trade", and ib_head_timestamp
                             # (the range_shortfall suppression input) is never available here.
-                            _run_quality_detection(
+                            run_detection(
                                 ticker=ticker,
                                 asset_class=asset_class,
+                                timeframe="1d",
                                 bars=valid_bars,
                                 parquet_path=parquet_path,
                                 expected_start=None,
+                                ib_head_timestamp=None,
                                 source="massive",
                             )
                             inserted = bronze.merge_ticker_rows(ticker, rows)
@@ -970,12 +926,14 @@ def main():  # pragma: no cover — only exercised by integration tests
                                 as_of_date=target,
                             )
                         parquet_path = bronze_dir / f"symbol={ticker}" / "1d.parquet"
-                        _run_quality_detection(
+                        run_detection(
                             ticker=ticker,
                             asset_class=asset_class,
+                            timeframe="1d",
                             bars=valid_bars,
                             parquet_path=parquet_path,
                             expected_start=latest + timedelta(days=1) if latest else None,
+                            ib_head_timestamp=None,
                             source="ib",
                             reference_source=_source_comparison(reference_bars, valid_bars),
                         )

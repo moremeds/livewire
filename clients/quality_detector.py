@@ -6,8 +6,10 @@ See: docs/superpowers/specs/2026-05-17-mdw-reliability-foundation-design.md
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -288,3 +290,63 @@ def detect_all(
         flags.append(f)
 
     return flags
+
+
+#: Set to False by `--no-quality`. The gate applies to every caller: it means
+#: "do not run the detector this run", not "not on this one code path". Before
+#: consolidation only fetch_ib_historical honoured it.
+QUALITY_ENABLED: bool = True
+
+
+def run_detection(
+    *,
+    ticker: str,
+    asset_class: str,
+    timeframe: str,
+    bars: list,
+    parquet_path: Path,
+    source: str = "ib",
+    expected_start: date | None = None,
+    ib_head_timestamp: date | None = None,
+    reference_source: dict | None = None,
+    errors_during_fetch: list[dict] | None = None,
+    alerts_enabled: bool = True,
+    on_error: Callable[[Exception], None] | None = None,
+) -> None:
+    """Run detection and emit flags without ever blocking a publish."""
+    if not QUALITY_ENABLED or not bars:
+        return
+
+    # Imported inside the function: clients.quality_flags imports QualityFlag
+    # from this module, so a module-level import would be a cycle.
+    from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
+
+    metadata: dict = {
+        "asset_class": asset_class,
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "source": source,
+        "bars_received": len(bars),
+        "errors_during_fetch": errors_during_fetch or [],
+        "expected_start": expected_start,
+        "ib_head_timestamp": ib_head_timestamp,
+    }
+    if reference_source is not None:
+        metadata["reference_source"] = reference_source
+
+    try:
+        flags = detect_all(bars=_normalize_bars_for_detection(bars), metadata=metadata, trading_calendar=None)
+    except Exception as exc:  # pragma: no cover - detect_all wraps individual detectors
+        if on_error is not None:
+            on_error(exc)
+        return
+
+    if not flags:
+        return
+
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    write_sidecar(parquet_path, flags, metadata)
+    for flag in flags:
+        append_audit(flag, source=source, ticker=ticker, timeframe=timeframe, parquet_path=parquet_path)
+        if alerts_enabled:
+            alert_on_flag(flag, source=source, ticker=ticker)

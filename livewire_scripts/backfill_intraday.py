@@ -41,8 +41,7 @@ from clients.intraday_bronze_client import (
     INTRADAY_TIMEFRAMES,
     IntradayBronzeClient,
 )
-from clients.quality_detector import _normalize_bars_for_detection, detect_all
-from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
+from clients.quality_detector import run_detection
 from livewire_scripts.daily_update import validate_intraday_bar
 from livewire_scripts.fetch_ib_historical import compute_intraday_chunks
 from livewire_scripts.paths import cursor_dir, data_lake_dir, log_dir
@@ -139,51 +138,6 @@ def ib_bar_to_row(bar: Any, symbol_id: int) -> dict[str, Any]:
     }
 
 
-def _run_quality_detection(
-    *,
-    ticker: str,
-    timeframe: str,
-    bars: list,
-    parquet_path: Path,
-    outcome: TickerOutcome,
-    asset_class: str = "equity",
-    source: str = "ib",
-) -> None:
-    """Run intraday quality detection and emit flags without blocking publish."""
-    if not bars:
-        return
-    errors = [{"code": 0, "count": 1, "message": e} for e in (outcome.errors or [])]
-    metadata = {
-        "asset_class": asset_class,
-        "ticker": ticker,
-        "timeframe": timeframe,
-        "source": source,
-        "bars_received": len(bars),
-        "errors_during_fetch": errors,
-        "expected_start": None,
-        "ib_head_timestamp": None,
-    }
-    normalized = _normalize_bars_for_detection(bars)
-    try:
-        flags = detect_all(bars=normalized, metadata=metadata, trading_calendar=None)
-    except Exception:  # pragma: no cover - detect_all wraps individual detectors
-        return
-    if not flags:
-        return
-    parquet_path.parent.mkdir(parents=True, exist_ok=True)
-    write_sidecar(parquet_path, flags, metadata)
-    for flag in flags:
-        append_audit(
-            flag,
-            source=source,
-            ticker=ticker,
-            timeframe=timeframe,
-            parquet_path=parquet_path,
-        )
-        if _intraday_backfill_alerts_enabled():
-            alert_on_flag(flag, source=source, ticker=ticker)
-
-
 def _intraday_backfill_alerts_enabled() -> bool:
     """Return True when bulk intraday backfills should send per-flag emails."""
     return os.getenv("MDW_INTRADAY_BACKFILL_ALERTS", "").lower() in {
@@ -263,13 +217,14 @@ def backfill_ticker(
 
     if all_rows:
         parquet_path = bronze.bronze_dir / f"symbol={ticker}" / f"{timeframe}.parquet"
-        _run_quality_detection(
+        run_detection(
             ticker=ticker,
+            asset_class=asset_class,
             timeframe=timeframe,
             bars=all_rows,
             parquet_path=parquet_path,
-            outcome=outcome,
-            asset_class=asset_class,
+            errors_during_fetch=[{"code": 0, "count": 1, "message": e} for e in (outcome.errors or [])],
+            alerts_enabled=_intraday_backfill_alerts_enabled(),
         )
         outcome.bars_inserted = bronze.merge_ticker_rows(
             ticker,

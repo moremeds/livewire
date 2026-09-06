@@ -61,6 +61,7 @@ from rich.progress import (
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from clients import quality_detector
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateAction, CorporateActionStore
 from clients.ib_client import IBClient, IBError
@@ -83,8 +84,7 @@ from clients.ingestion_common import (
 )
 from clients.massive_client import MassiveAPIError, MassiveClient
 from clients.price_basis import prepare_ib_rows_for_publish
-from clients.quality_detector import _normalize_bars_for_detection, detect_all
-from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
+from clients.quality_detector import run_detection
 from livewire_scripts.paths import data_lake_dir, log_dir
 
 _DEFAULT_STORAGE_CLIENT = BronzeClient
@@ -114,7 +114,6 @@ MAG7 = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
 IB_EARLIEST_DATE = datetime(1993, 1, 29)
 
 console = Console()
-_QUALITY_ENABLED = True
 
 
 # ROOT_EXCHANGE_MAP, SUPPORTED_IB_FX_PAIRS, _resolve_fx_pair,
@@ -495,54 +494,6 @@ def _bronze_parquet_path(ticker: str, bronze: BronzeClient) -> Path:
     return Path(base) / f"symbol={ticker}" / "1d.parquet"
 
 
-def _run_quality_detection(
-    *,
-    ticker: str,
-    timeframe: str,
-    asset_class: str,
-    bars: list,
-    parquet_path: Path,
-    expected_start: date | None = None,
-    ib_head_timestamp: date | None = None,
-    source: str = "ib",
-) -> None:
-    """Run post-fetch quality detection and emit flags without blocking publish."""
-    if not _QUALITY_ENABLED or not bars:
-        return
-
-    normalized = _normalize_bars_for_detection(bars)
-    metadata = {
-        "asset_class": asset_class,
-        "ticker": ticker,
-        "timeframe": timeframe,
-        "source": source,
-        "bars_received": len(bars),
-        "errors_during_fetch": [],
-        "expected_start": expected_start,
-        "ib_head_timestamp": ib_head_timestamp,
-    }
-    try:
-        flags = detect_all(bars=normalized, metadata=metadata, trading_calendar=None)
-    except Exception as exc:  # pragma: no cover - detect_all wraps individual detectors
-        console.print(f"  [yellow]quality detection raised: {exc}[/yellow]")
-        return
-
-    if not flags:
-        return
-
-    parquet_path.parent.mkdir(parents=True, exist_ok=True)
-    write_sidecar(parquet_path, flags, metadata)
-    for flag in flags:
-        append_audit(
-            flag,
-            source=source,
-            ticker=ticker,
-            timeframe=timeframe,
-            parquet_path=parquet_path,
-        )
-        alert_on_flag(flag, source=source, ticker=ticker)
-
-
 def fetch_ticker(
     ticker: str,
     bars: list,
@@ -559,7 +510,7 @@ def fetch_ticker(
         return 0
 
     parquet_path = _bronze_parquet_path(ticker, bronze)
-    _run_quality_detection(
+    run_detection(
         ticker=ticker,
         timeframe="1d",
         asset_class=asset_class,
@@ -567,6 +518,7 @@ def fetch_ticker(
         parquet_path=parquet_path,
         expected_start=expected_start,
         ib_head_timestamp=ib_head_timestamp,
+        on_error=lambda exc: console.print(f"  [yellow]quality detection raised: {exc}[/yellow]"),
     )
 
     symbol_id = bronze.get_symbol_id(ticker)
@@ -628,12 +580,12 @@ def backfill_ticker(
     # and it will fire for every instrument younger than 1993 that reaches this
     # path without an ib_head_timestamp to excuse it.
     #
-    # `_run_quality_detection` already skips the detector when expected_start is
+    # `run_detection` already skips the detector when expected_start is
     # None (quality_detector.py: `if expected_start is not None and bars`), which
     # is the correct behaviour: no known inception means no expectation to test.
     # Callers that DO know one still pass it and are unaffected.
     parquet_path = _bronze_parquet_path(ticker, bronze)
-    _run_quality_detection(
+    run_detection(
         ticker=ticker,
         timeframe="1d",
         asset_class=asset_class,
@@ -642,6 +594,7 @@ def backfill_ticker(
         expected_start=expected_start,
         ib_head_timestamp=ib_head_timestamp,
         source=source,
+        on_error=lambda exc: console.print(f"  [yellow]quality detection raised: {exc}[/yellow]"),
     )
 
     symbol_id = bronze.get_symbol_id(ticker)
@@ -752,8 +705,7 @@ def main():  # pragma: no cover — only exercised by integration tests
         help="Disable the post-fetch quality detection hook (debug only).",
     )
     args = parser.parse_args()
-    global _QUALITY_ENABLED
-    _QUALITY_ENABLED = not args.no_quality
+    quality_detector.QUALITY_ENABLED = not args.no_quality
     resolved_source = _resolve_historical_source(
         args.source,
         asset_class=args.asset_class,
