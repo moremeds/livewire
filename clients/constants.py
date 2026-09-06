@@ -38,7 +38,10 @@ DECLARED: dict[str, tuple[float, str]] = {
     "lane_budget_s/fx": (30 * 60, "s"),
     "lane_budget_s/corporate-actions": (3 * 60 * 60, "s"),
     "lane_budget_s/equity": (2 * 60 * 60, "s"),
-    "lane_budget_s/silver": (2 * 60 * 60, "s"),
+    # Measured full rebuilds on the mini: 2026-08-27 2h12m, 08-28 2h15m,
+    # 08-30 2h51m, 08-31 1h18m. 7200 was a guess and it killed the first
+    # budgeted run at 7201s on 2026-09-07; 4h clears the longest by 1h09m.
+    "lane_budget_s/silver": (4 * 60 * 60, "s"),
     "lane_budget_s/default": (30 * 60, "s"),
     # How long a lane is expected to wait for the lake-io lock. Global on
     # purpose: this is a property of the lock, not of a lane. 2340s is the

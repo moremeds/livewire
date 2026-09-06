@@ -47,6 +47,11 @@ declared value; priority expressed as the poll interval (daily 1s, intraday
 `outcome='failed'`; a `Lanes blocked` check on the graded surface so a deferred
 lane is visible rather than a silent exit 0.
 
+**Also found:** the `silver` lane budget was never measured. 7200s was a guess,
+and the first run it actually bounded was killed at 7201s (2026-09-07). Four
+measured full rebuilds on the mini -- 2026-08-27 2h12m, 08-28 2h15m, 08-30
+2h51m, 08-31 1h18m -- put the budget at 4h.
+
 **Not fixed here:** the `digest` tail (which spawns `housekeeping --apply`),
 `vol_1h_derive`, and the separate 11:00Z `coverage` job stay outside the lock --
 none of them is a lane body. Coverage is untimed by design

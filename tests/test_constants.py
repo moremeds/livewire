@@ -82,6 +82,15 @@ def test_ib_only_lanes_are_a_subset_of_the_lane_order():
     assert set(constants.IB_ONLY_LANES) <= set(constants.LANE_ORDER)
 
 
+def test_the_silver_budget_clears_the_longest_measured_full_rebuild():
+    """4h, from four measured full rebuilds on the mini; 7200 was a guess.
+
+    The longest was 2026-08-30 at 2h51m, and the first budgeted run killed
+    silver at 7201s on 2026-09-07.
+    """
+    assert constants.declared("lane_budget_s/silver") == 4 * 60 * 60
+
+
 def test_the_lake_lock_wait_is_declared_globally():
     """The acceptable wait is a property of the lock, not of one lane."""
     assert constants.DECLARED["lake_lock_wait_s"] == (2340, "s")
