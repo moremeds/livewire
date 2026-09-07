@@ -185,12 +185,15 @@ def _carry_forward(
         resolved: list[PublishedArtifact] = []
         for artifact in entries:
             path = client.root / artifact.path
-            if not path.is_file():
+            # The disk is the authority: the manifest describes the bytes being served,
+            # and an interrupted publish leaves those bytes ahead of the recorded sha.
+            sha = _sha256(path)
+            if sha is None:  # vanished between checks — skip rather than manifest a gap
                 resolved = []
                 break
             # row_count is not serialized into the manifest but PublishedArtifact
             # requires it — read the footer rather than inventing a number.
-            resolved.append(PublishedArtifact(path, artifact.sha256, pq.ParquetFile(path).metadata.num_rows))
+            resolved.append(PublishedArtifact(path, sha, pq.ParquetFile(path).metadata.num_rows))
         if not resolved:
             continue  # a vanished artifact must not be manifested
         artifacts.extend(resolved)
