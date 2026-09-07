@@ -1,9 +1,13 @@
+import logging
 from datetime import date
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from clients.coverage_denominator import ExpectedSeries
 from clients.gap_engine import (
+    actual_sessions,
     classify,
     load_unresolved,
     massive_floor_for,
@@ -255,3 +259,46 @@ def test_an_unconfirmed_terminus_keeps_its_gap_class_but_loses_tier_a():
     """
     findings = classify(_series(), present={SESSIONS[0]}, massive_floor=FLOOR, unconfirmed=True)
     assert [(f.gap, f.tier, f.heal_by_days) for f in findings] == [("G1", "B", None)]
+
+
+# --- actual_sessions: a corrupt file counts as missing, it does not abort ------
+
+
+def _bronze_path(tmp_path, series):
+    path = tmp_path / f"asset_class={series.asset_class}" / f"symbol={series.symbol}" / f"{series.timeframe}.parquet"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def test_actual_sessions_reads_a_good_parquet(tmp_path):
+    series = _series()
+    pq.write_table(pa.table({"trade_date": list(SESSIONS)}), _bronze_path(tmp_path, series))
+
+    assert actual_sessions(tmp_path, series) == set(SESSIONS)
+
+
+def test_actual_sessions_missing_file_is_an_empty_set(tmp_path):
+    assert actual_sessions(tmp_path, _series()) == set()
+
+
+def test_one_corrupt_parquet_is_counted_missing_and_does_not_kill_the_scan(tmp_path, caplog):
+    """A torn per-symbol file must read MISSING, never raise.
+
+    Third recurrence of the same class: RJF's `1d.parquet` on macmini
+    (`Parquet magic bytes not found in footer`) propagated out of
+    `actual_sessions` through `scan_findings` and degraded the whole gap scan to
+    one `scan: FAILED` line, so the Tier A/B repair queue was not produced.
+    """
+    series = _series()
+    path = _bronze_path(tmp_path, series)
+    pq.write_table(pa.table({"trade_date": list(SESSIONS)}), path)
+    path.write_bytes(path.read_bytes()[:-64])  # truncate the footer: real corruption
+
+    with caplog.at_level(logging.ERROR, logger="clients.gap_engine"):
+        assert actual_sessions(tmp_path, series) == set()
+
+    assert str(path) in caplog.text
+
+    # ...and the series therefore classifies as G3, exactly like an absent file.
+    findings = classify(series, present=actual_sessions(tmp_path, series), massive_floor=FLOOR)
+    assert [f.gap for f in findings] == ["G3"]

@@ -749,3 +749,21 @@ def test_the_lane_budget_drift_check_still_works():
     _measured("lane_budget_s", "corporate-actions", 100.0)
 
     assert _section("Declared constants match reality").verdict is status.Verdict.WARN
+
+
+def test_silver_progress_reports_the_heartbeat_and_is_unknown_without_one():
+    """`rebuild-silver --full` walks hours; the ledger says how far it got.
+
+    Graded through `status.Verdict`, not the name imported at module scope: an
+    earlier test in this file reloads the module, so the top-level `Verdict` is a
+    different class object by the time this runs and `is` would always fail.
+    """
+    _run()
+    assert _section("Silver progress").verdict is status.Verdict.UNKNOWN
+
+    _measurement("progress", "silver", 500)
+    _measurement("progress_total", "silver", 13311)
+    section = _section("Silver progress")
+    assert section.verdict is status.Verdict.OK
+    assert "symbols=500.0" in section.lines[1]
+    assert "universe=13311.0" in section.lines[1]
