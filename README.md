@@ -268,9 +268,8 @@ python scripts/livewire_store.py rebuild-silver --tickers NVDA AAPL SPY
 python scripts/livewire_store.py rebuild-silver --full
 python scripts/livewire_store.py rebuild-silver --full --dry-run
 
-# Read-only four-symbol canary; choose a control with no active actions
-python livewire_scripts/validate_silver_canary.py \
-  --tickers NVDA AAPL SPY --control <NO_ACTION_SYMBOL>
+# Read-only, and it names the symbols: the failure list is the canary
+python scripts/livewire_store.py rebuild-silver --full --dry-run --failure-output /tmp/silver-dry.json
 ```
 
 The publisher holds a Silver-root lock, stamps one revision across all changed

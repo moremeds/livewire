@@ -595,12 +595,6 @@ on the published-vs-review ratio before the ~12K tail. Full design:
 `docs/superpowers/specs/2026-07-19-unknown-basis-ib-verified-reconstruction-design.md`
 (plan archived; see git history).
 
-### Silver canary (read-only)
-
-```bash
-python livewire_scripts/validate_silver_canary.py --tickers NVDA AAPL SPY --control SYMBOL   # Read-only factor/OHLCV/bronze-integrity canary
-```
-
 ### Rollback
 
 ```bash

@@ -391,7 +391,6 @@ def test_every_former_call_site_agrees_on_the_digest():
     assert source_evidence.digest_bytes(GOLDEN_BYTES) == GOLDEN_DIGEST
 
 
-@pytest.mark.xfail(reason="green once the dead-code plan deletes validate_silver_canary", strict=True)
 def test_no_module_hand_rolls_a_file_digest():
     import pathlib
 
