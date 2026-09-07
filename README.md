@@ -777,8 +777,8 @@ python -m pytest tests/ -v
 python -m pytest tests -q --cov=clients --cov=livewire_scripts --cov=scripts --cov-report=term-missing
 ```
 
-* **100% coverage enforced** (`fail_under = 100` in `pyproject.toml`)
-* `clients/ib_client.py` and `clients/historical_provider.py` excluded from coverage gate
+* **95% coverage enforced** (`fail_under = 95` in `pyproject.toml`)
+* `clients/ib_client.py` excluded from the coverage gate
 
 ### RuntimeWarning Gate
 
