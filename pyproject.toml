@@ -36,7 +36,6 @@ source = ["clients", "livewire_scripts"]
 omit = [
     "tests/*",
     "clients/ib_client.py",
-    "clients/historical_provider.py",
 ]
 
 [tool.coverage.report]

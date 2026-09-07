@@ -153,45 +153,11 @@ scripts/setup_market_warehouse.sh \
 
 ## CLI Reference
 
-Livewire has two CLI layers: the **unified CLI** (`scripts/livewire.py`) for streamlined workflows, and five **operator scripts** for granular control.
-
-### Unified CLI
-
-The unified CLI groups all operations under four commands with automatic source selection:
-
-```bash
-source ~/market-warehouse/.venv/bin/activate
-
-# Daily sync — catch up all asset classes
-python scripts/livewire.py sync                         # Equity + volatility + futures + rates
-python scripts/livewire.py sync --asset-class equity    # Equity only
-python scripts/livewire.py sync --full                  # Full daily-backfill orchestrator
-python scripts/livewire.py sync --scheduled             # Scheduled job with retry + alerting
-
-# Deep historical backfill
-python scripts/livewire.py backfill --full              # Full warehouse build (all presets, all phases)
-python scripts/livewire.py backfill --timeframe 1d      # Daily bars only
-python scripts/livewire.py backfill --timeframe 1m 5m   # Full-market equity intraday
-
-# Quality and health
-python scripts/livewire.py check                        # Default: coverage report
-python scripts/livewire.py check --health               # Bronze health check
-python scripts/livewire.py check --report               # Quality rollup
-python scripts/livewire.py check --weekly               # Weekly summary
-python scripts/livewire.py check --universe             # Universe screener
-
-# Publish to external targets
-python scripts/livewire.py publish r2                   # Sync to R2
-python scripts/livewire.py publish --migrate            # Parquet schema migration
-```
-
-**Sources** — equity daily uses Massive by default (requires `MASSIVE_API_KEY`);
-pass `--source ib` to force IB. Equity intraday always requires Massive flat-file
-credentials. Non-equity intraday remains IB-backed.
+Livewire has one CLI layer: four operator entrypoints, one per concern. There is
+no wrapper CLI — a fifth dispatcher existed until 2026-09-06 and no scheduled job
+ever called it.
 
 ### Operator Scripts
-
-For granular control, use the five operator scripts directly:
 
 | Script | Function | Typical usage |
 | --- | --- | --- |
@@ -200,6 +166,10 @@ For granular control, use the five operator scripts directly:
 | `scripts/livewire_ops.py` | Operations | Scheduled daily job, alert sending |
 | `scripts/livewire_store.py` | Storage maintenance | DuckDB catalog, Silver rebuild, R2 sync, parquet filename migration |
 | `scripts/setup_market_warehouse.sh` | One-time bootstrap | Create `~/market-warehouse/`, venv, directories, optional ClickHouse helpers |
+
+**Sources** — equity daily uses Massive by default (requires `MASSIVE_API_KEY`);
+pass `--source ib` to force IB. Equity intraday always requires Massive flat-file
+credentials. Non-equity intraday remains IB-backed.
 
 Use `--help` at the top level or after a subcommand:
 
@@ -298,9 +268,8 @@ python scripts/livewire_store.py rebuild-silver --tickers NVDA AAPL SPY
 python scripts/livewire_store.py rebuild-silver --full
 python scripts/livewire_store.py rebuild-silver --full --dry-run
 
-# Read-only four-symbol canary; choose a control with no active actions
-python livewire_scripts/validate_silver_canary.py \
-  --tickers NVDA AAPL SPY --control <NO_ACTION_SYMBOL>
+# Read-only, and it names the symbols: the failure list is the canary
+python scripts/livewire_store.py rebuild-silver --full --dry-run --failure-output /tmp/silver-dry.json
 ```
 
 The publisher holds a Silver-root lock, stamps one revision across all changed
@@ -467,10 +436,8 @@ python scripts/livewire_ingest.py robust --preset presets/sp500.json --mode back
 The full warehouse build runs all presets through daily seed, older-history backfill, intraday backfill, CBOE volatility, FRED rates, and the DuckDB coverage refresh:
 
 ```bash
-# Python orchestrator (recommended)
+# Python orchestrator
 python scripts/livewire_ingest.py backfill-all
-# Or via unified CLI
-python scripts/livewire.py backfill --full
 ```
 
 Features:
@@ -495,8 +462,6 @@ flat-file catch-up across every symbol present in each target day:
 
 ```bash
 python scripts/livewire_ingest.py daily-backfill
-# Or via unified CLI
-python scripts/livewire.py sync --full
 ```
 
 Default intraday lookback: 7 calendar days (`MDW_DAILY_BACKFILL_INTRADAY_DAYS`).
@@ -811,8 +776,8 @@ python -m pytest tests/ -v
 python -m pytest tests -q --cov=clients --cov=livewire_scripts --cov=scripts --cov-report=term-missing
 ```
 
-* **100% coverage enforced** (`fail_under = 100` in `pyproject.toml`)
-* `clients/ib_client.py` and `clients/historical_provider.py` excluded from coverage gate
+* **95% coverage enforced** (`fail_under = 95` in `pyproject.toml`)
+* `clients/ib_client.py` excluded from the coverage gate
 
 ### RuntimeWarning Gate
 

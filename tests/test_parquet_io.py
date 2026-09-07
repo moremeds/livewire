@@ -210,7 +210,6 @@ def test_write_json_atomic_serialises_dates_rather_than_raising(tmp_path):
     assert json.loads(target.read_text(encoding="utf-8")) == {"session": "2026-09-05"}
 
 
-@pytest.mark.xfail(reason="green once the dead-code plan deletes both modules", strict=True)
 def test_no_module_hand_rolls_an_atomic_json_writer():
     """Twelve copies preceded this; parquet_io is the blessed publish primitive."""
     import pathlib
