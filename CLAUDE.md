@@ -86,7 +86,7 @@ gap      = expected − actual
 ### IB
 
 - Connect to `127.0.0.1:4001` only. The LAN IP is TCP-open and the API silently times out after ~4 min; a "hanging" IB run is almost always this. → pm:2026-07-18-ib-gateway-lan-ip-silent-timeout
-- Gateway pinned 10.45, live mode, 2FA approved by hand on every login. Livewire never restarts, retries, or manages the Gateway; a connection failure is 2FA/maintenance/session conflict, not a bug to recover. → test: `tests/test_run_ib_fetch_robust.py::test_gateway_unavailable_is_typed_and_never_retried`
+- Gateway pinned 10.50, live mode, 2FA approved by hand on every login. Livewire never restarts, retries, or manages the Gateway; a connection failure is 2FA/maintenance/session conflict, not a bug to recover. → test: `tests/test_run_ib_fetch_robust.py::test_gateway_unavailable_is_typed_and_never_retried`
 - IB is not a single point of failure. Unreachable Gateway → exit 86 → lane **skipped**, run DEGRADED (not failed, no page, no retry). Eligibility is membership of the IB phase set, not the exit code. → test: `tests/test_run_daily_update_job.py::test_gateway_down_is_degraded_not_failed`, `tests/test_status.py::test_an_ib_phase_at_86_reads_degraded_not_failed` · pm:2026-07-22-ib-not-a-single-point-of-failure, pm:2026-08-08-ib-down-must-not-fail-the-run
 - A preflight belongs to the phase that needs IB, never to the orchestrator: an orchestrator-level preflight lost Friday 2026-08-07 warehouse-wide (equity 0/13311, rates 0/4). → pm:2026-08-08-ib-down-must-not-fail-the-run
 - Equity daily falls back to Massive on a down Gateway; futures/cmdty have no fallback and stay degraded — a manufactured success is worse than a gap. → test: `tests/test_run_daily_update_job.py::test_futures_and_cmdty_get_no_fallback`
