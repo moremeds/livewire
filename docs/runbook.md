@@ -152,7 +152,12 @@ This repo does not install, configure, or restart the Gateway.
   so `nc -z` succeeds against it, but `TrustedTwsApiClientIPs` is empty and the
   API connection silently times out after ~4 minutes. The code default is already
   correct — do not override it.
-- **Gateway version**: pinned to **10.45** (10.46 is incompatible).
+- **Gateway version**: pinned to **10.50**, installed at
+  `~/Applications/IB Gateway 10.50` on macmini. 10.46 was incompatible and its
+  bundle is kept alongside as `IB Gateway 10.46.disabled`; 10.45 is no longer on
+  the machine. Observed on macmini 2026-09-07: pid 36703 is the 10.50 bundle's
+  JRE, sitting at the login screen with no listener on 4001 — a running Gateway
+  process is not a logged-in one.
 - **Trading mode**: live. **2FA** is approved manually in IBKR Mobile on every
   fresh login; livewire cannot bypass this.
 - **Do NOT** write order-management workflows, restart/manage the Gateway from
