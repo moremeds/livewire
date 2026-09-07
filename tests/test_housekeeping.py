@@ -318,3 +318,54 @@ class TestEvidenceLockSweep:
 
     def test_a_lake_without_the_directory_plans_nothing(self, tmp_path):
         assert housekeeping.plan_evidence_locks(tmp_path / "data-lake") == []
+
+
+class TestTheSweepCrossesTheSymlinkedSubtrees:
+    """2026-09-06: the lake root became a real internal directory whose big
+    subtrees are each a symlink onto the exFAT volume. `Path.rglob` does not
+    descend into a symlinked directory, so the sweep walked only the small real
+    directories and reported `71 item(s) deleted, 0 failed` while every sidecar
+    under bronze/ survived. → pm:2026-09-07-appledouble-sweep-stopped-at-the-symlinked-subtrees
+    """
+
+    def test_a_symlinked_subtree_is_swept(self, tmp_path):
+        volume = tmp_path / "volume" / "data-lake"
+        sidecar = _touch(volume / "bronze/asset_class=equity/symbol=RJF/._1d.parquet")
+        real = _touch(volume / "bronze/asset_class=equity/symbol=RJF/1d.parquet")
+        lake = tmp_path / "data-lake"
+        lake.mkdir()
+        (lake / "bronze").symlink_to(volume / "bronze")
+
+        planned = [p for _, p in plan_appledouble(lake)]
+
+        assert lake / "bronze/asset_class=equity/symbol=RJF/._1d.parquet" in planned
+        assert sidecar.exists(), "planning never mutates"
+        assert real not in planned
+
+    def test_a_symlink_off_the_lake_is_not_swept_and_a_loop_terminates(self, tmp_path):
+        outside = _touch(tmp_path / "elsewhere/._notours.parquet")
+        lake = tmp_path / "data-lake"
+        ours = _touch(lake / "bronze/asset_class=equity/symbol=RJF/._1d.parquet")
+        (lake / "bronze/escape").symlink_to(tmp_path / "elsewhere")
+        (lake / "bronze/loop").symlink_to(lake)
+
+        planned = [p for _, p in plan_appledouble(lake)]
+
+        assert planned == [ours], "the lake's own sidecar, once; nothing off the lake"
+        assert outside.exists()
+
+    def test_a_subtree_the_walk_never_entered_is_loud(self, tmp_path, caplog):
+        """The silent-success case: the volume is unmounted, so bronze/ dangles,
+        the walk covers the small real directories and the summary is clean."""
+        lake = tmp_path / "data-lake"
+        _touch(lake / "cursors/last.json")
+        (lake / "bronze").symlink_to(tmp_path / "volume" / "data-lake" / "bronze")
+
+        with caplog.at_level("WARNING"):
+            planned = plan_appledouble(lake)
+
+        assert planned == []
+        assert any("never entered" in r.getMessage() and "bronze" in r.getMessage() for r in caplog.records), (
+            "a sweep that entered nothing must not read as a clean sweep"
+        )
+        assert not any("cursors" in r.getMessage() for r in caplog.records), "a walked subtree is not reported"
