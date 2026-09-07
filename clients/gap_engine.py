@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from clients import constants
 from clients.coverage_denominator import ExpectedSeries
+
+log = logging.getLogger(__name__)
 
 DATE_COLUMN = "trade_date"
 
@@ -69,11 +73,35 @@ class Finding:
 
 
 def actual_sessions(bronze_root: Path, series: ExpectedSeries) -> set[date]:
-    """Sessions actually present on disk. A missing file is an empty set, not an error."""
+    """Sessions actually present on disk. An unreadable file is an empty set, not an error.
+
+    A file that exists but is torn is the same fact as a file that is absent:
+    the bars are not readable, so the sessions are missing. Letting
+    `pa.ArrowInvalid` out instead propagated through `scan_findings` and
+    degraded the whole gap scan to one `scan: FAILED` line, so the Tier A/B
+    repair queue -- the point of the engine -- was not produced that night,
+    while the rest of the coverage job completed and the run looked healthy.
+    (macmini 2026-09-07: equity RJF `1d.parquet`, "Parquet magic bytes not
+    found in footer". Third recurrence of this class.)
+
+    Empty is the conservative direction and needs no new plumbing: the series
+    reads G3 "nothing on disk" and enters the repair queue, exactly like an
+    absent file. It cannot hide a gap, only over-report one -- the same
+    argument `coverage_report._latest_date_or_none` already rests on -- and the
+    ERROR below names the path so an operator can quarantine or refetch it.
+
+    The engine is read-only and never repairs. Moving the file aside is
+    `flatfile_publisher.quarantine_corrupt_parquet`'s job, on the write path
+    that owns the data.
+    """
     path = bronze_root / f"asset_class={series.asset_class}" / f"symbol={series.symbol}" / f"{series.timeframe}.parquet"
     if not path.exists():
         return set()
-    table = pq.read_table(path, columns=[DATE_COLUMN])
+    try:
+        table = pq.read_table(path, columns=[DATE_COLUMN])
+    except (OSError, pa.ArrowInvalid) as exc:
+        log.error("unreadable parquet, counted as missing: %s: %s", path, exc)
+        return set()
     return {value.as_py() for value in table.column(DATE_COLUMN)}
 
 
