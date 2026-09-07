@@ -118,6 +118,18 @@ def test_scan_warehouse_reports_daily_and_intraday_snapshots(tmp_path: Path) -> 
     assert intraday.key_column == "bar_timestamp"
 
 
+def test_scan_warehouse_skips_appledouble_sidecars(tmp_path: Path) -> None:
+    daily_path = _write_daily(tmp_path, "equity", "RJF", [date(2026, 1, 5), date(2026, 1, 7)])
+    sidecar = daily_path.parent / "._1d.parquet"
+    sidecar.write_bytes(b"\x00" * 4096)
+
+    snapshots = scan_warehouse(ScanOptions(bronze_root=tmp_path, target_date=date(2026, 1, 8)))
+
+    timeframes = {s.timeframe for s in snapshots}
+    assert "._1d" not in timeframes
+    assert timeframes == {"1d"}
+
+
 def test_build_report_summarizes_symbols_and_rows(tmp_path: Path) -> None:
     _write_daily(tmp_path, "equity", "AAPL", [date(2026, 1, 5)])
     _write_daily(tmp_path, "rates", "DGS10", [date(2026, 1, 5), date(2026, 1, 6)])
