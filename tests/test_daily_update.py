@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -789,8 +790,7 @@ class TestFetchBatch:
 class TestQualityHookIntegration:
     def test_quality_hook_fires_before_merge(self, tmp_path):
         """The helper runs detect_all and emits every configured flag path."""
-        from clients.quality_detector import QualityFlag
-        from livewire_scripts.daily_update import _run_quality_detection
+        from clients.quality_detector import QualityFlag, run_detection
 
         bars = [_make_bar(date="2026-05-15")]
         parquet_path = tmp_path / "x.parquet"
@@ -803,14 +803,15 @@ class TestQualityHookIntegration:
         )
 
         with (
-            patch("livewire_scripts.daily_update.detect_all", return_value=[fake_flag]) as m_detect,
-            patch("livewire_scripts.daily_update.write_sidecar", return_value=True) as m_sidecar,
-            patch("livewire_scripts.daily_update.append_audit", return_value=True) as m_audit,
-            patch("livewire_scripts.daily_update.alert_on_flag", return_value=True) as m_alert,
+            patch("clients.quality_detector.detect_all", return_value=[fake_flag]) as m_detect,
+            patch("clients.quality_flags.write_sidecar", return_value=True) as m_sidecar,
+            patch("clients.quality_flags.append_audit", return_value=True) as m_audit,
+            patch("clients.quality_flags.alert_on_flag", return_value=True) as m_alert,
         ):
-            _run_quality_detection(
+            run_detection(
                 ticker="AAPL",
                 asset_class="equity",
+                timeframe="1d",
                 bars=bars,
                 parquet_path=parquet_path,
                 expected_start=date(2026, 5, 14),
@@ -822,12 +823,13 @@ class TestQualityHookIntegration:
         assert m_alert.call_count == 1
 
     def test_quality_hook_skips_when_no_bars(self, tmp_path):
-        from livewire_scripts.daily_update import _run_quality_detection
+        from clients.quality_detector import run_detection
 
-        with patch("livewire_scripts.daily_update.detect_all") as m_detect:
-            _run_quality_detection(
+        with patch("clients.quality_detector.detect_all") as m_detect:
+            run_detection(
                 ticker="AAPL",
                 asset_class="equity",
+                timeframe="1d",
                 bars=[],
                 parquet_path=tmp_path / "x.parquet",
                 expected_start=date(2026, 5, 14),
@@ -1383,7 +1385,7 @@ class TestMain:
                 "livewire_scripts.daily_update.FallbackClient",
                 return_value=mock_fallback,
             ),
-            patch("livewire_scripts.daily_update._run_quality_detection") as quality_mock,
+            patch("livewire_scripts.daily_update.run_detection") as quality_mock,
             patch(
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
@@ -1683,7 +1685,7 @@ class TestMain:
                 return_value=mock_fallback,
             ),
             patch("livewire_scripts.daily_update.StorageClient", lambda **kw: storage),
-            patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path),
+            patch.dict(os.environ, {"MDW_DATA_LAKE": str(tmp_path)}),
         ):
             main()
 
@@ -2380,7 +2382,7 @@ class TestMain:
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=kw.get("bronze_dir", vol_bronze_dir)),
             ),
-            patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path / "data-lake"),
+            patch.dict(os.environ, {"MDW_DATA_LAKE": str(tmp_path / "data-lake")}),
         ):
             main()
 
@@ -2454,7 +2456,7 @@ class TestMain:
                     asset_class=kw.get("asset_class", "futures"),
                 ),
             ),
-            patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path / "data-lake"),
+            patch.dict(os.environ, {"MDW_DATA_LAKE": str(tmp_path / "data-lake")}),
         ):
             main()
 
@@ -2521,7 +2523,7 @@ class TestMain:
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
             ),
-            patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path / "data-lake"),
+            patch.dict(os.environ, {"MDW_DATA_LAKE": str(tmp_path / "data-lake")}),
         ):
             main()
 
@@ -2579,7 +2581,7 @@ class TestMain:
                 "livewire_scripts.daily_update.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=bronze_dir),
             ),
-            patch("livewire_scripts.daily_update.DATA_LAKE", tmp_path / "data-lake"),
+            patch.dict(os.environ, {"MDW_DATA_LAKE": str(tmp_path / "data-lake")}),
         ):
             main()
 

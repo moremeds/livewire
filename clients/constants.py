@@ -17,6 +17,17 @@ from __future__ import annotations
 
 import os
 
+#: The nightly daily-update lanes in run order. No-fallback lanes first: the
+#: IB-only lanes take minutes and cannot be back-sourced, so they never queue
+#: behind a 3-8h Massive lane (pm:2026-07-28-daily-job-deadline-is-a-total).
+#: `run_daily_update_job` runs this list and `status` grades it; a lane that is
+#: not in this tuple exists in neither.
+LANE_ORDER: tuple[str, ...] = ("futures", "cmdty", "cboe", "fx", "corporate-actions", "equity", "silver")
+
+#: Lanes with no provider fallback. A down Gateway degrades these rather than
+#: manufacturing a success (pm:2026-07-22-ib-not-a-single-point-of-failure).
+IB_ONLY_LANES: tuple[str, ...] = ("futures", "cmdty")
+
 # key -> (value, unit). Scope is the segment after '/', absent when global.
 DECLARED: dict[str, tuple[float, str]] = {
     # Per-lane wall-clock budgets. One per lane in run_daily_update_job.LANE_ORDER,

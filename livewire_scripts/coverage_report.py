@@ -60,8 +60,6 @@ from livewire_scripts.paths import data_lake_dir, log_dir
 log = logging.getLogger(__name__)
 console = Console()
 
-_DATA_LAKE: Path | None = None
-_LOG_DIR: Path | None = None
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPT_DIR.parent
 _INGEST_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ingest.py"
@@ -86,14 +84,6 @@ FOOTER_READ_WORKERS = 16
 # The window the 2026-09-01 measurement used. MIN_TERMINUS_SESSIONS decides
 # inside it; this only bounds how far back a terminus can be dated.
 TERMINUS_WINDOW_SESSIONS = 20
-
-
-def _resolved_data_lake() -> Path:
-    return _DATA_LAKE or data_lake_dir()
-
-
-def _resolved_log_dir() -> Path:
-    return _LOG_DIR or log_dir()
 
 
 @dataclass
@@ -330,7 +320,7 @@ def compute_coverage(
     as present if it is current through *target_date* OR it is absent from the
     day's raw traded set (it simply did not trade; no-trade is not missing).
     """
-    bronze_root = bronze_root or _resolved_data_lake() / "bronze"
+    bronze_root = bronze_root or data_lake_dir() / "bronze"
     # The real clock. NOT session_due_at(target_date): that makes the due filter
     # `session_due_at(d) <= as_of` tautologically true for a single-session
     # window, so the entire deadline rule would be inert on the one code path
@@ -788,7 +778,7 @@ def compute_non_equity_coverage(
     invisible. Known, deferred, and carried forward deliberately; the fix is a
     per-class calendar, not a tweak here.
     """
-    bronze_root = bronze_root or _resolved_data_lake() / "bronze"
+    bronze_root = bronze_root or data_lake_dir() / "bronze"
     presets_dir = presets_dir or Path("presets")
     # Real wall clock, not the session's own due time: passing session_due_at
     # (target_date) here would make the due filter tautologically true and the
@@ -877,7 +867,7 @@ def write_coverage_log(
     missing_blocks: Iterable[str],
     results: dict[str, CoverageResult] | None = None,
 ) -> Path:
-    resolved_log_dir = _resolved_log_dir()
+    resolved_log_dir = log_dir()
     resolved_log_dir.mkdir(parents=True, exist_ok=True)
     log_path = resolved_log_dir / f"coverage_{target_date:%Y-%m-%d}.log"
     with log_path.open("a", encoding="utf-8") as fh:
@@ -1063,12 +1053,12 @@ def _scan_and_write_artifacts(target: date, as_of: datetime) -> str:
     four weeks.
     """
     try:
-        findings = scan_findings(target, bronze_root=_resolved_data_lake() / "bronze", as_of=as_of)
+        findings = scan_findings(target, bronze_root=data_lake_dir() / "bronze", as_of=as_of)
         # Inside the boundary, not after it. A scan that succeeded and a WRITE
         # that failed (full disk, read-only release tree, a permission change)
         # escaped the "never raises" contract and aborted main() before
         # auto-recovery -- the same failure-domain leak, one line further down.
-        repairs_dir = _resolved_data_lake() / "repairs"
+        repairs_dir = data_lake_dir() / "repairs"
         write_tier_a_manifest(findings, repairs_dir / f"tier_a_{target}.json")
         write_decision_requests(findings, repairs_dir / f"decisions_{target}.json")
     except Exception as exc:  # noqa: BLE001 - the coverage half must survive any scan failure
@@ -1123,7 +1113,7 @@ def main() -> None:
     coverage_started = time.monotonic()
     results = compute_coverage(
         target,
-        cache_path=_resolved_log_dir() / "coverage_footer_cache.json",
+        cache_path=log_dir() / "coverage_footer_cache.json",
         as_of=as_of,
     )
     line = format_one_liner(target, results)

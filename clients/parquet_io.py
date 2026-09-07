@@ -9,6 +9,7 @@ specified sort column.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import time
 from collections.abc import Iterator
@@ -27,6 +28,42 @@ import pyarrow.parquet as pq
 # lighter cold read pass on every subsequent merge-and-rewrite.
 PARQUET_COMPRESSION = "zstd"
 PARQUET_COMPRESSION_LEVEL = 3
+
+
+def fsync_directory(path: Path) -> None:
+    """fsync a directory so a rename inside it survives a crash.
+
+    One directory fsync per commit is the rule the sharded CAS was rebuilt
+    around (pm:2026-09-05-source-evidence-flat-exfat-directory); four copies of
+    this function is four chances to forget it.
+    """
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def write_json_atomic(path: Path, payload: object) -> None:
+    """Publish JSON the way the lake publishes parquet: temp -> fsync -> replace.
+
+    The temp file is a sibling of the destination so `os.replace` stays within
+    one filesystem; `.resolve()` is deliberately not called, because the lake
+    root is a directory of symlinks into the exFAT volume.
+    """
+    destination = Path(path).expanduser()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True, indent=2, default=str)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+        fsync_directory(destination.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 @contextmanager

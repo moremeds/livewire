@@ -401,3 +401,60 @@ def test_detect_all_emits_real_row_count_anomaly_from_metadata():
     )
     flag = next(f for f in flags if f.category == "row_count_anomaly")
     assert flag.detail["missing_dates"] == ["2026-04-02"]
+
+
+def test_the_quality_gate_applies_to_every_caller(tmp_path, monkeypatch):
+    """--no-quality means the detector does not run this run, on any path."""
+    from clients import quality_detector
+
+    monkeypatch.setattr(quality_detector, "QUALITY_ENABLED", False)
+    called: list[int] = []
+    monkeypatch.setattr(quality_detector, "detect_all", lambda **kw: called.append(1) or [])
+
+    quality_detector.run_detection(
+        ticker="NVDA",
+        asset_class="equity",
+        timeframe="1d",
+        bars=[_Bar("2026-09-04")],
+        parquet_path=tmp_path / "NVDA.parquet",
+    )
+
+    assert called == []
+
+
+def test_run_detection_passes_the_caller_metadata_through(tmp_path, monkeypatch):
+    from clients import quality_detector
+
+    seen: dict = {}
+
+    def _capture(*, bars, metadata, trading_calendar):
+        seen.update(metadata)
+        return []
+
+    monkeypatch.setattr(quality_detector, "detect_all", _capture)
+    quality_detector.run_detection(
+        ticker="NVDA",
+        asset_class="equity",
+        timeframe="5m",
+        bars=[_Bar("2026-09-04")],
+        parquet_path=tmp_path / "NVDA.parquet",
+        errors_during_fetch=[{"code": 0, "count": 1, "message": "boom"}],
+        reference_source={"provider": "massive"},
+    )
+
+    assert seen["timeframe"] == "5m"
+    assert seen["errors_during_fetch"] == [{"code": 0, "count": 1, "message": "boom"}]
+    assert seen["reference_source"] == {"provider": "massive"}
+
+
+def test_no_module_hand_rolls_quality_detection():
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    offenders = [
+        path.name
+        for path in sorted((root / "livewire_scripts").glob("*.py"))
+        if "def _run_quality_detection(" in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []

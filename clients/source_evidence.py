@@ -9,18 +9,22 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import json
 import os
 import re
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock, get_ident
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+from clients.parquet_io import fsync_directory
 
 _CAS_REF = re.compile(r"^artifact://sha256/([0-9a-f]{64})$")
 
@@ -36,6 +40,32 @@ _MANIFEST_SCHEMA = pa.schema(
         pa.field("content_type", pa.string(), nullable=False),
     ]
 )
+
+
+def sha256_file(path: Path) -> str:
+    """Digest a file's exact bytes — the CAS key every evidence row quotes."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def canonical_bytes(value: object, *, default: Callable[[object], str] | None = None) -> bytes:
+    """The one canonical JSON encoding. Two subsystems that disagree here
+    disagree about whether two payloads are the same payload."""
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"), default=default) + "\n").encode()
+
+
+def digest_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def jsonable(value: Any) -> Any:
+    """Coerce datetimes to UTC ISO-8601 and tuples to lists, recursively."""
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat()
+    if isinstance(value, dict):
+        return {str(key): jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonable(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -71,14 +101,6 @@ def _exclusive_lock(path: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-
-def _fsync_directory(path: Path) -> None:
-    directory_fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
 
 
 class SourceEvidenceStore:
@@ -273,7 +295,7 @@ class SourceEvidenceStore:
             pending = sorted(self._unsynced_dirs)
             self._unsynced_dirs.clear()
         for directory in pending:
-            _fsync_directory(directory)
+            fsync_directory(directory)
 
     @staticmethod
     def _digest_from_ref(ref: str) -> str:
@@ -313,6 +335,6 @@ class SourceEvidenceStore:
                 raise ValueError("source evidence manifest validation failed")
             os.replace(temp_path, self.manifest_path)
             os.chmod(self.manifest_path, 0o600)
-            _fsync_directory(self.manifest_path.parent)
+            fsync_directory(self.manifest_path.parent)
         finally:
             temp_path.unlink(missing_ok=True)

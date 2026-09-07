@@ -161,7 +161,7 @@ def test_resume_replays_legacy_resolved_evidence_without_refetch(tmp_path):
     detail_path.write_text(json.dumps(detail, sort_keys=True))
     cursor_path = output / "cursor.json"
     cursor = json.loads(cursor_path.read_text())
-    cursor["completed"]["AAPL"]["detail_sha256"] = resolve_split_basis._sha256(detail_path)
+    cursor["completed"]["AAPL"]["detail_sha256"] = resolve_split_basis.sha256_file(detail_path)
     cursor_path.write_text(json.dumps(cursor, sort_keys=True))
 
     assert (

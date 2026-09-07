@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from collections.abc import Sequence
@@ -13,6 +12,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from clients.bronze_client import BronzeClient
+from clients.source_evidence import sha256_file
 from clients.symbol_paths import encode_symbol
 from livewire_scripts.paths import data_lake_dir
 
@@ -25,10 +25,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--cursor", type=Path)
     return parser.parse_args(list(argv) if argv is not None else None)
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _write_cursor(path: Path, completed: set[str]) -> None:
@@ -73,12 +69,12 @@ def run(
                 completed.add(symbol)
                 _write_cursor(cursor_path, completed)
             continue
-        source_hash = _sha256(path)
+        source_hash = sha256_file(path)
         artifact = {"symbol": symbol, "path": str(path), "source_sha256": source_hash}
         if not args.dry_run:
             rows = client.read_symbol_rows(symbol)
             client.replace_ticker_rows(symbol, rows)
-            artifact["target_sha256"] = _sha256(path)
+            artifact["target_sha256"] = sha256_file(path)
             if cursor_path is not None:
                 completed.add(symbol)
                 _write_cursor(cursor_path, completed)

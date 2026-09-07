@@ -27,6 +27,7 @@ from clients.adjustment_engine import build_factor_intervals
 from clients.bronze_client import EQUITY_SOURCES, BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.ib_client import IBClient, IBConnectionError
+from clients.parquet_io import write_json_atomic
 from clients.symbol_paths import encode_symbol
 from clients.yahoo_basis import (
     AnchorVerdict,
@@ -294,13 +295,6 @@ def _corrected_rows(existing: list[dict], yahoo_raw: dict, yahoo_adjusted: dict,
     return corrected
 
 
-def _write_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(payload, sort_keys=True, indent=2))
-    os.replace(tmp, path)
-
-
 def _backup_and_write(symbol: str, *, bronze: BronzeClient, output_dir: Path, new_rows: list[dict], mode: str) -> dict:
     """Back the parquet up verbatim, record a write-ahead intent sidecar, then replace the
     rows. A crash mid-write is still undoable by ``rollback-legacy-basis --output-dir``
@@ -317,7 +311,7 @@ def _backup_and_write(symbol: str, *, bronze: BronzeClient, output_dir: Path, ne
     finally:
         tmp.unlink(missing_ok=True)
     sidecar_path = output_dir / "symbols" / f"{encode_symbol(symbol)}.json"
-    _write_json(
+    write_json_atomic(
         sidecar_path,
         {
             "symbol": symbol,
@@ -336,7 +330,7 @@ def _backup_and_write(symbol: str, *, bronze: BronzeClient, output_dir: Path, ne
         "backup_sha256": sha,
         "rows_written": written,
     }
-    _write_json(sidecar_path, sidecar)
+    write_json_atomic(sidecar_path, sidecar)
     return sidecar
 
 
@@ -469,7 +463,7 @@ def run(
                         entry["applied"] = "skipped_rewrite"  # --relabel-only defers value rewrites
                     if entry["applied"] in ("relabeled", "rewritten"):
                         cursor["completed"][symbol] = {"status": "done"}
-                        _write_json(args.output_dir / "cursor.json", cursor)
+                        write_json_atomic(args.output_dir / "cursor.json", cursor)
                 except Exception as exc:
                     entry["applied"] = f"apply_failed: {exc}"
             counts[entry["status"]] = counts.get(entry["status"], 0) + 1

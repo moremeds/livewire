@@ -351,7 +351,7 @@ class TestShardedCas:
         store = SourceEvidenceStore(tmp_path)
         synced: list[str] = []
         monkeypatch.setattr(
-            "clients.source_evidence._fsync_directory",
+            "clients.source_evidence.fsync_directory",
             lambda path: synced.append(str(path)),
         )
         rows = [evidence(a.ref, a.sha256) for a in (store.persist_raw(f"body-{i}".encode()) for i in range(8))]
@@ -364,3 +364,43 @@ class TestShardedCas:
         assert 0 < len(synced) <= 9
         store.record_many(rows)
         assert len(synced) <= 10
+
+
+#: A fixed real payload and the digest it produced before consolidation. If a
+#: refactor changes canonicalisation, every HashedRef in the lake stops
+#: matching; this is the tripwire.
+GOLDEN_PAYLOAD = {"symbol": "NVDA", "session": "2026-09-05", "source": "massive", "rows": 391}
+GOLDEN_BYTES = b'{"rows":391,"session":"2026-09-05","source":"massive","symbol":"NVDA"}\n'
+GOLDEN_DIGEST = "458b0f98a643df70f673f2cfb6b570ee2f500552eaa0dd1093d71891d2e75bff"
+
+
+def test_canonical_bytes_are_frozen():
+    from clients.source_evidence import canonical_bytes, digest_bytes
+
+    assert canonical_bytes(GOLDEN_PAYLOAD) == GOLDEN_BYTES
+    assert digest_bytes(canonical_bytes(GOLDEN_PAYLOAD)) == GOLDEN_DIGEST
+
+
+def test_every_former_call_site_agrees_on_the_digest():
+    from clients import pit_silver_revision, shepherd_repair, source_evidence
+    from livewire_scripts import shepherd_actions, shepherd_daily, shepherd_universe
+
+    modules = [shepherd_repair, pit_silver_revision, shepherd_actions, shepherd_daily, shepherd_universe]
+    for module in modules:
+        assert module.canonical_bytes(GOLDEN_PAYLOAD) == GOLDEN_BYTES, module.__name__
+    assert source_evidence.digest_bytes(GOLDEN_BYTES) == GOLDEN_DIGEST
+
+
+@pytest.mark.xfail(reason="green once the dead-code plan deletes validate_silver_canary", strict=True)
+def test_no_module_hand_rolls_a_file_digest():
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    offenders = [
+        path.name
+        for package in ("clients", "livewire_scripts")
+        for path in sorted((root / package).glob("*.py"))
+        if "def _sha256(path: Path) -> str:" in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []

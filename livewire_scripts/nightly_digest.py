@@ -27,8 +27,6 @@ if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
 from livewire_scripts.paths import data_lake_dir, log_dir
 from livewire_scripts.status import Verdict, collect
 
-_LOG_DIR: Path | None = None
-_DATA_LAKE: Path | None = None
 _FAILURE_EMAIL_SCRIPT = _PROJECT_ROOT / "livewire_node" / "send_daily_update_failure_email.mjs"
 
 
@@ -75,8 +73,8 @@ def main(argv=None, runner=subprocess.run) -> int:
     parser = argparse.ArgumentParser(description="Build the Livewire nightly digest")
     parser.add_argument("--run-date", type=date.fromisoformat, default=datetime.now(UTC).date())
     parser.add_argument("--email", action="store_true", help="Send the digest via Nodemailer")
-    parser.add_argument("--log-dir", type=Path, default=_LOG_DIR or log_dir())
-    parser.add_argument("--data-lake", type=Path, default=_DATA_LAKE or data_lake_dir())
+    parser.add_argument("--log-dir", type=Path, default=log_dir())
+    parser.add_argument("--data-lake", type=Path, default=data_lake_dir())
     args = parser.parse_args(argv)
 
     body = build_digest(args.run_date, args.log_dir, args.data_lake)

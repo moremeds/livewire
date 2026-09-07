@@ -70,3 +70,13 @@ def test_every_lane_in_lane_order_has_a_declared_budget():
 
     for lane in LANE_ORDER:
         assert f"lane_budget_s/{lane}" in constants.DECLARED
+
+
+def test_declared_lane_budgets_cover_exactly_the_lane_set():
+    budget_lanes = {key.split("/", 1)[1] for key in constants.DECLARED if key.startswith("lane_budget_s/")}
+
+    assert budget_lanes == set(constants.LANE_ORDER) | {"default"}
+
+
+def test_ib_only_lanes_are_a_subset_of_the_lane_order():
+    assert set(constants.IB_ONLY_LANES) <= set(constants.LANE_ORDER)

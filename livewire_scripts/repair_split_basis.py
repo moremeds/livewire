@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shutil
@@ -12,7 +11,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from clients.bronze_client import BronzeClient
-from clients.parquet_io import symbol_lock
+from clients.parquet_io import symbol_lock, write_json_atomic
+from clients.source_evidence import sha256_file
 from livewire_scripts.paths import data_lake_dir
 
 
@@ -24,19 +24,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     mode.add_argument("--rollback", action="store_true")
     parser.add_argument("--data-lake-root", type=Path)
     return parser.parse_args(list(argv) if argv is not None else None)
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _write_atomic(path: Path, payload: dict) -> None:
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        temp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
 
 
 def _restore_exact(backup: Path, target: Path) -> None:
@@ -73,9 +60,9 @@ def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None
             backup = Path(item.get("backup_path", "")).resolve()
             if not backup.is_file():
                 raise ValueError(f"{item['symbol']}: rollback backup is missing")
-            if _sha256(target) != item.get("applied_sha256"):
+            if sha256_file(target) != item.get("applied_sha256"):
                 raise ValueError(f"{item['symbol']}: stale target blocks rollback")
-        elif _sha256(target) != item["source_sha256"]:
+        elif sha256_file(target) != item["source_sha256"]:
             raise ValueError(f"{item['symbol']}: stale manifest source hash")
     changed = 0
     for item in payload["symbols"]:
@@ -87,13 +74,13 @@ def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None
                 backup = Path(item.get("backup_path", "")).resolve()
                 if not backup.is_file():
                     raise ValueError(f"{item['symbol']}: rollback backup is missing")
-                if _sha256(target) != item.get("applied_sha256"):
+                if sha256_file(target) != item.get("applied_sha256"):
                     raise ValueError(f"{item['symbol']}: stale target blocks rollback")
                 _restore_exact(backup, target)
-                if _sha256(target) != item["source_sha256"]:
+                if sha256_file(target) != item["source_sha256"]:
                     raise ValueError(f"{item['symbol']}: rollback hash mismatch")
             else:
-                if _sha256(target) != item["source_sha256"]:
+                if sha256_file(target) != item["source_sha256"]:
                     raise ValueError(f"{item['symbol']}: stale manifest source hash")
                 backup = manifest_path.with_name(f"{item['symbol']}.{item['source_sha256']}.parquet.bak")
                 if not backup.exists():
@@ -105,9 +92,9 @@ def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None
                 normalized = client._normalize_rows(list(by_date.values()), item["symbol"])
                 client._publish_symbol_rows(item["symbol"], normalized)
                 item["backup_path"] = str(backup)
-                item["applied_sha256"] = _sha256(target)
+                item["applied_sha256"] = sha256_file(target)
             changed += 1
-    _write_atomic(manifest_path, payload)
+    write_json_atomic(manifest_path, payload)
     print(json.dumps({"changed": changed, "rollback": bool(args.rollback)}, sort_keys=True))
     return 0
 

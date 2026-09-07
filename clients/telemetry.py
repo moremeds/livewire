@@ -9,20 +9,16 @@ import json
 import logging
 import os
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from statistics import quantiles
 from threading import Lock
 
+from clients.timeutils import utc_iso
 from livewire_scripts.paths import log_dir
 
 _VALID_SOURCES = {"ib", "uw", "massive"}
 
 _logger = logging.getLogger("livewire.telemetry")
-
-
-def _utc_iso() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _resolve_default_path() -> Path | None:
@@ -78,7 +74,7 @@ class BaseTelemetry:
         if self._disabled or not self._started:
             return
         record = dict(record)
-        record.setdefault("ts", _utc_iso())
+        record.setdefault("ts", utc_iso())
         record.setdefault("source", self.source)
         line = json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n"
         try:

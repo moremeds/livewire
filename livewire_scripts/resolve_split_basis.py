@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from collections.abc import Callable, Sequence
@@ -17,6 +16,8 @@ from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.ib_client import IBClient
 from clients.massive_client import MassiveClient
+from clients.parquet_io import write_json_atomic
+from clients.source_evidence import sha256_file
 from clients.split_basis_evidence import (
     classify_reference_basis,
     classify_split_from_reference,
@@ -40,23 +41,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=int(os.environ.get("MDW_IB_PORT", "4001")))
     parser.add_argument("--resume", action="store_true")
     return parser.parse_args(list(argv) if argv is not None else None)
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _write_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        with temp.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, sort_keys=True, default=str)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
 
 
 def _classification_payload(classification) -> dict:
@@ -163,7 +147,7 @@ def run(
     root = (args.data_lake_root or data_lake_dir()).expanduser().resolve()
     audit_path = args.audit_manifest.expanduser().resolve()
     output = args.output_dir.expanduser().resolve()
-    audit_sha256 = _sha256(audit_path)
+    audit_sha256 = sha256_file(audit_path)
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
     if audit.get("schema_version") != 1:
         raise ValueError("unsupported audit manifest schema")
@@ -203,14 +187,14 @@ def run(
                 and checkpoint
                 and checkpoint.get("source_sha256") == item["source_sha256"]
                 and detail_path.is_file()
-                and checkpoint.get("detail_sha256") == _sha256(detail_path)
+                and checkpoint.get("detail_sha256") == sha256_file(detail_path)
             )
             checkpoint_valid = checkpoint_artifact_valid and checkpoint.get("status") == "resolved"
             source_path = Path(item["path"]).resolve()
             bronze_root = (root / "bronze/asset_class=equity").resolve()
             if not source_path.is_relative_to(bronze_root):
                 raise ValueError("audit target is outside equity Bronze")
-            if not source_path.is_file() or _sha256(source_path) != item["source_sha256"]:
+            if not source_path.is_file() or sha256_file(source_path) != item["source_sha256"]:
                 detail = {
                     "audit_sha256": audit_sha256,
                     "data_lake_root": str(root),
@@ -220,13 +204,13 @@ def run(
                     "status": "error",
                     "symbol": symbol,
                 }
-                _write_atomic(detail_path, detail)
+                write_json_atomic(detail_path, detail)
                 cursor["completed"][symbol] = {
-                    "detail_sha256": _sha256(detail_path),
+                    "detail_sha256": sha256_file(detail_path),
                     "source_sha256": item["source_sha256"],
                     "status": "error",
                 }
-                _write_atomic(cursor_path, cursor)
+                write_json_atomic(cursor_path, cursor)
                 results.append(detail)
                 continue
             rows = bronze.read_symbol_rows(symbol)
@@ -240,13 +224,13 @@ def run(
                     continue
                 replayed = _replay_resolved_detail(saved_detail, item, rows, actions)
                 if replayed is not None:
-                    _write_atomic(detail_path, replayed)
+                    write_json_atomic(detail_path, replayed)
                     cursor["completed"][symbol] = {
-                        "detail_sha256": _sha256(detail_path),
+                        "detail_sha256": sha256_file(detail_path),
                         "source_sha256": item["source_sha256"],
                         "status": "resolved",
                     }
-                    _write_atomic(cursor_path, cursor)
+                    write_json_atomic(cursor_path, cursor)
                     results.append(replayed)
                     continue
             ohlc_corrections = []
@@ -457,13 +441,13 @@ def run(
                 "status": status,
                 "symbol": symbol,
             }
-            _write_atomic(detail_path, detail)
+            write_json_atomic(detail_path, detail)
             cursor["completed"][symbol] = {
-                "detail_sha256": _sha256(detail_path),
+                "detail_sha256": sha256_file(detail_path),
                 "source_sha256": item["source_sha256"],
                 "status": status,
             }
-            _write_atomic(cursor_path, cursor)
+            write_json_atomic(cursor_path, cursor)
             results.append(detail)
     finally:
         if ib_client is not None:
@@ -474,7 +458,7 @@ def run(
     for result in results:
         counts[result["status"]] = counts.get(result["status"], 0) + 1
     summary = {"audit_sha256": audit_sha256, "counts": counts, "symbols": len(results)}
-    _write_atomic(output / "summary.json", summary)
+    write_json_atomic(output / "summary.json", summary)
     print(json.dumps(summary, sort_keys=True))
     return 0 if results and all(result["status"] == "resolved" for result in results) else 1
 

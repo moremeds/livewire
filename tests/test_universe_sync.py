@@ -199,9 +199,9 @@ class TestMain:
                     }
                 )
             )
-        monkeypatch.setattr("livewire_scripts.universe_sync._WAREHOUSE_DIR", warehouse)
+        monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(warehouse))
         monkeypatch.setattr("livewire_scripts.universe_sync._PRESET_DIR", presets)
-        monkeypatch.setattr("livewire_scripts.universe_sync._DATA_LAKE", warehouse / "data-lake")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(warehouse / "data-lake"))
         monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
         return warehouse, presets
 

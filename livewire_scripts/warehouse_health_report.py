@@ -22,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
 
 import pyarrow.parquet as pq
 
+from clients import constants
 from clients.intraday_bronze_client import INTRADAY_TIMEFRAMES
 from livewire_scripts.daily_update import is_trading_day, previous_trading_day, session_close_time
 from livewire_scripts.paths import data_lake_dir, warehouse_dir
@@ -870,12 +871,17 @@ def _status(
     if rows == 0:
         return "error"
     if timeframe in INTRADAY_TIMEFRAMES and not has_daily_snapshot:
-        return "thin" if coverage_ratio < 0.95 or (stale_days is not None and stale_days > 3) else "ok"
+        return (
+            "thin"
+            if coverage_ratio < constants.declared("coverage_alert_threshold")
+            or (stale_days is not None and stale_days > 3)
+            else "ok"
+        )
     if stale_days is not None and stale_days > 7:
         return "error"
     if stale_days is not None and stale_days > 3:
         return "warn" if has_daily_snapshot else "thin"
-    if coverage_ratio < 0.95:
+    if coverage_ratio < constants.declared("coverage_alert_threshold"):
         return "thin"
     return "ok"
 
@@ -900,13 +906,14 @@ def _reason(
         return "Actionable health issue detected by the warehouse scanner."
     if status == "thin":
         base = (
-            "Low density means the vendor emitted bars for fewer than 95% of possible RTH slots; "
+            f"Low density means the vendor emitted bars for fewer than "
+            f"{constants.declared('coverage_alert_threshold'):.0%} of possible RTH slots; "
             "for trade bars this usually means no trades occurred in many buckets, not an actionable repair. "
             "Fill synthetic zero-volume bars in silver if a dense grid is required."
         )
         if timeframe in INTRADAY_TIMEFRAMES and not has_daily_snapshot:
             return "This is an intraday-only snapshot with no matching daily bronze file. " + base
-        if coverage_ratio < 0.95:
+        if coverage_ratio < constants.declared("coverage_alert_threshold"):
             return base
         return "Fresh enough but classified thin by the warehouse policy."
     return "Fresh enough and dense enough for the warehouse health policy."

@@ -4,9 +4,7 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import os
 from collections.abc import Sequence
 from dataclasses import asdict, replace
 from datetime import date, datetime
@@ -15,7 +13,9 @@ from zoneinfo import ZoneInfo
 
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
+from clients.parquet_io import write_json_atomic
 from clients.price_basis import classify_split_events, normalize_ib_rows
+from clients.source_evidence import sha256_file
 from clients.split_basis_evidence import (
     classify_reference_basis,
     classify_split_from_reference,
@@ -38,25 +38,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _classification_payload(item) -> dict:
     payload = asdict(item)
     payload["ex_date"] = item.ex_date.isoformat()
     payload["split_factor"] = str(item.split_factor)
     return payload
-
-
-def _write_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        temp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
 
 
 def run(
@@ -94,7 +80,7 @@ def run(
                     candidate_evidence.get("status") == "resolved"
                     and candidate_evidence.get("symbol") == symbol
                     and Path(candidate_evidence.get("data_lake_root", "")).resolve() == root
-                    and candidate_evidence.get("source_sha256") == _sha256(path)
+                    and candidate_evidence.get("source_sha256") == sha256_file(path)
                 ):
                     evidence = candidate_evidence
                     evidence_path = candidate
@@ -149,7 +135,7 @@ def run(
                 )
             classifications = resolved
         if evidence_path and corrections_replayed and all(item.treatment != "ambiguous" for item in classifications):
-            resolution_evidence_sha256 = _sha256(evidence_path)
+            resolution_evidence_sha256 = sha256_file(evidence_path)
         eligible = all(item.treatment != "ambiguous" for item in classifications)
         replacements = []
         error = None
@@ -179,7 +165,7 @@ def run(
                 "path": str(path),
                 "replacements": replacements,
                 "resolution_evidence_sha256": resolution_evidence_sha256,
-                "source_sha256": _sha256(path),
+                "source_sha256": sha256_file(path),
                 "symbol": symbol,
             }
         )
@@ -189,7 +175,7 @@ def run(
         "schema_version": 1,
         "symbols": manifest_symbols,
     }
-    _write_atomic(args.output, payload)
+    write_json_atomic(args.output, payload)
     print(json.dumps({"failed": failed, "output": str(args.output), "symbols": len(symbols)}, sort_keys=True))
     return 1 if failed else 0
 

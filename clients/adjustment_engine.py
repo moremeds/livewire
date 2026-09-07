@@ -8,6 +8,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from clients.corporate_action_store import CorporateAction
+from clients.timeutils import coerce_date
 
 ONE = Decimal("1")
 
@@ -19,10 +20,6 @@ class FactorInterval:
     price_adjustment_factor: Decimal
     split_volume_factor: Decimal
     adjustment_revision: int = 0
-
-
-def _date(value: date | str) -> date:
-    return value if isinstance(value, date) else date.fromisoformat(value)
 
 
 def _decimal(value: Any, label: str) -> Decimal:
@@ -43,8 +40,8 @@ def build_factor_intervals(
     """Build exhaustive factor intervals over the supplied bronze sessions."""
     if not bars:
         return []
-    ordered_bars = sorted(bars, key=lambda row: _date(row["trade_date"]))
-    dates = [_date(row["trade_date"]) for row in ordered_bars]
+    ordered_bars = sorted(bars, key=lambda row: coerce_date(row["trade_date"]))
+    dates = [coerce_date(row["trade_date"]) for row in ordered_bars]
     if len(dates) != len(set(dates)):
         raise ValueError("duplicate bronze trade dates")
 
@@ -109,7 +106,7 @@ def build_factor_intervals(
         cash = _decimal(action.cash_amount, "cash dividend")
         if cash < 0:
             raise ValueError("cash dividend must be non-negative")
-        previous = [row for row in ordered_bars if _date(row["trade_date"]) < action.ex_date]
+        previous = [row for row in ordered_bars if coerce_date(row["trade_date"]) < action.ex_date]
         if not previous:
             raise ValueError(f"missing previous close for dividend {action.action_id}")
         previous_row = previous[-1]
@@ -171,8 +168,8 @@ def adjust_daily_rows(
 ) -> list[dict]:
     """Apply one exhaustive factor interval to every bronze daily row."""
     adjusted: list[dict] = []
-    for row in sorted(rows, key=lambda item: _date(item["trade_date"])):
-        trade_date = _date(row["trade_date"])
+    for row in sorted(rows, key=lambda item: coerce_date(item["trade_date"])):
+        trade_date = coerce_date(row["trade_date"])
         matches = [item for item in intervals if item.effective_start <= trade_date <= item.effective_end]
         if len(matches) != 1:
             raise ValueError(f"expected one factor interval for {trade_date}, found {len(matches)}")

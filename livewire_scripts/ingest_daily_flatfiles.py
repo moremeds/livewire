@@ -13,42 +13,21 @@ import argparse
 import logging
 import os
 from collections.abc import Sequence
-from datetime import date, timedelta
 from pathlib import Path
 
 from clients.massive_daily_flatfile_store import MassiveDailyFlatfileStore
-from clients.massive_flatfile_client import S3_PREFIX_DAILY, MassiveFlatfileClient, require_flatfile_credentials
+from clients.massive_flatfile_client import S3_PREFIX_DAILY, MassiveFlatfileClient
 from clients.massive_flatfile_state import MassiveFlatfileState
-from clients.trading_calendar import trading_dates_in_range
 from livewire_scripts.daily_flatfile_publisher import publish_daily_dates
 from livewire_scripts.flatfile_downloader import download_dates
 from livewire_scripts.flatfile_planner import discover_plan, require_capacity
+from livewire_scripts.ingest_flatfiles import _parse_dates, _require_credentials
 from livewire_scripts.paths import cursor_dir, warehouse_dir
 from livewire_scripts.sync_runner import EQUITY_PRESETS, ticker_union
 
 log = logging.getLogger("livewire.ingest_daily_flatfiles")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
-def _require_credentials() -> None:
-    try:
-        require_flatfile_credentials()
-    except RuntimeError as exc:
-        raise SystemExit(str(exc)) from exc
-
-
-def _parse_dates(args: argparse.Namespace, plan_dates: tuple[date, ...]) -> list[date]:
-    if args.mode == "backfill":
-        return list(plan_dates)
-    if args.mode == "catch-up":
-        end = plan_dates[-1]
-        return [d for d in plan_dates if d >= end - timedelta(days=args.days)]
-    if args.dates:
-        return sorted(date.fromisoformat(value) for value in args.dates)
-    if args.start and args.end:
-        return trading_dates_in_range(date.fromisoformat(args.start), date.fromisoformat(args.end))
-    raise SystemExit("repair requires --dates or --start and --end")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

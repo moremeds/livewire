@@ -88,7 +88,7 @@ class TestParseCoverageLog:
 
 class TestLoadWeek:
     def test_loads_seven_consecutive_days(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("livewire_scripts.weekly_quality_summary._LOG_DIR", tmp_path)
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path))
         start = date(2026, 3, 30)  # Monday
         for i in range(7):
             d = start + __import__("datetime").timedelta(days=i)
@@ -97,7 +97,7 @@ class TestLoadWeek:
         assert len(entries) == 7
 
     def test_skips_missing_days(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("livewire_scripts.weekly_quality_summary._LOG_DIR", tmp_path)
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path))
         start = date(2026, 3, 30)
         for offset in (0, 2, 4):  # only 3 of 7 days have logs
             d = start + __import__("datetime").timedelta(days=offset)
@@ -261,7 +261,7 @@ class TestRenderMarkdown:
 
 class TestWriteSummary:
     def test_writes_to_correct_path(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("livewire_scripts.weekly_quality_summary._LOG_DIR", tmp_path)
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path))
         path = write_summary("# hello", (2026, 14))
         assert path.name == "quality_weekly_2026-14.md"
         assert path.read_text() == "# hello"
@@ -280,7 +280,7 @@ def test_iso_week_start_monday():
 
 class TestMain:
     def test_skips_non_sunday_without_force(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("livewire_scripts.weekly_quality_summary._LOG_DIR", tmp_path)
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path))
         with patch("livewire_scripts.weekly_quality_summary.date") as mock_date:
             # Wednesday 2026-04-08
             mock_date.today.return_value = date(2026, 4, 8)
@@ -292,7 +292,7 @@ class TestMain:
         assert list(tmp_path.glob("quality_weekly_*.md")) == []
 
     def test_force_runs_any_day(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("livewire_scripts.weekly_quality_summary._LOG_DIR", tmp_path)
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path))
         # Seed one log so the report has content
         _write_log(tmp_path, date(2026, 3, 30), _spec_header(date(2026, 3, 30)))
         with patch("livewire_scripts.weekly_quality_summary.date") as mock_date:
@@ -305,7 +305,7 @@ class TestMain:
         assert len(files) == 1
 
     def test_explicit_week_argument(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("livewire_scripts.weekly_quality_summary._LOG_DIR", tmp_path)
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path))
         _write_log(tmp_path, date(2026, 3, 30), _spec_header(date(2026, 3, 30)))
         with patch("livewire_scripts.weekly_quality_summary.date") as mock_date:
             mock_date.today.return_value = date(2026, 4, 5)  # Sunday
@@ -322,7 +322,7 @@ class TestMain:
         assert "Week 14 of 2026" in path.read_text()
 
     def test_sunday_default_runs(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("livewire_scripts.weekly_quality_summary._LOG_DIR", tmp_path)
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path))
         with patch("livewire_scripts.weekly_quality_summary.date") as mock_date:
             mock_date.today.return_value = date(2026, 4, 5)  # Sunday
             mock_date.fromisocalendar = date.fromisocalendar
@@ -340,7 +340,7 @@ def test_persistent_gap_survives_the_top_ten_truncation(tmp_path, monkeypatch):
     parser read only that sample, so an alphabetically-late symbol could never
     register as a persistent gap however many days it was out.
     """
-    monkeypatch.setattr(weekly, "_LOG_DIR", tmp_path)
+    monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path))
     late = "ZZZZ"
     for offset in range(3):
         day = date(2026, 4, 6) + timedelta(days=offset)
@@ -372,7 +372,7 @@ def test_persistent_gap_survives_the_top_ten_truncation(tmp_path, monkeypatch):
 
 def test_30m_missing_block_is_parsed(tmp_path, monkeypatch):
     """30m was absent from _TIMEFRAMES and _MISSING_RE entirely."""
-    monkeypatch.setattr(weekly, "_LOG_DIR", tmp_path)
+    monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path))
     day = date(2026, 4, 6)
     (tmp_path / f"coverage_{day:%Y-%m-%d}.log").write_text(
         f"{day} coverage: 1d=2/2 (100.00%) 1m=2/2 (100.00%) 1h=2/2 (100.00%) "
