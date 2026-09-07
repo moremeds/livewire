@@ -237,9 +237,6 @@ already in bronze parquet:
 ```bash
 python scripts/livewire_ingest.py backfill-all   # Full warehouse build (Python orchestrator)
 python scripts/livewire_ingest.py daily-backfill # Lightweight daily catch-up (Python orchestrator)
-# Or via unified CLI:
-python scripts/livewire.py backfill --full       # Same as backfill-all
-python scripts/livewire.py sync --full           # Same as daily-backfill
 ```
 
 - `backfill-all` (`livewire_scripts/backfill_runner.py`) is the default warehouse
@@ -631,12 +628,6 @@ failures from `rebuild-silver --full --dry-run --failure-output`, then a STOP GA
 on the published-vs-review ratio before the ~12K tail. Full design:
 `docs/superpowers/specs/2026-07-19-unknown-basis-ib-verified-reconstruction-design.md`
 (plan archived; see git history).
-
-### Silver canary (read-only)
-
-```bash
-python livewire_scripts/validate_silver_canary.py --tickers NVDA AAPL SPY --control SYMBOL   # Read-only factor/OHLCV/bronze-integrity canary
-```
 
 ### Rollback
 

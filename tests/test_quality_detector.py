@@ -84,7 +84,7 @@ def test_range_shortfall_no_head_ts_uses_expected_diff_only():
     assert flag.severity in {"warning", "critical"}
 
 
-# Use a simple BarRecord stub - match clients.historical_provider's BarRecord shape
+# A minimal bar record: the fields every detector reads.
 class _Bar:
     def __init__(self, d, c=100.0):
         self.trade_date = d if isinstance(d, str) else d.isoformat()

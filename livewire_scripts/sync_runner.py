@@ -21,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from livewire_scripts.paths import data_lake_dir, log_dir
+from livewire_scripts.paths import log_dir
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
@@ -29,7 +29,11 @@ if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
 
 from clients import constants, ledger
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
-from livewire_scripts.backfill_runner import EQUITY_PRESETS  # re-exported: ingest_daily_flatfiles imports it from here
+from livewire_scripts.backfill_runner import (
+    EQUITY_PRESETS,  # re-exported: ingest_daily_flatfiles imports it from here
+    _derive_vol_1h,
+    load_tickers,
+)
 from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, parse_last_summary_json
 from livewire_scripts.job_runner_common import LAKE_LOCK_BLOCKER, lake_lock
 
@@ -82,12 +86,6 @@ def build_config(repo_root: Path | None = None) -> SyncConfig:
         intraday_days=int(os.getenv("MDW_DAILY_BACKFILL_INTRADAY_DAYS", "7")),
         target_date=os.getenv("MDW_DAILY_BACKFILL_TARGET_DATE") or None,
     )
-
-
-def load_tickers(preset_path: str) -> list[str]:
-    with open(preset_path, encoding="utf-8") as fh:
-        payload = json.load(fh)
-    return sorted(str(t).upper() for t in payload.get("tickers", []))
 
 
 def ticker_union(presets: Sequence[str]) -> list[str]:
@@ -262,35 +260,6 @@ def run_phase(
             run,
         )
     return result.returncode
-
-
-def _derive_vol_1h(
-    vol_preset: str,
-    *,
-    warehouse_dir: Path | None = None,
-) -> int:
-    """Derive 1h bars from 30m for all tickers in the vol preset."""
-    from clients.intraday_bronze_client import IntradayBronzeClient
-    from clients.timeframe_aggregator import aggregate_bars
-
-    tickers = load_tickers(vol_preset)
-    lake = warehouse_dir / "data-lake" if warehouse_dir is not None else data_lake_dir()
-    bronze_dir = lake / "bronze" / "asset_class=volatility"
-    derived = 0
-
-    for ticker in tickers:
-        bronze_30m = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe="30m")
-        rows = bronze_30m.read_symbol_rows(ticker)
-        if not rows:
-            continue
-        agg = aggregate_bars(rows, source_tf="30m", target_tf="1h")
-        if agg:
-            bronze_1h = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe="1h")
-            bronze_1h.merge_ticker_rows(ticker, agg, overwrite_existing=True)
-            derived += 1
-
-    logger.info("Derived 1h from 30m for %d/%d vol tickers", derived, len(tickers))
-    return derived
 
 
 def run_sync(

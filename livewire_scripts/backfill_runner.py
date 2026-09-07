@@ -449,6 +449,12 @@ def _run_equity_intraday(
     return result.returncode
 
 
+def load_tickers(preset_path: str) -> list[str]:
+    with open(preset_path, encoding="utf-8") as fh:
+        payload = json.load(fh)
+    return sorted(str(t).upper() for t in payload.get("tickers", []))
+
+
 def _derive_vol_1h(
     vol_preset: str,
     *,
@@ -458,8 +464,7 @@ def _derive_vol_1h(
     from clients.intraday_bronze_client import IntradayBronzeClient
     from clients.timeframe_aggregator import aggregate_bars
 
-    with open(vol_preset, encoding="utf-8") as fh:
-        tickers = json.load(fh).get("tickers", [])
+    tickers = load_tickers(vol_preset)
 
     lake = warehouse_dir / "data-lake" if warehouse_dir is not None else data_lake_dir()
     bronze_dir = lake / "bronze" / "asset_class=volatility"
