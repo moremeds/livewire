@@ -11,33 +11,53 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from livewire_scripts.paths import data_lake_dir, log_dir
+from livewire_scripts.paths import log_dir
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from clients import constants, ledger
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
+from livewire_scripts.backfill_runner import (
+    EQUITY_PRESETS,  # re-exported: ingest_daily_flatfiles imports it from here
+    _derive_vol_1h,
+    load_tickers,
+)
 from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, parse_last_summary_json
+from livewire_scripts.job_runner_common import LAKE_LOCK_BLOCKER, lake_lock
 
 logger = logging.getLogger("livewire.sync_runner")
 
-EQUITY_PRESETS = ("presets/sp500.json", "presets/ndx100.json", "presets/r2k.json")
 VOL_PRESET = "presets/volatility-intraday.json"
 # Distinct so the digest and failure summary can name a stall as a stall.
 TIMEOUT_EXIT_CODE = 124
 VOL_DAILY_PRESET = "presets/volatility.json"
 EQUITY_INTRADAY_TIMEFRAMES = ("1m", "5m", "1h")
 VOL_INTRADAY_TIMEFRAMES = ("30m", "5m")
+#: How often this job looks for a free lake-io lock. 60s, against the daily
+#: job's 1s: the intraday job is the low-priority holder, so a daily lane
+#: waiting at the moment of a release wins the next acquire by a wide margin
+#: (spec 2026-09-06-tiered-nightly-pipeline-design.md section 3).
+LAKE_LOCK_POLL_S = constants.declared("lake_lock_poll_s/intraday")
+
+
+def _emit_ledger(table: str, rows: list[dict], run: str) -> None:
+    """Keep reporting failures from aborting the market-data work."""
+    try:
+        ledger.emit(table, rows, run_id=run)
+    except Exception as exc:  # pragma: no cover - observable, but non-fatal
+        logger.error("could not write %s ledger row: %s", table, exc)
 
 
 @dataclass(frozen=True)
@@ -66,12 +86,6 @@ def build_config(repo_root: Path | None = None) -> SyncConfig:
         intraday_days=int(os.getenv("MDW_DAILY_BACKFILL_INTRADAY_DAYS", "7")),
         target_date=os.getenv("MDW_DAILY_BACKFILL_TARGET_DATE") or None,
     )
-
-
-def load_tickers(preset_path: str) -> list[str]:
-    with open(preset_path, encoding="utf-8") as fh:
-        payload = json.load(fh)
-    return sorted(str(t).upper() for t in payload.get("tickers", []))
 
 
 def ticker_union(presets: Sequence[str]) -> list[str]:
@@ -138,21 +152,68 @@ def run_phase(
     logger.info("CMD %s: %s", label, _format_command(command))
 
     budget = phase_timeout_seconds() if timeout is None else timeout
-    with log_file.open("a", encoding="utf-8") as fh:
-        try:
-            result = runner(
-                command,
-                stdout=fh,
-                stderr=subprocess.STDOUT,
-                text=True,
-                check=False,
-                timeout=budget,
-            )
-        except subprocess.TimeoutExpired:
-            logger.error("%s exceeded its %ds budget and was killed", label, budget)
-            return TIMEOUT_EXIT_CODE
+    run = os.environ.get("LW_RUN_ID")
+    started = datetime.now(UTC)
+    if run:
+        _emit_ledger(
+            "lane_results",
+            [
+                {
+                    "run_id": run,
+                    "lane": label,
+                    "started": started,
+                    "ended": None,
+                    "exit_code": None,
+                    "budget_s": float(budget),
+                    "elapsed_s": None,
+                    "outcome": None,
+                    "blocker": None,
+                }
+            ],
+            run,
+        )
+    with lake_lock(label, poll_s=LAKE_LOCK_POLL_S, budget_s=float(budget)) as waited:
+        if waited is None:
+            # The daily job held the lake for this phase's whole budget. The
+            # intraday job is the one that defers, so this is not a failure and
+            # does not page -- it is one lane_results row and one measurement.
+            logger.warning("%s never got the lake-io lock within %ds; skipping", label, budget)
+            if run:
+                _emit_ledger(
+                    "lane_results",
+                    [
+                        {
+                            "run_id": run,
+                            "lane": label,
+                            "started": started,
+                            "ended": datetime.now(UTC),
+                            "exit_code": None,
+                            "budget_s": float(budget),
+                            "elapsed_s": 0.0,
+                            "outcome": "blocked",
+                            "blocker": LAKE_LOCK_BLOCKER,
+                        }
+                    ],
+                    run,
+                )
+            return 0
+        clock = time.monotonic()
+        with log_file.open("a", encoding="utf-8") as fh:
+            try:
+                result = runner(
+                    command,
+                    stdout=fh,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    check=False,
+                    timeout=budget,
+                )
+            except subprocess.TimeoutExpired:
+                logger.error("%s exceeded its %ds budget and was killed", label, budget)
+                result = subprocess.CompletedProcess(command, TIMEOUT_EXIT_CODE)
+        elapsed_s = time.monotonic() - clock
 
-    if result.returncode != 0:
+    if result.returncode not in (0, TIMEOUT_EXIT_CODE):
         if allow_completed_summary:
             try:
                 with log_file.open(encoding="utf-8") as fh:
@@ -165,41 +226,40 @@ def run_phase(
                         label,
                         result.returncode,
                     )
-                    return 0
+                    result = subprocess.CompletedProcess(command, 0)
             except FileNotFoundError:
                 pass
-        logger.warning("%s exited with code %d", label, result.returncode)
+        if result.returncode != 0:
+            logger.warning("%s exited with code %d", label, result.returncode)
 
+    if run:
+        code = result.returncode
+        _emit_ledger(
+            "lane_results",
+            [
+                {
+                    "run_id": run,
+                    "lane": label,
+                    "started": started,
+                    "ended": datetime.now(UTC),
+                    "exit_code": code,
+                    "budget_s": float(budget),
+                    "elapsed_s": elapsed_s,
+                    "outcome": (
+                        "done"
+                        if code == 0
+                        else "timeout"
+                        if code == TIMEOUT_EXIT_CODE
+                        else "blocked"
+                        if code == GATEWAY_DOWN_EXIT_CODE
+                        else "failed"
+                    ),
+                    "blocker": "ib_unreachable" if code == GATEWAY_DOWN_EXIT_CODE else None,
+                }
+            ],
+            run,
+        )
     return result.returncode
-
-
-def _derive_vol_1h(
-    vol_preset: str,
-    *,
-    warehouse_dir: Path | None = None,
-) -> int:
-    """Derive 1h bars from 30m for all tickers in the vol preset."""
-    from clients.intraday_bronze_client import IntradayBronzeClient
-    from clients.timeframe_aggregator import aggregate_bars
-
-    tickers = load_tickers(vol_preset)
-    lake = warehouse_dir / "data-lake" if warehouse_dir is not None else data_lake_dir()
-    bronze_dir = lake / "bronze" / "asset_class=volatility"
-    derived = 0
-
-    for ticker in tickers:
-        bronze_30m = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe="30m")
-        rows = bronze_30m.read_symbol_rows(ticker)
-        if not rows:
-            continue
-        agg = aggregate_bars(rows, source_tf="30m", target_tf="1h")
-        if agg:
-            bronze_1h = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe="1h")
-            bronze_1h.merge_ticker_rows(ticker, agg, overwrite_existing=True)
-            derived += 1
-
-    logger.info("Derived 1h from 30m for %d/%d vol tickers", derived, len(tickers))
-    return derived
 
 
 def run_sync(
@@ -407,6 +467,8 @@ def run_sync(
 def main(argv: Sequence[str] | None = None) -> int:
     import argparse
 
+    os.environ.setdefault("LW_RUN_ID", ledger.new_run_id("intraday-catchup"))
+
     parser = argparse.ArgumentParser(description="Daily sync runner — routine warehouse catch-up")
     parser.add_argument("--target-date", type=str, default=None)
     parser.add_argument("--intraday-days", type=int, default=None)
@@ -426,7 +488,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     if overrides:
         config = replace(config, **overrides)
 
-    return run_sync(config)
+    started = datetime.now(UTC)
+    run = os.environ["LW_RUN_ID"]
+    run_row = {
+        "run_id": run,
+        "job": "intraday-catchup",
+        "host": socket.gethostname(),
+        "release_sha": os.environ.get("LW_RELEASE_SHA"),
+        "presets_sha": None,
+        "registry_sha": None,
+        "started": started,
+        "ended": None,
+        "exit_code": None,
+        "verdict": None,
+    }
+    _emit_ledger("runs", [run_row], run)
+    try:
+        code = run_sync(config)
+    except BaseException:
+        _emit_ledger(
+            "runs",
+            [run_row | {"ended": datetime.now(UTC), "exit_code": 1, "verdict": "FAILED"}],
+            run,
+        )
+        raise
+    _emit_ledger(
+        "runs",
+        [run_row | {"ended": datetime.now(UTC), "exit_code": code, "verdict": "FAILED" if code else "OK"}],
+        run,
+    )
+    return code
 
 
 if __name__ == "__main__":  # pragma: no cover

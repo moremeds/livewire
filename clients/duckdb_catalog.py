@@ -39,18 +39,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
 import duckdb
+import pyarrow as pa
 
 from clients.symbol_paths import canonical_symbol, encode_symbol
 from livewire_scripts.paths import data_lake_dir, silver_dir, warehouse_dir
+
+log = logging.getLogger(__name__)
 
 # ponytail: TEMP views, not persisted ones. A read_only connection cannot
 # CREATE VIEW in the database but can create temporary ones, so this single
@@ -147,6 +151,49 @@ def view_names() -> list[str]:
 def default_database() -> Path:
     """Return the catalog database path."""
     return Path(os.environ.get("MDW_DUCKDB_PATH", warehouse_dir() / "analytics.duckdb")).expanduser()
+
+
+_LEDGER_VIEW_SQL = "CREATE OR REPLACE TEMP VIEW {name} AS SELECT * FROM read_parquet({files!r}, union_by_name=true)"
+
+
+def _ledger_files(directory: Path) -> list[str]:
+    """Return the real parquet under `directory`, minus macOS AppleDouble sidecars.
+
+    The lake is exFAT, so every `x.parquet` may have a `._x.parquet` beside it.
+    DuckDB reads whatever the glob matches and fails the whole query on the
+    first sidecar, so the glob is resolved here rather than handed to DuckDB.
+    """
+    return sorted(str(path) for path in directory.glob("*/*.parquet") if not path.name.startswith("._"))
+
+
+def ledger_query(
+    sql: str,
+    *,
+    root: Path,
+    tables: Mapping[str, pa.Schema],
+) -> list[dict]:
+    """Run SQL over append-only ledger parquet in a read-only memory database.
+
+    The session timezone is pinned to UTC: DuckDB otherwise takes it from the
+    host, and every ledger timestamp is a UTC instant that the callers compare
+    against a UTC date. On the mini (Asia/Hong_Kong) a run started
+    2026-09-06 20:52:01Z read `date(started) = 2026-09-07`, `_last_run_id`
+    returned '' and every run-scoped `status` check went UNKNOWN.
+    """
+    con = duckdb.connect(":memory:")
+    try:
+        con.execute("SET TimeZone = 'UTC'")
+        for name in tables:
+            files = _ledger_files(Path(root) / name)
+            if files:
+                con.execute(_LEDGER_VIEW_SQL.format(name=name, files=files))
+            else:
+                con.register(name, pa.Table.from_batches([], schema=tables[name]))
+        cursor = con.execute(sql)
+        columns = [description[0] for description in cursor.description]
+        return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+    finally:
+        con.close()
 
 
 def connect(
@@ -481,8 +528,15 @@ def build_coverage(
             try:
                 ensure_view(con, view_name, lake_root=lake_root, silver_root=silver_root)
                 con.execute(_coverage_insert(view_name, date_column))
-            except duckdb.IOException:
-                # No files behind this view yet; leave it out rather than abort.
+            except (duckdb.IOException, duckdb.InvalidInputException) as exc:
+                # IOException: no files behind this view yet. InvalidInputException:
+                # a corrupt/truncated parquet file in the glob (e.g. "No magic bytes
+                # found") -- read_parquet has no per-file skip in DuckDB 1.5, so one
+                # bad file fails the whole view's read. Either way, leave this view
+                # out of the build rather than aborting every other view along with
+                # it -- but say so; a silently empty view is a dead detector, not a
+                # healthy one. -> pm:2026-09-06-duckdb-coverage-corrupt-parquet-aborted-build
+                log.warning("duckdb build: leaving %s out of this build: %s", view_name, exc)
                 counts[view_name] = 0
                 continue
             counted = con.execute("SELECT count(*) FROM coverage WHERE view_name = ?", [view_name]).fetchone()

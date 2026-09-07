@@ -102,6 +102,7 @@ class SilverRevisionPublisher:
     def transaction(self) -> Iterator[SilverRevisionTransaction]:
         """Reserve the next revision while holding the cross-process publish lock."""
         with self._lock():
+            self._recover_orphans()
             current = self._read_current()
             revision = 1 if current is None else current.revision + 1
             yield SilverRevisionTransaction(self, current, revision)
@@ -115,6 +116,7 @@ class SilverRevisionPublisher:
     ) -> SilverRevision:
         manifest_artifacts = self._validate_artifacts(artifacts)
         normalized_affected = self._validate_affected(affected)
+        self._recover_orphans()
         current = self._read_current()
         if current and current.artifacts == manifest_artifacts and current.affected == normalized_affected:
             return current
@@ -144,6 +146,43 @@ class SilverRevisionPublisher:
             immutable_path.unlink(missing_ok=True)
             raise
         return silver_revision
+
+    def _recover_orphans(self) -> None:
+        """Reconcile a manifest left behind by a kill between the immutable write and
+        the ``current.json`` swap: the ``except`` that unlinks it never runs under
+        SIGKILL, so every later publish recomputed the same revision and died on
+        ``open("xb")`` -- permanently. A manifest at exactly ``current + 1`` that still
+        validates is adopted; anything else is quarantined, never deleted.
+        """
+        current = self._read_current()
+        current_revision = 0 if current is None else current.revision
+        candidates = sorted(
+            (int(path.stem.split("=", 1)[1]), path)
+            for path in self.revisions_dir.glob("revision=*.json")
+            if path.stem.split("=", 1)[1].isdigit() and int(path.stem.split("=", 1)[1]) > current_revision
+        )
+        for revision, path in candidates:
+            if revision != current_revision + 1 or not self._manifest_self_identifies(path, revision):
+                self._quarantine(path)
+                continue
+            self._replace_current(path.read_bytes())
+            current_revision = revision
+
+    @staticmethod
+    def _manifest_self_identifies(path: Path, revision: int) -> bool:
+        # The honest minimum, and deliberately not more: re-hashing the manifest's
+        # artifacts would re-read the whole Silver tree off a cold exFAT lake on every
+        # publish, and the publisher hashed them already before it wrote this file.
+        try:
+            payload = json.loads(path.read_bytes())
+        except (OSError, ValueError):
+            return False
+        return isinstance(payload, dict) and payload.get("schema_version") == 1 and payload.get("revision") == revision
+
+    def _quarantine(self, path: Path) -> None:
+        quarantine = self.revisions_dir / "quarantine"
+        quarantine.mkdir(parents=True, exist_ok=True)
+        os.replace(path, quarantine / f"{path.name}.{time.time_ns()}.orphan")
 
     def _validate_artifacts(
         self,

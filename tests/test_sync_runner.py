@@ -519,7 +519,10 @@ class TestRunSync:
 
 class TestMain:
     def test_default_args(self, tmp_path, monkeypatch):
+        from clients import ledger
+
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
+        monkeypatch.setenv("LW_RUN_ID", "intraday-catchup-main-test")
         monkeypatch.delenv("MDW_DAILY_BACKFILL_TARGET_DATE", raising=False)
 
         with patch("livewire_scripts.sync_runner.run_sync", return_value=0) as mock:
@@ -527,6 +530,10 @@ class TestMain:
         assert rc == 0
         config = mock.call_args[0][0]
         assert config.target_date == "2026-05-28"
+        assert ledger.query("select job, verdict from runs order by ended nulls first") == [
+            {"job": "intraday-catchup", "verdict": None},
+            {"job": "intraday-catchup", "verdict": "OK"},
+        ]
 
     def test_all_overrides(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
@@ -581,6 +588,25 @@ class TestPhaseTimeout:
         sync_runner.run_phase("ok", ["true"], tmp_path, runner=fake_runner, timeout=42)
 
         assert seen["timeout"] == 42
+
+    def test_phase_writes_entry_and_terminal_ledger_rows(self, tmp_path, monkeypatch):
+        from clients import ledger
+
+        monkeypatch.setenv("LW_RUN_ID", "intraday-catchup-test")
+        assert (
+            sync_runner.run_phase(
+                "equity_1m",
+                ["ok"],
+                tmp_path,
+                runner=lambda *a, **k: CompletedProcess(a[0], 0),
+                timeout=10,
+            )
+            == 0
+        )
+        assert ledger.query("select outcome from lane_results order by ended nulls first") == [
+            {"outcome": None},
+            {"outcome": "done"},
+        ]
 
     def test_budget_is_env_tunable(self, monkeypatch):
         monkeypatch.setenv("MDW_SYNC_PHASE_TIMEOUT_SECONDS", "900")
@@ -655,3 +681,64 @@ class TestAGatewayOutageDegradesRatherThanFails:
         summary = self._summary(capsys)
         assert summary["failed"] == ["daily_backfill_duckdb_coverage"]
         assert summary["degraded"] == []
+
+
+class TestTheIntradayPhasesWaitForTheLake:
+    """The 6h flat-file phase is what crowded the daily lanes out for four nights."""
+
+    @pytest.fixture(autouse=True)
+    def warehouse(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
+        monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+        monkeypatch.setenv("LW_RUN_ID", "intraday-catchup-20260906T100000Z-1")
+
+    def test_a_phase_records_the_time_it_waited(self, tmp_path):
+        from clients import ledger
+
+        rc = run_phase("daily_backfill_fred_rates", ["echo", "hi"], tmp_path, runner=_ok_runner)
+
+        assert rc == 0
+        assert ledger.query("select name, scope, source from measurements where name = 'lake_lock_wait_s'") == [
+            {
+                "name": "lake_lock_wait_s",
+                "scope": "daily_backfill_fred_rates",
+                "source": "measured",
+            }
+        ]
+
+    def test_a_phase_that_never_gets_the_lock_is_blocked_and_never_runs(self, tmp_path, monkeypatch):
+        from clients import ledger
+        from clients.parquet_io import path_lock
+        from livewire_scripts.paths import lake_lock_path
+
+        started = []
+
+        def _recording_runner(command, **kwargs):
+            started.append(command)
+            return CompletedProcess(args=command, returncode=0)
+
+        with path_lock(lake_lock_path()):
+            rc = run_phase(
+                "daily_backfill_intraday_equity_flatfiles",
+                ["cmd"],
+                tmp_path,
+                runner=_recording_runner,
+                timeout=0,
+            )
+
+        assert rc == 0  # a deferred phase must not page; it is the low-priority job
+        assert started == []
+        assert ledger.query("select lane, outcome, blocker from lane_results where outcome is not null") == [
+            {
+                "lane": "daily_backfill_intraday_equity_flatfiles",
+                "outcome": "blocked",
+                "blocker": "lake_lock",
+            }
+        ]
+
+    def test_the_intraday_job_polls_at_the_intraday_interval(self):
+        """Low priority is a real mechanism: it looks once a minute, not once a second."""
+        from clients import constants
+
+        assert constants.declared("lake_lock_poll_s/intraday") == sync_runner.LAKE_LOCK_POLL_S
+        assert constants.declared("lake_lock_poll_s/daily") < sync_runner.LAKE_LOCK_POLL_S

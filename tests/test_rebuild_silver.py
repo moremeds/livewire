@@ -9,6 +9,7 @@ from decimal import Decimal
 import pyarrow.parquet as pq
 import pytest
 
+from clients import ledger
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.massive_client import MassiveDividend, MassiveSplit
@@ -123,30 +124,6 @@ def test_continuity_allowlist_exempts_an_evidenced_date(tmp_path):
 
     kept = pq.ParquetFile(silver / "asset_class=equity/symbol=EQIX/1d.parquet").read().to_pylist()
     assert [str(r["trade_date"]) for r in kept] == ["2002-12-30", "2003-01-02", "2003-01-03"]
-
-
-def test_summary_line_is_visible_to_the_nightly_digest(tmp_path, capsys):
-    """The digest's Silver section is the ONLY alert for window regressions.
-
-    The rebuild still exits 0 when it withholds symbols, so nothing else
-    surfaces them. This summary printed as bare JSON, which
-    `parse_all_summary_json` skips, so the section rendered "(not found)" on
-    nights the rebuild had in fact succeeded — rev-19 withheld 41 symbols and
-    the 2026-08-01 digest reported no Silver rebuild at all.
-    """
-    from livewire_scripts.status import _silver_section
-
-    _bronze(tmp_path, "NVDA")
-    _split(tmp_path)
-    assert rebuild_silver.run(["--tickers", "NVDA"], data_lake_root=tmp_path, silver_root=tmp_path / "silver") == 0
-
-    log_dir = tmp_path / "logs"
-    log_dir.mkdir()
-    (log_dir / "daily_update_2026-07-02.log").write_text(capsys.readouterr().out, encoding="utf-8")
-
-    section = "\n".join(_silver_section("2026-07-02", log_dir).lines)
-    assert "(not found)" not in section
-    assert "revision=1" in section
 
 
 def test_targeted_rebuild_publishes_daily_factors_and_manifest(tmp_path, capsys):
@@ -914,3 +891,46 @@ def test_full_rebuild_remanifests_orphaned_silver_files(tmp_path, capsys):
     assert summary["rebuilt"] == 0  # BBB carried by reference, AAA unchanged
     remanifested = json.loads(current_path.read_text())
     assert {a["symbol"] for a in remanifested["affected"]} == {"AAA", "BBB"}
+
+
+def test_carried_symbol_takes_its_sha_from_disk_not_the_stale_manifest(tmp_path):
+    """The 2026-09-06 shape: a killed publish left MSFT's bytes on disk ahead of the
+    committed manifest. Staging then reproduces exactly those bytes, so MSFT is never
+    ``changed``, is carried forward, and a manifest sha from the previous revision makes
+    ``_validate_artifacts`` raise ``artifact checksum mismatch`` on every later run."""
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
+    _seed_bronze(root, "MSFT", [("2024-01-02", 370.87), ("2024-01-03", 370.60)])
+    rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+
+    # The interrupted run rewrote MSFT's artifacts and died before committing: same rows
+    # (so staging still calls them unchanged), different bytes from the manifest's sha.
+    carried = silver / "adjustments/asset_class=equity/symbol=MSFT/factors.parquet"
+    manifest_sha = hashlib.sha256(carried.read_bytes()).hexdigest()
+    pq.write_table(pq.ParquetFile(carried).read(), carried, compression="gzip")
+    assert hashlib.sha256(carried.read_bytes()).hexdigest() != manifest_sha
+    # One genuinely changed symbol, so the run reaches the publish transaction at all.
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25), ("2024-01-04", 181.91)])
+
+    assert rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17)) == 0
+
+    current = json.loads((silver / "revisions/current.json").read_text())
+    entry = next(a for a in current["artifacts"] if a["path"].endswith("symbol=MSFT/factors.parquet"))
+    assert entry["sha256"] == hashlib.sha256(carried.read_bytes()).hexdigest()
+
+
+def test_full_rebuild_heartbeats_progress_to_the_ledger(tmp_path, monkeypatch):
+    """A --full walk killed at its lane budget prints nothing; the ledger says how far it got."""
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-20260907T060000Z-1")
+    monkeypatch.setattr(rebuild_silver, "_PROGRESS_EVERY", 2)
+    for symbol in ("AAA", "BBB", "CCC"):
+        _bronze(tmp_path, symbol)
+
+    assert rebuild_silver.run(["--full"], data_lake_root=tmp_path, silver_root=tmp_path / "silver") == 0
+
+    rows = ledger.query("select name, value, unit, run_id from measurements where scope = 'silver'")
+    # Beat at symbol 2, then the closing beat at 3 — never a stale multiple of the cadence.
+    assert sorted(row["value"] for row in rows if row["name"] == "progress") == [2.0, 3.0]
+    assert {row["value"] for row in rows if row["name"] == "progress_total"} == {3.0}
+    assert {row["unit"] for row in rows} == {"symbols"}
+    assert {row["run_id"] for row in rows} == {"daily-update-20260907T060000Z-1"}

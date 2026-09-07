@@ -52,7 +52,7 @@ Use this file for:
 - Daily 1d coverage auto-recovery for equities uses `scripts/livewire_ingest.py daily --source massive --target-date <date> --tickers ...` so recent target-date repair does not consume IB historical pacing. Explicit missing bronze tickers get the target-date row only; full historical seeding still belongs to `historical`.
 - `scripts/livewire_ingest.py flatfile-ingest` is the only equity-intraday path. It discovers the actual entitled range, stages bucketed raw daily Parquet, publishes every provider ticker to `1m`, and derives `5m`, `30m`, and `1h`. `intraday-backfill` is IB-only for non-equity.
 - Equity-intraday orchestrators require Massive S3 credentials and fail before any phases when they are missing; there is no REST or IB equity-intraday fallback.
-- A full flat-file backfill is capacity-gated before download using the discovered compressed object size, `MDW_FLATFILE_STORAGE_MULTIPLIER`, and `MDW_FLATFILE_MIN_FREE_GB`.
+- A full flat-file backfill is capacity-gated before download using the discovered compressed object size, `MDW_FLATFILE_STORAGE_MULTIPLIER`, and `LW_DECLARED_FLATFILE_MIN_FREE_GB`.
 - Equity `1m` surfaces in daily/weekly coverage alongside `1d`, `1h`, and `5m`. The DuckDB coverage table is **daily-only** on purpose: a pass over the intraday tier would enumerate and scan 23.57 GB, and equity `1m` alone exceeds the free disk.
 - Intraday for non-equity asset classes remains IB-backed; `--source massive` is equity-only.
 - Telemetry events (IB farm states, connection lifecycle) land in `~/market-warehouse/logs/telemetry.jsonl`. Schema is source-tagged JSONL with `{ts, source, event, ...}`.

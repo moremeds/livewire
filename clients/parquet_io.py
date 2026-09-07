@@ -9,6 +9,7 @@ specified sort column.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import time
 from collections.abc import Iterator
@@ -29,6 +30,71 @@ PARQUET_COMPRESSION = "zstd"
 PARQUET_COMPRESSION_LEVEL = 3
 
 
+def fsync_directory(path: Path) -> None:
+    """fsync a directory so a rename inside it survives a crash.
+
+    One directory fsync per commit is the rule the sharded CAS was rebuilt
+    around (pm:2026-09-05-source-evidence-flat-exfat-directory); four copies of
+    this function is four chances to forget it.
+    """
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def write_json_atomic(path: Path, payload: object) -> None:
+    """Publish JSON the way the lake publishes parquet: temp -> fsync -> replace.
+
+    The temp file is a sibling of the destination so `os.replace` stays within
+    one filesystem; `.resolve()` is deliberately not called, because the lake
+    root is a directory of symlinks into the exFAT volume.
+    """
+    destination = Path(path).expanduser()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True, indent=2, default=str)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+        fsync_directory(destination.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def path_lock(lock_path: Path, *, blocking: bool = True) -> Iterator[bool]:
+    """Hold a POSIX flock on `lock_path`, creating it and its parent on demand.
+
+    Yields True while the lock is held; yields False, having taken nothing, when
+    `blocking=False` and another open file description holds it. flock is
+    released with the fd -- SIGKILL included -- so there is no cleanup path to
+    write and none to get wrong.
+
+    One primitive, two scopes: `symbol_lock` serializes writers to one parquet
+    path, and `livewire_scripts.job_runner_common.lake_lock` serializes whole
+    lanes against the lake (spec 2026-09-06-tiered-nightly-pipeline-design.md
+    section 3). A second implementation would be a second lock domain, which is
+    the same as no lock.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), flags)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 @contextmanager
 def symbol_lock(parquet_path: Path) -> Iterator[Path]:
     """Serialize writers for one parquet path using a local POSIX lock.
@@ -38,13 +104,8 @@ def symbol_lock(parquet_path: Path) -> Iterator[Path]:
     with working ``flock`` semantics; verified on the production exFAT data lake.
     """
     lock_path = parquet_path.with_suffix(parquet_path.suffix + ".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            yield lock_path
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    with path_lock(lock_path):
+        yield lock_path
 
 
 def publish_parquet(
@@ -97,7 +158,10 @@ def validate_parquet_file(
         raise ValueError(f"{path}: expected {expected_rows} rows, found {table.num_rows}")
 
     raw_values = table.column(sort_column).to_pylist()
-    values = [v.isoformat() if isinstance(v, (date, datetime)) else str(v) for v in raw_values]
+    # Dates become ISO text (string-sortable); everything else keeps its own
+    # type. str() on an int sorted "10" before "2", so an 11-row ledger emit
+    # was unpublishable and a genuinely unsorted [1, 10, 2] validated clean.
+    values = [v.isoformat() if isinstance(v, (date, datetime)) else v for v in raw_values]
     if values != sorted(values):
         raise ValueError(f"{path}: {sort_column} values are not sorted ascending")
     if len(values) != len(set(values)):

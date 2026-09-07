@@ -4,8 +4,6 @@ import json
 import os
 from datetime import UTC, datetime
 
-import pytest
-
 from livewire_scripts.corporate_action_cursor import (
     build_identity,
     default_cursor_path,
@@ -70,46 +68,63 @@ def test_fresh_run_replaces_matching_completed_cursor(tmp_path):
     assert fresh.started_at == _utc(14)
 
 
-def test_completed_cursor_rejects_resume(tmp_path):
-    identity = build_identity(tmp_path, ["AAPL"], full_reconcile=True, dry_run=False)
-    path = tmp_path / "cursor.json"
-    cursor = open_cursor(path, identity, resume=False, now=_utc(13))
-    cursor.mark_completed("AAPL", now=_utc(13))
-    cursor.mark_run_completed(now=_utc(13))
+class TestResumeNeverFailsTheLane:
+    """The nightly lane passes --resume unconditionally.
 
-    with pytest.raises(ValueError, match="already complete"):
-        open_cursor(path, identity, resume=True, now=_utc(14))
+    Every reason a cursor cannot be continued has to degrade to a fresh pass:
+    raising here would lose the whole night, which is the outcome the cursor
+    exists to prevent.
+    """
 
+    def test_completed_cursor_starts_a_fresh_pass(self, tmp_path, capsys):
+        identity = build_identity(tmp_path, ["AAPL"], full_reconcile=True, dry_run=False)
+        path = tmp_path / "cursor.json"
+        cursor = open_cursor(path, identity, resume=False, now=_utc(13))
+        cursor.mark_completed("AAPL", now=_utc(13))
+        cursor.mark_run_completed(now=_utc(13))
 
-def test_incompatible_cursor_rejects_resume(tmp_path):
-    identity = build_identity(tmp_path, ["AAPL"], full_reconcile=False, dry_run=False)
-    other = build_identity(tmp_path, ["MSFT"], full_reconcile=False, dry_run=False)
-    path = tmp_path / "cursor.json"
-    open_cursor(path, identity, resume=False, now=_utc(13))
+        fresh = open_cursor(path, identity, resume=True, now=_utc(14))
 
-    with pytest.raises(ValueError, match="incompatible"):
-        open_cursor(path, other, resume=True, now=_utc(13))
+        assert fresh.completed == set()
+        assert fresh.run_completed_at is None
+        assert fresh.started_at == _utc(14)
+        assert "already complete" in capsys.readouterr().err
 
+    def test_incompatible_cursor_starts_a_fresh_pass(self, tmp_path, capsys):
+        identity = build_identity(tmp_path, ["AAPL"], full_reconcile=False, dry_run=False)
+        other = build_identity(tmp_path, ["MSFT"], full_reconcile=False, dry_run=False)
+        path = tmp_path / "cursor.json"
+        open_cursor(path, identity, resume=False, now=_utc(13))
 
-def test_malformed_cursor_rejects_resume(tmp_path):
-    path = tmp_path / "cursor.json"
-    path.write_text("not json")
-    identity = build_identity(tmp_path, ["AAPL"], full_reconcile=False, dry_run=False)
+        fresh = open_cursor(path, other, resume=True, now=_utc(13))
 
-    with pytest.raises(ValueError, match="malformed"):
-        open_cursor(path, identity, resume=True, now=_utc(13))
+        assert fresh.identity == other
+        assert fresh.completed == set()
+        assert "no longer matches" in capsys.readouterr().err
+        assert json.loads(path.read_text())["ticker_sha256"] == other.ticker_sha256
 
+    def test_malformed_cursor_starts_a_fresh_pass(self, tmp_path, capsys):
+        path = tmp_path / "cursor.json"
+        path.write_text("not json")
+        identity = build_identity(tmp_path, ["AAPL"], full_reconcile=False, dry_run=False)
 
-def test_non_boolean_mode_is_malformed(tmp_path):
-    identity = build_identity(tmp_path, ["AAPL"], full_reconcile=False, dry_run=False)
-    path = tmp_path / "cursor.json"
-    open_cursor(path, identity, resume=False, now=_utc(13))
-    payload = json.loads(path.read_text())
-    payload["dry_run"] = "false"
-    path.write_text(json.dumps(payload))
+        fresh = open_cursor(path, identity, resume=True, now=_utc(13))
 
-    with pytest.raises(ValueError, match="malformed"):
-        open_cursor(path, identity, resume=True, now=_utc(13))
+        assert fresh.completed == set()
+        assert "malformed" in capsys.readouterr().err
+
+    def test_non_boolean_mode_is_malformed(self, tmp_path, capsys):
+        identity = build_identity(tmp_path, ["AAPL"], full_reconcile=False, dry_run=False)
+        path = tmp_path / "cursor.json"
+        open_cursor(path, identity, resume=False, now=_utc(13))
+        payload = json.loads(path.read_text())
+        payload["dry_run"] = "false"
+        path.write_text(json.dumps(payload))
+
+        fresh = open_cursor(path, identity, resume=True, now=_utc(13))
+
+        assert fresh.completed == set()
+        assert "malformed" in capsys.readouterr().err
 
 
 def test_cursor_write_fsyncs_before_atomic_replace(tmp_path, monkeypatch):

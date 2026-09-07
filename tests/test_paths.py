@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib
 from pathlib import Path
 
@@ -74,3 +75,51 @@ def test_resolvers_read_environment_at_call_time(
 
     assert paths.warehouse_dir() == warehouse
     assert paths.data_lake_dir() == warehouse / "data-lake"
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+#: Module-level names that used to shadow livewire_scripts.paths. A module that
+#: reintroduces one has invented a second lake root that MDW_DATA_LAKE cannot
+#: reach, which is how a test can pass against a path production never uses.
+_FORBIDDEN_OVERRIDES = {"_DATA_LAKE", "DATA_LAKE", "_LOG_DIR", "_WAREHOUSE_DIR"}
+
+
+def test_no_module_shadows_the_path_resolvers():
+    offenders: list[str] = []
+    for package in ("clients", "livewire_scripts"):
+        for path in sorted((_REPO_ROOT / package).glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in tree.body:
+                targets = []
+                if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                    targets = [node.target.id]
+                elif isinstance(node, ast.Assign):
+                    targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                offenders += [f"{path.name}:{name}" for name in targets if name in _FORBIDDEN_OVERRIDES]
+
+    assert offenders == []
+
+
+def test_data_lake_dir_follows_the_warehouse_override(monkeypatch, tmp_path):
+    from livewire_scripts.paths import data_lake_dir
+
+    monkeypatch.delenv("MDW_DATA_LAKE", raising=False)
+    monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
+
+    assert data_lake_dir() == tmp_path / "data-lake"
+
+
+def test_the_lake_lock_lives_under_the_warehouse_not_the_lake(paths, tmp_path: Path) -> None:
+    """The lock must not be one more entry in the exFAT directory it exists to protect."""
+    lock = paths.lake_lock_path()
+
+    assert lock == paths.warehouse_dir() / "locks" / "lake-io.lock"
+    assert not lock.is_relative_to(paths.data_lake_dir())
+
+
+def test_the_lake_lock_follows_the_warehouse_override(paths, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
+    monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "elsewhere"))
+
+    assert paths.lake_lock_path() == tmp_path / "warehouse" / "locks" / "lake-io.lock"
+    assert not paths.lake_lock_path().is_relative_to(paths.data_lake_dir())

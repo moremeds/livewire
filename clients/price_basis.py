@@ -9,6 +9,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 
 from clients.corporate_action_store import CorporateAction
+from clients.timeutils import coerce_date
 
 ONE = Decimal("1")
 VOLUME_MODES = frozenset({"raw", "split_adjusted"})
@@ -24,10 +25,6 @@ class SplitClassification:
     raw_error: float
     adjusted_error: float
     confidence: float
-
-
-def _date(value: date | str) -> date:
-    return value if isinstance(value, date) else date.fromisoformat(value)
 
 
 def _decimal(value, label: str) -> Decimal:
@@ -64,11 +61,11 @@ def classify_split_events(
     """Classify each effective split as raw, adjusted, or ambiguous."""
     if tolerance <= 0 or min_margin < 0:
         raise ValueError("classification tolerances must be positive")
-    ordered = sorted(rows, key=lambda row: _date(row["trade_date"]))
+    ordered = sorted(rows, key=lambda row: coerce_date(row["trade_date"]))
     result: list[SplitClassification] = []
     for action, factor in _effective_splits(actions, as_of_date):
-        previous = [row for row in ordered if _date(row["trade_date"]) < action.ex_date]
-        following = [row for row in ordered if _date(row["trade_date"]) >= action.ex_date]
+        previous = [row for row in ordered if coerce_date(row["trade_date"]) < action.ex_date]
+        following = [row for row in ordered if coerce_date(row["trade_date"]) >= action.ex_date]
         if not previous:
             continue
         if not following:
@@ -122,7 +119,7 @@ def normalize_ib_rows(rows: list[dict], classifications: list[SplitClassificatio
     for row in rows:
         if row.get("source") != "ib" or row.get("price_basis") not in {"unknown", "split_adjusted"}:
             raise ValueError("normalization requires staged IB rows")
-        trade_date = _date(row["trade_date"])
+        trade_date = coerce_date(row["trade_date"])
         factor = ONE
         for item in classifications:
             if item.treatment == "adjusted" and item.ex_date > trade_date:
@@ -158,7 +155,7 @@ def prepare_ib_rows_for_publish(
     ]
     if not any(row.get("source") == "ib" for row in staged):
         return staged
-    earliest_ib_date = min(_date(row["trade_date"]) for row in staged if row.get("source") == "ib")
+    earliest_ib_date = min(coerce_date(row["trade_date"]) for row in staged if row.get("source") == "ib")
     relevant_actions = [action for action in actions if action.ex_date > earliest_ib_date]
     combined_by_date = {str(row["trade_date"]): row for row in existing_rows}
     combined_by_date.update({str(row["trade_date"]): row for row in staged})
@@ -189,7 +186,7 @@ def normalize_split_adjusted_rows(
     for row in rows:
         if row.get("price_basis") != "split_adjusted":
             raise ValueError("normalization requires split_adjusted input rows")
-        trade_date = _date(row["trade_date"])
+        trade_date = coerce_date(row["trade_date"])
         factor = ONE
         for ex_date, split_factor in splits:
             if ex_date > trade_date:

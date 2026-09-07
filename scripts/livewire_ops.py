@@ -25,6 +25,7 @@ COMMANDS = {
     "run-intraday-catchup-job": "livewire_scripts.run_intraday_catchup_job",
     "release": "livewire_scripts.release",
     "housekeeping": "livewire_scripts.housekeeping",
+    "ledger": "livewire_scripts.ledger_cli",
     "status": "livewire_scripts.status",
 }
 

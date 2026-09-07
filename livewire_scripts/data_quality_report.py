@@ -271,13 +271,6 @@ def _send_email(summary: dict) -> bool:
         )
         return False
 
-    log_dir = _resolve_log_dir()
-    log_dir.mkdir(parents=True, exist_ok=True)
-    date_str = datetime.now(UTC).strftime("%Y-%m-%d")
-    (log_dir / f"quality_summary_{date_str}.marker").write_text(
-        "ok\n",
-        encoding="utf-8",
-    )
     return True
 
 

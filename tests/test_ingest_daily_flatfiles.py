@@ -107,3 +107,10 @@ def test_main_reports_capacity_failure_without_downloading(monkeypatch, tmp_path
     ):
         main(["backfill"])
     download.assert_not_called()
+
+
+def test_the_daily_ingester_shares_the_intraday_date_parser():
+    from livewire_scripts import ingest_daily_flatfiles, ingest_flatfiles
+
+    assert ingest_daily_flatfiles._parse_dates is ingest_flatfiles._parse_dates
+    assert ingest_daily_flatfiles._require_credentials is ingest_flatfiles._require_credentials

@@ -16,14 +16,17 @@ from zoneinfo import ZoneInfo
 
 import pyarrow.parquet as pq
 
+from clients import ledger
 from clients.adjustment_engine import FactorInterval, adjust_daily_rows, build_factor_intervals
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateAction, CorporateActionStore
+from clients.parquet_io import write_json_atomic
 from clients.seed_boundary import classify_seed_boundary
 from clients.silver_client import PublishedArtifact, SilverClient
 from clients.silver_revision import AffectedSymbol, ManifestArtifact, SilverRevision, SilverRevisionPublisher
 from clients.silver_window import resolve_window
 from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, resolve_exit_code
+from livewire_scripts.job_runner_common import emit_progress
 from livewire_scripts.paths import data_lake_dir
 
 TIMEFRAMES = ("1d", "1m", "5m", "30m", "1h")
@@ -82,6 +85,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="publish symbols whose window start moved later (required once, for the rev-3 bootstrap)",
     )
     return parser.parse_args(list(argv) if argv is not None else None)
+
+
+# Heartbeat cadence, in symbols. Matches the corporate-actions lane: a --full run
+# walks ~13k symbols for hours and prints nothing an operator can count.
+_PROGRESS_EVERY = 500
 
 
 def default_silver_root(root: Path) -> Path:
@@ -184,12 +192,15 @@ def _carry_forward(
         resolved: list[PublishedArtifact] = []
         for artifact in entries:
             path = client.root / artifact.path
-            if not path.is_file():
+            # The disk is the authority: the manifest describes the bytes being served,
+            # and an interrupted publish leaves those bytes ahead of the recorded sha.
+            sha = _sha256(path)
+            if sha is None:  # vanished between checks — skip rather than manifest a gap
                 resolved = []
                 break
             # row_count is not serialized into the manifest but PublishedArtifact
             # requires it — read the footer rather than inventing a number.
-            resolved.append(PublishedArtifact(path, artifact.sha256, pq.ParquetFile(path).metadata.num_rows))
+            resolved.append(PublishedArtifact(path, sha, pq.ParquetFile(path).metadata.num_rows))
         if not resolved:
             continue  # a vanished artifact must not be manifested
         artifacts.extend(resolved)
@@ -320,7 +331,7 @@ def _summary(**values) -> None:
     """Emit the machine-readable run summary on the shared SUMMARY_JSON contract.
 
     This line used to print as bare JSON. `parse_all_summary_json` skips every
-    line without the prefix, so `nightly_digest._silver_section` never found it
+    line without the prefix, so the ledger measurement writer never found it
     and rendered "(not found)" on nights the rebuild had in fact succeeded —
     taking the `window_regressions` warning with it. That warning is the ONLY
     alert for a symbol whose window shrank (the run still exits 0), so the
@@ -370,20 +381,6 @@ def _failure(
     }
 
 
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    destination = path.expanduser().resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
-    try:
-        with temporary.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, sort_keys=True)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, destination)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def run(
     argv: Sequence[str] | None = None,
     *,
@@ -411,7 +408,8 @@ def run(
 
     staged: list[StagedSymbol] = []
     failures: list[dict] = []
-    for symbol in symbols:
+    run_id = os.environ.get("LW_RUN_ID") or ledger.new_run_id("silver")
+    for position, symbol in enumerate(symbols, start=1):
         rows: list[dict] = []
         actions: list[CorporateAction] = []
         try:
@@ -471,6 +469,11 @@ def run(
         except Exception as exc:
             failures.append(_failure(symbol, exc, bronze, rows, actions))
             print(f"{symbol}: {exc}", file=sys.stderr)
+        if position % _PROGRESS_EVERY == 0:
+            emit_progress(scope="silver", completed=position, total=len(symbols), run_id=run_id)
+    # The loop is the hours-long part; a final beat so the last partial batch is
+    # counted and `status` reads N of N rather than the previous multiple of 500.
+    emit_progress(scope="silver", completed=len(symbols), total=len(symbols), run_id=run_id)
 
     current = publisher.read_current()
     current_revision = 0 if current is None else current.revision
@@ -508,7 +511,7 @@ def run(
     )
 
     if args.failure_output is not None:
-        _write_json_atomic(
+        write_json_atomic(
             args.failure_output,
             {
                 "schema_version": 2,

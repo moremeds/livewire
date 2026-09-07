@@ -6,8 +6,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+#: CLAUDE.md, "Where things are": scripts/ holds four entrypoints. A fifth
+#: dispatcher (scripts/livewire.py) survived for months because this test
+#: required it to exist. The set is now the contract, in both directions.
 EXPECTED_SCRIPT_FILES = {
-    "livewire.py",
     "livewire_ingest.py",
     "livewire_ops.py",
     "livewire_quality.py",
@@ -16,10 +18,11 @@ EXPECTED_SCRIPT_FILES = {
 }
 
 
-def test_scripts_directory_exposes_only_five_operator_entrypoints() -> None:
+def test_scripts_directory_exposes_only_the_four_operator_entrypoints() -> None:
     script_files = {path.name for path in (REPO_ROOT / "scripts").iterdir() if path.is_file()}
 
     assert script_files == EXPECTED_SCRIPT_FILES
+    assert sum(1 for name in script_files if name.endswith(".py")) == 4
 
 
 def test_operator_entrypoint_modules_are_importable() -> None:

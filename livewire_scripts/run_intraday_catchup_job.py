@@ -16,9 +16,13 @@ import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
+from livewire_scripts.job_runner_common import AlertRequest, append_log
+from livewire_scripts.job_runner_common import build_alert_command as _build_alert_command
+from livewire_scripts.job_runner_common import build_log_file as _build_log_file
+from livewire_scripts.job_runner_common import utc_now as _utc_now
 from livewire_scripts.paths import warehouse_dir as resolve_warehouse_dir
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -37,19 +41,6 @@ class IntradayCatchupConfig:
     node_bin: str
 
 
-@dataclass(frozen=True)
-class AlertRequest:
-    run_date: str
-    log_file: Path
-    exit_code: int
-    error_summary: str
-    repo_root: Path
-
-
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
 def build_config() -> IntradayCatchupConfig:
     warehouse_dir = resolve_warehouse_dir()
     log_dir = Path(os.getenv("MDW_INTRADAY_CATCHUP_LOG_DIR", str(warehouse_dir / "logs"))).expanduser()
@@ -65,8 +56,7 @@ def build_config() -> IntradayCatchupConfig:
 
 
 def build_log_file(log_dir: Path, now: datetime | None = None) -> Path:
-    current = now or _utc_now()
-    return log_dir / f"intraday_catchup_{current:%Y-%m-%d}.log"
+    return _build_log_file(log_dir, "intraday_catchup", now)
 
 
 def build_intraday_catchup_command(config: IntradayCatchupConfig) -> list[str]:
@@ -74,35 +64,7 @@ def build_intraday_catchup_command(config: IntradayCatchupConfig) -> list[str]:
 
 
 def build_alert_command(config: IntradayCatchupConfig, request: AlertRequest) -> list[str]:
-    return [
-        config.python_bin,
-        str(config.alert_script),
-        "send-alert",
-        "--run-date",
-        request.run_date,
-        "--log-file",
-        str(request.log_file),
-        # One token. The two-token form breaks whenever the summary begins with
-        # "--", which is how the 2026-08-08 page was lost.
-        f"--error-summary={request.error_summary}",
-        "--repo-root",
-        str(request.repo_root),
-        "--job-name",
-        "intraday_catchup",
-        "--attempts",
-        "1",
-        "--exit-code",
-        str(request.exit_code),
-    ]
-
-
-def append_log(log_file: Path, message: str) -> None:
-    """Append a line to log_file, creating parent dirs as needed."""
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    with log_file.open("a", encoding="utf-8") as handle:
-        handle.write(message)
-        if not message.endswith("\n"):
-            handle.write("\n")
+    return _build_alert_command(config.python_bin, config.alert_script, request, job_name="intraday_catchup")
 
 
 def _node_binary_exists(node_bin: str) -> bool:
@@ -160,6 +122,7 @@ def _send_failure_alert(
     alert_request = AlertRequest(
         run_date=log_file.stem.removeprefix("intraday_catchup_"),
         log_file=log_file,
+        attempts=1,
         exit_code=exit_code,
         error_summary=_extract_error_summary(log_file),
         repo_root=REPO_ROOT,

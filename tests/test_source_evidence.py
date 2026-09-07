@@ -57,6 +57,26 @@ def test_duplicate_bytes_and_manifest_row_are_idempotent(tmp_path):
     assert store.list_verified() == [row]
 
 
+def test_repeat_persist_within_one_run_skips_the_disk_reverify(tmp_path):
+    """A digest this process already confirmed on disk is not re-read+rehashed.
+
+    Corporate-actions responses are heavily duplicated within one run (e.g.
+    thousands of tickers sharing one empty-results body); re-verifying an
+    already-known digest from disk on every call turned that duplication into
+    O(responses) reads against a single mechanical drive. Corrupting the file
+    out from under the cache and confirming persist_raw still succeeds proves
+    the second call never touched disk.
+    """
+    store = SourceEvidenceStore(tmp_path)
+    first = store.persist_raw(b"shared body")
+    store.raw_path(first.sha256).write_bytes(b"corrupted")
+
+    second = store.persist_raw(b"shared body")
+
+    assert second == first
+    assert store.raw_path(first.sha256).read_bytes() == b"corrupted"
+
+
 def test_later_retrieval_of_same_source_revision_preserves_first_known_time(tmp_path):
     store = SourceEvidenceStore(tmp_path)
     artifact = store.persist_raw(b"same revision")
@@ -233,3 +253,153 @@ class TestBatchedCommit:
         with pytest.raises(ValueError, match="artifact missing"):
             store.record_many([good, missing])
         assert not store.manifest_path.exists()
+
+
+class TestShardedCas:
+    """One flat directory on exFAT is a linear scan per write.
+
+    Production 2026-09-05: 275,006 entries in `raw/shepherd/sha256/`, 137,504 of
+    them orphan lock files, 25 GB — and the corporate-actions lane timing out at
+    its 10800s budget three nights running. The fixtures that hid it reused one
+    byte-identical body, so every write after the first was an in-process cache
+    hit; these use distinct bodies, which is what production sends.
+    """
+
+    def test_distinct_bodies_land_in_shards_and_no_lock_file_is_created(self, tmp_path):
+        store = SourceEvidenceStore(tmp_path)
+        for index in range(20):
+            payload = f'{{"results":[{index}]}}'.encode()
+            artifact = store.persist_raw(payload)
+            digest = artifact.sha256
+            assert store.raw_path(digest) == store.raw_root / digest[0:2] / digest[2:4] / digest
+            assert store.read(artifact.ref) == payload
+
+        assert list(store.raw_root.glob("*")) != []
+        assert [path.name for path in store.raw_root.rglob(".*.lock")] == []
+        # Nothing lands directly in the flat root any more.
+        assert [path for path in store.raw_root.iterdir() if path.is_file()] == []
+
+    def test_a_legacy_flat_artifact_is_still_resolved_and_verified(self, tmp_path):
+        store = SourceEvidenceStore(tmp_path)
+        payload = b'{"legacy":"written before sharding"}'
+        digest = hashlib.sha256(payload).hexdigest()
+        legacy = store.raw_root / digest
+        legacy.write_bytes(payload)
+
+        assert store.raw_path(digest) == legacy
+        row = evidence(f"artifact://sha256/{digest}", digest)
+        store.record_many([row])
+
+        assert store.read(row.ref) == payload
+        assert store.list_verified() == [row]
+        assert not (store.raw_root / digest[0:2] / digest[2:4] / digest).exists()
+
+    def test_the_renamed_aside_flat_directory_is_still_resolved_and_verified(self, tmp_path):
+        """Retiring the 275k-entry flat directory is one `mv`, not 275k unlinks.
+
+        The artifacts it holds are provider bytes that can never be refetched,
+        so `sha256-legacy/` has to stay readable exactly like `sha256/` did.
+        """
+        store = SourceEvidenceStore(tmp_path)
+        payload = b'{"legacy":"moved aside by one mv"}'
+        digest = hashlib.sha256(payload).hexdigest()
+        renamed = store.raw_root.parent / "sha256-legacy"
+        renamed.mkdir(parents=True)
+        (renamed / digest).write_bytes(payload)
+
+        assert store.raw_path(digest) == renamed / digest
+        row = evidence(f"artifact://sha256/{digest}", digest)
+        store.record_many([row])
+
+        assert store.read(row.ref) == payload
+        assert store.list_verified() == [row]
+
+    def test_a_corrupt_legacy_artifact_still_fails_closed(self, tmp_path):
+        store = SourceEvidenceStore(tmp_path)
+        digest = hashlib.sha256(b"claimed").hexdigest()
+        (store.raw_root / digest).write_bytes(b"tampered")
+
+        with pytest.raises(ValueError, match="hash mismatch"):
+            store.record_many([evidence(f"artifact://sha256/{digest}", digest)])
+
+    def test_record_many_does_not_rehash_a_digest_this_process_wrote(self, tmp_path, monkeypatch):
+        store = SourceEvidenceStore(tmp_path)
+        written = store.persist_raw(b'{"fresh":"body"}')
+        foreign_payload = b'{"another process":"wrote this"}'
+        foreign_digest = hashlib.sha256(foreign_payload).hexdigest()
+        (store.raw_root / foreign_digest[0:2] / foreign_digest[2:4]).mkdir(parents=True)
+        (store.raw_root / foreign_digest[0:2] / foreign_digest[2:4] / foreign_digest).write_bytes(foreign_payload)
+
+        verified: list[str] = []
+        real_verify = SourceEvidenceStore._verify_path
+        monkeypatch.setattr(
+            SourceEvidenceStore,
+            "_verify_path",
+            staticmethod(lambda path, digest: (verified.append(digest), real_verify(path, digest))[1]),
+        )
+        store.record_many(
+            [
+                evidence(written.ref, written.sha256),
+                evidence(f"artifact://sha256/{foreign_digest}", foreign_digest),
+            ]
+        )
+
+        assert verified == [foreign_digest]
+        assert len(store.list_verified()) == 2
+
+    def test_the_shard_directory_is_fsynced_once_per_commit_not_per_artifact(self, tmp_path, monkeypatch):
+        store = SourceEvidenceStore(tmp_path)
+        synced: list[str] = []
+        monkeypatch.setattr(
+            "clients.source_evidence.fsync_directory",
+            lambda path: synced.append(str(path)),
+        )
+        rows = [evidence(a.ref, a.sha256) for a in (store.persist_raw(f"body-{i}".encode()) for i in range(8))]
+
+        assert synced == []
+        store.record_many(rows)
+
+        # Eight artifacts, at most eight shard directories, then the manifest's
+        # own parent -- never one directory fsync per artifact write.
+        assert 0 < len(synced) <= 9
+        store.record_many(rows)
+        assert len(synced) <= 10
+
+
+#: A fixed real payload and the digest it produced before consolidation. If a
+#: refactor changes canonicalisation, every HashedRef in the lake stops
+#: matching; this is the tripwire.
+GOLDEN_PAYLOAD = {"symbol": "NVDA", "session": "2026-09-05", "source": "massive", "rows": 391}
+GOLDEN_BYTES = b'{"rows":391,"session":"2026-09-05","source":"massive","symbol":"NVDA"}\n'
+GOLDEN_DIGEST = "458b0f98a643df70f673f2cfb6b570ee2f500552eaa0dd1093d71891d2e75bff"
+
+
+def test_canonical_bytes_are_frozen():
+    from clients.source_evidence import canonical_bytes, digest_bytes
+
+    assert canonical_bytes(GOLDEN_PAYLOAD) == GOLDEN_BYTES
+    assert digest_bytes(canonical_bytes(GOLDEN_PAYLOAD)) == GOLDEN_DIGEST
+
+
+def test_every_former_call_site_agrees_on_the_digest():
+    from clients import pit_silver_revision, shepherd_repair, source_evidence
+    from livewire_scripts import shepherd_actions, shepherd_daily, shepherd_universe
+
+    modules = [shepherd_repair, pit_silver_revision, shepherd_actions, shepherd_daily, shepherd_universe]
+    for module in modules:
+        assert module.canonical_bytes(GOLDEN_PAYLOAD) == GOLDEN_BYTES, module.__name__
+    assert source_evidence.digest_bytes(GOLDEN_BYTES) == GOLDEN_DIGEST
+
+
+def test_no_module_hand_rolls_a_file_digest():
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    offenders = [
+        path.name
+        for package in ("clients", "livewire_scripts")
+        for path in sorted((root / package).glob("*.py"))
+        if "def _sha256(path: Path) -> str:" in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []

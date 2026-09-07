@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shutil
 import sys
+from collections.abc import Iterator
 from datetime import date, datetime
 from pathlib import Path
 
@@ -42,8 +44,9 @@ from livewire_scripts.release import prune as prune_releases
 log = logging.getLogger(__name__)
 
 #: Lake subtrees no retention rule may ever enter. Matched on the path's parts,
-#: so `repairs/triage/anything/deeper` is protected too.
-PROTECTED_LAKE_DIRS = frozenset({"raw", "repairs"})
+#: so `repairs/triage/anything/deeper` is protected too. The ledger is the run
+#: record every reader grades against, so pruning it would erase a night.
+PROTECTED_LAKE_DIRS = frozenset({"raw", "repairs", "ledger"})
 
 LOG_RETENTION_DAYS = 60
 KEEP_RELEASES = 3
@@ -101,7 +104,7 @@ def plan_housekeeping(
         for directory in revisions[: max(0, len(revisions) - keep_evicted)]:
             planned.append(("superseded evicted revision", directory))
 
-    # AppleDouble sidecars are NOT swept here. `data_lake.rglob("._*")` is a full
+    # AppleDouble sidecars are NOT swept here. `plan_appledouble` is a full
     # recursive walk of a 13 TiB exFAT volume — the exact operation this branch is
     # fixing everywhere else (a single-timeframe glob measured 281s cold; `du -sh`
     # over bronze never returned). Putting it inside a nightly 600s budget would
@@ -114,11 +117,120 @@ def plan_housekeeping(
     return planned
 
 
+def _sweep_roots(data_lake: Path) -> tuple[Path, ...]:
+    """Resolved directories the sidecar walk is allowed inside: the lake itself
+    plus whatever the lake's own first-level entries point at. Since 2026-09-06
+    the lake root is a real internal directory and bronze/, gold/, quarantine/,
+    repairs/, security_master/ … are each a symlink onto /Volumes/DATA_LAKE, so
+    the volume is reached through those declared entries and nowhere else. A
+    deeper symlink resolving outside all of them leaves the lake and is not ours
+    to sweep.
+    """
+    roots = [data_lake.resolve()]
+    try:
+        entries = sorted(data_lake.iterdir())
+    except OSError:
+        return tuple(roots)
+    roots += [entry.resolve() for entry in entries if entry.is_symlink() and entry.is_dir()]
+    return tuple(roots)
+
+
+def _iter_sidecars(data_lake: Path, entered: set[str]) -> Iterator[Path]:
+    """Yield every `._*` file under the lake, recording the first-level subtrees
+    the walk actually got inside.
+
+    `os.walk(..., followlinks=True)` rather than `Path.rglob("._*")`: rglob does
+    not descend into a symlinked directory, and since the 2026-09-06 layout
+    change every large subtree of the lake is one. Paths are yielded unresolved
+    so `_is_protected` still matches them against the lake root it was handed.
+    """
+    roots = _sweep_roots(data_lake)
+    seen: set[tuple[int, int]] = set()
+    try:
+        root_stat = data_lake.stat()
+        seen.add((root_stat.st_dev, root_stat.st_ino))
+    except OSError:
+        return
+    for dirpath, dirnames, filenames in os.walk(data_lake, followlinks=True):
+        parts = Path(dirpath).relative_to(data_lake).parts
+        if parts:
+            entered.add(parts[0])
+        followable = []
+        for name in dirnames:
+            child = Path(dirpath) / name
+            # Only a symlink can escape the lake or close a loop; a real
+            # subdirectory needs neither check and both cost a stat apiece.
+            if not child.is_symlink():
+                followable.append(name)
+                continue
+            try:
+                if not any(child.resolve().is_relative_to(root) for root in roots):
+                    continue  # points off the lake
+                stat = child.stat()
+            except OSError:
+                continue  # dangling, or unreadable: nothing to sweep behind it
+            key = (stat.st_dev, stat.st_ino)
+            if key in seen:
+                continue  # a loop, or the same subtree reachable twice
+            seen.add(key)
+            followable.append(name)
+        dirnames[:] = followable
+        for name in filenames:
+            if name.startswith("._"):
+                yield Path(dirpath) / name
+
+
+def _warn_on_subtrees_the_walk_missed(data_lake: Path, entered: set[str]) -> None:
+    """Rule 9: a sweep that covered nothing must not read as a clean sweep.
+
+    `os.walk` yields a dirpath for every directory it enters, empty ones
+    included, so a first-level subtree that is missing from `entered` was not
+    walked at all — a dangling symlink (the volume is unmounted), a target off
+    the lake, or an unreadable directory. That is the 2026-09-06 shape: 71
+    deletions, 0 failures, and every sidecar still on disk.
+    """
+    try:
+        children = sorted(data_lake.iterdir())
+    except OSError:
+        return
+    for child in children:
+        if child.name in entered or _is_protected(child, data_lake):
+            continue
+        if child.is_dir() or (child.is_symlink() and not child.exists()):
+            log.warning("appledouble sweep never entered %s — it swept nothing there", child)
+
+
 def plan_appledouble(data_lake: Path) -> list[tuple[str, Path]]:
     """Opt-in sweep. Walks the whole lake — minutes, not seconds. Never nightly."""
-    return [
-        ("AppleDouble sidecar", path) for path in sorted(data_lake.rglob("._*")) if not _is_protected(path, data_lake)
+    entered: set[str] = set()
+    planned = [
+        ("AppleDouble sidecar", path)
+        for path in sorted(_iter_sidecars(data_lake, entered))
+        if not _is_protected(path, data_lake)
     ]
+    _warn_on_subtrees_the_walk_missed(data_lake, entered)
+    return planned
+
+
+def plan_evidence_locks(data_lake: Path) -> list[tuple[str, Path]]:
+    """Opt-in sweep of orphan `.<digest>.lock` files in the flat evidence CAS.
+
+    The one sanctioned exception to the `raw/` protection, and scoped by name to
+    `.*.lock` files sitting directly in `raw/shepherd/sha256/`: those are not
+    provider bytes, they are the lock files `persist_raw` created and never
+    unlinked -- 137,504 of them, half the 275,006 entries in that one directory,
+    on 2026-09-05. An artifact is never matched, and no subdirectory (a shard) is
+    entered.
+
+    Opt-in, like `--appledouble` and for the same reason: listing a
+    275k-entry directory on exFAT is minutes of cold I/O, and `main()` plans
+    everything before it deletes anything, so a glob that blows the nightly
+    tail's 600s budget would delete nothing at all.
+    """
+    flat = data_lake / "raw" / "shepherd" / "sha256"
+    if not flat.is_dir():
+        return []
+    return [("orphan source-evidence lock", path) for path in sorted(flat.glob(".*.lock")) if path.is_file()]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -128,6 +240,11 @@ def main(argv: list[str] | None = None) -> int:
         "--appledouble",
         action="store_true",
         help="Also sweep exFAT ._* sidecars. Walks the whole lake — minutes. Not for the nightly job.",
+    )
+    parser.add_argument(
+        "--evidence-locks",
+        action="store_true",
+        help="Also sweep orphan source-evidence .lock files. Lists a 275k-entry directory — minutes.",
     )
     parser.add_argument("--log-retention-days", type=int, default=LOG_RETENTION_DAYS)
     parser.add_argument("--keep-releases", type=int, default=KEEP_RELEASES)
@@ -148,6 +265,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.appledouble:
         planned += plan_appledouble(resolved_lake)
+    if args.evidence_locks:
+        planned += plan_evidence_locks(resolved_lake)
     for reason, path in planned:
         log.info("%s %s (%s)", "DELETE" if args.apply else "would delete", path, reason)
 

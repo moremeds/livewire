@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from collections.abc import Callable, Sequence
@@ -28,6 +27,8 @@ from clients.adjusted_history_validation import (
 from clients.corporate_action_store import CorporateActionStore
 from clients.ib_client import IBClient
 from clients.massive_client import MassiveClient
+from clients.parquet_io import write_json_atomic
+from clients.source_evidence import sha256_file
 from clients.symbol_paths import decode_symbol, encode_symbol
 from livewire_scripts.adjusted_history_sources import (
     IBHistoryFetcher,
@@ -83,12 +84,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _input_hashes(paths: dict[str, Path]) -> dict[str, str | None]:
-    return {name: _sha256(path) if path.is_file() else None for name, path in paths.items()}
+    return {name: sha256_file(path) if path.is_file() else None for name, path in paths.items()}
 
 
 def _jsonable(value: Any) -> Any:
@@ -99,20 +96,6 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (date, datetime)):
         return value.isoformat()
     return value
-
-
-def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        with temp.open("w", encoding="utf-8") as handle:
-            json.dump(_jsonable(payload), handle, sort_keys=True, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
 
 
 def _assert_output_safe(output: Path, bronze: Path, silver: Path) -> None:
@@ -333,7 +316,7 @@ def run(
                     and checkpoint
                     and checkpoint.get("input_hashes") == before
                     and detail_path.is_file()
-                    and checkpoint.get("detail_sha256") == _sha256(detail_path)
+                    and checkpoint.get("detail_sha256") == sha256_file(detail_path)
                 ):
                     results.append(json.loads(detail_path.read_text(encoding="utf-8")))
                     continue
@@ -509,13 +492,13 @@ def run(
                         "massive_sma": _jsonable(sma_diagnostics),
                         "mechanical_jumps": _jsonable([asdict(item) for item in jumps]),
                     }
-                _write_json_atomic(detail_path, detail)
+                write_json_atomic(detail_path, _jsonable(detail))
                 cursor["completed"][symbol] = {
                     "input_hashes": before,
-                    "detail_sha256": _sha256(detail_path),
+                    "detail_sha256": sha256_file(detail_path),
                     "outcome": detail["outcome"],
                 }
-                _write_json_atomic(cursor_path, cursor)
+                write_json_atomic(cursor_path, _jsonable(cursor))
                 results.append(_jsonable(detail))
     finally:
         if ib_client is not None and ib_connected:
@@ -533,7 +516,7 @@ def run(
         },
         "symbols": [{"symbol": item["symbol"], "outcome": item["outcome"]} for item in results],
     }
-    _write_json_atomic(output / "manifest.json", manifest)
+    write_json_atomic(output / "manifest.json", _jsonable(manifest))
     summary = ["# Adjusted History Validation", "", f"Overall: {'PASS' if passed else 'FAIL'}", ""]
     summary.extend(f"- {item['symbol']}: {str(item['outcome']).upper()}" for item in results)
     (output / "summary.md").write_text("\n".join(summary) + "\n", encoding="utf-8")

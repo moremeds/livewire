@@ -15,16 +15,26 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Lock
 
+from clients import constants, ledger
 from clients.corporate_action_store import CorporateActionStore, ProviderEvent
 from clients.ingestion_common import load_preset
 from clients.massive_client import MassiveAuthError, MassiveClient, MassivePageEvidence
 from clients.source_evidence import SourceEvidence, SourceEvidenceStore
 from clients.symbol_paths import canonical_symbol, decode_symbol
+from clients.telemetry import MassiveTelemetry
 from livewire_scripts.corporate_action_cursor import build_identity, default_cursor_path, open_cursor
+from livewire_scripts.job_runner_common import emit_progress
 from livewire_scripts.paths import data_lake_dir
 
 # Share of attempted symbols that may fail before the run counts as systemic.
-FAILURE_RATE_TOLERANCE = 0.05
+FAILURE_RATE_TOLERANCE = constants.declared("failure_rate_tolerance")
+
+# Symbols between evidence-manifest commits. A commit is O(manifest), so per
+# response it cost 41 min a night; once per run it is free but a lane SIGKILLed
+# at its budget (three nights running, 2026-09-03/04/05) loses every manifest row
+# for bytes already on disk. 500 pays ~1/500 of the per-response cost and caps
+# the loss at 500 rows.
+_EVIDENCE_FLUSH_EVERY = 500
 
 # Values of MDW_SOURCE_EVIDENCE that turn response-evidence collection off.
 _EVIDENCE_OFF = frozenset({"0", "off", "false", "no"})
@@ -239,6 +249,7 @@ def run(
     client_factory: Callable[[], MassiveClient] | None = None,
     store: CorporateActionStore | None = None,
     data_lake_root: Path | None = None,
+    telemetry: MassiveTelemetry | None = None,
 ) -> int:
     args = parse_args(argv)
     root = Path(data_lake_root) if data_lake_root is not None else data_lake_dir()
@@ -249,9 +260,17 @@ def run(
     action_store = store or CorporateActionStore(root)
 
     evidence = _EvidenceBuffer(root) if evidence_enabled() else None
+    # One telemetry for every worker: _fetch_parallel builds one client per
+    # worker and the totals only mean anything summed across the lane. It is a
+    # parameter rather than a local because default_client_factory is bypassed
+    # whenever a caller injects a client or a factory — which is every test.
+    telemetry = telemetry or MassiveTelemetry(jsonl_path=None)
 
     def default_client_factory() -> MassiveClient:
-        return MassiveClient(response_evidence_recorder=None if evidence is None else evidence.recorder())
+        return MassiveClient(
+            response_evidence_recorder=None if evidence is None else evidence.recorder(),
+            telemetry=telemetry,
+        )
 
     identity = build_identity(
         root,
@@ -264,90 +283,120 @@ def run(
     ticker_set = set(tickers)
     if not cursor.completed <= ticker_set:
         raise ValueError(f"corporate-action cursor contains symbols outside this run: {cursor_path}")
-    pending_tickers = [ticker for ticker in tickers if ticker not in cursor.completed]
     resumed = len(cursor.completed)
     counters = {"inserted": 0, "revised": 0, "cancelled": 0, "unchanged": 0, "failed": 0}
     attempted = 0
+    marked = 0
+    cycles = 0
+    cycle_failed = 0
+    run_id = _lane_run_id()
 
-    owned_client: MassiveClient | None = None
-    active_workers = min(workers, len(pending_tickers))
-    if active_workers == 0:
-        fetches = iter(())
-    elif active_workers == 1:
-        massive = client
-        if massive is None:
-            try:
-                owned_client = (client_factory or default_client_factory)()
-            except Exception as exc:
-                fetches = iter((_FetchResult(ticker=None, error=exc),))
-            else:
-                massive = owned_client
-                fetches = _fetch_sequential(massive, pending_tickers)
-        else:
-            fetches = _fetch_sequential(massive, pending_tickers)
-    else:
-        fetches = _fetch_parallel(
-            pending_tickers,
-            workers=active_workers,
-            client_factory=client_factory or default_client_factory,
+    def open_fetches(pending: list[str]) -> tuple[Iterator[_FetchResult], MassiveClient | None]:
+        active_workers = min(workers, len(pending))
+        if active_workers == 1:
+            massive = client
+            if massive is None:
+                try:
+                    owned = (client_factory or default_client_factory)()
+                except Exception as exc:
+                    return iter((_FetchResult(ticker=None, error=exc),)), None
+                return _fetch_sequential(owned, pending), owned
+            return _fetch_sequential(massive, pending), None
+        return (
+            _fetch_parallel(
+                pending,
+                workers=active_workers,
+                client_factory=client_factory or default_client_factory,
+            ),
+            None,
         )
 
-    try:
-        for fetched in fetches:
-            if fetched.ticker is None:
-                counters["failed"] += 1
-                print(f"provider: {fetched.error}", file=sys.stderr)
-                continue
-            attempted += 1
-            ticker = fetched.ticker
-            if fetched.error is not None:
-                counters["failed"] += 1
-                print(f"{ticker}: {fetched.error}", file=sys.stderr)
-                continue
+    # At most two passes: finish whatever last night left, then -- if there is
+    # budget left -- run this night's own pass. A SIGKILL at the lane budget
+    # simply leaves the current pass resumable tomorrow.
+    while True:
+        # A pass that inherited work is the tail of an earlier night; only that
+        # kind of pass earns a second cycle in the same invocation.
+        continues_an_earlier_night = bool(cursor.completed)
+        pending_tickers = [ticker for ticker in tickers if ticker not in cursor.completed]
+        cycle_failed = 0
+        if pending_tickers:
+            cycles += 1
+            fetches, owned_client = open_fetches(pending_tickers)
             try:
-                fetched_at = datetime.now(UTC)
-                result = action_store.reconcile(
-                    ticker,
-                    fetched.events or [],
-                    fetched_at,
-                    full_reconcile=args.full_reconcile,
-                    dry_run=args.dry_run,
-                )
-                if hasattr(action_store, "record_fetch"):
-                    action_store.record_fetch(
-                        ticker,
-                        fetched.pages or [],
-                        fetched_at,
-                        full_reconcile=args.full_reconcile,
-                        dry_run=args.dry_run,
-                    )
-            except Exception as exc:
-                counters["failed"] += 1
-                print(f"{ticker}: {exc}", file=sys.stderr)
-                continue
-            for key in ("inserted", "revised", "cancelled", "unchanged"):
-                counters[key] += int(getattr(result, key))
-            cursor.mark_completed(ticker, now=datetime.now(UTC))
-    finally:
-        if owned_client is not None:
-            owned_client.close()
-        # Commit whatever was collected even when the run aborted: the bytes are
-        # already on disk and a provider response is not refetchable later.
-        if evidence is not None:
-            evidence.flush()
+                for fetched in fetches:
+                    if fetched.ticker is None:
+                        counters["failed"] += 1
+                        cycle_failed += 1
+                        print(f"provider: {fetched.error}", file=sys.stderr)
+                        continue
+                    attempted += 1
+                    ticker = fetched.ticker
+                    if fetched.error is not None:
+                        counters["failed"] += 1
+                        cycle_failed += 1
+                        print(f"{ticker}: {fetched.error}", file=sys.stderr)
+                        continue
+                    try:
+                        fetched_at = datetime.now(UTC)
+                        result = action_store.reconcile(
+                            ticker,
+                            fetched.events or [],
+                            fetched_at,
+                            full_reconcile=args.full_reconcile,
+                            dry_run=args.dry_run,
+                        )
+                        if hasattr(action_store, "record_fetch"):
+                            action_store.record_fetch(
+                                ticker,
+                                fetched.pages or [],
+                                fetched_at,
+                                full_reconcile=args.full_reconcile,
+                                dry_run=args.dry_run,
+                            )
+                    except Exception as exc:
+                        counters["failed"] += 1
+                        cycle_failed += 1
+                        print(f"{ticker}: {exc}", file=sys.stderr)
+                        continue
+                    for key in ("inserted", "revised", "cancelled", "unchanged"):
+                        counters[key] += int(getattr(result, key))
+                    cursor.mark_completed(ticker, now=datetime.now(UTC))
+                    marked += 1
+                    if attempted % _EVIDENCE_FLUSH_EVERY == 0:
+                        if evidence is not None:
+                            evidence.flush()
+                        emit_progress(
+                            scope="corporate-actions", completed=resumed + marked, total=len(tickers), run_id=run_id
+                        )
+            finally:
+                if owned_client is not None:
+                    owned_client.close()
+                # Commit whatever was collected even when the run aborted: the bytes are
+                # already on disk and a provider response is not refetchable later.
+                if evidence is not None:
+                    evidence.flush()
 
-    if len(cursor.completed) == len(tickers) and counters["failed"] == 0:
-        cursor.mark_run_completed(now=datetime.now(UTC))
+        complete = len(cursor.completed) == len(tickers) and counters["failed"] == 0
+        if complete:
+            cursor.mark_run_completed(now=datetime.now(UTC))
+        if not (complete and continues_an_earlier_night):
+            break
+        cursor = open_cursor(cursor_path, identity, resume=False, now=datetime.now(UTC))
+
     summary = {
         "attempted": attempted,
         **counters,
         "completed": len(cursor.completed),
         "cursor": str(cursor_path),
-        "pending": len(tickers) - resumed - attempted,
+        "cycles": cycles,
+        # Symbols this invocation never reached, in the pass it ends on.
+        "pending": len(tickers) - len(cursor.completed) - cycle_failed,
         "requested": len(tickers),
         "resumed": resumed,
     }
     print(json.dumps(summary, sort_keys=True))
+    _emit_provider_measurements(telemetry, run_id)
 
     # Rate, not a binary. `run_daily_update_job.main()` gates the Silver rebuild on
     # this lane (`silver_inputs_ok = action_code == 0`), so `1 if failed` meant a
@@ -370,6 +419,55 @@ def run(
     if failed and (attempted == failed or failed > FAILURE_RATE_TOLERANCE * attempted):
         return 1
     return 0
+
+
+_PROVIDER_MEASUREMENTS = (
+    ("provider_requests", "requests", "count"),
+    ("provider_throttled", "throttled", "count"),
+    ("provider_errors", "errors", "count"),
+    ("provider_wait_s", "wait_s", "s"),
+    ("provider_latency_p95_ms", "latency_p95_ms", "ms"),
+)
+
+
+def _lane_run_id() -> str:
+    """The run this lane's ledger rows belong to; the orchestrator supplies it."""
+    return os.environ.get("LW_RUN_ID") or ledger.new_run_id("corporate-actions")
+
+
+def _emit_measurements(rows: list[dict], run_id: str) -> None:
+    try:
+        ledger.emit("measurements", rows, run_id=run_id)
+    except Exception as exc:  # pragma: no cover - telemetry must not fail a good run
+        print(f"WARNING: could not write measurements: {exc}", file=sys.stderr)
+
+
+def _emit_provider_measurements(telemetry: MassiveTelemetry, run_id: str) -> None:
+    """Publish what the provider cost this lane. Never aborts the run.
+
+    2026-09-03: corporate-actions ran 2h15m of its 3h budget and nothing
+    durable recorded whether it was throttled, timing out, or simply slow,
+    because the client was built with telemetry=None.
+    """
+    totals = telemetry.summary()
+    if not totals["requests"]:
+        return
+    now = datetime.now(UTC)
+    _emit_measurements(
+        [
+            {
+                "name": name,
+                "scope": "corporate-actions",
+                "measured_at": now,
+                "value": float(totals[key]),
+                "unit": unit,
+                "source": "measured",
+                "run_id": run_id,
+            }
+            for name, key, unit in _PROVIDER_MEASUREMENTS
+        ],
+        run_id,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

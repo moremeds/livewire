@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock
 
 import pytest
@@ -254,3 +255,54 @@ def test_uw_telemetry_source_locked_to_uw():
 def test_massive_telemetry_source_locked_to_massive():
     t = MassiveTelemetry(jsonl_path=None)
     assert t.source == "massive"
+
+
+def test_massive_totals_are_recorded_without_a_jsonl_sink():
+    """Production passes jsonl_path=None and never calls start(); the counters
+    still have to work. BaseTelemetry disables _emit in both of those cases."""
+    t = MassiveTelemetry(jsonl_path=None)
+
+    for dt_ms in range(1, 101):
+        t.record_request(endpoint="/v3/reference/splits", status=200, dt_ms=dt_ms)
+    t.record_request(endpoint="/v3/reference/splits", status=429, dt_ms=4000)
+    t.record_request(endpoint="/v3/reference/splits", status=0, dt_ms=30000)
+    t.record_wait(12.5)
+    t.record_wait(0.5)
+
+    summary = t.summary()
+    assert summary["requests"] == 102
+    assert summary["throttled"] == 1
+    assert summary["errors"] == 1
+    assert summary["wait_s"] == 13.0
+    # 102 samples (1..100ms, then 4000 and 30000): inclusive p95 interpolates
+    # between the 96th and 97th sample, so it stays in the 100 fast responses
+    # rather than being dragged up by the two slow tail samples.
+    assert summary["latency_p95_ms"] == 96.95
+
+
+def test_massive_summary_is_zeroed_before_any_request():
+    """ledger.emit refuses zero rows, so the caller needs a truthful zero."""
+    assert MassiveTelemetry(jsonl_path=None).summary() == {
+        "requests": 0,
+        "throttled": 0,
+        "errors": 0,
+        "wait_s": 0.0,
+        "latency_p95_ms": 0.0,
+    }
+
+
+def test_massive_totals_survive_concurrent_workers():
+    """_fetch_parallel shares one telemetry across 4 client threads."""
+    t = MassiveTelemetry(jsonl_path=None)
+
+    def hammer() -> None:
+        for _ in range(500):
+            t.record_request(endpoint="/v3/reference/splits", status=200, dt_ms=10)
+            t.record_wait(0.001)
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        for future in [executor.submit(hammer) for _ in range(4)]:
+            future.result()
+
+    assert t.summary()["requests"] == 2000
+    assert t.summary()["wait_s"] == 2.0

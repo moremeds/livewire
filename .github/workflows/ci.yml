@@ -3,6 +3,9 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    # `edited` covers a base-branch retarget: PR #114 was opened against a
+    # spec branch, retargeted to main, and had zero runs until this line.
+    types: [opened, synchronize, reopened, edited]
   # A squash merge creates a commit no pull-request run ever covered, so main
   # commits need their own run: `livewire_ops.py release promote` will only
   # build an artifact from a SHA that has a completed, successful run here.

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from collections import Counter
 from datetime import UTC, date, datetime, time, timedelta
@@ -18,7 +17,7 @@ from clients.bronze_client import EQUITY_SOURCES, PRICE_BASES
 from clients.duckdb_catalog import symbol_files
 from clients.index_membership_store import IndexMembershipStore
 from clients.security_master import SecurityIdentityEvent, SecurityMaster
-from clients.source_evidence import SourceEvidenceStore
+from clients.source_evidence import SourceEvidenceStore, canonical_bytes, digest_bytes
 from clients.trading_calendar import trading_dates_in_range
 from livewire_scripts.paths import data_lake_dir
 from livewire_scripts.run_ib_fetch_robust import (
@@ -29,18 +28,10 @@ from livewire_scripts.run_ib_fetch_robust import (
 )
 
 
-def _canonical(value: object) -> bytes:
-    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
-
-
-def _digest(payload: bytes) -> str:
-    return hashlib.sha256(payload).hexdigest()
-
-
 def _verify_evidence(store: SourceEvidenceStore):
     def verify(ref: str, digest: str) -> bool:
         try:
-            return _digest(store.read(ref)) == digest
+            return digest_bytes(store.read(ref)) == digest
         except (OSError, ValueError):
             return False
 
@@ -181,7 +172,7 @@ def _evaluate(
             "fileChangedSincePlan": compare_to_plan and planned_hash is not None,
         }
     path = Path(resolved[0])
-    raw_hash = _digest(path.read_bytes())
+    raw_hash = digest_bytes(path.read_bytes())
     base.update(parquetPath=str(path), parquetHash=raw_hash)
     violations: list[str] = []
     try:
@@ -285,7 +276,7 @@ def plan_daily(index_id: str, revision: int, as_of: date, *, data_lake_root: Pat
         if interval_end < start:
             continue
         target = _scope_target(index_id, revision, as_of, identity, start, interval_end)
-        scope_hash = f"sha256:{_digest(_canonical(target))}"
+        scope_hash = f"sha256:{digest_bytes(canonical_bytes(target))}"
         evaluation = _evaluate(target, data_lake_root=root)
         units.append(
             {
@@ -324,7 +315,7 @@ def _validate_daily_work_unit_scope(unit: dict[str, Any], *, data_lake_root: Pat
     if not isinstance(unit, dict) or not required.issubset(unit):
         raise ValueError("daily work unit is incomplete")
     target = {key: unit[key] for key in required if key != "scopeHash"}
-    expected_scope = f"sha256:{_digest(_canonical(target))}"
+    expected_scope = f"sha256:{digest_bytes(canonical_bytes(target))}"
     if unit["scopeHash"] != expected_scope:
         raise ValueError("daily work-unit scope hash mismatch")
     root = Path(data_lake_root).expanduser()
@@ -368,7 +359,7 @@ def verify_daily_work_unit(unit: dict[str, Any], *, data_lake_root: Path) -> dic
         **evaluation,
         "changedPaths": [],
     }
-    receipt["receiptHash"] = f"sha256:{_digest(_canonical(receipt))}"
+    receipt["receiptHash"] = f"sha256:{digest_bytes(canonical_bytes(receipt))}"
     return receipt
 
 
@@ -392,7 +383,7 @@ def fetch_daily_work_unit(
         raise ValueError("daily fetch accepts only a planned deep-history work unit")
     root = Path(data_lake_root).expanduser()
     expected_path = _bronze_path_for(root / "bronze", "equity", target["symbol"])
-    before_hash = _digest(expected_path.read_bytes()) if expected_path.exists() else None
+    before_hash = digest_bytes(expected_path.read_bytes()) if expected_path.exists() else None
     outcome: TickerOutcome = runner(
         ticker=target["symbol"],
         mode="seed",
@@ -412,7 +403,7 @@ def fetch_daily_work_unit(
         "reasonCode": outcome.note or outcome.code.value,
     }
     if outcome.code == OutcomeCategory.TEMPORARY_UNAVAILABLE:
-        after_hash = _digest(expected_path.read_bytes()) if expected_path.exists() else None
+        after_hash = digest_bytes(expected_path.read_bytes()) if expected_path.exists() else None
         changed = before_hash != after_hash
         receipt: dict[str, Any] = {
             "version": 1,
@@ -428,7 +419,7 @@ def fetch_daily_work_unit(
         }
         if changed:
             receipt["summary"]["reasonCode"] = "partial-write-before-ib-wait"
-        receipt["receiptHash"] = f"sha256:{_digest(_canonical(receipt))}"
+        receipt["receiptHash"] = f"sha256:{digest_bytes(canonical_bytes(receipt))}"
         return receipt, 1 if changed else 75
 
     evaluation = _evaluate(target, data_lake_root=root)
@@ -449,7 +440,7 @@ def fetch_daily_work_unit(
         "changedPaths": [] if parquet_path is None else [parquet_path],
         "summary": summary,
     }
-    receipt["receiptHash"] = f"sha256:{_digest(_canonical(receipt))}"
+    receipt["receiptHash"] = f"sha256:{digest_bytes(canonical_bytes(receipt))}"
     return receipt, 0 if completed else 1
 
 

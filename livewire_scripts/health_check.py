@@ -45,8 +45,6 @@ _BAR_SIZE_MINUTES = {"1m": 1, "1h": 60, "5m": 5, "30m": 30}
 log = logging.getLogger(__name__)
 
 console = Console()
-_WAREHOUSE_DIR: Path | None = None
-_DATA_LAKE: Path | None = None
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPT_DIR.parent
@@ -56,7 +54,7 @@ _OPS_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ops.py"
 
 def _resolve_bronze_dir(asset_class: str) -> Path:
     """Return the bronze directory for the given asset class."""
-    lake = _DATA_LAKE or (_WAREHOUSE_DIR / "data-lake" if _WAREHOUSE_DIR else data_lake_dir())
+    lake = data_lake_dir()
     return lake / "bronze" / f"asset_class={asset_class}"
 
 
@@ -546,7 +544,7 @@ def main() -> None:
         from clients.ib_client import IBClient  # noqa: PLC0415
         from livewire_scripts.daily_update import fetch_fallback_bars  # noqa: PLC0415
 
-        resolved_log_dir = _WAREHOUSE_DIR / "logs" if _WAREHOUSE_DIR else log_dir()
+        resolved_log_dir = log_dir()
         resolved_log_dir.mkdir(parents=True, exist_ok=True)
         log_path = resolved_log_dir / f"health_check_{today:%Y-%m-%d}.log"
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1417,12 +1418,12 @@ class TestQualityHookIntegration:
 
         with (
             patch(
-                "livewire_scripts.fetch_ib_historical.detect_all",
+                "clients.quality_detector.detect_all",
                 return_value=[fake_flag],
             ) as m_detect,
-            patch("livewire_scripts.fetch_ib_historical.write_sidecar", return_value=True) as m_sidecar,
-            patch("livewire_scripts.fetch_ib_historical.append_audit", return_value=True) as m_audit,
-            patch("livewire_scripts.fetch_ib_historical.alert_on_flag", return_value=True) as m_alert,
+            patch("clients.quality_flags.write_sidecar", return_value=True) as m_sidecar,
+            patch("clients.quality_flags.append_audit", return_value=True) as m_audit,
+            patch("clients.quality_flags.alert_on_flag", return_value=True) as m_alert,
         ):
             inserted = fetch_ticker("AAPL", bars, bronze, asset_class="equity")
         assert inserted == bronze.replace_ticker_rows.return_value
@@ -1449,12 +1450,12 @@ class TestQualityHookIntegration:
 
         with (
             patch(
-                "livewire_scripts.fetch_ib_historical.detect_all",
+                "clients.quality_detector.detect_all",
                 return_value=[fake_flag],
             ) as m_detect,
-            patch("livewire_scripts.fetch_ib_historical.write_sidecar", return_value=True) as m_sidecar,
-            patch("livewire_scripts.fetch_ib_historical.append_audit", return_value=True) as m_audit,
-            patch("livewire_scripts.fetch_ib_historical.alert_on_flag", return_value=True) as m_alert,
+            patch("clients.quality_flags.write_sidecar", return_value=True) as m_sidecar,
+            patch("clients.quality_flags.append_audit", return_value=True) as m_audit,
+            patch("clients.quality_flags.alert_on_flag", return_value=True) as m_alert,
         ):
             inserted = backfill_ticker("AAPL", bars, bronze, asset_class="equity")
         assert m_detect.call_count == 1
@@ -1482,10 +1483,10 @@ class TestQualityHookIntegration:
         bronze.get_symbol_id.return_value = 42
 
         with (
-            patch("livewire_scripts.fetch_ib_historical.detect_all", return_value=[]) as m_detect,
-            patch("livewire_scripts.fetch_ib_historical.write_sidecar", return_value=True),
-            patch("livewire_scripts.fetch_ib_historical.append_audit", return_value=True),
-            patch("livewire_scripts.fetch_ib_historical.alert_on_flag", return_value=True),
+            patch("clients.quality_detector.detect_all", return_value=[]) as m_detect,
+            patch("clients.quality_flags.write_sidecar", return_value=True),
+            patch("clients.quality_flags.append_audit", return_value=True),
+            patch("clients.quality_flags.alert_on_flag", return_value=True),
         ):
             backfill_ticker("BIL", bars, bronze, asset_class="equity")
 
@@ -1500,10 +1501,10 @@ class TestQualityHookIntegration:
         bronze.get_symbol_id.return_value = 42
 
         with (
-            patch("livewire_scripts.fetch_ib_historical.detect_all", return_value=[]) as m_detect,
-            patch("livewire_scripts.fetch_ib_historical.write_sidecar", return_value=True),
-            patch("livewire_scripts.fetch_ib_historical.append_audit", return_value=True),
-            patch("livewire_scripts.fetch_ib_historical.alert_on_flag", return_value=True),
+            patch("clients.quality_detector.detect_all", return_value=[]) as m_detect,
+            patch("clients.quality_flags.write_sidecar", return_value=True),
+            patch("clients.quality_flags.append_audit", return_value=True),
+            patch("clients.quality_flags.alert_on_flag", return_value=True),
         ):
             backfill_ticker("BIL", bars, bronze, asset_class="equity", expected_start=date(2007, 5, 30))
 
@@ -1517,10 +1518,10 @@ class TestQualityHookIntegration:
         bronze.get_symbol_id.return_value = 42
 
         with (
-            patch("livewire_scripts.fetch_ib_historical.detect_all", return_value=[]) as m_detect,
-            patch("livewire_scripts.fetch_ib_historical.write_sidecar") as m_sidecar,
-            patch("livewire_scripts.fetch_ib_historical.append_audit") as m_audit,
-            patch("livewire_scripts.fetch_ib_historical.alert_on_flag") as m_alert,
+            patch("clients.quality_detector.detect_all", return_value=[]) as m_detect,
+            patch("clients.quality_flags.write_sidecar") as m_sidecar,
+            patch("clients.quality_flags.append_audit") as m_audit,
+            patch("clients.quality_flags.alert_on_flag") as m_alert,
         ):
             backfill_ticker("AAPL", bars, bronze, asset_class="equity")
         m_detect.assert_called_once()
@@ -1531,7 +1532,7 @@ class TestQualityHookIntegration:
     def test_empty_bars_skip_detection_entirely_for_both_publish_paths(self):
         """Existing 'if not bars: return 0' path is unchanged - detector not called."""
         bronze = MagicMock()
-        with patch("livewire_scripts.fetch_ib_historical.detect_all") as m_detect:
+        with patch("clients.quality_detector.detect_all") as m_detect:
             fetch_inserted = fetch_ticker("AAPL", [], bronze)
             backfill_inserted = backfill_ticker("AAPL", [], bronze)
         assert fetch_inserted == 0
@@ -1540,11 +1541,11 @@ class TestQualityHookIntegration:
 
     def test_no_quality_flag_disables_hook(self, monkeypatch):
         """When MDW_NO_QUALITY=1 is set (or via module flag), detect_all is skipped."""
-        monkeypatch.setattr("livewire_scripts.fetch_ib_historical._QUALITY_ENABLED", False)
+        monkeypatch.setattr("clients.quality_detector.QUALITY_ENABLED", False)
         bars = [_make_bar(date="2025-01-02")]
         bronze = MagicMock()
         bronze.get_symbol_id.return_value = 42
-        with patch("livewire_scripts.fetch_ib_historical.detect_all") as m_detect:
+        with patch("clients.quality_detector.detect_all") as m_detect:
             backfill_ticker("AAPL", bars, bronze)
         m_detect.assert_not_called()
 
@@ -1565,7 +1566,7 @@ class TestQualityHookIntegration:
             ),
             patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
             patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
-            patch("livewire_scripts.fetch_ib_historical.detect_all") as m_detect,
+            patch("clients.quality_detector.detect_all") as m_detect,
         ):
             main()
 
@@ -2572,7 +2573,7 @@ class TestMain:
                 "livewire_scripts.fetch_ib_historical.BronzeClient",
                 lambda **kw: BronzeClient(bronze_dir=kw.get("bronze_dir", vol_bronze_dir)),
             ),
-            patch("livewire_scripts.fetch_ib_historical.DATA_LAKE", tmp_path / "data-lake"),
+            patch.dict(os.environ, {"MDW_DATA_LAKE": str(tmp_path / "data-lake")}),
             patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
         ):
             main()

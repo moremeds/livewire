@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
+from clients import constants
 from clients.massive_flatfile_client import MassiveFlatfileClient
 
 
@@ -64,7 +65,7 @@ def discover_plan(client: MassiveFlatfileClient, warehouse_dir: Path) -> Flatfil
     usage = shutil.disk_usage(capacity_path(warehouse_dir))
     compressed_bytes = sum(size for _, size in dated)
     multiplier = float(os.getenv("MDW_FLATFILE_STORAGE_MULTIPLIER", "8"))
-    minimum_free_bytes = int(float(os.getenv("MDW_FLATFILE_MIN_FREE_GB", "25")) * 1024**3)
+    minimum_free_bytes = int(constants.declared("flatfile_min_free_gb") * 1024**3)
     return FlatfilePlan(
         tuple(d for d, _ in dated),
         compressed_bytes,

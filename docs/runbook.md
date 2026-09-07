@@ -61,9 +61,34 @@ warehouse paths.
 | `MDW_ORCHESTRATOR_MAX_ATTEMPTS`     | `3`                                                   | Per-ticker retry budget for `livewire_ingest.py robust`                                            |
 | `MDW_ORCHESTRATOR_COOLDOWN_SECONDS` | `60`                                                  | Sleep between orchestrator retry attempts                                                          |
 | `MDW_LOG_LEVEL`                     | `INFO`                                                | Logger root level for reliability tooling                                                          |
-| `MDW_UNDELIVERED_DIR`               | `~/market-warehouse/logs/quality_alerts_undelivered/` | Where failed per-flag alert HTML bodies are preserved                                              |
-| `MDW_LOG_DIR`                       | `~/market-warehouse/logs/`                            | Where `livewire_quality.py report --email` writes `quality_summary_YYYY-MM-DD.marker`              |
+| `MDW_LOG_DIR`                       | `~/market-warehouse/logs/`                            | Runtime log directory                                                                               |
 | `MDW_SOURCE_EVIDENCE`               | `on`                                                  | Set to `off`/`0`/`false`/`no` to stop `corporate-actions` collecting exact provider response bytes |
+
+#### Lake I/O lock
+
+One `fcntl.flock` at `<warehouse>/locks/lake-io.lock`. Held for the length of any
+lane that touches the lake, in `run_daily_update_job.run_with_retries`,
+`._run_scheduled_lane` and `sync_runner.run_phase`. Released between lanes. Not
+taken by `status`, the digest, the watchdog, or any ledger read — those are
+internal-disk only.
+
+```bash
+# who is holding it right now (mini)
+lsof ~/market-warehouse/locks/lake-io.lock
+
+# what each lane waited for it, this run (only lanes that acquired it)
+python scripts/livewire_ops.py ledger query "select scope as lane, round(value) as waited_s \
+  from measurements where name = 'lake_lock_wait_s' and measured_at >= current_date order by value desc"
+
+# any lane that never got it
+python scripts/livewire_ops.py ledger query "select lane, outcome, blocker from lane_results \
+  where blocker = 'lake_lock' and date(started) = current_date"
+```
+
+Deleting the lock file while a lane holds it does **not** release the lock (flock
+is on the open file description) and the next lane will create a new one, giving
+you two lock domains and no serialization. There is no operator action that
+"clears" it: flock is released with the fd, SIGKILL included.
 
 ### Massive S3 flat files
 
@@ -74,8 +99,6 @@ warehouse paths.
 | `MDW_FLATFILE_LOOKBACK_DAYS`      | `7`          | Direct `flatfile-ingest catch-up` lookback                                                                     |
 | `MDW_FLATFILE_BUCKETS`            | `256`        | Raw ticker buckets per trading day                                                                             |
 | `MDW_FLATFILE_STORAGE_MULTIPLIER` | `8`          | Capacity-planning multiplier for a full build                                                                  |
-| `MDW_FLATFILE_MIN_FREE_GB`        | `25`         | Required free-space reserve after a full build                                                                 |
-| `MDW_FLATFILE_MIN_PUBLISH_RATIO`  | `0.9`        | Minimum share of the raw file's ticker set a publish must cover before the run fails. Skipped on a resumed run |
 | `MDW_FLATFILE_DAILY_WORKERS`      | `4`          | Process-pool size for the `flatfile-ingest-daily` publish phase (also `--workers`)                             |
 | `MDW_FLATFILE_DAILY_BUCKETS`      | `32`         | Ticker buckets per day for `flatfile-ingest-daily` (also `--buckets`)                                          |
 
@@ -84,10 +107,26 @@ warehouse paths.
 | Variable                           | Default      | Meaning                                                                           |
 | ---------------------------------- | ------------ | --------------------------------------------------------------------------------- |
 | `MDW_SYNC_PHASE_TIMEOUT_SECONDS`   | `21600` (6h) | Hard per-phase budget in `daily-backfill`                                         |
-| `MDW_DAILY_JOB_DEADLINE_SECONDS`   | `14400` (4h) | **Total** wall-clock budget for one `run-daily-job` run, shared across every lane |
 | `MDW_DAILY_BACKFILL_INTRADAY_DAYS` | `7`          | Whole-market flat-file catch-up window in `daily-backfill`                        |
 | `MDW_DAILY_BACKFILL_DAY_AGGS_DAYS` | `7`          | `flatfile-ingest-daily catch-up` window in `daily-backfill`                       |
-| `MDW_COVERAGE_ALERT_THRESHOLD`     | `0.95`       | Coverage ratio below which `coverage` triggers a targeted backfill                |
+
+### Declared constants (`clients/constants.py`)
+
+| Variable            | Default                    | Meaning                                                                                                                                                                                                       |
+| ------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LW_DECLARED_<KEY>` | see `clients/constants.py` | Overrides any declared constant for one run. `<KEY>` is the `DECLARED` key upper-cased with `/` and `-` as `_` — e.g. `LW_DECLARED_FAILURE_RATE_TOLERANCE=0.10`, `LW_DECLARED_LANE_BUDGET_S_CORPORATE_ACTIONS=7200` |
+
+Every key is emitted to the ledger as `measurements(source='declared')` at run
+start; `status` WARNs when a lane's 14-day p95 `source='measured'` elapsed time
+drifts more than 2× from its declared budget.
+
+`lake_lock_wait_s` (global, 2340s) is the expected wait for the lake-io lock;
+`lake_lock_poll_s/daily` (1s) and `lake_lock_poll_s/intraday` (60s) are how often
+each job looks for it. `status` grades the declared wait against the 14-day p95
+of `measurements(name='lake_lock_wait_s')`, one row per lane that acquired the
+lock, and reads UNKNOWN until those rows exist. A lane that gave up at its
+budget emits no measurement — its `lane_results` row (`outcome='blocked'`,
+`blocker='lake_lock'`) is the record, and `status`'s `Lanes blocked` grades it.
 
 ### DuckDB catalog
 
@@ -198,9 +237,6 @@ already in bronze parquet:
 ```bash
 python scripts/livewire_ingest.py backfill-all   # Full warehouse build (Python orchestrator)
 python scripts/livewire_ingest.py daily-backfill # Lightweight daily catch-up (Python orchestrator)
-# Or via unified CLI:
-python scripts/livewire.py backfill --full       # Same as backfill-all
-python scripts/livewire.py sync --full           # Same as daily-backfill
 ```
 
 - `backfill-all` (`livewire_scripts/backfill_runner.py`) is the default warehouse
@@ -405,6 +441,40 @@ python scripts/livewire_ingest.py corporate-actions --dry-run                   
 Targeted runs never infer disappearance by default; full reconciliations may
 append cancellation revisions.
 
+`--resume` is what the nightly lane passes, every night. It continues the
+per-symbol cursor for this exact scope (lake root, ticker set, `--full-reconcile`,
+`--dry-run`); a cursor from a different scope, a finished pass, or an unreadable
+file starts a fresh pass and says so on stderr rather than failing. When a resumed
+tail finishes and there is budget left, the same invocation opens a new cursor and
+does a full pass, so a night that catches up still reconciles the whole universe.
+`cycles` in the JSON summary says how many passes ran. Progress is heartbeat to
+`measurements(scope='corporate-actions', name='progress'|'progress_total')` every
+500 symbols, so a lane killed at its budget still records how far it got —
+`livewire_ops.py status` renders it as `Corporate-action progress`.
+
+#### Why was corporate-actions slow last night?
+
+```bash
+uv run python scripts/livewire_ops.py ledger query "select name, value, unit from measurements where scope = 'corporate-actions' and run_id = '<run_id>' order by name"
+```
+
+Read them together; no single one of them answers the question.
+
+- `provider_wait_s` large → the lane is asleep, not working: throttled or
+  retrying. More `--workers` will not help.
+- `provider_throttled` large → the provider is pushing back. More workers make
+  it worse; the lane needs preemptive pacing (`min_interval_seconds`) like fx
+  has. The 5 req/min figure elsewhere in this repo is **fx-scoped**; this
+  lane's ceiling has never been measured.
+- `provider_errors` large → attempts that never got a response. Each costs a
+  full request timeout plus a backoff and is invisible in response counts.
+- `provider_latency_p95_ms` high with the three above near zero → the endpoint
+  itself is slow. This is the only case where more `--workers` is the lever.
+
+`provider_latency_p95_ms` is socket time per attempt only; it does not include
+`provider_wait_s`, by construction — the sleeps happen outside the measured
+window. Join on `run_id` to `lane_results.elapsed_s` for the lane's wall-clock.
+
 ### Silver rebuild
 
 Silver artifacts publish beneath `MDW_SILVER_DIR` (default `data-lake/silver`).
@@ -416,6 +486,11 @@ python scripts/livewire_store.py rebuild-silver --tickers NVDA AAPL SPY   # Targ
 python scripts/livewire_store.py rebuild-silver --full --dry-run          # Full comparison without publishing
 python scripts/livewire_store.py rebuild-silver --full --dry-run --failure-output /tmp/rev3-dry.json
 ```
+
+Progress is heartbeat to `measurements(scope='silver', name='progress'|'progress_total')`
+every 500 symbols and once more at the end, exactly as corporate-actions does, so a
+`--full` walk killed at its lane budget still records how far it got —
+`livewire_ops.py status` renders it as `Silver progress`.
 
 Trim controls:
 
@@ -559,12 +634,6 @@ on the published-vs-review ratio before the ~12K tail. Full design:
 `docs/superpowers/specs/2026-07-19-unknown-basis-ib-verified-reconstruction-design.md`
 (plan archived; see git history).
 
-### Silver canary (read-only)
-
-```bash
-python livewire_scripts/validate_silver_canary.py --tickers NVDA AAPL SPY --control SYMBOL   # Read-only factor/OHLCV/bronze-integrity canary
-```
-
 ### Rollback
 
 ```bash
@@ -601,7 +670,7 @@ python scripts/livewire_quality.py coverage --target-date 2026-08-28
 # plus the `scan:` line in <log_dir>/coverage_<date>.log
 ```
 
-- Below `MDW_COVERAGE_ALERT_THRESHOLD` (default `0.95`) it triggers a targeted
+- Below the declared `coverage_alert_threshold` (default `0.95`) it triggers a targeted
   backfill subprocess and re-checks. 1d recovery uses Massive daily REST; intraday
   recovery republishes the whole target-day flat file with
   `flatfile-ingest repair --dates <date>`.
@@ -635,6 +704,15 @@ python scripts/livewire_ops.py status
 Grades nine cheap signals and prints a fix command for anything not OK. It reads
 only what the nightly jobs already produced — it never scans parquet. Exit code is
 always 0. `Verdict` is ordered `OK < UNKNOWN < WARN < BAD`.
+
+### Ledger
+
+```bash
+uv run python scripts/livewire_ops.py ledger query "select lane, outcome, elapsed_s from lane_results order by started desc limit 20"
+uv run python scripts/livewire_ops.py ledger query "select scope, date '1970-01-01' + cast(value as int) as last_session from measurements where name = 'last_session'"
+uv run python scripts/livewire_ops.py ledger emit --table evidence --json '{"evidence_hash":"…","kind":"request","subject":"silver:TSLA","payload_json":"{}","source_url":null,"fetched_at":"2026-09-02T06:00:00+00:00","proposer":"human","run_id":"manual-1"}'
+# LW_LEDGER_ROOT overrides the root (default <lake>/ledger); LW_RUN_ID names the run.
+```
 
 ### Weekly quality summary
 
@@ -684,10 +762,7 @@ sidecar and audit JSONL schemas are in
 python scripts/livewire_quality.py digest --run-date YYYY-MM-DD --email
 ```
 
-Assembles one plain-text report from the per-job `SUMMARY_JSON` lines (outcome
-table per asset class, intraday phase table, coverage line, disk headroom) and
-writes `quality_summary_YYYY-MM-DD.marker` for the watchdog. Reads the newest
-`coverage_*.log` and warns when it is more than 3 days old.
+Renders the same ledger-backed checks as `status`; it does not parse job logs.
 
 ### Watchdog
 
@@ -695,9 +770,7 @@ writes `quality_summary_YYYY-MM-DD.marker` for the watchdog. Reads the newest
 python scripts/livewire_quality.py watchdog
 ```
 
-Runs at 10:30 UTC daily; alerts if the scheduled sync never started or never
-logged a completion marker. It requires the `silver` scope and reads the equity
-`SUMMARY_JSON`.
+Runs at 10:30 UTC daily and pages only when a ledger-backed status check is BAD.
 
 ### Alerts
 
@@ -705,9 +778,8 @@ logged a completion marker. It requires the `silver` scope and reads the equity
 python scripts/livewire_ops.py send-alert
 ```
 
-Nodemailer CLI behind every failure page. Alerts that fail to send are persisted
-to `<log_dir>/alerts_undelivered/`; per-flag quality alerts go to
-`MDW_UNDELIVERED_DIR`. Alert values must use the single-token `--key=value` form.
+Nodemailer CLI behind every failure page. Failed sends are recorded as ledger
+execution rows. Alert values must use the single-token `--key=value` form.
 
 ### Daily-run outcome categories
 
@@ -854,11 +926,18 @@ conversion table to other Mac timezones.
 | Job                                  | UTC time            | Entrypoint                                                                                  |
 | ------------------------------------ | ------------------- | ------------------------------------------------------------------------------------------- |
 | `com.livewire.release-promote`       | 04:30 daily         | `livewire_ops.py release promote` (reads the repo)                                          |
-| `com.livewire.intraday-catchup`      | 05:00 daily         | `livewire_ops.py run-intraday-catchup-job`                                                  |
-| `com.livewire.daily-update`          | 06:00 daily         | `livewire_ops.py run-daily-job`                                                             |
+| `com.livewire.daily-update`          | 05:00 daily         | `livewire_ops.py run-daily-job`                                                             |
+| `com.livewire.intraday-catchup`      | 10:00 daily         | `livewire_ops.py run-intraday-catchup-job`                                                  |
 | `com.livewire.daily-update-watchdog` | 10:30 daily         | `livewire_quality.py watchdog`                                                              |
 | `com.livewire.coverage`              | 11:00 daily         | `livewire_quality.py coverage` (also runs the windowed gap classifier)                      |
 | `com.livewire.universe-refresh`      | Sunday 13:00 weekly | `livewire_ingest.py universe-sync && livewire_ingest.py shepherd-universe` (reads the repo) |
+
+> The two lake writers are ordered by the code, not by these times: every lane
+> holds `<warehouse>/locks/lake-io.lock` while it runs, `daily-update` polls for
+> it every second and `intraday-catchup` every 60s. The times only set the
+> arrival order. `coverage` (11:00) overlaps `intraday-catchup` and does **not**
+> take the lock — it is untimed by design, so contention costs it wall-clock and
+> cannot fail it.
 
 `run-daily-job` syncs equities, futures and cmdty via IB, then all volatility
 indices via CBOE and DXY/FX via Yahoo+Massive, in a single invocation; pass
@@ -897,7 +976,6 @@ python scripts/livewire_ingest.py shepherd-universe verify --index <INDEX> --rev
 | Coverage             | `~/market-warehouse/logs/coverage_YYYY-MM-DD.log`                         |
 | Interior gaps        | `~/market-warehouse/logs/interior_gaps_YYYY-MM-DD.log`                    |
 | Weekly summary       | `~/market-warehouse/logs/quality_weekly_YYYY-WW.md`                       |
-| Digest marker        | `~/market-warehouse/logs/quality_summary_YYYY-MM-DD.marker`               |
 | Telemetry            | `~/market-warehouse/logs/telemetry.jsonl`                                 |
 | Quality audit        | `~/market-warehouse/logs/quality_audit.jsonl`                             |
 
@@ -917,10 +995,19 @@ python scripts/livewire_ops.py housekeeping --keep-releases 3
 python scripts/livewire_ops.py housekeeping --keep-evicted 2
 python scripts/livewire_ops.py housekeeping --log-dir <path> --data-lake <path>
 python scripts/livewire_ops.py housekeeping --appledouble        # opt-in `._*` sweep
+python scripts/livewire_ops.py housekeeping --evidence-locks     # opt-in orphan `.lock` sweep
 ```
 
 The AppleDouble sweep (`--appledouble`) is opt-in and must **never** go in the
 nightly job — it `rglob`s the whole exFAT volume.
+
+`--evidence-locks` deletes orphan `.<digest>.lock` files left directly in
+`raw/shepherd/sha256/` by the pre-2026-09-05 `persist_raw` (137,504 of them on
+2026-09-05). It is the one sanctioned exception to the `raw/` protection, scoped
+by name to `.*.lock` in that one directory — artifacts and shard subdirectories
+are never touched. Opt-in for the same reason as `--appledouble`: listing that
+275k-entry directory takes minutes, and `main()` plans before it deletes, so a
+glob that blows the nightly 600s tail budget would delete nothing at all.
 
 ---
 

@@ -12,6 +12,8 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from clients.parquet_io import fsync_directory
+
 
 @contextmanager
 def _lock(path: Path) -> Iterator[None]:
@@ -24,14 +26,6 @@ def _lock(path: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 class AtomicParquetLog:
@@ -83,6 +77,6 @@ class AtomicParquetLog:
                 raise ValueError("append-only Parquet validation failed")
             os.replace(temporary, self.path)
             os.chmod(self.path, 0o600)
-            _fsync_directory(self.path.parent)
+            fsync_directory(self.path.parent)
         finally:
             temporary.unlink(missing_ok=True)

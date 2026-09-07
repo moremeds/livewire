@@ -36,6 +36,12 @@ def _touch(path: Path, *, days_old: int = 0) -> Path:
     return path
 
 
+def test_the_ledger_is_protected_by_name() -> None:
+    from livewire_scripts.housekeeping import PROTECTED_LAKE_DIRS
+
+    assert "ledger" in PROTECTED_LAKE_DIRS
+
+
 # Checked against BOTH planners. `plan_housekeeping` no longer walks the lake at
 # all, so on its own these would pass vacuously — and a protection test that
 # cannot fail is worse than none, because it reads as coverage.
@@ -54,6 +60,7 @@ def _touch(path: Path, *, days_old: int = 0) -> Path:
         "repairs/adjusted-silver-cutover-20260715-production/A.abc.parquet.bak",
         # the protection must hold for the sidecars inside those trees too
         "raw/massive/us_stocks_sip/day_aggs_v1/date=2021-07-28/._part.parquet",
+        "ledger/runs/date=2026-09-02/r1.parquet",
     ],
 )
 class TestProtectedPathsSurvive:
@@ -262,3 +269,103 @@ def test_a_directory_named_like_a_log_is_never_planned(tmp_path):
     )
 
     assert trap not in [p for _, p in planned]
+
+
+class TestEvidenceLockSweep:
+    """The one sanctioned exception to the raw/ protection, scoped to `*.lock`.
+
+    `persist_raw` created `.<digest>.lock` per response and never unlinked it:
+    137,504 orphans of the 275,006 entries in one flat exFAT directory on
+    2026-09-05, which is what made the corporate-actions lane time out.
+    """
+
+    def _flat_cas(self, tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+        lake = tmp_path / "data-lake"
+        cas = lake / "raw/shepherd/sha256"
+        digest = "a" * 64
+        lock = _touch(cas / f".{digest}.lock")
+        artifact = _touch(cas / digest)
+        sharded = _touch(cas / "ab/cd" / ("ab" + "c" * 62))
+        return lake, lock, artifact, sharded
+
+    def test_the_sweep_is_opt_in_and_the_dry_run_only_lists(self, tmp_path, monkeypatch, caplog):
+        lake, lock, artifact, _sharded = self._flat_cas(tmp_path)
+        monkeypatch.setattr(housekeeping, "prune_releases", lambda keep, dry_run: [])
+
+        housekeeping.main(["--apply", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(lake)])
+        assert lock.exists(), "listing a 275k-entry directory is never part of the default sweep"
+
+        with caplog.at_level("INFO"):
+            rc = housekeeping.main(["--evidence-locks", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(lake)])
+
+        assert rc == 0
+        assert lock.exists(), "dry run by default"
+        assert str(lock) in caplog.text
+        assert str(artifact) not in caplog.text
+
+    def test_apply_deletes_only_the_lock_files(self, tmp_path, monkeypatch):
+        lake, lock, artifact, sharded = self._flat_cas(tmp_path)
+        monkeypatch.setattr(housekeeping, "prune_releases", lambda keep, dry_run: [])
+
+        rc = housekeeping.main(
+            ["--apply", "--evidence-locks", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(lake)]
+        )
+
+        assert rc == 0
+        assert not lock.exists()
+        assert artifact.exists(), "a provider artifact is never refetchable"
+        assert sharded.exists(), "shards are not entered"
+
+    def test_a_lake_without_the_directory_plans_nothing(self, tmp_path):
+        assert housekeeping.plan_evidence_locks(tmp_path / "data-lake") == []
+
+
+class TestTheSweepCrossesTheSymlinkedSubtrees:
+    """2026-09-06: the lake root became a real internal directory whose big
+    subtrees are each a symlink onto the exFAT volume. `Path.rglob` does not
+    descend into a symlinked directory, so the sweep walked only the small real
+    directories and reported `71 item(s) deleted, 0 failed` while every sidecar
+    under bronze/ survived. → pm:2026-09-07-appledouble-sweep-stopped-at-the-symlinked-subtrees
+    """
+
+    def test_a_symlinked_subtree_is_swept(self, tmp_path):
+        volume = tmp_path / "volume" / "data-lake"
+        sidecar = _touch(volume / "bronze/asset_class=equity/symbol=RJF/._1d.parquet")
+        real = _touch(volume / "bronze/asset_class=equity/symbol=RJF/1d.parquet")
+        lake = tmp_path / "data-lake"
+        lake.mkdir()
+        (lake / "bronze").symlink_to(volume / "bronze")
+
+        planned = [p for _, p in plan_appledouble(lake)]
+
+        assert lake / "bronze/asset_class=equity/symbol=RJF/._1d.parquet" in planned
+        assert sidecar.exists(), "planning never mutates"
+        assert real not in planned
+
+    def test_a_symlink_off_the_lake_is_not_swept_and_a_loop_terminates(self, tmp_path):
+        outside = _touch(tmp_path / "elsewhere/._notours.parquet")
+        lake = tmp_path / "data-lake"
+        ours = _touch(lake / "bronze/asset_class=equity/symbol=RJF/._1d.parquet")
+        (lake / "bronze/escape").symlink_to(tmp_path / "elsewhere")
+        (lake / "bronze/loop").symlink_to(lake)
+
+        planned = [p for _, p in plan_appledouble(lake)]
+
+        assert planned == [ours], "the lake's own sidecar, once; nothing off the lake"
+        assert outside.exists()
+
+    def test_a_subtree_the_walk_never_entered_is_loud(self, tmp_path, caplog):
+        """The silent-success case: the volume is unmounted, so bronze/ dangles,
+        the walk covers the small real directories and the summary is clean."""
+        lake = tmp_path / "data-lake"
+        _touch(lake / "cursors/last.json")
+        (lake / "bronze").symlink_to(tmp_path / "volume" / "data-lake" / "bronze")
+
+        with caplog.at_level("WARNING"):
+            planned = plan_appledouble(lake)
+
+        assert planned == []
+        assert any("never entered" in r.getMessage() and "bronze" in r.getMessage() for r in caplog.records), (
+            "a sweep that entered nothing must not read as a clean sweep"
+        )
+        assert not any("cursors" in r.getMessage() for r in caplog.records), "a walked subtree is not reported"

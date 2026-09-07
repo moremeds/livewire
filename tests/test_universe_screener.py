@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -340,7 +341,7 @@ class TestMain:
 
     def test_not_trading_day_exits(self, tmp_path, monkeypatch):
         """Script exits 0 on non-trading day without --force."""
-        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", tmp_path / "data-lake")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "data-lake"))
 
         with patch("livewire_scripts.universe_screener.is_trading_day", return_value=False):
             with pytest.raises(SystemExit) as exc_info:
@@ -352,7 +353,7 @@ class TestMain:
         data_lake = tmp_path / "data-lake"
         bronze_dir = data_lake / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
-        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
+        monkeypatch.setenv("MDW_DATA_LAKE", str(data_lake))
 
         preset_path = tmp_path / "preset.json"
         state_path = tmp_path / "state.json"
@@ -366,7 +367,7 @@ class TestMain:
             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client),
             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
             patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
-            patch("livewire_scripts.universe_screener._LOG_DIR", log_dir),
+            patch.dict(os.environ, {"MDW_LOG_DIR": str(log_dir)}),
         ):
             main(["--dry-run", "--force"])
 
@@ -413,7 +414,7 @@ class TestMain:
         )
         pq.write_table(table, existing_sym_dir / "1d.parquet")
 
-        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
+        monkeypatch.setenv("MDW_DATA_LAKE", str(data_lake))
 
         preset_path = tmp_path / "preset.json"
         state_path = tmp_path / "state.json"  # does not exist — bootstrap mode
@@ -433,7 +434,7 @@ class TestMain:
             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client),
             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
             patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
-            patch("livewire_scripts.universe_screener._LOG_DIR", log_dir),
+            patch.dict(os.environ, {"MDW_LOG_DIR": str(log_dir)}),
             patch("shutil.move", fake_archive),
             patch("subprocess.run"),
         ):
@@ -447,7 +448,7 @@ class TestMain:
         data_lake = tmp_path / "data-lake"
         bronze_dir = data_lake / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
-        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
+        monkeypatch.setenv("MDW_DATA_LAKE", str(data_lake))
 
         import pyarrow as pa
         import pyarrow.parquet as pq
@@ -515,7 +516,7 @@ class TestMain:
             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client),
             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
             patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
-            patch("livewire_scripts.universe_screener._LOG_DIR", log_dir),
+            patch.dict(os.environ, {"MDW_LOG_DIR": str(log_dir)}),
             patch("shutil.move", fake_move),
             patch("subprocess.run"),
         ):
@@ -529,7 +530,7 @@ class TestMain:
         data_lake = tmp_path / "data-lake"
         bronze_dir = data_lake / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
-        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
+        monkeypatch.setenv("MDW_DATA_LAKE", str(data_lake))
 
         today = date.today().isoformat()
         state = {"run_date": today, "universe": [], "absent_counts": {}}
@@ -547,7 +548,7 @@ class TestMain:
             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client),
             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
             patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
-            patch("livewire_scripts.universe_screener._LOG_DIR", log_dir),
+            patch.dict(os.environ, {"MDW_LOG_DIR": str(log_dir)}),
             patch("subprocess.run"),
         ):
             # Should not raise SystemExit — --force bypasses idempotency
@@ -595,7 +596,7 @@ class TestMain:
         )
         pq.write_table(table, old_sym_dir / "1d.parquet")
 
-        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
+        monkeypatch.setenv("MDW_DATA_LAKE", str(data_lake))
 
         # State with OLDTICKER absent for >= GRACE_DAYS
         state = {
@@ -623,7 +624,7 @@ class TestMain:
             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client),
             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
             patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
-            patch("livewire_scripts.universe_screener._LOG_DIR", log_dir),
+            patch.dict(os.environ, {"MDW_LOG_DIR": str(log_dir)}),
             patch("shutil.move", fake_move),
             patch("subprocess.run"),
         ):
@@ -639,7 +640,7 @@ class TestMain:
         data_lake = tmp_path / "data-lake"
         bronze_dir = data_lake / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
-        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
+        monkeypatch.setenv("MDW_DATA_LAKE", str(data_lake))
 
         today = date.today().isoformat()
         state = {"run_date": today, "universe": [], "absent_counts": {}}
@@ -653,7 +654,7 @@ class TestMain:
         with (
             patch("livewire_scripts.universe_screener.is_trading_day", return_value=True),
             patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
-            patch("livewire_scripts.universe_screener._LOG_DIR", log_dir),
+            patch.dict(os.environ, {"MDW_LOG_DIR": str(log_dir)}),
         ):
             with pytest.raises(SystemExit) as exc_info:
                 main([])
@@ -664,7 +665,7 @@ class TestMain:
         data_lake = tmp_path / "data-lake"
         bronze_dir = data_lake / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
-        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
+        monkeypatch.setenv("MDW_DATA_LAKE", str(data_lake))
 
         preset_path = tmp_path / "preset.json"
         state_path = tmp_path / "state.json"
@@ -685,7 +686,7 @@ class TestMain:
             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client),
             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
             patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
-            patch("livewire_scripts.universe_screener._LOG_DIR", log_dir),
+            patch.dict(os.environ, {"MDW_LOG_DIR": str(log_dir)}),
             patch("subprocess.run", fake_run),
         ):
             main(["--force"])
@@ -701,7 +702,7 @@ class TestMain:
         data_lake = tmp_path / "data-lake"
         bronze_dir = data_lake / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
-        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", data_lake)
+        monkeypatch.setenv("MDW_DATA_LAKE", str(data_lake))
 
         preset_path = tmp_path / "preset.json"
         state_path = tmp_path / "state.json"
@@ -718,7 +719,7 @@ class TestMain:
             patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client),
             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
             patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
-            patch("livewire_scripts.universe_screener._LOG_DIR", log_dir),
+            patch.dict(os.environ, {"MDW_LOG_DIR": str(log_dir)}),
             patch("livewire_scripts.universe_screener._send_screener_alert") as mock_alert,
             patch("subprocess.run"),
         ):
@@ -757,9 +758,9 @@ class TestCoreEtfIntegration:
 
     def test_core_etf_added_when_missing(self, tmp_path, monkeypatch):
         """A core ETF not in bronze should be added even if not scanned."""
-        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", tmp_path / "data-lake")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "data-lake"))
         monkeypatch.setattr("livewire_scripts.universe_screener._STATE_PATH", tmp_path / "state.json")
-        monkeypatch.setattr("livewire_scripts.universe_screener._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         monkeypatch.setattr("livewire_scripts.universe_screener._PRESET_PATH", tmp_path / "preset.json")
         monkeypatch.setattr("livewire_scripts.universe_screener._CORE_ETFS_PATH", tmp_path / "core.json")
 
@@ -783,9 +784,9 @@ class TestCoreEtfIntegration:
 
     def test_core_etf_never_in_removals(self, tmp_path, monkeypatch):
         """A core ETF in bronze but not scanned should NEVER be archived."""
-        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", tmp_path / "data-lake")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "data-lake"))
         monkeypatch.setattr("livewire_scripts.universe_screener._STATE_PATH", tmp_path / "state.json")
-        monkeypatch.setattr("livewire_scripts.universe_screener._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         monkeypatch.setattr("livewire_scripts.universe_screener._PRESET_PATH", tmp_path / "preset.json")
         monkeypatch.setattr("livewire_scripts.universe_screener._CORE_ETFS_PATH", tmp_path / "core.json")
 
@@ -826,9 +827,9 @@ class TestCoreEtfIntegration:
 
     def test_existing_absent_count_for_core_etf_is_dropped(self, tmp_path, monkeypatch):
         """Defensive: if a previous buggy run added a core ETF to absent_counts, drop it."""
-        monkeypatch.setattr("livewire_scripts.universe_screener._DATA_LAKE", tmp_path / "data-lake")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "data-lake"))
         monkeypatch.setattr("livewire_scripts.universe_screener._STATE_PATH", tmp_path / "state.json")
-        monkeypatch.setattr("livewire_scripts.universe_screener._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         monkeypatch.setattr("livewire_scripts.universe_screener._PRESET_PATH", tmp_path / "preset.json")
         monkeypatch.setattr("livewire_scripts.universe_screener._CORE_ETFS_PATH", tmp_path / "core.json")
 

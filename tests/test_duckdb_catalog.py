@@ -24,6 +24,7 @@ from clients.duckdb_catalog import (
     ensure_pit_views,
     ensure_shepherd_metadata_view,
     ensure_view,
+    ledger_query,
     read_symbols,
     symbol_files,
     view_names,
@@ -354,6 +355,26 @@ def test_build_coverage_tolerates_individually_absent_asset_classes(tmp_path: Pa
     assert counts["bronze_equity_1d"] == 2
 
 
+def test_build_coverage_tolerates_a_corrupt_parquet_in_the_glob(tmp_path: Path, lake: Path, silver: Path) -> None:
+    """One truncated file ("No magic bytes found") took the whole nightly duckdb
+    build down for three straight releases (7e11244/c58036d/7cc33b5b), 2026-09-03
+    through -05 -- every other asset class and silver went missing along with it.
+    DuckDB 1.5's read_parquet has no per-file skip for a glob (verified: passing
+    ignore_errors raises BinderException, it is not a real parameter), so the
+    view carrying the corrupt file still comes back empty; the fix is that it no
+    longer takes every *other* view down with it.
+    """
+    corrupt = lake / "bronze" / "asset_class=equity" / "symbol=HON" / "1d.parquet"
+    corrupt.write_bytes(corrupt.read_bytes()[:-8])
+
+    dest = tmp_path / "analytics.duckdb"
+    counts = build_coverage(dest, lake_root=lake, silver_root=silver)
+
+    assert counts["bronze_equity_1d"] == 0
+    assert counts["silver_equity_1d"] == 1
+    assert dest.exists()
+
+
 def test_coverage_sources_are_daily_only() -> None:
     """Intraday must stay out: a coverage pass over it would scan 23.57 GB."""
     names = [name for name, _ in COVERAGE_SOURCES]
@@ -675,3 +696,38 @@ def test_pit_coverage_view_is_bound_to_the_manifest_input_hash(tmp_path: Path) -
     }
     assert all(row[0] == manifest["input_hash"] and row[2] == "VERIFIED" for row in rows)
     assert not {"1" * 64, "2" * 64, "3" * 64} & {row[3] for row in rows}
+
+
+def test_ledger_query_ignores_appledouble_shadow_files(tmp_path):
+    """The lake is exFAT: macOS drops a `._x.parquet` beside every `x.parquet`,
+    and DuckDB dies on it with "No magic bytes found at end of file"."""
+    directory = tmp_path / "runs" / "date=2026-09-03"
+    directory.mkdir(parents=True)
+    pq.write_table(pa.table({"run_id": ["daily-update-1"]}), directory / "runs.parquet")
+    (directory / "._runs.parquet").write_bytes(b"Mac OS X AppleDouble stub")
+
+    rows = ledger_query(
+        "select run_id, date from runs",
+        root=tmp_path,
+        tables={"runs": pa.schema([("run_id", pa.string())])},
+    )
+
+    assert [row["run_id"] for row in rows] == ["daily-update-1"]
+    # The hive partition column has to survive the switch to an explicit file list.
+    assert [row["date"] for row in rows] == [date(2026, 9, 3)]
+
+
+def test_ledger_query_treats_a_shadow_only_directory_as_empty(tmp_path):
+    """A directory holding nothing but sidecars has no rows — it is not an error,
+    and it must not build a view over an empty file list."""
+    directory = tmp_path / "runs" / "date=2026-09-03"
+    directory.mkdir(parents=True)
+    (directory / "._runs.parquet").write_bytes(b"Mac OS X AppleDouble stub")
+
+    rows = ledger_query(
+        "select run_id from runs",
+        root=tmp_path,
+        tables={"runs": pa.schema([("run_id", pa.string())])},
+    )
+
+    assert rows == []

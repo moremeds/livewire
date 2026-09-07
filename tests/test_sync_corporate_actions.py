@@ -8,10 +8,13 @@ from types import SimpleNamespace
 import pytest
 import responses
 
+from clients import ledger
 from clients.corporate_action_store import CorporateActionStore
 from clients.massive_client import MassiveAuthError, MassiveResponseCapture
 from clients.source_evidence import SourceEvidenceStore
+from clients.telemetry import MassiveTelemetry
 from livewire_scripts import sync_corporate_actions
+from livewire_scripts.corporate_action_cursor import build_identity, open_cursor
 
 
 @responses.activate
@@ -43,6 +46,10 @@ class _Client:
     def __init__(self, *, fail=None):
         self.fail = {fail} if isinstance(fail, str) else set(fail or ())
         self.calls: list[tuple[str, str]] = []
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def get_splits(self, ticker):
         self.calls.append(("splits", ticker))
@@ -158,6 +165,7 @@ def test_explicit_tickers_reconcile_sequentially_with_dry_run(tmp_path, capsys):
         "cancelled": 6,
         "completed": 2,
         "cursor": summary["cursor"],
+        "cycles": 1,
         "failed": 0,
         "inserted": 2,
         "pending": 0,
@@ -326,7 +334,9 @@ def test_failed_symbol_is_not_checkpointed_and_resume_retries_it(tmp_path):
         )
         == 0
     )
-    assert second.fetched_symbols == {"MSFT"}
+    # The resumed pass owes only MSFT; finishing it frees the rest of the
+    # budget, so the same invocation opens a fresh pass over the whole list.
+    assert second.fetch_counts == {"MSFT": 2, "AAPL": 1}
 
 
 def test_auth_failure_stops_new_work_and_reports_pending(tmp_path, capsys):
@@ -356,6 +366,57 @@ def _stub_endpoints(tickers):
                 json={"status": "OK", "results": []},
                 status=200,
             )
+
+
+def _stub_distinct_endpoints(tickers):
+    """Production shape: every response body differs, so nothing dedupes.
+
+    `_stub_endpoints` returns one byte-identical empty body, which every write
+    after the first answers from the in-process digest cache -- that is what hid
+    the flat-directory cost until the lane timed out three nights running.
+    """
+    for ticker in tickers:
+        for resource in ("splits", "dividends"):
+            responses.add(
+                responses.GET,
+                f"https://api.massive.com/v3/reference/{resource}",
+                json={"status": "OK", "request_id": f"{ticker}-{resource}", "results": []},
+                status=200,
+            )
+
+
+class TestDistinctResponseBodies:
+    @responses.activate
+    def test_every_artifact_is_sharded_and_no_lock_file_is_left_behind(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MASSIVE_API_KEY", "fixture-token")
+        tickers = ["AAPL", "MSFT", "NVDA"]
+        _stub_distinct_endpoints(tickers)
+
+        assert sync_corporate_actions.run(["--tickers", *tickers, "--workers", "1"], data_lake_root=tmp_path) == 0
+
+        store = SourceEvidenceStore(tmp_path)
+        assert len(store.list_verified()) == 2 * len(tickers)
+        assert list(store.raw_root.rglob(".*.lock")) == []
+        assert [path for path in store.raw_root.iterdir() if path.is_file()] == []
+
+    @responses.activate
+    def test_the_manifest_is_committed_during_the_run_not_only_at_the_end(self, tmp_path, monkeypatch):
+        """A lane SIGKILLed at its budget never reaches the `finally`."""
+        monkeypatch.setenv("MASSIVE_API_KEY", "fixture-token")
+        monkeypatch.setattr(sync_corporate_actions, "_EVIDENCE_FLUSH_EVERY", 1)
+        tickers = ["AAPL", "MSFT", "NVDA"]
+        _stub_distinct_endpoints(tickers)
+        publishes = []
+        real_publish = SourceEvidenceStore._publish_manifest
+        monkeypatch.setattr(
+            SourceEvidenceStore,
+            "_publish_manifest",
+            lambda self, rows: (publishes.append(len(rows)), real_publish(self, rows))[1],
+        )
+
+        assert sync_corporate_actions.run(["--tickers", *tickers, "--workers", "1"], data_lake_root=tmp_path) == 0
+
+        assert publishes == [2, 4, 6], "one commit per ticker, each carrying the whole manifest"
 
 
 class TestEvidenceIsCommittedOncePerRun:
@@ -452,3 +513,159 @@ def test_one_buffer_is_shared_by_every_worker(tmp_path):
     buffer.flush()
 
     assert len(SourceEvidenceStore(tmp_path).list_verified()) == 4
+
+
+def test_provider_totals_reach_the_ledger_not_just_the_log(tmp_path, monkeypatch):
+    """2026-09-03: the lane ran 2h15m and nothing on disk said whether it was
+    rate-limited, timing out, or just slow — telemetry was never passed."""
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-20260903T060005Z-49009")
+    telemetry = MassiveTelemetry(jsonl_path=None)
+    telemetry.record_request(endpoint="/v3/reference/splits", status=200, dt_ms=120)
+    telemetry.record_request(endpoint="/v3/reference/splits", status=429, dt_ms=90)
+    telemetry.record_wait(4.25)
+
+    rc = sync_corporate_actions.run(
+        ["--tickers", "AAPL", "--workers", "1"],
+        client=_Client(),
+        store=_Store(),
+        data_lake_root=tmp_path,
+        telemetry=telemetry,
+    )
+
+    assert rc == 0
+    rows = ledger.query(
+        "select name, scope, source, unit, value from measurements "
+        "where run_id = 'daily-update-20260903T060005Z-49009' order by name"
+    )
+    assert [row["name"] for row in rows] == [
+        "provider_errors",
+        "provider_latency_p95_ms",
+        "provider_requests",
+        "provider_throttled",
+        "provider_wait_s",
+    ]
+    assert {row["scope"] for row in rows} == {"corporate-actions"}
+    assert {row["source"] for row in rows} == {"measured"}
+    by_name = {row["name"]: row["value"] for row in rows}
+    assert by_name["provider_requests"] == 2.0
+    assert by_name["provider_throttled"] == 1.0
+    assert by_name["provider_wait_s"] == 4.25
+
+
+def test_the_default_client_factory_actually_attaches_the_telemetry(tmp_path, monkeypatch):
+    """The seam the injected-factory tests skip: production goes through
+    default_client_factory, and that is the only place the wiring exists."""
+    monkeypatch.setenv("MASSIVE_API_KEY", "fixture-token")
+    built: list[dict] = []
+
+    class _Recorder(_Client):
+        def __init__(self, **kwargs):
+            super().__init__()
+            built.append(kwargs)
+
+    monkeypatch.setattr(sync_corporate_actions, "MassiveClient", _Recorder)
+    telemetry = MassiveTelemetry(jsonl_path=None)
+
+    sync_corporate_actions.run(
+        ["--tickers", "AAPL", "--workers", "1"],
+        store=_Store(),
+        data_lake_root=tmp_path,
+        telemetry=telemetry,
+    )
+
+    assert built and built[0]["telemetry"] is telemetry
+
+
+def test_a_run_that_measured_nothing_emits_nothing(tmp_path, monkeypatch):
+    """ledger.emit refuses zero rows; a run that made no measured request
+    must skip the emit rather than abort a lane that otherwise succeeded."""
+    monkeypatch.setenv("LW_RUN_ID", "manual-20260903T000000Z-1")
+
+    rc = sync_corporate_actions.run(["--tickers", "AAPL"], client=_Client(), store=_Store(), data_lake_root=tmp_path)
+
+    assert rc == 0
+    assert ledger.query("select count(*) as n from measurements")[0]["n"] == 0
+
+
+def _seed_cursor(tmp_path, path, tickers, done):
+    """Write a real, compatible, incomplete cursor -- the subject under test."""
+    identity = build_identity(tmp_path, tickers, full_reconcile=False, dry_run=False)
+    cursor = open_cursor(path, identity, resume=False, now=datetime(2026, 9, 4, 6, tzinfo=UTC))
+    for ticker in done:
+        cursor.mark_completed(ticker, now=datetime(2026, 9, 4, 6, tzinfo=UTC))
+    return cursor
+
+
+def test_a_resumed_pass_finishes_its_tail_then_opens_a_new_cycle(tmp_path):
+    """Last night's tail first, then this night's own full pass.
+
+    Resuming alone would leave the head of the universe untouched on a night
+    the previous pass was nearly done; restarting alone was the bug.
+    """
+    tickers = ["AAPL", "MSFT", "NVDA"]
+    cursor_path = tmp_path / "cursor.json"
+    _seed_cursor(tmp_path, cursor_path, tickers, ["AAPL", "MSFT"])
+    client = _Client()
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", *tickers, "--cursor", str(cursor_path), "--resume"],
+            client=client,
+            store=_Store(),
+            data_lake_root=tmp_path,
+        )
+        == 0
+    )
+
+    assert [ticker for kind, ticker in client.calls if kind == "splits"] == [
+        "NVDA",
+        "AAPL",
+        "MSFT",
+        "NVDA",
+    ]
+    assert json.loads(cursor_path.read_text())["run_completed_at"] is not None
+
+
+def test_a_resumed_pass_that_does_not_finish_stays_resumable(tmp_path, capsys):
+    tickers = ["AAPL", "MSFT", "NVDA"]
+    cursor_path = tmp_path / "cursor.json"
+    _seed_cursor(tmp_path, cursor_path, tickers, ["AAPL"])
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", *tickers, "--cursor", str(cursor_path), "--resume"],
+            client=_Client(fail="NVDA"),
+            store=_Store(),
+            data_lake_root=tmp_path,
+        )
+        == 1
+    )
+
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["cycles"] == 1
+    assert summary["resumed"] == 1
+    assert json.loads(cursor_path.read_text())["run_completed_at"] is None
+    assert json.loads(cursor_path.read_text())["completed"] == ["AAPL", "MSFT"]
+
+
+def test_progress_heartbeats_to_the_ledger_at_every_flush(tmp_path, monkeypatch):
+    """A lane SIGKILLed at its budget prints nothing; the ledger still says how far it got."""
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-20260905T060000Z-1")
+    monkeypatch.setattr(sync_corporate_actions, "_EVIDENCE_FLUSH_EVERY", 2)
+    tickers = [f"T{index}" for index in range(4)]
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", *tickers, "--cursor", str(tmp_path / "cursor.json")],
+            client=_Client(),
+            store=_Store(),
+            data_lake_root=tmp_path,
+        )
+        == 0
+    )
+
+    rows = ledger.query("select name, value, unit, run_id from measurements where scope = 'corporate-actions'")
+    assert sorted(row["value"] for row in rows if row["name"] == "progress") == [2.0, 4.0]
+    assert {row["value"] for row in rows if row["name"] == "progress_total"} == {4.0}
+    assert {row["unit"] for row in rows} == {"symbols"}
+    assert {row["run_id"] for row in rows} == {"daily-update-20260905T060000Z-1"}

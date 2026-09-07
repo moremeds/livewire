@@ -446,8 +446,7 @@ def test_email_mode_spawns_nodemailer_and_writes_marker(tmp_path, monkeypatch):
     assert spawned, "Nodemailer should be invoked"
     cmd = spawned[0][0]
     assert "daily-summary" in cmd
-    markers = list(marker_dir.glob("quality_summary_*.marker"))
-    assert markers, "marker file should be written"
+    assert list(marker_dir.glob("*.marker")) == []
 
 
 def test_send_email_failure_returns_false(monkeypatch, capsys):

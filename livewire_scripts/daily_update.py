@@ -50,12 +50,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients.bronze_client import BronzeClient
-from clients.corporate_action_store import CorporateActionStore
 from clients.daily_bar_fallback import DailyBarFallbackClient
 from clients.ib_client import IBClient
 from clients.ingestion_common import (
     ROOT_EXCHANGE_MAP,  # noqa: F401
     SUPPORTED_IB_FX_PAIRS,  # noqa: F401
+    action_store_for_bronze,
     bars_to_futures_rows,
     bars_to_midpoint_rows,
     bars_to_rows,
@@ -72,8 +72,7 @@ from clients.ingestion_common import (
 )
 from clients.massive_client import MassiveAPIError, MassiveAuthError, MassiveClient
 from clients.price_basis import prepare_ib_rows_for_publish
-from clients.quality_detector import _normalize_bars_for_detection, detect_all
-from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
+from clients.quality_detector import run_detection
 from clients.trading_calendar import (
     _easter,  # noqa: F401
     get_nyse_holidays,  # noqa: F401
@@ -120,19 +119,9 @@ def _optional_massive_client():
 
 # ── Config ─────────────────────────────────────────────────────────────
 
-DATA_LAKE: Path | None = None
 BRONZE_DIR: Path | None = None
 
 console = Console()
-
-
-def _resolved_data_lake() -> Path:
-    return DATA_LAKE or data_lake_dir()
-
-
-def _action_store_for_bronze(bronze_dir: Path) -> CorporateActionStore:
-    root = bronze_dir.parent.parent if bronze_dir.parent.name == "bronze" else bronze_dir.parent
-    return CorporateActionStore(root)
 
 
 # ROOT_EXCHANGE_MAP, SUPPORTED_IB_FX_PAIRS, _resolve_fx_pair,
@@ -333,51 +322,6 @@ def validate_bars(
 
 # bars_to_rows, bars_to_futures_rows, bars_to_midpoint_rows
 # → imported from clients.ingestion_common
-
-
-def _run_quality_detection(
-    *,
-    ticker: str,
-    asset_class: str,
-    bars: list,
-    parquet_path: Path,
-    expected_start: date | None = None,
-    source: str = "ib",
-    reference_source: dict | None = None,
-) -> None:
-    """Run daily quality detection and emit flags without blocking publish."""
-    if not bars:
-        return
-    normalized = _normalize_bars_for_detection(bars)
-    metadata = {
-        "asset_class": asset_class,
-        "ticker": ticker,
-        "timeframe": "1d",
-        "source": source,
-        "bars_received": len(bars),
-        "expected_start": expected_start,
-        "ib_head_timestamp": None,
-        "errors_during_fetch": [],
-    }
-    if reference_source is not None:
-        metadata["reference_source"] = reference_source
-    try:
-        flags = detect_all(bars=normalized, metadata=metadata, trading_calendar=None)
-    except Exception:  # pragma: no cover - detect_all wraps individual detectors
-        return
-    if not flags:
-        return
-    parquet_path.parent.mkdir(parents=True, exist_ok=True)
-    write_sidecar(parquet_path, flags, metadata)
-    for flag in flags:
-        append_audit(
-            flag,
-            source=source,
-            ticker=ticker,
-            timeframe="1d",
-            parquet_path=parquet_path,
-        )
-        alert_on_flag(flag, source=source, ticker=ticker)
 
 
 def validate_intraday_bar(
@@ -661,7 +605,7 @@ def main():  # pragma: no cover — only exercised by integration tests
         console.print("[red]--source massive is only supported for asset_class=equity.[/red]")
         return 2
 
-    bronze_dir = BRONZE_DIR or _resolved_data_lake() / "bronze" / f"asset_class={asset_class}"
+    bronze_dir = BRONZE_DIR or data_lake_dir() / "bronze" / f"asset_class={asset_class}"
 
     console.print(
         f"\n[bold]Daily Update[/bold]  target_date={target}  force={args.force}  "
@@ -783,12 +727,14 @@ def main():  # pragma: no cover — only exercised by integration tests
                             # No expected_start on the Massive path: for thin instruments a
                             # later actual_start just means "didn't trade", and ib_head_timestamp
                             # (the range_shortfall suppression input) is never available here.
-                            _run_quality_detection(
+                            run_detection(
                                 ticker=ticker,
                                 asset_class=asset_class,
+                                timeframe="1d",
                                 bars=valid_bars,
                                 parquet_path=parquet_path,
                                 expected_start=None,
+                                ib_head_timestamp=None,
                                 source="massive",
                             )
                             inserted = bronze.merge_ticker_rows(ticker, rows)
@@ -971,16 +917,18 @@ def main():  # pragma: no cover — only exercised by integration tests
                                 existing_rows=(
                                     bronze.read_symbol_rows(ticker) if hasattr(bronze, "read_symbol_rows") else []
                                 ),
-                                actions=_action_store_for_bronze(bronze_dir).latest_active(ticker),
+                                actions=action_store_for_bronze(bronze_dir).latest_active(ticker),
                                 as_of_date=target,
                             )
                         parquet_path = bronze_dir / f"symbol={ticker}" / "1d.parquet"
-                        _run_quality_detection(
+                        run_detection(
                             ticker=ticker,
                             asset_class=asset_class,
+                            timeframe="1d",
                             bars=valid_bars,
                             parquet_path=parquet_path,
                             expected_start=latest + timedelta(days=1) if latest else None,
+                            ib_head_timestamp=None,
                             source="ib",
                             reference_source=_source_comparison(reference_bars, valid_bars),
                         )

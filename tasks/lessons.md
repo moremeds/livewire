@@ -1,5 +1,6 @@
 # Lessons
 
+- When the user names an exact plan path, open and execute that file; never infer a nearby plan from the branch name.
 - For whole-universe work, count canonical provider symbols rather than only
   uppercased labels: mixed-case identities such as `BCPC`/`BCpC` and `TPC`/`TpC`
   are distinct and must remain distinct in scope hashes, API queries, cursors,

@@ -862,7 +862,10 @@ class TestGapAwareCompleted:
         mock_bronze = MagicMock()
         mock_bronze.get_trade_dates_by_symbol.return_value = {
             "AAPL": [date(2026, 5, 27), date(2026, 5, 28), date(2026, 5, 29)],
-            "MSFT": [date(2026, 5, 27), date(2026, 5, 29)],
+            # A tail gap: the registry engine emits G1 (newest sessions missing)
+            # and G3 (nothing on disk); interior absence is deliberately not a
+            # finding (pm:2026-09-01-g2-g13-not-emitted).
+            "MSFT": [date(2026, 5, 27), date(2026, 5, 28)],
         }
         with patch(
             "clients.bronze_client.BronzeClient",
@@ -1279,3 +1282,20 @@ class TestGapAwareCompleted:
             warehouse_dir=tmp_path,
         )
         assert result == 0
+
+
+def test_gap_aware_completed_consumes_the_registry_gap_engine(tmp_path, monkeypatch):
+    """backfill_runner must ask clients.gap_engine, never a second detector."""
+    import pathlib
+
+    import livewire_scripts.backfill_runner as runner
+
+    calls: list[tuple[str, int]] = []
+
+    def _fake_classify(series, present, massive_floor, terminus=None, unconfirmed=False):
+        calls.append((series.symbol, len(series.sessions)))
+        return []
+
+    monkeypatch.setattr(runner, "classify", _fake_classify)
+    assert not hasattr(runner, "compute_gaps")
+    assert "livewire_scripts.check_gaps" not in pathlib.Path(runner.__file__).read_text(encoding="utf-8")

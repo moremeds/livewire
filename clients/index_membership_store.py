@@ -13,6 +13,7 @@ import pyarrow as pa
 
 from clients.revisioned_parquet import AtomicParquetLog
 from clients.security_master import SecurityMaster
+from clients.timeutils import require_aware
 
 MembershipAction = Literal["add", "remove"]
 MembershipStatus = Literal["candidate", "verified", "rejected", "unresolved"]
@@ -78,13 +79,13 @@ class IndexMembershipStore:
     def events(self, index_id: str, *, as_of: datetime | None = None) -> list[MembershipEvent]:
         items = [_deserialize(row) for row in self._log(index_id).read()]
         if as_of is not None:
-            _require_aware(as_of, "as_of")
+            require_aware(as_of, "as_of")
             items = [item for item in items if item.known_at <= as_of]
         return items
 
     def members_effective_at(self, index_id: str, effective_at: datetime, as_of: datetime) -> set[str]:
-        _require_aware(effective_at, "effective_at")
-        _require_aware(as_of, "as_of")
+        require_aware(effective_at, "effective_at")
+        require_aware(as_of, "as_of")
         items = self.events(index_id, as_of=as_of)
         superseded = {item.supersedes for item in items if item.supersedes is not None}
         applicable = [
@@ -146,10 +147,10 @@ def _validate_event(item: MembershipEvent, verifier: EvidenceVerifier | None) ->
         raise ValueError("invalid membership status")
     if item.revision < 1:
         raise ValueError("membership revision must be positive")
-    _require_aware(item.effective_at, "effective_at")
-    _require_aware(item.known_at, "known_at")
+    require_aware(item.effective_at, "effective_at")
+    require_aware(item.known_at, "known_at")
     if item.announced_at is not None:
-        _require_aware(item.announced_at, "announced_at")
+        require_aware(item.announced_at, "announced_at")
         if item.announced_at > item.known_at:
             raise ValueError("announced_at cannot be after known_at")
     if len(item.source_refs) == 0 or len(item.source_refs) != len(item.source_hashes):
@@ -179,8 +180,3 @@ def _deserialize(row: dict[str, object]) -> MembershipEvent:
             "source_hashes": tuple(row["source_hashes"]),
         }
     )
-
-
-def _require_aware(value: datetime, label: str) -> None:
-    if value.tzinfo is None:
-        raise ValueError(f"{label} must be timezone-aware")

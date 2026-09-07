@@ -22,6 +22,7 @@ from clients.index_membership_store import IndexMembershipStore, MembershipEvent
 from clients.mediawiki_client import MediaWikiClient
 from clients.security_master import SecurityIdentityEvent, SecurityMaster
 from clients.source_evidence import SourceEvidence, SourceEvidenceStore
+from clients.source_evidence import canonical_bytes as _canonical_bytes
 from clients.universe_client import UniverseFetchError, parse_constituent_table
 from livewire_scripts.paths import data_lake_dir
 
@@ -34,8 +35,9 @@ _HASH = re.compile(r"^[0-9a-f]{64}$")
 _REF = re.compile(r"^artifact://sha256/([0-9a-f]{64})$")
 
 
-def _canonical(value: object) -> bytes:
-    return (json.dumps(value, sort_keys=True, separators=(",", ":"), default=_json_default) + "\n").encode()
+def canonical_bytes(value: object) -> bytes:
+    """Module-local binding so the payload's datetimes keep their Z suffix."""
+    return _canonical_bytes(value, default=_json_default)
 
 
 def _json_default(value: object) -> str:
@@ -52,7 +54,7 @@ def scope_hash_for(index_id: str, sources: list[dict[str, str]]) -> str:
             key=lambda item: item["ref"],
         ),
     }
-    return f"sha256:{hashlib.sha256(_canonical(payload)).hexdigest()}"
+    return f"sha256:{hashlib.sha256(canonical_bytes(payload)).hexdigest()}"
 
 
 def decision_payload_hash(payload: dict[str, Any]) -> str:
@@ -60,7 +62,7 @@ def decision_payload_hash(payload: dict[str, Any]) -> str:
         key: payload.get(key)
         for key in ("version", "indexId", "scopeHash", "sourceEvidence", "identityEvents", "membershipEvents")
     }
-    return f"sha256:{hashlib.sha256(_canonical(decision)).hexdigest()}"
+    return f"sha256:{hashlib.sha256(canonical_bytes(decision)).hexdigest()}"
 
 
 def _record_preset(store: SourceEvidenceStore, path: Path, retrieved_at: datetime) -> tuple[SourceEvidence, set[str]]:
@@ -178,7 +180,7 @@ def scan_index(
         },
         "mutated": False,
     }
-    artifact = store.persist_raw(_canonical(result))
+    artifact = store.persist_raw(canonical_bytes(result))
     result["scanArtifact"] = {"ref": artifact.ref, "sha256": artifact.sha256}
     return result
 
@@ -531,7 +533,7 @@ def verify_revision(
         "stateHint": "VERIFIED",
         "changedPaths": [],
     }
-    receipt["receiptHash"] = f"sha256:{hashlib.sha256(_canonical(receipt)).hexdigest()}"
+    receipt["receiptHash"] = f"sha256:{hashlib.sha256(canonical_bytes(receipt)).hexdigest()}"
     return receipt
 
 

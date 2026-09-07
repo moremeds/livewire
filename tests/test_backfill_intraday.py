@@ -233,7 +233,7 @@ class TestBackfillTicker:
                 "livewire_scripts.backfill_intraday._make_contract",
                 return_value=contract,
             ) as m_contract:
-                with patch("livewire_scripts.backfill_intraday._run_quality_detection") as m_quality:
+                with patch("livewire_scripts.backfill_intraday.run_detection") as m_quality:
                     outcome = backfill_ticker(
                         "VIX",
                         "5m",
@@ -251,8 +251,8 @@ class TestBackfillTicker:
 
 class TestQualityHookIntegration:
     def test_quality_hook_suppresses_bulk_email_alerts_by_default(self, tmp_path, monkeypatch):
-        from clients.quality_detector import QualityFlag
-        from livewire_scripts.backfill_intraday import _run_quality_detection
+        from clients.quality_detector import QualityFlag, run_detection
+        from livewire_scripts.backfill_intraday import _intraday_backfill_alerts_enabled
 
         monkeypatch.delenv("MDW_INTRADAY_BACKFILL_ALERTS", raising=False)
         bars = [_make_ib_bar(datetime(2026, 4, 6, 9, 30))]
@@ -268,19 +268,21 @@ class TestQualityHookIntegration:
 
         with (
             patch(
-                "livewire_scripts.backfill_intraday.detect_all",
+                "clients.quality_detector.detect_all",
                 return_value=[fake_flag],
             ),
-            patch("livewire_scripts.backfill_intraday.write_sidecar") as write_sidecar,
-            patch("livewire_scripts.backfill_intraday.append_audit") as append_audit,
-            patch("livewire_scripts.backfill_intraday.alert_on_flag") as alert_on_flag,
+            patch("clients.quality_flags.write_sidecar") as write_sidecar,
+            patch("clients.quality_flags.append_audit") as append_audit,
+            patch("clients.quality_flags.alert_on_flag") as alert_on_flag,
         ):
-            _run_quality_detection(
+            run_detection(
                 ticker="AAPL",
+                asset_class="equity",
                 timeframe="5m",
                 bars=bars,
                 parquet_path=parquet_path,
-                outcome=outcome,
+                errors_during_fetch=[{"code": 0, "count": 1, "message": e} for e in (outcome.errors or [])],
+                alerts_enabled=_intraday_backfill_alerts_enabled(),
             )
 
         write_sidecar.assert_called_once()
@@ -288,8 +290,8 @@ class TestQualityHookIntegration:
         alert_on_flag.assert_not_called()
 
     def test_quality_hook_fires_with_outcome_errors_when_enabled(self, tmp_path, monkeypatch):
-        from clients.quality_detector import QualityFlag
-        from livewire_scripts.backfill_intraday import _run_quality_detection
+        from clients.quality_detector import QualityFlag, run_detection
+        from livewire_scripts.backfill_intraday import _intraday_backfill_alerts_enabled
 
         monkeypatch.setenv("MDW_INTRADAY_BACKFILL_ALERTS", "1")
         bars = [_make_ib_bar(datetime(2026, 4, 6, 9, 30))]
@@ -305,20 +307,21 @@ class TestQualityHookIntegration:
 
         with (
             patch(
-                "livewire_scripts.backfill_intraday.detect_all",
+                "clients.quality_detector.detect_all",
                 return_value=[fake_flag],
             ) as m_detect,
-            patch("livewire_scripts.backfill_intraday.write_sidecar", return_value=True) as m_sidecar,
-            patch("livewire_scripts.backfill_intraday.append_audit", return_value=True) as m_audit,
-            patch("livewire_scripts.backfill_intraday.alert_on_flag", return_value=True) as m_alert,
+            patch("clients.quality_flags.write_sidecar", return_value=True) as m_sidecar,
+            patch("clients.quality_flags.append_audit", return_value=True) as m_audit,
+            patch("clients.quality_flags.alert_on_flag", return_value=True) as m_alert,
         ):
-            _run_quality_detection(
+            run_detection(
                 ticker="AAPL",
+                asset_class="volatility",
                 timeframe="5m",
                 bars=bars,
                 parquet_path=parquet_path,
-                outcome=outcome,
-                asset_class="volatility",
+                errors_during_fetch=[{"code": 0, "count": 1, "message": e} for e in (outcome.errors or [])],
+                alerts_enabled=_intraday_backfill_alerts_enabled(),
             )
 
         kwargs = m_detect.call_args.kwargs
@@ -329,16 +332,19 @@ class TestQualityHookIntegration:
         assert m_alert.call_count == 1
 
     def test_quality_hook_skips_empty_bars(self, tmp_path):
-        from livewire_scripts.backfill_intraday import _run_quality_detection
+        from clients.quality_detector import run_detection
+        from livewire_scripts.backfill_intraday import _intraday_backfill_alerts_enabled
 
         outcome = TickerOutcome(ticker="AAPL")
-        with patch("livewire_scripts.backfill_intraday.detect_all") as m_detect:
-            _run_quality_detection(
+        with patch("clients.quality_detector.detect_all") as m_detect:
+            run_detection(
                 ticker="AAPL",
+                asset_class="equity",
                 timeframe="5m",
                 bars=[],
                 parquet_path=tmp_path / "x.parquet",
-                outcome=outcome,
+                errors_during_fetch=[{"code": 0, "count": 1, "message": e} for e in (outcome.errors or [])],
+                alerts_enabled=_intraday_backfill_alerts_enabled(),
             )
 
         m_detect.assert_not_called()
@@ -403,8 +409,8 @@ class TestMain:
 
     def test_dry_run_no_ib_calls(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         # Patching IBClient at module path shouldn't even fire — dry-run skips it
         with patch.object(
             sys,
@@ -442,8 +448,8 @@ class TestMain:
 
     def test_non_equity_intraday_defaults_to_ib_source(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
 
         with patch(
             "livewire_scripts.backfill_intraday.compute_intraday_chunks",
@@ -471,8 +477,8 @@ class TestMain:
 
     def test_volatility_intraday_vix_spx_preset_dry_run(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
 
         preset_path = Path("presets/volatility-intraday.json")
         preset = json.loads(preset_path.read_text(encoding="utf-8"))
@@ -524,8 +530,8 @@ class TestMain:
 
     def test_skip_existing_marks_completed(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         # Seed bronze with old data so should_skip_existing returns True
         bronze_dir = tmp_path / "lake" / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
@@ -573,8 +579,8 @@ class TestMain:
 
     def test_max_tickers_caps_run(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
 
         with patch.object(
             sys,
@@ -601,8 +607,8 @@ class TestMain:
         # A "completed" cursor entry must NOT block a --tickers explicit run.
         # The cursor is for preset resume only.
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         save_cursor("5m", "custom", {"AAPL"})
 
         bars = [_make_ib_bar(datetime(2026, 4, 6, 10, 0))]
@@ -627,8 +633,8 @@ class TestMain:
 
     def test_preset_run_writes_cursor_on_success(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
 
         bars = [_make_ib_bar(datetime(2026, 4, 6, 10, 0))]
         fake_ib = MagicMock()
@@ -661,8 +667,8 @@ class TestMain:
 
     def test_preset_run_writes_cursor_on_no_data(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
 
         fake_ib = MagicMock()
         fake_ib.__enter__.return_value = fake_ib
@@ -696,8 +702,8 @@ class TestMain:
 
     def test_preset_run_writes_cursor_on_skip_existing(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         bronze_dir = tmp_path / "lake" / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
         client = IntradayBronzeClient(bronze_dir=bronze_dir, timeframe="5m")
@@ -744,8 +750,8 @@ class TestMain:
     def test_preset_run_respects_cursor(self, tmp_path, monkeypatch):
         # Inverse: when --preset is used, cursor entries DO skip tickers.
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         save_cursor("5m", "sp500", {"AAPL"})
 
         fake_ib = MagicMock()
@@ -768,8 +774,8 @@ class TestMain:
 
     def test_full_run_inserts_via_mocked_ib(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
 
         bars = [_make_ib_bar(datetime(2026, 4, 6, 10, 0))]
         fake_ib = MagicMock()
@@ -795,8 +801,8 @@ class TestMain:
 
     def test_full_volatility_run_inserts_vix_under_volatility_asset_class(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
 
         bars = [_make_ib_bar(datetime(2026, 4, 6, 10, 0))]
         fake_ib = MagicMock()
@@ -829,8 +835,8 @@ class TestMain:
 
     def test_ib_no_data_skips_and_marks_completed(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
 
         fake_ib = MagicMock()
         fake_ib.__enter__.return_value = fake_ib
@@ -855,8 +861,8 @@ class TestMain:
 
     def test_provider_errors_make_run_fail(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         fake_ib = MagicMock()
         fake_ib.__enter__.return_value = fake_ib
         fake_ib.__exit__.return_value = None
@@ -906,8 +912,8 @@ class TestComputeIntradayChunksForDays:
 class TestDaysArgValidation:
     def test_days_below_one_rejected(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         with patch.object(
             sys,
             "argv",
@@ -928,8 +934,8 @@ class TestDaysArgValidation:
 class TestExistingOnlyFilter:
     def test_existing_only_filters_tickers(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
 
         bronze_dir = tmp_path / "lake" / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
@@ -970,8 +976,8 @@ class TestExistingOnlyFilter:
 class TestSkipExistingWithPreset:
     def test_skip_existing_with_preset_saves_cursor(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
-        monkeypatch.setattr(backfill_intraday, "_DATA_LAKE", tmp_path / "lake")
-        monkeypatch.setattr(backfill_intraday, "_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         (tmp_path / "cur").mkdir(parents=True)
 
         bronze_dir = tmp_path / "lake" / "bronze" / "asset_class=equity"

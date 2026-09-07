@@ -29,3 +29,17 @@ def log_dir() -> Path:
 def cursor_dir() -> Path:
     """Return the cursor/state directory."""
     return Path(os.environ.get("MDW_CURSOR_DIR", warehouse_dir() / "cursors")).expanduser()
+
+
+def lake_lock_path() -> Path:
+    """The one lock every lane that touches the lake holds while it runs.
+
+    Under the warehouse, never under the lake. The lake root is a directory of
+    symlinks onto an exFAT volume whose directory operations are linear
+    (pm:2026-09-05-source-evidence-flat-exfat-directory), so a lock file living
+    there would be one more entry in the directory the lock exists to protect --
+    and it would move with the volume, which is the thing that goes away. It
+    honors MDW_WAREHOUSE_DIR like every other resolver, and deliberately does
+    NOT honor MDW_DATA_LAKE.
+    """
+    return warehouse_dir() / "locks" / "lake-io.lock"

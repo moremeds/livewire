@@ -115,20 +115,14 @@ def test_an_archived_symbol_a_preset_still_claims_stays_expected():
     assert claimed and claimed <= {s.symbol for s in series}
 
 
-def test_session_is_due_at_the_daily_job_deadline_the_following_day():
-    # run-daily-job starts 06:00 UTC on S+1 and MDW_DAILY_JOB_DEADLINE_SECONDS
-    # (4h) puts its deadline at 10:00 UTC.
-    assert session_due_at(date(2026, 8, 31)) == datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
-
-
-def test_session_due_at_honours_the_existing_deadline_env_var(monkeypatch):
-    monkeypatch.setenv("MDW_DAILY_JOB_DEADLINE_SECONDS", "7200")
-    assert session_due_at(date(2026, 8, 31)) == datetime(2026, 9, 1, 8, 0, tzinfo=UTC)
+def test_session_is_due_after_the_delivery_allowance_the_following_day():
+    # The denominator allows four hours after the 06:00 UTC filling job starts.
+    assert session_due_at(date(2026, 8, 31)) == datetime(2026, 9, 1, 15, 0, tzinfo=UTC)
 
 
 def test_rates_is_due_a_day_later_than_equity():
     # Spec section 8.1: FRED publishes a session behind, so the rates row is T+2.
-    # A uniform T+1 expects DGS10 for session S at 10:00 UTC on S+1, when the
+    # A uniform T+1 expects DGS10 for session S at 15:00 UTC on S+1, when the
     # series legitimately does not exist yet -- one phantom gap per series, daily.
     session = date(2026, 8, 28)
     assert session_due_at(session, lag_days=2) - session_due_at(session) == timedelta(days=1)
@@ -160,7 +154,7 @@ def test_the_same_session_is_expected_once_the_deadline_passes(tmp_path):
         "1d",
         date(2026, 8, 27),
         date(2026, 8, 31),
-        as_of=datetime(2026, 9, 1, 10, 0, tzinfo=UTC),
+        as_of=datetime(2026, 9, 1, 15, 0, tzinfo=UTC),
     )
     assert date(2026, 8, 31) in series[0].sessions
 

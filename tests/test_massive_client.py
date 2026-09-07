@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -22,6 +23,7 @@ from clients.massive_client import (
     MassiveServerError,
     MassiveValidationError,
 )
+from clients.telemetry import MassiveTelemetry
 
 
 def _make_client(**kwargs) -> MassiveClient:
@@ -751,3 +753,47 @@ def test_min_interval_defaults_to_no_throttling():
             client.get_fx_intraday_bars("EURUSD", "1h", date(2026, 7, 22), date(2026, 7, 24))
 
     assert slept == []
+
+
+@responses.activate
+def test_a_connection_timeout_is_recorded_as_an_attempt_not_silence():
+    """_get used to `continue` on ReqTimeout without recording anything, so a
+    symbol could burn two minutes in timeouts and show up as zero requests."""
+    telemetry = MassiveTelemetry(jsonl_path=None)
+    responses.add(responses.GET, _url("/x"), body=ReqTimeout("down"))
+    responses.add(responses.GET, _url("/x"), body=ReqConnectionError("down"))
+
+    with _make_client(max_retries=1, backoff_factor=0, telemetry=telemetry) as client:
+        with pytest.raises(MassiveAPIError, match="Connection failed"):
+            client._get("/x")
+
+    summary = telemetry.summary()
+    assert summary["requests"] == 2
+    assert summary["errors"] == 2
+
+
+def test_backoff_sleep_is_recorded_as_wait_not_latency(monkeypatch):
+    """The backoff sleep happens after _record_request, so it can never appear
+    in latency_p95_ms — it has to be counted separately or it is invisible."""
+    monkeypatch.setattr("clients.massive_client.time.sleep", lambda _seconds: None)
+    telemetry = MassiveTelemetry(jsonl_path=None)
+
+    with _make_client(max_retries=1, backoff_factor=0.5, telemetry=telemetry) as client:
+        client._sleep_backoff(3)
+
+    summary = telemetry.summary()
+    assert summary["wait_s"] == 4.0  # 0.5 * 2**3, slept and recorded
+    assert summary["requests"] == 0
+
+
+def test_preemptive_pacing_is_recorded_as_wait(monkeypatch):
+    """fx paces at 5 rpm; whichever lane paces, the sleep is lane time and has
+    to be visible. _throttle runs before the request clock starts."""
+    monkeypatch.setattr("clients.massive_client.time.sleep", lambda _seconds: None)
+    telemetry = MassiveTelemetry(jsonl_path=None)
+
+    with _make_client(min_interval_seconds=12.0, telemetry=telemetry) as client:
+        client._last_request_at = time.monotonic()
+        client._throttle()
+
+    assert telemetry.summary()["wait_s"] > 11.0

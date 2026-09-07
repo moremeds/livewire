@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -475,7 +476,7 @@ class TestMain:
         warehouse_dir = tmp_path
 
         with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
-            with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
+            with patch.dict(os.environ, {"MDW_WAREHOUSE_DIR": str(warehouse_dir)}):
                 with patch(
                     "sys.argv",
                     [
@@ -533,7 +534,7 @@ class TestMain:
         warehouse_dir = tmp_path
 
         with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
-            with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
+            with patch.dict(os.environ, {"MDW_WAREHOUSE_DIR": str(warehouse_dir)}):
                 with patch(
                     "sys.argv",
                     [
@@ -581,7 +582,7 @@ class TestMain:
         warehouse_dir = tmp_path
 
         with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
-            with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
+            with patch.dict(os.environ, {"MDW_WAREHOUSE_DIR": str(warehouse_dir)}):
                 with patch("sys.argv", ["health_check.py", "--force", "--alert-threshold", "100"]):
                     with patch("livewire_scripts.health_check.subprocess.run"):
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm):
@@ -616,7 +617,7 @@ class TestMain:
         warehouse_dir = tmp_path
 
         with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
-            with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
+            with patch.dict(os.environ, {"MDW_WAREHOUSE_DIR": str(warehouse_dir)}):
                 with patch("sys.argv", ["health_check.py", "--force", "--alert-threshold", "100"]):
                     with patch("livewire_scripts.health_check.subprocess.run"):
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm):
@@ -659,7 +660,7 @@ class TestMain:
         warehouse_dir = tmp_path
 
         with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
-            with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
+            with patch.dict(os.environ, {"MDW_WAREHOUSE_DIR": str(warehouse_dir)}):
                 with patch("sys.argv", ["health_check.py", "--force", "--alert-threshold", "100"]):
                     with patch("livewire_scripts.health_check.subprocess.run"):
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm):
@@ -743,7 +744,7 @@ class TestMain:
         warehouse_dir = tmp_path
 
         with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
-            with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
+            with patch.dict(os.environ, {"MDW_WAREHOUSE_DIR": str(warehouse_dir)}):
                 with patch(
                     "sys.argv",
                     [
@@ -796,7 +797,7 @@ class TestMain:
         warehouse_dir = tmp_path
 
         with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
-            with patch("livewire_scripts.health_check._WAREHOUSE_DIR", warehouse_dir):
+            with patch.dict(os.environ, {"MDW_WAREHOUSE_DIR": str(warehouse_dir)}):
                 with patch(
                     "sys.argv",
                     [

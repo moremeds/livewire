@@ -12,13 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from clients.corporate_action_store import CorporateAction, CorporateActionFetch, CorporateActionStore
-from clients.source_evidence import SourceEvidenceStore
+from clients.source_evidence import SourceEvidenceStore, canonical_bytes
 from clients.symbol_paths import canonical_symbol
 from livewire_scripts.paths import data_lake_dir
-
-
-def _canonical(value: object) -> bytes:
-    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
 def _hash(payload: bytes) -> str:
@@ -188,7 +184,7 @@ def export_actions(symbols: list[str], as_of: datetime, *, data_lake_root: Path)
         },
         "mutated": False,
     }
-    receipt["receiptHash"] = f"sha256:{_hash(_canonical(receipt))}"
+    receipt["receiptHash"] = f"sha256:{_hash(canonical_bytes(receipt))}"
     return receipt
 
 

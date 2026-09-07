@@ -44,6 +44,22 @@ def _error_summary(cmd) -> str:
     return token.removeprefix("--error-summary=")
 
 
+def test_coverage_emits_its_percentage_and_elapsed_seconds(tmp_path, monkeypatch):
+    from clients import ledger
+
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    monkeypatch.setenv("LW_RUN_ID", "coverage-20260902T110000Z-1")
+    coverage_report.emit_coverage_measurements(
+        {"1d": CoverageResult("1d", total=100, present=100, missing_symbols=[])},
+        elapsed_s=1432.0,
+    )
+    assert ledger.query("select name, scope, value, source from measurements order by name") == [
+        {"name": "coverage_elapsed_s", "scope": "all", "value": 1432.0, "source": "measured"},
+        {"name": "coverage_pct", "scope": "1d", "value": 1.0, "source": "measured"},
+        {"name": "coverage_total", "scope": "1d", "value": 100.0, "source": "measured"},
+    ]
+
+
 _ET = ZoneInfo("America/New_York")
 
 _DAILY_SCHEMA = pa.schema(
@@ -389,7 +405,7 @@ class TestFormatters:
 
 class TestWriteCoverageLog:
     def test_appends_when_called_twice(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path)
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path))
         path = write_coverage_log(date(2026, 4, 6), "first line", ["  detail"])
         write_coverage_log(date(2026, 4, 6), "second line", [])
         content = path.read_text()
@@ -651,8 +667,8 @@ class TestMain:
                 main()  # No exception
 
     def test_no_recover_skips_subprocess(self, seeded_bronze, monkeypatch, tmp_path):
-        monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", seeded_bronze.parent)
-        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(seeded_bronze.parent))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
             wraps=lambda d, bronze_root=None, cache_path=None, as_of=None, registry_path=None, presets_dir=None: (
@@ -669,11 +685,11 @@ class TestMain:
         assert mock_run.call_count == 0
 
     def test_above_threshold_no_recovery(self, seeded_bronze, monkeypatch, tmp_path):
-        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         # main() writes the Tier A manifest and the decision queue under
         # <data-lake>/repairs/. Without this the test writes them into the
         # REAL warehouse.
-        monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", tmp_path / "lake")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
         with (
             patch(
                 "livewire_scripts.coverage_report.compute_coverage",
@@ -708,11 +724,11 @@ class TestMain:
         _write_intraday(root, "AAPL", "1h", [target])
         _write_intraday(root, "AAPL", "30m", [target])
         _write_intraday(root, "AAPL", "5m", [date(2026, 3, 1)])  # stale -> triggers recovery
-        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         # main() writes the Tier A manifest and the decision queue under
         # <data-lake>/repairs/. Without this the test writes them into the
         # REAL warehouse.
-        monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", tmp_path / "lake")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
 
         def fake_run(cmd, **kwargs):
             if "livewire_ingest.py" in str(cmd):
@@ -746,11 +762,11 @@ class TestMain:
         # Both stale at 5m (file present, old date)
         _write_intraday(root, "AAPL", "5m", [date(2026, 3, 1)])
         _write_intraday(root, "MSFT", "5m", [date(2026, 3, 1)])
-        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         # main() writes the Tier A manifest and the decision queue under
         # <data-lake>/repairs/. Without this the test writes them into the
         # REAL warehouse.
-        monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", tmp_path / "lake")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
 
         def fake_run(cmd, **kwargs):
             if "livewire_ingest.py" in str(cmd):
@@ -782,11 +798,11 @@ class TestMain:
             _write_daily(root, sym, [target])
             _write_intraday(root, sym, "1h", [target])
             _write_intraday(root, sym, "5m", [date(2026, 3, 1)])
-        monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
         # main() writes the Tier A manifest and the decision queue under
         # <data-lake>/repairs/. Without this the test writes them into the
         # REAL warehouse.
-        monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", tmp_path / "lake")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
 
         with patch(
             "livewire_scripts.coverage_report.compute_coverage",
@@ -1091,7 +1107,7 @@ def test_rates_is_graded_against_the_newest_session_its_lane_actually_owed(tmp_p
     """FRED publishes a session behind (spec 8.1), so rates must be graded at T+2.
 
     Asking only about the run's target made rates invisible on EVERY night, not
-    just some: at 11:00 UTC on 08-29 the 08-28 session is not yet due for rates,
+    just some: at 15:30 UTC on 08-29 the 08-28 session is not yet due for rates,
     and by the next run the target had advanced to 08-28, so 08-27 was never
     revisited by anybody. total=0 maps to ratio 1.0, so it read green forever --
     a detector reporting perfect health because it enumerated nothing.
@@ -1104,7 +1120,7 @@ def test_rates_is_graded_against_the_newest_session_its_lane_actually_owed(tmp_p
     results = compute_non_equity_coverage(
         date(2026, 8, 28),
         bronze_root=bronze,
-        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+        as_of=datetime(2026, 8, 29, 16, 0, tzinfo=UTC),
     )
     assert results["rates"].measured_session == date(2026, 8, 27)
     assert results["rates"].total == 4
@@ -1176,7 +1192,7 @@ def test_a_preset_member_with_no_parquet_is_counted_missing(tmp_path):
         bronze_root=bronze,
         registry_path=_registry_for(tmp_path, ["AAPL", "BK"]),
         presets_dir=tmp_path / "presets",
-        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+        as_of=datetime(2026, 8, 29, 16, 0, tzinfo=UTC),
     )
     assert "BK" in results["1d"].missing_symbols
 
@@ -1202,7 +1218,7 @@ def test_a_terminus_symbol_is_in_neither_present_nor_missing(tmp_path):
         bronze_root=bronze,
         registry_path=_registry_for(tmp_path, ["AAPL", "EQR"]),
         presets_dir=tmp_path / "presets",
-        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+        as_of=datetime(2026, 8, 29, 16, 0, tzinfo=UTC),
     )
     result = results["1d"]
     assert "EQR" in dict(result.terminus_symbols)
@@ -1228,7 +1244,7 @@ def test_a_one_day_absence_is_still_exempted_as_no_trade(tmp_path):
         bronze_root=bronze,
         registry_path=_registry_for(tmp_path, ["AAPL", "SLND"]),
         presets_dir=tmp_path / "presets",
-        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+        as_of=datetime(2026, 8, 29, 16, 0, tzinfo=UTC),
     )
     assert "SLND" not in results["1d"].missing_symbols
     assert results["1d"].terminus_symbols == ()
@@ -1239,7 +1255,7 @@ def test_before_the_deadline_the_session_is_not_expected_at_all(tmp_path):
     # than through build_denominator. Passing as_of=session_due_at(target_date)
     # would make the due filter tautologically true, so the ONLY test that can
     # catch a regression here is one that goes through the real caller with a
-    # real clock. 04:21 UTC on 2026-08-29 is before the 10:00 UTC deadline for
+    # real clock. 04:21 UTC on 2026-08-29 is before the 15:00 UTC deadline for
     # session 2026-08-28, so nothing is due and nothing is missing.
     bronze = tmp_path / "bronze"
     _write_daily(bronze, "AAPL", [date(2026, 8, 27)])
@@ -1257,7 +1273,7 @@ def test_before_the_deadline_the_session_is_not_expected_at_all(tmp_path):
         bronze_root=bronze,
         registry_path=_registry_for(tmp_path, ["AAPL"]),
         presets_dir=tmp_path / "presets",
-        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+        as_of=datetime(2026, 8, 29, 16, 0, tzinfo=UTC),
     )
     assert late["1d"].missing_symbols == ["AAPL"]
 
@@ -1276,7 +1292,7 @@ def test_terminus_is_not_computed_for_symbols_outside_the_registry(tmp_path):
         bronze_root=bronze,
         registry_path=_registry_for(tmp_path, ["AAPL"]),
         presets_dir=tmp_path / "presets",
-        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+        as_of=datetime(2026, 8, 29, 16, 0, tzinfo=UTC),
     )
     assert results["1d"].terminus_symbols == ()
 
@@ -1292,7 +1308,7 @@ def test_a_registry_only_symbol_survives_a_recovery_that_could_not_fetch_it(tmp_
     kwargs = {
         "registry_path": _registry_for(tmp_path, ["AAPL", "BK"]),
         "presets_dir": tmp_path / "presets",
-        "as_of": datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+        "as_of": datetime(2026, 8, 29, 16, 0, tzinfo=UTC),
     }
     with patch.object(coverage_report.subprocess, "run") as run_mock:
         outcome = auto_recover("1d", ["BK"], bronze_root=bronze, target_date=date(2026, 8, 28), **kwargs)
@@ -1306,8 +1322,8 @@ def test_main_writes_both_repair_artifacts(seeded_bronze, monkeypatch, tmp_path)
     # The Task 7 wiring: without this the classifier exists and nothing scheduled
     # ever calls it, which is the state gap_scan's deletion would have left.
     lake = tmp_path / "lake"
-    monkeypatch.setattr("livewire_scripts.coverage_report._DATA_LAKE", lake)
-    monkeypatch.setattr("livewire_scripts.coverage_report._LOG_DIR", tmp_path / "logs")
+    monkeypatch.setenv("MDW_DATA_LAKE", str(lake))
+    monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
     with patch(
         "livewire_scripts.coverage_report.compute_coverage",
         wraps=lambda d, bronze_root=None, cache_path=None, as_of=None, registry_path=None, presets_dir=None: (
@@ -1353,7 +1369,7 @@ def test_an_unasked_action_store_leaves_a_terminus_in_the_denominator(tmp_path):
         bronze_root=bronze,
         registry_path=_registry_for(tmp_path, ["AAPL", "EQR"]),
         presets_dir=tmp_path / "presets",
-        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+        as_of=datetime(2026, 8, 29, 16, 0, tzinfo=UTC),
     )
     result = results["1d"]
     # Withheld: the store cannot speak to this absence, so no terminus is claimed
@@ -1385,7 +1401,7 @@ def test_a_stale_raw_tape_keeps_every_symbol_in_the_coverage_denominator(tmp_pat
         bronze_root=bronze,
         registry_path=_registry_for(tmp_path, ["AAPL", "EQR"]),
         presets_dir=tmp_path / "presets",
-        as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC),
+        as_of=datetime(2026, 8, 29, 16, 0, tzinfo=UTC),
     )
     assert results["1d"].terminus_symbols == ()
     assert results["1d"].total == 2
@@ -1416,8 +1432,8 @@ def test_the_equity_deadline_gate_is_the_early_return_not_build_denominator(tmp_
     # 04:00 UTC on 08-28: the job that fills 08-28 has not even started.
     early = compute_coverage(date(2026, 8, 28), as_of=datetime(2026, 8, 28, 4, 0, tzinfo=UTC), **kwargs)
     assert (early["1d"].total, early["1d"].present) == (0, 0)
-    # 11:00 UTC the next day: due, and the two registry symbols are countable.
-    due = compute_coverage(date(2026, 8, 28), as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC), **kwargs)
+    # 16:00 UTC the next day: due, and the two registry symbols are countable.
+    due = compute_coverage(date(2026, 8, 28), as_of=datetime(2026, 8, 29, 16, 0, tzinfo=UTC), **kwargs)
     assert due["1d"].total == 2
 
     # And the sessions build_denominator returns are empty in the early case --
@@ -1443,7 +1459,7 @@ def test_a_pre_deadline_run_does_not_erase_the_1d_footer_cache(tmp_path):
     _save_footer_cache REPLACES the cache file, so returning early without
     carrying 1d entries forward deleted ~13,270 of them -- and the run that
     triggers this branch is precisely the pre-deadline one that then penalises
-    the 11:00 job it precedes.
+    the 15:30 job it precedes.
     """
     bronze = tmp_path / "bronze"
     _write_daily(bronze, "AAPL", [date(2026, 8, 28)])
@@ -1454,7 +1470,7 @@ def test_a_pre_deadline_run_does_not_erase_the_1d_footer_cache(tmp_path):
         registry_path=_registry_for(tmp_path, ["AAPL"]),
         presets_dir=tmp_path / "presets",
     )
-    compute_coverage(date(2026, 8, 28), as_of=datetime(2026, 8, 29, 11, 0, tzinfo=UTC), **kwargs)
+    compute_coverage(date(2026, 8, 28), as_of=datetime(2026, 8, 29, 16, 0, tzinfo=UTC), **kwargs)
     seeded = json.loads(cache_path.read_text())
     assert any(key.endswith("1d.parquet") for key in seeded)
 

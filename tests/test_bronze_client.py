@@ -317,6 +317,25 @@ class TestBronzeClient:
         assert bronze.get_summary() == []
 
     @pytest.mark.integration
+    def test_a_corrupt_symbol_parquet_counts_missing_not_abort(self, bronze):
+        # 2026-09-03: OII's 1d.parquet raised pyarrow.lib.ArrowInvalid ("Could
+        # not read schema") out of get_trade_dates_by_symbol and took the
+        # whole equity daily lane down with it. Truncating a real parquet
+        # reproduces the exact production error, same technique as
+        # test_coverage_report.py::test_one_corrupt_parquet_does_not_kill_the_whole_scan.
+        aapl_id = bronze.get_symbol_id("AAPL")
+        bronze.replace_ticker_rows("AAPL", [_row("2025-01-02", aapl_id, 102.0)])
+        oii_id = bronze.get_symbol_id("OII")
+        bronze.replace_ticker_rows("OII", [_row("2025-01-02", oii_id, 50.0)])
+
+        corrupt = bronze.bronze_dir / "symbol=OII" / "1d.parquet"
+        corrupt.write_bytes(corrupt.read_bytes()[:-8])
+
+        assert bronze.get_trade_dates_by_symbol() == {"AAPL": [date(2025, 1, 2)], "OII": []}
+        assert bronze.get_latest_dates() == {"AAPL": "2025-01-02"}
+        assert bronze.get_summary() == [{"symbol": "AAPL", "rows": 1, "earliest": "2025-01-02", "latest": "2025-01-02"}]
+
+    @pytest.mark.integration
     def test_publish_cleans_temp_file_on_replace_error(self, bronze, monkeypatch):
         def _boom(src, dst):
             raise OSError("replace failed")
