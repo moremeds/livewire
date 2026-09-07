@@ -203,9 +203,6 @@ already in bronze parquet:
 ```bash
 python scripts/livewire_ingest.py backfill-all   # Full warehouse build (Python orchestrator)
 python scripts/livewire_ingest.py daily-backfill # Lightweight daily catch-up (Python orchestrator)
-# Or via unified CLI:
-python scripts/livewire.py backfill --full       # Same as backfill-all
-python scripts/livewire.py sync --full           # Same as daily-backfill
 ```
 
 - `backfill-all` (`livewire_scripts/backfill_runner.py`) is the default warehouse
