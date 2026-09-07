@@ -890,3 +890,29 @@ def test_full_rebuild_remanifests_orphaned_silver_files(tmp_path, capsys):
     assert summary["rebuilt"] == 0  # BBB carried by reference, AAA unchanged
     remanifested = json.loads(current_path.read_text())
     assert {a["symbol"] for a in remanifested["affected"]} == {"AAA", "BBB"}
+
+
+def test_carried_symbol_takes_its_sha_from_disk_not_the_stale_manifest(tmp_path):
+    """The 2026-09-06 shape: a killed publish left MSFT's bytes on disk ahead of the
+    committed manifest. Staging then reproduces exactly those bytes, so MSFT is never
+    ``changed``, is carried forward, and a manifest sha from the previous revision makes
+    ``_validate_artifacts`` raise ``artifact checksum mismatch`` on every later run."""
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
+    _seed_bronze(root, "MSFT", [("2024-01-02", 370.87), ("2024-01-03", 370.60)])
+    rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+
+    # The interrupted run rewrote MSFT's artifacts and died before committing: same rows
+    # (so staging still calls them unchanged), different bytes from the manifest's sha.
+    carried = silver / "adjustments/asset_class=equity/symbol=MSFT/factors.parquet"
+    manifest_sha = hashlib.sha256(carried.read_bytes()).hexdigest()
+    pq.write_table(pq.ParquetFile(carried).read(), carried, compression="gzip")
+    assert hashlib.sha256(carried.read_bytes()).hexdigest() != manifest_sha
+    # One genuinely changed symbol, so the run reaches the publish transaction at all.
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25), ("2024-01-04", 181.91)])
+
+    assert rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17)) == 0
+
+    current = json.loads((silver / "revisions/current.json").read_text())
+    entry = next(a for a in current["artifacts"] if a["path"].endswith("symbol=MSFT/factors.parquet"))
+    assert entry["sha256"] == hashlib.sha256(carried.read_bytes()).hexdigest()
