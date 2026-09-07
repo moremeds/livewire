@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 import pyarrow.parquet as pq
 
+from clients import ledger
 from clients.adjustment_engine import FactorInterval, adjust_daily_rows, build_factor_intervals
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateAction, CorporateActionStore
@@ -25,6 +26,7 @@ from clients.silver_client import PublishedArtifact, SilverClient
 from clients.silver_revision import AffectedSymbol, ManifestArtifact, SilverRevision, SilverRevisionPublisher
 from clients.silver_window import resolve_window
 from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, resolve_exit_code
+from livewire_scripts.job_runner_common import emit_progress
 from livewire_scripts.paths import data_lake_dir
 
 TIMEFRAMES = ("1d", "1m", "5m", "30m", "1h")
@@ -83,6 +85,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="publish symbols whose window start moved later (required once, for the rev-3 bootstrap)",
     )
     return parser.parse_args(list(argv) if argv is not None else None)
+
+
+# Heartbeat cadence, in symbols. Matches the corporate-actions lane: a --full run
+# walks ~13k symbols for hours and prints nothing an operator can count.
+_PROGRESS_EVERY = 500
 
 
 def default_silver_root(root: Path) -> Path:
@@ -398,7 +405,8 @@ def run(
 
     staged: list[StagedSymbol] = []
     failures: list[dict] = []
-    for symbol in symbols:
+    run_id = os.environ.get("LW_RUN_ID") or ledger.new_run_id("silver")
+    for position, symbol in enumerate(symbols, start=1):
         rows: list[dict] = []
         actions: list[CorporateAction] = []
         try:
@@ -458,6 +466,11 @@ def run(
         except Exception as exc:
             failures.append(_failure(symbol, exc, bronze, rows, actions))
             print(f"{symbol}: {exc}", file=sys.stderr)
+        if position % _PROGRESS_EVERY == 0:
+            emit_progress(scope="silver", completed=position, total=len(symbols), run_id=run_id)
+    # The loop is the hours-long part; a final beat so the last partial batch is
+    # counted and `status` reads N of N rather than the previous multiple of 500.
+    emit_progress(scope="silver", completed=len(symbols), total=len(symbols), run_id=run_id)
 
     current = publisher.read_current()
     current_revision = 0 if current is None else current.revision

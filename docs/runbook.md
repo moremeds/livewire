@@ -453,6 +453,11 @@ python scripts/livewire_store.py rebuild-silver --full --dry-run          # Full
 python scripts/livewire_store.py rebuild-silver --full --dry-run --failure-output /tmp/rev3-dry.json
 ```
 
+Progress is heartbeat to `measurements(scope='silver', name='progress'|'progress_total')`
+every 500 symbols and once more at the end, exactly as corporate-actions does, so a
+`--full` walk killed at its lane budget still records how far it got —
+`livewire_ops.py status` renders it as `Silver progress`.
+
 Trim controls:
 
 - `--continuity-threshold` (default `6.0`) — the blind window scan over the

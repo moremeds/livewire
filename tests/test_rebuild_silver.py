@@ -9,6 +9,7 @@ from decimal import Decimal
 import pyarrow.parquet as pq
 import pytest
 
+from clients import ledger
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.massive_client import MassiveDividend, MassiveSplit
@@ -890,3 +891,20 @@ def test_full_rebuild_remanifests_orphaned_silver_files(tmp_path, capsys):
     assert summary["rebuilt"] == 0  # BBB carried by reference, AAA unchanged
     remanifested = json.loads(current_path.read_text())
     assert {a["symbol"] for a in remanifested["affected"]} == {"AAA", "BBB"}
+
+
+def test_full_rebuild_heartbeats_progress_to_the_ledger(tmp_path, monkeypatch):
+    """A --full walk killed at its lane budget prints nothing; the ledger says how far it got."""
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-20260907T060000Z-1")
+    monkeypatch.setattr(rebuild_silver, "_PROGRESS_EVERY", 2)
+    for symbol in ("AAA", "BBB", "CCC"):
+        _bronze(tmp_path, symbol)
+
+    assert rebuild_silver.run(["--full"], data_lake_root=tmp_path, silver_root=tmp_path / "silver") == 0
+
+    rows = ledger.query("select name, value, unit, run_id from measurements where scope = 'silver'")
+    # Beat at symbol 2, then the closing beat at 3 — never a stale multiple of the cadence.
+    assert sorted(row["value"] for row in rows if row["name"] == "progress") == [2.0, 3.0]
+    assert {row["value"] for row in rows if row["name"] == "progress_total"} == {3.0}
+    assert {row["unit"] for row in rows} == {"symbols"}
+    assert {row["run_id"] for row in rows} == {"daily-update-20260907T060000Z-1"}
