@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import collections
 import importlib
+import os
+import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +25,7 @@ from livewire_scripts.status import (
 )
 
 RUN = "daily-update-20260902T060000Z-1"
+INTRADAY_RUN = "intraday-catchup-20260902T100000Z-1"
 NOW = datetime.now(UTC)
 EPOCH = date(1970, 1, 1)
 
@@ -77,7 +80,8 @@ def _lane(lane, **over):
 
 
 def _all_lanes(**overrides):
-    for lane in ("futures", "cmdty", "cboe", "fx", "corporate-actions", "equity", "silver"):
+    """Seeded from the declared lane order -- the last hand-written copy of it (spec section 7)."""
+    for lane in constants.LANE_ORDER:
         _lane(lane, **overrides.get(lane, {}))
 
 
@@ -119,7 +123,7 @@ def _measurement(name, scope, value, *, measured_at=NOW):
 
 def _section(name, **kw):
     sections = status.collect(
-        date.today(),
+        NOW.date(),
         Path("/nonexistent"),
         Path("/nonexistent"),
         runner=_fake_launchctl,
@@ -151,6 +155,14 @@ def _seed_drift(name, scope, declared_value, measured_values, unit="s"):
     _declared_or_measured(name, scope, declared_value, "declared", unit=unit)
     for index, value in enumerate(measured_values):
         _declared_or_measured(name, scope, value, "measured", run_id=f"{RUN}-{index}", unit=unit)
+
+
+def _declared(name, scope, value):
+    _declared_or_measured(name, scope, value, "declared")
+
+
+def _measured(name, scope, value):
+    _declared_or_measured(name, scope, value, "measured")
 
 
 _DRIFT = "Declared constants match reality"
@@ -341,8 +353,8 @@ def test_a_lane_inside_its_budget_is_ok():
 def test_an_ib_only_lane_days_behind_warns_and_names_its_blocker():
     _run()
     _lane("futures", exit_code=86, outcome="blocked", blocker="ib_unreachable")
-    _last_session("futures", date.today() - timedelta(days=9))
-    _last_session("cmdty", date.today() - timedelta(days=1))
+    _last_session("futures", NOW.date() - timedelta(days=9))
+    _last_session("cmdty", NOW.date() - timedelta(days=1))
     section = _section("IB-only lanes behind")
     assert section.verdict is Verdict.WARN
     body = "\n".join(section.lines)
@@ -352,16 +364,16 @@ def test_an_ib_only_lane_days_behind_warns_and_names_its_blocker():
 def test_an_ib_only_lane_current_is_ok():
     _run()
     _lane("futures")
-    _last_session("futures", date.today() - timedelta(days=1))
-    _last_session("cmdty", date.today() - timedelta(days=1))
+    _last_session("futures", NOW.date() - timedelta(days=1))
+    _last_session("cmdty", NOW.date() - timedelta(days=1))
     assert _section("IB-only lanes behind").verdict is Verdict.OK
 
 
 def test_a_weekend_gap_is_not_a_backlog():
     _run()
     _lane("futures")
-    _last_session("futures", date.today() - timedelta(days=3))
-    _last_session("cmdty", date.today() - timedelta(days=3))
+    _last_session("futures", NOW.date() - timedelta(days=3))
+    _last_session("cmdty", NOW.date() - timedelta(days=3))
     assert _section("IB-only lanes behind").verdict is Verdict.OK
 
 
@@ -372,7 +384,7 @@ def test_an_ib_only_lane_that_never_reported_a_session_is_unknown():
 
 
 def test_one_missing_ib_only_lane_is_unknown_not_green():
-    _last_session("futures", date.today())
+    _last_session("futures", NOW.date())
     assert _section("IB-only lanes behind").verdict is Verdict.UNKNOWN
 
 
@@ -454,7 +466,7 @@ def test_shrinking_silver_failures_are_ok():
 
 def test_a_broken_check_never_takes_the_report_down(monkeypatch):
     monkeypatch.setattr(status.ledger, "query", lambda sql: (_ for _ in ()).throw(RuntimeError("boom")))
-    sections = status.collect(date.today(), Path("/nonexistent"), Path("/nonexistent"), runner=_fake_launchctl)
+    sections = status.collect(NOW.date(), Path("/nonexistent"), Path("/nonexistent"), runner=_fake_launchctl)
     assert any(section.verdict is Verdict.UNKNOWN for section in sections)
 
 
@@ -569,7 +581,7 @@ def _fake_launchctl(_cmd, **_kw):
 def test_main_exits_zero_even_when_everything_is_broken(tmp_path: Path, capsys, monkeypatch) -> None:
     monkeypatch.setattr("livewire_scripts.status.subprocess.run", _fake_launchctl)
     monkeypatch.setattr("livewire_scripts.status._coverage_headline", _no_catalog)
-    rc = main(["--run-date", date.today().isoformat(), "--log-dir", str(tmp_path), "--data-lake", str(tmp_path)])
+    rc = main(["--run-date", NOW.date().isoformat(), "--log-dir", str(tmp_path), "--data-lake", str(tmp_path)])
     assert rc == 0
     assert "Livewire status" in capsys.readouterr().out
 
@@ -624,3 +636,116 @@ def test_the_ib_only_check_counts_exactly_the_ib_only_lanes():
 
     assert status._lane_values(constants.IB_ONLY_LANES) in sql
     assert f"count(last_session) < {len(constants.IB_ONLY_LANES)}" in sql
+
+
+def test_a_lane_deferred_by_the_lake_lock_is_a_warning():
+    _run()
+    _all_lanes()
+    _lane("corporate-actions", outcome="blocked", exit_code=None, blocker="lake_lock", elapsed_s=0.0)
+
+    section = _section("Lanes blocked")
+    assert section.verdict is status.Verdict.WARN
+    assert "corporate-actions" in " ".join(section.lines)
+
+
+def test_a_run_started_before_midnight_utc_resolves_from_a_host_east_of_utc():
+    """`$today` is UTC; DuckDB must evaluate `date(started)` in UTC too.
+
+    The mini runs Asia/Hong_Kong. A run started 2026-09-06 20:52:01Z is stored
+    `2026-09-07 04:52:01+08:00`, and a session-local `date(started)` read it as
+    the 7th while status asked for the 6th -- so `_last_run_id` returned '' and
+    every run-scoped check went UNKNOWN (macmini dry run, 2026-09-06 20:52Z).
+    """
+    if not hasattr(time, "tzset"):
+        pytest.skip("no time.tzset on this platform")
+    started = datetime(2026, 9, 6, 20, 52, 1, tzinfo=UTC)
+    _run(started=started, ended=started)
+    _all_lanes()
+
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = "Asia/Hong_Kong"
+    time.tzset()
+    try:
+        sections = status.collect(
+            date(2026, 9, 6),
+            Path("/nonexistent"),
+            Path("/nonexistent"),
+            runner=_fake_launchctl,
+            database=None,
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+    terminal = next(section for section in sections if section.name == "Lanes terminal")
+    assert terminal.verdict is status.Verdict.OK
+
+
+def test_lanes_blocked_is_unknown_when_no_run_resolved():
+    """An unresolved run measured nothing; `none` would be a green lie."""
+    assert _section("Lanes blocked").verdict is status.Verdict.UNKNOWN
+
+
+def test_no_lane_deferred_by_the_lake_lock_is_ok_not_unknown():
+    """Zero blocked lanes on a resolved run is the good case."""
+    _run()
+    _all_lanes()
+
+    assert _section("Lanes blocked").verdict is status.Verdict.OK
+
+
+def test_an_intraday_lane_deferred_by_the_lake_lock_is_a_warning():
+    """Both scheduled jobs write the lake, so both can be the deferred one.
+
+    Scoping the check to the daily run alone hid every intraday phase that lost
+    the lock -- the exact contention this lock was added for.
+    """
+    _run()
+    _all_lanes()
+    _run(run_id=INTRADAY_RUN, job="intraday-catchup", ended=None)
+    _lane("equity", run_id=INTRADAY_RUN, outcome="blocked", exit_code=None, blocker="lake_lock", elapsed_s=0.0)
+
+    section = _section("Lanes blocked")
+    assert section.verdict is status.Verdict.WARN
+    assert "intraday-catchup:equity" in " ".join(section.lines)
+
+
+def test_a_silver_lane_blocked_by_a_failed_prerequisite_is_not_a_lake_lock_row():
+    """`blocked` is also how a failed prerequisite reads; the blocker is the discriminator."""
+    _run()
+    _all_lanes()
+    _lane("silver", outcome="blocked", exit_code=None, blocker="equity", elapsed_s=0.0)
+
+    assert _section("Lanes blocked").verdict is status.Verdict.OK
+
+
+def test_the_declared_lake_lock_wait_is_graded_against_the_measured_p95():
+    _run()
+    _declared("lake_lock_wait_s", "", 2340.0)
+    for lane in ("corporate-actions", "equity"):
+        _measured("lake_lock_wait_s", lane, 30.0)
+
+    section = _section("Declared constants match reality")
+    assert section.verdict is status.Verdict.WARN
+    assert "lake_lock_wait_s" in " ".join(section.lines)
+
+
+def test_a_lake_lock_wait_near_the_declared_value_is_ok():
+    _run()
+    _declared("lake_lock_wait_s", "", 2340.0)
+    for lane in ("corporate-actions", "equity"):
+        _measured("lake_lock_wait_s", lane, 2000.0)
+
+    assert _section("Declared constants match reality").verdict is status.Verdict.OK
+
+
+def test_the_lane_budget_drift_check_still_works():
+    """Widening the filter must not stop it grading the thing it was written for."""
+    _run()
+    _declared("lane_budget_s", "corporate-actions", 10800.0)
+    _measured("lane_budget_s", "corporate-actions", 100.0)
+
+    assert _section("Declared constants match reality").verdict is status.Verdict.WARN

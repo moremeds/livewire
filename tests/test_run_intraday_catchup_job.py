@@ -371,7 +371,7 @@ class TestLaunchdTemplate:
         assert "<string>com.livewire.intraday-catchup</string>" in text
         assert "run-intraday-catchup-job" in text
         assert "<key>Hour</key>" in text
-        assert "<integer>13</integer>" in text
+        assert "<integer>18</integer>" in text  # 10:00Z: the second lake writer
         assert "<key>Minute</key>" in text
         assert "<integer>0</integer>" in text
         # Same substitution sentinel as the daily-update example — and it names the
@@ -380,3 +380,47 @@ class TestLaunchdTemplate:
         assert "/path/to/warehouse/current" in text
         assert ".venv/bin/python scripts/livewire_ops.py run-intraday-catchup-job" in text
         assert "/path/to/repo" not in text
+
+
+class TestBothRunnersTakeOneLock:
+    """CLAUDE.md rule 5, fix the twin: two lock files is the same as no lock."""
+
+    def test_the_daily_and_intraday_runners_lock_the_same_file(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from livewire_scripts import run_daily_update_job as daily_runner
+        from livewire_scripts.sync_runner import run_phase
+
+        warehouse = tmp_path / "warehouse"
+        monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(warehouse))
+        monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+        monkeypatch.setenv("LW_RUN_ID", "daily-update-20260906T050000Z-1")
+
+        config = daily_runner.RunnerConfig(
+            warehouse_dir=warehouse,
+            log_dir=tmp_path / "logs",
+            daily_update_script=tmp_path / "daily.py",
+            alert_script=tmp_path / "alert.py",
+            python_bin="python3",
+            node_bin="node",
+            max_attempts=1,
+            retry_delay_seconds=0,
+        )
+        daily_runner._run_scheduled_lane(
+            config,
+            ["true"],
+            "FX Sync",
+            "fx",
+            env=None,
+            runner=daily_runner._run_in_own_process_group,
+            now_fn=daily_runner._utc_now,
+        )
+        run_phase("daily_backfill_fred_rates", ["true"], tmp_path / "logs", runner=subprocess.run)
+
+        assert sorted((warehouse / "locks").iterdir()) == [warehouse / "locks" / "lake-io.lock"]
+
+    def test_the_lock_is_not_inside_the_lake(self, tmp_path, monkeypatch):
+        from livewire_scripts.paths import data_lake_dir, lake_lock_path
+
+        monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
+        assert not lake_lock_path().is_relative_to(data_lake_dir())

@@ -1812,3 +1812,186 @@ class TestLaneSubprocessesRunUnbuffered:
         )
 
         assert seen["env"]["PYTHONUNBUFFERED"] == "1"
+
+
+class TestTheLakeLock:
+    """Both daily lane bodies hold it. One locked body and one unlocked body is no lock."""
+
+    @pytest.fixture(autouse=True)
+    def warehouse(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
+        monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+        monkeypatch.setenv("LW_RUN_ID", "daily-update-20260906T050000Z-1")
+
+    def test_a_scheduled_lane_records_the_time_it_waited(self, tmp_path):
+        from clients import ledger
+
+        config = _config(tmp_path)
+        daily_runner._run_scheduled_lane(
+            config,
+            ["true"],
+            "CBOE Volatility Sync",
+            "cboe",
+            env=None,
+            runner=daily_runner._run_in_own_process_group,
+            now_fn=daily_runner._utc_now,
+        )
+
+        assert ledger.query("select name, scope, source from measurements where name = 'lake_lock_wait_s'") == [
+            {"name": "lake_lock_wait_s", "scope": "cboe", "source": "measured"}
+        ]
+
+    def test_a_scheduled_lane_that_never_gets_the_lock_is_blocked_and_never_runs(self, tmp_path, monkeypatch):
+        from clients import ledger
+        from clients.parquet_io import path_lock
+        from livewire_scripts.paths import lake_lock_path
+
+        marker = tmp_path / "the-lane-ran"
+        config = _config(tmp_path)
+        monkeypatch.setitem(daily_runner.LANE_BUDGET_S, "cboe", 0.0)
+
+        with path_lock(lake_lock_path()):
+            code = daily_runner._run_scheduled_lane(
+                config,
+                ["touch", str(marker)],
+                "CBOE Volatility Sync",
+                "cboe",
+                env=None,
+                runner=daily_runner._run_in_own_process_group,
+                now_fn=daily_runner._utc_now,
+            )
+
+        assert code == 0  # a deferred lane must not fail the run; the ledger row is the verdict
+        assert not marker.exists()
+        assert ledger.query("select lane, outcome, blocker, exit_code from lane_results where outcome is not null") == [
+            {"lane": "cboe", "outcome": "blocked", "blocker": "lake_lock", "exit_code": None}
+        ]
+
+    def test_the_retrying_lane_body_holds_the_lock_too(self, tmp_path, monkeypatch):
+        from clients import ledger
+        from clients.parquet_io import path_lock
+        from livewire_scripts.paths import lake_lock_path
+
+        attempts = []
+
+        def _runner(command, stdout=None, env=None, timeout=None, **_):
+            attempts.append(command)
+            return subprocess.CompletedProcess(command, 0)
+
+        config = _config(tmp_path)
+        monkeypatch.setitem(daily_runner.LANE_BUDGET_S, "equity", 0.0)
+        with path_lock(lake_lock_path()):
+            code = daily_runner.run_with_retries(
+                config, ["--asset-class", "equity"], runner=_runner, completion_scope="equity"
+            )
+
+        assert code == 0
+        assert attempts == []  # the subprocess never started
+        assert ledger.query("select lane, outcome, blocker from lane_results where outcome is not null") == [
+            {"lane": "equity", "outcome": "blocked", "blocker": "lake_lock"}
+        ]
+
+    def test_the_wait_is_not_counted_as_lane_time(self, tmp_path, monkeypatch):
+        """elapsed_s measures work. A wait folded into it would inflate the next budget."""
+        import contextlib
+        import time as _time
+
+        from clients import ledger
+
+        @contextlib.contextmanager
+        def _slow_lock(lane, *, poll_s, budget_s, sleep_fn=None, monotonic=None):
+            _time.sleep(0.5)
+            yield 0.5
+
+        monkeypatch.setattr(daily_runner, "lake_lock", _slow_lock)
+        config = _config(tmp_path)
+        daily_runner._run_scheduled_lane(
+            config,
+            ["true"],
+            "FX Sync",
+            "fx",
+            env=None,
+            runner=daily_runner._run_in_own_process_group,
+            now_fn=daily_runner._utc_now,
+        )
+
+        rows = ledger.query("select lane, elapsed_s from lane_results where outcome is not null")
+        assert rows[0]["lane"] == "fx"
+        assert rows[0]["elapsed_s"] < 0.25
+
+
+class TestTheSilverGateOnlyBlocksOnFailure:
+    """Four nights of Silver were withheld because a timeout is exit 124 (spec section 4)."""
+
+    @pytest.fixture(autouse=True)
+    def ledger_root(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+        monkeypatch.setenv("LW_RUN_ID", "daily-update-20260906T050000Z-1")
+
+    def _lane(self, lane, outcome, exit_code):
+        from clients import ledger
+
+        now = datetime(2026, 9, 6, 5, 0, tzinfo=UTC)
+        ledger.emit(
+            "lane_results",
+            [
+                {
+                    "run_id": "daily-update-20260906T050000Z-1",
+                    "lane": lane,
+                    "started": now,
+                    "ended": now,
+                    "exit_code": exit_code,
+                    "budget_s": 10800.0,
+                    "elapsed_s": 10800.0,
+                    "outcome": outcome,
+                    "blocker": None,
+                }
+            ],
+            run_id="daily-update-20260906T050000Z-1",
+        )
+
+    def test_a_timed_out_corporate_actions_lane_no_longer_blocks_silver(self):
+        """2026-09-03/04/05/06 on the mini: 10800s, exit 124, Silver skipped all four nights."""
+        self._lane("corporate-actions", "timeout", 124)
+        self._lane("equity", "done", 0)
+
+        assert daily_runner.silver_is_blocked() is None
+
+    def test_an_ib_down_lane_no_longer_blocks_silver(self):
+        self._lane("corporate-actions", "done", 0)
+        self._lane("equity", "blocked", 86)
+
+        assert daily_runner.silver_is_blocked() is None
+
+    def test_a_lane_deferred_by_the_lake_lock_does_not_block_silver(self):
+        self._lane("corporate-actions", "blocked", None)
+        self._lane("equity", "done", 0)
+
+        assert daily_runner.silver_is_blocked() is None
+
+    def test_a_failed_corporate_actions_lane_still_blocks_silver(self):
+        """Wrong data, not slow data. This is the one case that must still stop Silver."""
+        self._lane("corporate-actions", "failed", 1)
+        self._lane("equity", "done", 0)
+
+        assert daily_runner.silver_is_blocked() == "corporate-actions"
+
+    def test_a_failed_equity_lane_still_blocks_silver(self):
+        self._lane("corporate-actions", "done", 0)
+        self._lane("equity", "failed", 1)
+
+        assert daily_runner.silver_is_blocked() == "equity"
+
+    def test_the_gate_still_fails_closed_on_a_missing_terminal_fact(self):
+        """A missing emit is not success: it would turn a failed lane into a green rebuild."""
+        self._lane("equity", "done", 0)
+
+        assert daily_runner.silver_is_blocked() == "corporate-actions"
+
+    def test_the_last_terminal_row_wins_so_the_massive_fallback_counts(self):
+        """equity emits twice when IB is down and Massive answers; the second row is the fact."""
+        self._lane("corporate-actions", "done", 0)
+        self._lane("equity", "blocked", 86)
+        self._lane("equity", "done", 0)
+
+        assert daily_runner.silver_is_blocked() is None

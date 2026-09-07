@@ -224,3 +224,38 @@ def test_no_module_hand_rolls_an_atomic_json_writer():
     ]
 
     assert offenders == []
+
+
+def test_a_non_blocking_path_lock_reports_a_busy_lock(tmp_path):
+    """flock is per open file description, so a second open in this process is a real contender."""
+    from clients.parquet_io import path_lock
+
+    lock = tmp_path / "locks" / "lake-io.lock"
+    with path_lock(lock) as held:
+        assert held is True
+        with path_lock(lock, blocking=False) as second:
+            assert second is False
+    with path_lock(lock, blocking=False) as third:
+        assert third is True
+
+
+def test_path_lock_creates_its_parent_directory(tmp_path):
+    from clients.parquet_io import path_lock
+
+    lock = tmp_path / "locks" / "lake-io.lock"
+    assert not lock.parent.exists()
+    with path_lock(lock) as held:
+        assert held is True
+    assert lock.exists()
+
+
+def test_symbol_lock_still_serializes_one_parquet_path(tmp_path):
+    """The per-file lock is a different scope and keeps its sidecar name (spec section 3)."""
+    from clients.parquet_io import path_lock, symbol_lock
+
+    parquet = tmp_path / "bronze" / "symbol=AAPL" / "1d.parquet"
+    parquet.parent.mkdir(parents=True)
+    with symbol_lock(parquet) as lock_path:
+        assert lock_path == parquet.with_suffix(".parquet.lock")
+        with path_lock(lock_path, blocking=False) as second:
+            assert second is False

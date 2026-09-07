@@ -80,3 +80,39 @@ def test_declared_lane_budgets_cover_exactly_the_lane_set():
 
 def test_ib_only_lanes_are_a_subset_of_the_lane_order():
     assert set(constants.IB_ONLY_LANES) <= set(constants.LANE_ORDER)
+
+
+def test_the_silver_budget_clears_the_longest_measured_full_rebuild():
+    """4h, from four measured full rebuilds on the mini; 7200 was a guess.
+
+    The longest was 2026-08-30 at 2h51m, and the first budgeted run killed
+    silver at 7201s on 2026-09-07.
+    """
+    assert constants.declared("lane_budget_s/silver") == 4 * 60 * 60
+
+
+def test_the_lake_lock_wait_is_declared_globally():
+    """The acceptable wait is a property of the lock, not of one lane."""
+    assert constants.DECLARED["lake_lock_wait_s"] == (2340, "s")
+    assert constants.split_scope("lake_lock_wait_s") == ("lake_lock_wait_s", "")
+
+
+def test_the_lake_lock_poll_intervals_are_scoped_by_job():
+    poll_scopes = {key.split("/", 1)[1] for key in constants.DECLARED if key.startswith("lake_lock_poll_s/")}
+
+    assert poll_scopes == {"daily", "intraday"}
+
+
+def test_the_daily_job_polls_the_lake_lock_more_often_than_the_intraday_job():
+    """Priority IS the poll interval: the low-priority job looks less often (spec section 3)."""
+    assert constants.declared("lake_lock_poll_s/daily") < constants.declared("lake_lock_poll_s/intraday")
+
+
+def test_the_lake_lock_keys_carry_a_working_env_override():
+    import os
+
+    os.environ["LW_DECLARED_LAKE_LOCK_POLL_S_INTRADAY"] = "5"
+    try:
+        assert constants.declared("lake_lock_poll_s/intraday") == 5.0
+    finally:
+        del os.environ["LW_DECLARED_LAKE_LOCK_POLL_S_INTRADAY"]

@@ -107,3 +107,19 @@ def test_data_lake_dir_follows_the_warehouse_override(monkeypatch, tmp_path):
     monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
 
     assert data_lake_dir() == tmp_path / "data-lake"
+
+
+def test_the_lake_lock_lives_under_the_warehouse_not_the_lake(paths, tmp_path: Path) -> None:
+    """The lock must not be one more entry in the exFAT directory it exists to protect."""
+    lock = paths.lake_lock_path()
+
+    assert lock == paths.warehouse_dir() / "locks" / "lake-io.lock"
+    assert not lock.is_relative_to(paths.data_lake_dir())
+
+
+def test_the_lake_lock_follows_the_warehouse_override(paths, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
+    monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "elsewhere"))
+
+    assert paths.lake_lock_path() == tmp_path / "warehouse" / "locks" / "lake-io.lock"
+    assert not paths.lake_lock_path().is_relative_to(paths.data_lake_dir())

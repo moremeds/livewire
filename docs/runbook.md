@@ -64,6 +64,32 @@ warehouse paths.
 | `MDW_LOG_DIR`                       | `~/market-warehouse/logs/`                            | Runtime log directory                                                                               |
 | `MDW_SOURCE_EVIDENCE`               | `on`                                                  | Set to `off`/`0`/`false`/`no` to stop `corporate-actions` collecting exact provider response bytes |
 
+#### Lake I/O lock
+
+One `fcntl.flock` at `<warehouse>/locks/lake-io.lock`. Held for the length of any
+lane that touches the lake, in `run_daily_update_job.run_with_retries`,
+`._run_scheduled_lane` and `sync_runner.run_phase`. Released between lanes. Not
+taken by `status`, the digest, the watchdog, or any ledger read — those are
+internal-disk only.
+
+```bash
+# who is holding it right now (mini)
+lsof ~/market-warehouse/locks/lake-io.lock
+
+# what each lane waited for it, this run (only lanes that acquired it)
+python scripts/livewire_ops.py ledger query "select scope as lane, round(value) as waited_s \
+  from measurements where name = 'lake_lock_wait_s' and measured_at >= current_date order by value desc"
+
+# any lane that never got it
+python scripts/livewire_ops.py ledger query "select lane, outcome, blocker from lane_results \
+  where blocker = 'lake_lock' and date(started) = current_date"
+```
+
+Deleting the lock file while a lane holds it does **not** release the lock (flock
+is on the open file description) and the next lane will create a new one, giving
+you two lock domains and no serialization. There is no operator action that
+"clears" it: flock is released with the fd, SIGKILL included.
+
 ### Massive S3 flat files
 
 | Variable                          | Default      | Meaning                                                                                                        |
@@ -93,6 +119,14 @@ warehouse paths.
 Every key is emitted to the ledger as `measurements(source='declared')` at run
 start; `status` WARNs when a lane's 14-day p95 `source='measured'` elapsed time
 drifts more than 2× from its declared budget.
+
+`lake_lock_wait_s` (global, 2340s) is the expected wait for the lake-io lock;
+`lake_lock_poll_s/daily` (1s) and `lake_lock_poll_s/intraday` (60s) are how often
+each job looks for it. `status` grades the declared wait against the 14-day p95
+of `measurements(name='lake_lock_wait_s')`, one row per lane that acquired the
+lock, and reads UNKNOWN until those rows exist. A lane that gave up at its
+budget emits no measurement — its `lane_results` row (`outcome='blocked'`,
+`blocker='lake_lock'`) is the record, and `status`'s `Lanes blocked` grades it.
 
 ### DuckDB catalog
 
@@ -887,11 +921,18 @@ conversion table to other Mac timezones.
 | Job                                  | UTC time            | Entrypoint                                                                                  |
 | ------------------------------------ | ------------------- | ------------------------------------------------------------------------------------------- |
 | `com.livewire.release-promote`       | 04:30 daily         | `livewire_ops.py release promote` (reads the repo)                                          |
-| `com.livewire.intraday-catchup`      | 05:00 daily         | `livewire_ops.py run-intraday-catchup-job`                                                  |
-| `com.livewire.daily-update`          | 06:00 daily         | `livewire_ops.py run-daily-job`                                                             |
+| `com.livewire.daily-update`          | 05:00 daily         | `livewire_ops.py run-daily-job`                                                             |
+| `com.livewire.intraday-catchup`      | 10:00 daily         | `livewire_ops.py run-intraday-catchup-job`                                                  |
 | `com.livewire.daily-update-watchdog` | 10:30 daily         | `livewire_quality.py watchdog`                                                              |
 | `com.livewire.coverage`              | 11:00 daily         | `livewire_quality.py coverage` (also runs the windowed gap classifier)                      |
 | `com.livewire.universe-refresh`      | Sunday 13:00 weekly | `livewire_ingest.py universe-sync && livewire_ingest.py shepherd-universe` (reads the repo) |
+
+> The two lake writers are ordered by the code, not by these times: every lane
+> holds `<warehouse>/locks/lake-io.lock` while it runs, `daily-update` polls for
+> it every second and `intraday-catchup` every 60s. The times only set the
+> arrival order. `coverage` (11:00) overlaps `intraday-catchup` and does **not**
+> take the lock — it is untimed by design, so contention costs it wall-clock and
+> cannot fail it.
 
 `run-daily-job` syncs equities, futures and cmdty via IB, then all volatility
 indices via CBOE and DXY/FX via Yahoo+Massive, in a single invocation; pass

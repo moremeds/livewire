@@ -26,7 +26,7 @@ livewire/                       # git repo
 ├── launchd/                    # *.plist.example templates for the 6 scheduled jobs
 ├── tests/                      # pytest; 95% coverage gate (clients/ib_client.py exempt)
 └── docs/
-    ├── postmortems/            # one file per incident: rule + what it cost + date (54 as of 2026-09-06)
+    ├── postmortems/            # one file per incident: rule + what it cost + date (55 as of 2026-09-06)
     ├── runbook.md              # every operator command, flag and env var, by task
     ├── superpowers/specs/      # designs; 2026-09-02-livewire-ledger-design.md is current
     └── audits/                 # dated read-only findings
@@ -41,6 +41,7 @@ livewire/                       # git repo
 │   └── quarantine/<stamp>/     # corrupt per-symbol parquet moved aside by the publisher
 ├── releases/<sha>/ + current   # immutable release artifacts; scheduled jobs run `current`
 ├── cursors/  logs/  .env       # resume state, job logs, credentials (a release carries no .env)
+├── locks/lake-io.lock          # the one lake-io flock; internal disk, never in the lake
 └── .venv/                      # runtime venv for launchd jobs (dev and CI use `uv run`)
 ```
 
@@ -55,7 +56,7 @@ verified on the mini or it is not verified.
 - Silver = fully back-adjusted daily bars + factor intervals, derived from bronze equity and the corporate-action store — both Massive-backed. Bronze is read-only to it; IB is never an input.
 - DuckDB reads parquet in place; its only durable artifact is a small coverage table. It is never a second store.
 - Providers: equity daily IB → Massive fallback; equity intraday Massive flat files only; futures/cmdty daily and volatility intraday IB; CBOE vol indices CBOE API; rates FRED; fx/DXY Yahoo (+ Massive intraday).
-- Six launchd jobs on the mini: intraday-catchup 05:00Z → daily-update 06:00Z → watchdog 10:30Z → coverage 11:00Z (no timeout) → release-promote; universe-refresh weekly, from the repo.
+- Six launchd jobs on the mini: daily-update 05:00Z → intraday-catchup 10:00Z → watchdog 10:30Z → coverage 11:00Z (no timeout) → release-promote; universe-refresh weekly, from the repo.
 - Apex is the consumer. It resolves silver by path and never reads the manifest; a corrupt symbol renders as a plausible chart while a missing one fails closed (HTTP 500). Correctness outranks coverage.
 
 ## The one contract
@@ -108,11 +109,12 @@ gap      = expected − actual
 - A release carries no `.env` and no `node_modules`; `promote` runs `npm ci --omit=dev` before `freeze`. → test: `tests/test_release.py` · pm:2026-07-29-release-missing-node-modules
 - Lane budgets are per lane (`LANE_BUDGET_S`), not a total: a lane over budget is killed by process group, recorded `outcome='timeout'`, and **the next lane starts normally**. → test: `tests/test_run_daily_update_job.py::TestPerLaneBudgets` · pm:2026-07-28-daily-job-deadline-is-a-total
 - Lane order is no-fallback-first (futures → cmdty → CBOE → FX → corporate-actions → equity → silver): the IB-only lanes take minutes and cannot be back-sourced, so they never queue behind a 3–8h Massive lane. → test: `::test_main_runs_the_no_fallback_lanes_before_the_expensive_ones`
+- One `fcntl.flock` at `<warehouse>/locks/lake-io.lock` (internal disk, never in the lake) is held by every lane that touches the lake, in **both** runners' three lane bodies; the daily job polls at 1s and the intraday job at 60s, and a lane that waits past its own budget is recorded `outcome='blocked', blocker='lake_lock'` instead of running. Four nights of corporate-actions timeouts (10800s each) against a 39-minute lake-alone run preceded it. → test: `tests/test_run_intraday_catchup_job.py::TestBothRunnersTakeOneLock`, `tests/test_run_daily_update_job.py::TestTheLakeLock` · pm:2026-09-06-intraday-and-daily-shared-the-lake
 - The lane list is declared once (`clients.constants.LANE_ORDER`, `IB_ONLY_LANES`); the job runs it and `status` generates its CHECK SQL from it, so a new lane cannot be run but ungraded. → test: `tests/test_status.py::test_adding_a_lane_makes_it_appear_in_the_lanes_terminal_check`, `tests/test_constants.py::test_declared_lane_budgets_cover_exactly_the_lane_set`
 - The lane runner never runs the alert: `_page_failure` takes no runner parameter; `send_failure_alert` binds `subprocess.run` late. → test: `TestTheLaneRunnerNeverRunsTheAlert` · pm:2026-08-02-lane-runner-ran-the-alert
 - Every lane pages, the timeout branch included; `_run_scheduled_lane` is the single shared lane body (no private copies). → test: `tests/test_run_daily_update_job.py::test_terminal_failure_*` · pm:2026-07-28-lane-alert-paths-missing
 - The corporate-actions lane always resumes (`--resume` is unconditional on the scheduled command, Sunday included): an incompatible or complete cursor starts a fresh pass instead of raising, and a resumed tail that finishes opens one new cycle in the same invocation. Without it three nights (2026-09-03/04/05) each restarted at symbol 1 and the tail of the ~13.3K universe was never reached. → test: `tests/test_sync_corporate_actions.py::test_a_resumed_pass_finishes_its_tail_then_opens_a_new_cycle`, `tests/test_corporate_action_cursor.py::TestResumeNeverFailsTheLane` · pm:2026-09-05-corporate-actions-restarted-from-symbol-one
-- corporate-actions fails on a rate (`FAILURE_RATE_TOLERANCE` 5%), never on one symbol; Silver is gated on its own two inputs only. → guard: `livewire_scripts/sync_corporate_actions.py` · pm:2026-08-02-corporate-actions-failed-on-one-symbol
+- corporate-actions fails on a rate (`FAILURE_RATE_TOLERANCE` 5%), never on one symbol; Silver is gated on its own two inputs only, and only on `outcome='failed'` — a timeout (124) or a down Gateway (86) is slow data, not wrong data. → guard: `livewire_scripts/sync_corporate_actions.py` · test: `tests/test_run_daily_update_job.py::TestTheSilverGateOnlyBlocksOnFailure` · pm:2026-08-02-corporate-actions-failed-on-one-symbol, pm:2026-09-06-intraday-and-daily-shared-the-lake
 - `no_trade` never makes a run look failed — not in `resolve_exit_code`, not in the watchdog (`updated == 0 and errors`). → test: `tests/test_daily_outcomes.py::test_no_trade_and_partial_never_fail` · pm:2026-07-26-no-trade-paged-quiet-weekends
 - A corrupt per-symbol parquet is quarantined by the publisher and counted **missing** by every reader. Both fail, in opposite directions; neither aborts. A read-only detector must not repair. Fixing only the publisher (2026-07-14) let the same file class abort `coverage` **9 times**, through 2026-09-01. → test: `tests/test_flatfile_publisher.py::test_corrupt_1m_parquet_quarantines_the_symbol_and_run_continues`, `tests/test_coverage_report.py::TestComputeCoverage::test_one_corrupt_parquet_does_not_kill_the_whole_scan` · pm:2026-07-14-corrupt-parquet-aborted-publish, pm:2026-09-01-coverage-aborted-on-corrupt-parquet
 - `duckdb build`'s per-view `read_parquet(glob)` has no per-file skip (DuckDB 1.5's `ignore_errors` is not a real parameter for it); a third reader hit the same corrupt-file class and took the _whole catalog_ down for three nights before `InvalidInputException` was caught alongside `IOException`. → test: `tests/test_duckdb_catalog.py::test_build_coverage_tolerates_a_corrupt_parquet_in_the_glob` · pm:2026-09-06-duckdb-coverage-corrupt-parquet-aborted-build
