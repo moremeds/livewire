@@ -29,6 +29,12 @@ def test_shepherd_universe_dispatches_without_gateway(monkeypatch):
         return 0
 
     monkeypatch.setattr("scripts.livewire_ingest._dispatch_module", fake_dispatch)
+    # `shepherd-universe` loads the scheduled env (launchd starts universe-refresh
+    # cold). Unpatched, the real loader reads the developer's `~/.secrets` and
+    # `~/market-warehouse/.env` into `os.environ` for the rest of the session —
+    # which broke test_migrate_parquet_filename by ordering. CI has no such files,
+    # so it would have stayed green.
+    monkeypatch.setattr("scripts.livewire_ingest.load_scheduled_env", lambda repo_root: None)
     assert main(["shepherd-universe", "scan", "--index", "sp500"]) == 0
     assert captured == {
         "module": "livewire_scripts.shepherd_universe",

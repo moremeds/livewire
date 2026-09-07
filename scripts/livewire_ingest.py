@@ -13,6 +13,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from livewire_scripts.scheduled_env import load_scheduled_env
+
 COMMANDS = {
     "daily": "livewire_scripts.daily_update",
     "historical": "livewire_scripts.fetch_ib_historical",
@@ -112,6 +114,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     args = parser.parse_args(argv[:1])
     rest = argv[1:]
+
+    if args.command in {"universe-sync", "shepherd-universe"}:
+        # `com.livewire.universe-refresh` chains exactly these two and is the
+        # only plist that invokes this entrypoint directly — every other job
+        # goes through `livewire_ops.py run-*-job`, which loads the same files
+        # before dispatching. launchd starts this one cold, so there is no
+        # parent env to inherit.
+        # Without this, `universe_sync` logged `MASSIVE_API_KEY not set —
+        # skipping dead-ticker check` and exited 0: the denominator gained new
+        # index members and never lost delisted ones, in the one job whose
+        # whole purpose is keeping that denominator honest.
+        load_scheduled_env(REPO_ROOT)
 
     if _requires_ib_preflight(args.command, rest):
         from clients.ib_gateway_preflight import assert_gateway_up
