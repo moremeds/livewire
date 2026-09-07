@@ -23,6 +23,7 @@ from clients.source_evidence import SourceEvidence, SourceEvidenceStore
 from clients.symbol_paths import canonical_symbol, decode_symbol
 from clients.telemetry import MassiveTelemetry
 from livewire_scripts.corporate_action_cursor import build_identity, default_cursor_path, open_cursor
+from livewire_scripts.job_runner_common import emit_progress
 from livewire_scripts.paths import data_lake_dir
 
 # Share of attempted symbols that may fail before the run counts as systemic.
@@ -365,7 +366,9 @@ def run(
                     if attempted % _EVIDENCE_FLUSH_EVERY == 0:
                         if evidence is not None:
                             evidence.flush()
-                        _emit_progress(completed=resumed + marked, total=len(tickers), run_id=run_id)
+                        emit_progress(
+                            scope="corporate-actions", completed=resumed + marked, total=len(tickers), run_id=run_id
+                        )
             finally:
                 if owned_client is not None:
                     owned_client.close()
@@ -437,26 +440,6 @@ def _emit_measurements(rows: list[dict], run_id: str) -> None:
         ledger.emit("measurements", rows, run_id=run_id)
     except Exception as exc:  # pragma: no cover - telemetry must not fail a good run
         print(f"WARNING: could not write measurements: {exc}", file=sys.stderr)
-
-
-def _emit_progress(*, completed: int, total: int, run_id: str) -> None:
-    """Heartbeat the universe position so a lane SIGKILLed at its budget still says how far it got."""
-    now = datetime.now(UTC)
-    _emit_measurements(
-        [
-            {
-                "name": name,
-                "scope": "corporate-actions",
-                "measured_at": now,
-                "value": float(value),
-                "unit": "symbols",
-                "source": "measured",
-                "run_id": run_id,
-            }
-            for name, value in (("progress", completed), ("progress_total", total))
-        ],
-        run_id,
-    )
 
 
 def _emit_provider_measurements(telemetry: MassiveTelemetry, run_id: str) -> None:

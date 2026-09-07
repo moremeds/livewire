@@ -121,6 +121,15 @@ CHECKS: list[tuple[str, str]] = [
         "having count(*) > 0",
     ),
     (
+        "Silver progress",
+        "select 'OK' as verdict, "
+        "max(case when name = 'progress' then value end) as symbols, "
+        "max(case when name = 'progress_total' then value end) as universe "
+        "from measurements where scope = 'silver' "
+        "and name in ('progress', 'progress_total') and run_id = '$run' "
+        "having count(*) > 0",
+    ),
+    (
         "Silver advanced",
         "select case when outcome = 'done' then 'OK' else 'BAD' end as verdict, "
         "outcome, blocker from lane_results "

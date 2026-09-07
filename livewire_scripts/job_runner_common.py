@@ -7,9 +7,12 @@ pm:2026-07-28-lane-alert-paths-missing describes.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+from clients import ledger
 
 
 @dataclass(frozen=True)
@@ -68,3 +71,29 @@ def build_alert_command(
     if request.exit_code is not None:
         command.extend(["--exit-code", str(request.exit_code)])
     return command
+
+
+def emit_progress(*, scope: str, completed: int, total: int, run_id: str) -> None:
+    """Heartbeat the universe position so a lane SIGKILLed at its budget still says how far it got.
+
+    One writer for every lane: corporate-actions and silver read the same
+    ``(progress, progress_total)`` pair off the ledger, so `status` grades them
+    with one shaped query and a second copy cannot drift.
+    """
+    now = utc_now()
+    rows = [
+        {
+            "name": name,
+            "scope": scope,
+            "measured_at": now,
+            "value": float(value),
+            "unit": "symbols",
+            "source": "measured",
+            "run_id": run_id,
+        }
+        for name, value in (("progress", completed), ("progress_total", total))
+    ]
+    try:
+        ledger.emit("measurements", rows, run_id=run_id)
+    except Exception as exc:  # pragma: no cover - telemetry must not fail a good run
+        print(f"WARNING: could not write measurements: {exc}", file=sys.stderr)
