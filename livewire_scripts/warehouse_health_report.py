@@ -146,6 +146,8 @@ def scan_warehouse(options: ScanOptions | None = None) -> list[SnapshotHealth]:
         return snapshots
 
     for path in sorted(bronze_root.glob("asset_class=*/symbol=*/*.parquet")):
+        if path.name.startswith("._"):
+            continue
         asset_part = path.parents[1].name
         symbol_part = path.parent.name
         if not asset_part.startswith("asset_class=") or not symbol_part.startswith("symbol="):
