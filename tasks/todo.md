@@ -25,7 +25,7 @@ Graph: `SE-00 -> {SE-01, SE-02} -> SE-03 -> SE-04 -> {SE-05, SE-06} -> SE-07 -> 
 - [x] **SE-04** (`depends_on: [SE-03]`): Implement shared write control and safe single-file publication; local fault/concurrency checks pass, production proof remains SE-08/11.
 - [x] **SE-05** (`depends_on: [SE-04]`): Implement approved immutable Silver publication; local five-boundary SIGKILL/retry checks pass.
 - [x] **SE-06** (`depends_on: [SE-04]`): Stabilize the Livewire → Apex data contract and pinned-snapshot readers; actual writer-to-adapter daily/intraday checks pass. Apex changes stop at minimal adapter compatibility. Internal reseed/signals refactor is deferred by the user (2026-09-08).
-- [ ] **SE-07** (`depends_on: [SE-05, SE-06]`): Verify failure isolation, actionable warnings, recovery and crash acceptance.
+- [x] **SE-07** (`depends_on: [SE-05, SE-06]`): Candidate failure isolation, warning/recovery regressions and crash acceptance verified; Mini healthy-subset omission/restored retry and 14 final external-volume cases pass. The 269/53 itemized data issues remain recovery work, not resolved data.
 - [ ] **SE-08** (`depends_on: [SE-07]`): Measure capacity against actual runtime timelines.
 - [ ] **SE-09** (`depends_on: [SE-08]`): Independent review, mandatory checks and compatible release candidates.
 - [ ] **SE-10** (`depends_on: [SE-09]`): Execute approved cutover with writer/release protection.
@@ -38,7 +38,7 @@ The 64-file Mini sample projected 16.005 GiB for row objects alone on a 16 GiB
 host, so that prior memory design was not viable. Request-level Apex adapters
 are narrowed as agreed; deferred internal changes were preserved in a verified
 backup before removal from the candidate. Manual repair/rollback/archive caller
-audit is complete. The final local configured coverage run passed 2,660 tests at
+audit is complete. The initial configured coverage run passed 2,660 tests at
 95.08%; Ruff checks passed and Pyright reported zero errors (25 warnings).
 Full Mini disposable capacity measurements remain in progress.
 
@@ -49,7 +49,8 @@ multi-item state is not restartable; selected manual commands collapse mixed
 case symbols. Durable per-item intent/resume, checksum-bound rollback, receipt
 failure preservation and canonical identities now pass independent re-review.
 The final local configured gate passes 2,687 tests at 95.01%; Ruff/format pass
-and Pyright reports zero errors (25 warnings). New exact-commit CI remains due.
+and Pyright reports zero errors (25 warnings). Linux CI run `34186169434`
+passes at exact implementation commit `062caa6` with the same test/coverage result.
 Historical sidecars without a known applied hash must fail closed rather than
 overwriting newer data. Mini capacity evidence remains pinned to unchanged
 snapshot code at `c11caa8`; it does not validate subsequent manual fixes or the
@@ -59,8 +60,24 @@ The measured fresh build publishes 13,279 members / 26,558 artifacts in
 failures match 198 unknown price bases, 61 currency mismatches, five conflicting
 splits, four invalid dividends and one source-identical corrupt RJF daily file.
 Comparison with production revision 39 still finds 53 shorter history windows;
-fresh-baseline `window_regressions=0` does not resolve them. No-op/incremental/
-failure-retry measurements and production cutover remain open.
+fresh-baseline `window_regressions=0` does not resolve them. Full no-op took
+743.799 seconds, retaining revision 1 with zero rebuilt symbols. AAPL increment
+took 624.424 seconds (revision 2, rebuilt 1); fixture corruption took 1,319.281
+seconds (revision 3, only A omitted), then restored retry took 652.258 seconds
+(revision 4, A returned). Retry overlapped the actual 13:00 production daily
+job. These staged measurements do not prove a cold normal-run or coverage
+repair competition budget. The [recovery inventory](../docs/codex-handoffs/2026-09-08-integrity-recovery-inventory.md)
+accounts for all 269 failures and 53 shortened windows; their data recovery,
+Apex baseline CI failures and production cutover remain open.
+
+The final external-volume check caught AppleDouble `._*.json` metadata in
+legacy rollback's receipt enumeration. Candidate `38c90bb` filters only those
+metadata names and adds a portable recovery regression; ordinary corrupt
+receipt JSON still fails explicitly. The complete local suite again passes
+2,688 tests at 95.01%; runtime source Ruff/format and Pyright checks pass
+(zero errors, 25 warnings). Final external recheck passes all 14 cases at
+`38c90bb` (`se08-20260908T1315-38c90bb`). Record final PR-head CI separately
+from this implementation evidence; SE-09 remains open while Apex CI is not green.
 
 Verification correction: `--cov=clients --cov=scripts` measures wrapper scripts
 and is not the required CI source set. The configured `--cov` gate correctly

@@ -40,13 +40,106 @@ data, delete generations, or trigger a production rebuild during verification.
   internal/external space, and retained generation bytes. Hash actual selected
   artifacts rather than treating existence as verification.
 
-Candidate evidence on 2026-09-08: Livewire implementation
-`c11caa8d96b8416c1a5256f71179639618461692` passed local and Linux CI at
-2,660 tests and 95.08% coverage (runs `34183052268`, `34183127817`). Ruff and
-format checks passed; Pyright reported zero errors and 25 warnings. Apex
+Candidate evidence on 2026-09-08: final Livewire implementation
+`38c90bba46f668cf2d615c90f867a3e1e9220a09` passed locally at 2,688 tests and
+95.01% coverage. Ruff/format and lock checks passed; Pyright reported zero
+errors and 25 warnings. Independent re-review found no blocking issues.
+This adds the external-test-discovered AppleDouble receipt filter to `062caa6`;
+only rollback receipt enumeration and its regression test changed.
+The test checks real data restoration while ignoring metadata; it does not
+require macOS-owned AppleDouble bytes to remain unchanged on exFAT.
+At exact `38c90bb`, all 14 final recovery/identity cases passed on the Mini's
+external filesystem in 21.84 seconds. The fresh fixture is
+`/Volumes/DATA_LAKE/livewire/disposable/se08-20260908T1315-38c90bb`;
+`receipt.txt` records exit 0 and archive SHA-256
+`b7058cf59e204328948dacd3dafd36c14557bd870c7be03fd8fa8f7b7e8c7f69`,
+with results in `pytest-output.txt` and command/nodeids/source hashes in
+`command.txt`. This was correctness verification during
+the active production daily job, not another performance sample.
+
+Apex
 `ae57f93cfb6f772277c6a309f5ae428dd1ce3298` passed CI integration, but CI lint
 and type gates failed outside the adapter diff and unit CI was consequently
 skipped. This is not a fully green compatible release pair.
+Run `34183103803` passed 129 integration tests (one skipped). Lint failures
+are isort 9.0.1 on unchanged `backtest/execution/parallel.py` and
+`order_matching.py`; type checking fails at unchanged
+`backtest/optimization/bayesian.py:73` with CI's mypy 2.3.1 / Optuna 5.
+Local focused adapter checks passed 114 tests. The broader local unit run
+passed 2,091 tests with 79 skipped and two Yahoo network failures; local
+integration passed 129 with one skipped. Do not silently repair those
+unrelated Apex internals or dependencies as part of the contract change.
+
+The preceding recovery/identity candidate
+`062caa6157c102e639c0a09e98c16370b5ef4fbf` passed local and Linux CI
+(`34186169434`) with 2,687 tests and 95.01% coverage, zero type errors and
+25 warnings. Independent re-review closed the manual recovery findings,
+including a failed completion receipt after publication. The actual producer
+to Apex `ae57f93` interoperability check passed at this candidate; the later
+AppleDouble fix changes no producer or adapter code. Its external-volume
+13-case check exposed two receipt-parsing failures (11 passed), preserved at
+`/Volumes/DATA_LAKE/livewire/disposable/se08-20260908T1306-062caa6/pytest-output.txt`.
+Never substitute its green Linux CI for that external-filesystem result.
+
+Mini capacity receipts remain explicitly pinned to `c11caa8`, before the
+manual recovery changes and three symbol-normalization corrections. On the
+13,548-symbol disposable fixture, input copying took 773.162 seconds while
+holding input locks; first publication took 1,971.265 seconds and committed
+13,279 members / 26,558 artifacts. The observed sampled RSS peak was 691,488
+KiB, sampled after process startup. Full no-op took 743.799 seconds and kept
+revision 1 / rebuilt 0, with the same 269 input failures. AAPL targeted
+increment took 624.424 seconds, committing
+revision 2 / rebuilt 1; targeted publication still validates the complete carried
+artifact set, so this measurement is not evidence of constant-cost updates.
+Corrupting only fixture symbol A then running full took 1,319.281 seconds:
+exit 0, revision 3, rebuilt 0 and 270 reported failures. A was absent from
+the new manifest while all other previous members remained eligible; this
+tests healthy-subset publication, not an all-or-nothing failed transaction.
+Byte-for-byte fixture restoration followed by targeted retry took 652.258
+seconds, exit 0, revision 4 / rebuilt 1. Revisions 1, 2 and 4 have identical
+13,279-member sets; revision 3 differs only by omitting A (13,278 members).
+The continuation receipt records `complete=true`.
+These are separate stage measurements with internal
+input and external output, not one cold production run or an SLA.
+At 13:00 HKT the normal production daily job actually started while the
+fixture recovery retry was still running (launchd `com.livewire.daily-update`,
+PIDs 83252/83253 observed at 13:00:09). Retry timing from that point is
+contended, not an idle-host sample. Production was not interrupted.
+Final-current artifacts reference 775,354,298 bytes; the deduplicated union
+across revisions 1–4 retains 776,044,796 bytes / 26,562 files. At 05:07:23 UTC,
+free space was 65,011,445,760 bytes internally and 7,216,270,278,656 externally.
+These are manifest-referenced artifact bytes, not total filesystem allocation
+or a generations-directory orphan inventory; see `c11-retained-capacity.json`.
+
+Receipts on the Mini are under
+`/Volumes/DATA_LAKE/livewire/disposable/se08-20260908T1122-c11caa8/logs/`:
+`input-copy-receipt.json`, `scenario-receipt.json`, `continuation-receipt.json`,
+`full-migration-failures.json`, `window-manifest-comparison.json` and
+`run-scenarios-rss.tsv`. The first runner parsed the summary delimiter wrongly
+after the completed build; continuation attested its persisted exit/status,
+duration and revision before proceeding, without repeating the build.
+
+The five physical SIGKILL publication boundaries also passed on the Mini's
+external filesystem in 128.36 seconds, using the `c11caa8` publication code.
+The fsync/flock probe and crash receipts are at
+`/Volumes/DATA_LAKE/livewire/disposable/se08-architecture-_ab1q7_c/receipt.json`
+and its adjacent `pytest-output.txt`. Later recovery and symbol-identity edits
+require their separately recorded final-candidate checks.
+
+Current fixture failures: 198 unknown historical price bases, 61 dividend/
+Bronze currency mismatches, five conflicting splits, four invalid dividends
+and one corrupt RJF daily file. The canonical and fixture RJF bytes have the
+same SHA-256
+`54e59febc7d33de3d0b91d557821dadc6c8116332ea6f1d54ebb2d37986c4051`;
+neither was modified during verification. Comparing production revision 39
+with the fixture finds 53 shorter history windows, zero membership changes
+and one lengthened window (MUNJ). Fresh-baseline regression count zero does
+not resolve those 53; the comparison is metadata evidence, not a correctness
+endorsement of either history window.
+The [itemized recovery inventory](2026-09-08-integrity-recovery-inventory.md)
+accounts for all 269 failures and 53 shortened windows with source receipt
+hashes, record pointers, investigation actions and clearance conditions.
+Its completion prepares recovery review; it does not resolve those data issues.
 
 ## 2. Reproduce the code checks in isolated checkouts
 
