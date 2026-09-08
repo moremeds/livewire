@@ -2,6 +2,42 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Systematic datalake integrity implementation (2026-09-08)
+
+Implementation approved and started; production cutover remains a separate gate.
+Authoritative execution plan:
+[systematic implementation](../docs/plans/2026-09-08-datalake-integrity-implementation.md).
+The end-state document supplies verified timing constraints; the Silver design
+supplies the storage/consumer contract. Preserve unrelated work and use isolated
+worktrees when implementation begins.
+
+Hard acceptance: contain failures to their actual dependencies; unrelated work
+must continue. Every warning names impact, evidence, last valid data, next action
+and recovery condition. Single-host/disk availability remains an explicit
+physical limitation until a separately scoped recovery/redundancy plan is proven.
+
+Graph: `SE-00 -> {SE-01, SE-02} -> SE-03 -> SE-04 -> {SE-05, SE-06} -> SE-07 -> SE-08 -> SE-09 -> SE-10 -> SE-11`.
+
+- [x] **SE-00** (`depends_on: []`): Pin source, deployment, process and data-root evidence.
+- [ ] **SE-01** (`depends_on: [SE-00]`): Inventory every writer/reader and trace actual failure boundaries.
+- [ ] **SE-02** (`depends_on: [SE-00]`): Make cross-platform tests and the 95% gate trustworthy.
+- [ ] **SE-03** (`depends_on: [SE-01, SE-02]`): Fix lock ownership, failure domains, recovery and warning contracts.
+- [ ] **SE-04** (`depends_on: [SE-03]`): Enforce shared write control and safe single-file publication.
+- [ ] **SE-05** (`depends_on: [SE-04]`): Implement approved immutable Silver publication.
+- [ ] **SE-06** (`depends_on: [SE-04]`): Implement approved pinned-snapshot readers across consumers.
+- [ ] **SE-07** (`depends_on: [SE-05, SE-06]`): Verify failure isolation, actionable warnings, recovery and crash acceptance.
+- [ ] **SE-08** (`depends_on: [SE-07]`): Measure capacity against actual runtime timelines.
+- [ ] **SE-09** (`depends_on: [SE-08]`): Independent review, mandatory checks and compatible release candidates.
+- [ ] **SE-10** (`depends_on: [SE-09]`): Execute approved cutover with writer/release protection.
+- [ ] **SE-11** (`depends_on: [SE-10]`): Claude independently verifies released code and a normal scheduled run.
+
+Correction to the earlier release checklist below: PR #124 was merged and
+release `23e1de284f343e357f97100cfe83fb48ac4be9ec` was verified on the mini in this
+conversation. However, Linux CI's successful status hid raw coverage of 94.89%.
+The earlier DI-5 check therefore does not establish complete acceptance; its
+gate issue is reopened as SE-02. Normal-run and Silver integrity acceptance
+remain open, separately from delivery of that release.
+
 ## Datalake integrity and release verification (2026-09-08)
 
 Goal: stop publishing a successful-looking incomplete catalog, make Silver

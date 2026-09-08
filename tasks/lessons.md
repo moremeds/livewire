@@ -1,5 +1,13 @@
 # Lessons
 
+- A systematic reliability plan must contain failures to actual dependencies:
+  a provider, symbol, catalog or notification failure must not stop unrelated
+  work. Audit shared locks as potential global waiting points. Do not claim a
+  single-host/single-disk system has eliminated physical single points of failure.
+- Warnings must state affected scope, evidence, last valid data, current automatic
+  handling, next action and recovery condition. Aggregate persistent incidents;
+  notify on meaningful change or required action, without hiding unresolved state.
+
 - When the user names an exact plan path, open and execute that file; never infer a nearby plan from the branch name.
 - For whole-universe work, count canonical provider symbols rather than only
   uppercased labels: mixed-case identities such as `BCPC`/`BCpC` and `TPC`/`TpC`
