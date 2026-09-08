@@ -1,7 +1,8 @@
 # Systematic integrity: independent verification and cutover gate
 
 This is the successor to the PR #124 verification note. The candidate is on
-Livewire `fix/systematic-integrity` (PR #125) and Apex `fix/livewire-snapshots`.
+Livewire `fix/systematic-integrity` ([PR #125](https://github.com/moremeds/livewire/pull/125))
+and Apex `fix/livewire-snapshots` ([PR #161](https://github.com/moremeds/apex/pull/161)).
 Do not infer a release from these branch names, a passing local test, or a PR.
 Record exact reviewed commits from the PRs before beginning; record merged
 commits and deployed artifacts separately after an approved cutover.
@@ -39,6 +40,14 @@ data, delete generations, or trigger a production rebuild during verification.
   internal/external space, and retained generation bytes. Hash actual selected
   artifacts rather than treating existence as verification.
 
+Candidate evidence on 2026-09-08: Livewire implementation
+`c11caa8d96b8416c1a5256f71179639618461692` passed local and Linux CI at
+2,660 tests and 95.08% coverage (runs `34183052268`, `34183127817`). Ruff and
+format checks passed; Pyright reported zero errors and 25 warnings. Apex
+`ae57f93cfb6f772277c6a309f5ae428dd1ce3298` passed CI integration, but CI lint
+and type gates failed outside the adapter diff and unit CI was consequently
+skipped. This is not a fully green compatible release pair.
+
 ## 2. Reproduce the code checks in isolated checkouts
 
 Livewire's required coverage command uses the configured `clients` and
@@ -63,7 +72,11 @@ For Apex, run its exact CI lint/type/unit/integration commands. The integration
 job explicitly excludes the live Futu and multi-broker test files. Do not run
 those as an unbounded substitute for a hermetic gate. At candidate preparation,
 two Yahoo-backed unit tests and five unchanged Black files failed locally;
-those are open baseline checks, not a full-suite pass.
+those are open baseline checks, not a full-suite pass. CI installed different
+tool versions: Black 26.5.1 passed, isort 9.0.1 rejected unchanged
+`src/backtest/execution/parallel.py` and `order_matching.py`; CI mypy rejected
+the unchanged `src/backtest/optimization/bayesian.py:73` direction argument.
+Record environment differences rather than conflating local and CI outcomes.
 
 Run the manual producer/consumer interoperability check from Livewire:
 
@@ -133,6 +146,11 @@ initial immutable snapshot from protected canonical inputs. Deploy compatible
 manifest-based readers before enabling the new writer. Return to an older data
 snapshot by publishing a new monotonic manifest referencing retained verified
 artifacts; reverting to a mutable writer is not a safe symlink rollback.
+The runnable regression `test_rebuild_preserves_bytes_pinned_by_prior_revision`
+also exercises this rollback through `SilverRevisionPublisher.publish`: revision
+3 references revision 1's retained artifacts while the pinned revision 2 remains
+readable. A production invocation must first select and validate the intended
+historical manifest and confirm the current revision under the publisher lock.
 
 Legacy `rollback-legacy-basis` intentionally restores its selected original
 backup and has no applied-target hash in old sidecars. Its new lock and checksum

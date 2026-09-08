@@ -78,6 +78,9 @@ def test_rebuild_preserves_bytes_pinned_by_prior_revision(tmp_path):
     _seed_bronze(root, "AAPL", [("2024-01-02", 10.0), ("2024-01-03", 11.0)])
     rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 9, 8))
     old_manifest = _manifest(silver)
+    publisher = SilverRevisionPublisher(silver)
+    previous = publisher.read_current()
+    assert previous is not None
     old_path = _path(silver, "AAPL", "/1d.parquet")
     old_bytes = old_path.read_bytes()
 
@@ -87,6 +90,19 @@ def test_rebuild_preserves_bytes_pinned_by_prior_revision(tmp_path):
     assert old_path.read_bytes() == old_bytes
     assert (silver / old_manifest["artifacts"][0]["path"]).is_file()
     assert _path(silver, "AAPL", "/1d.parquet") != old_path
+
+    # Restore retained data through a new commit; never rewind current.json.
+    newer_snapshot = SilverSnapshot.pin(silver)
+    restored = publisher.publish(
+        [PublishedArtifact(silver / item.path, item.sha256, 0) for item in previous.artifacts],
+        list(previous.affected),
+        previous.corporate_actions_as_of,
+        generation_id="restore-retained-data",
+    )
+    assert restored.revision == newer_snapshot.revision + 1
+    assert SilverSnapshot.pin(silver).files("1d") == [str(old_path)]
+    assert Path(newer_snapshot.files("1d")[0]).is_file()
+    assert old_path.read_bytes() == old_bytes
 
 
 def test_tampered_carried_reference_never_blesses_disk_bytes(tmp_path):
