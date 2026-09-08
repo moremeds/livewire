@@ -140,6 +140,17 @@ writers from crossing the migration while maintaining a reversible record of
 their installed configuration. Merely merging Livewire could allow its next
 automatic promotion to activate the writer prematurely.
 
+Control discovery at 2026-09-08 03:38:39 UTC: Apex runs as
+`apex-deploy-api-1`, Compose project `apex-deploy`, configured by
+`/Users/moremeds/apex-deploy/compose.yml` on the Mini. The running image's OCI
+revision is `905cab6b562af1af87ad821e109e91f24958465e`, not the host checkout
+revision. Bronze, Silver and delisted mounts are read-only; adjusted mode polls
+every 30 seconds. Refresh these observations before acting. Apex also opts into
+the shared `xenon-watchtower-1` updater (60-second poll). Its stable-tag release
+workflow publishes the mutable `latest` image. Consumer cutover must control
+this service's image/update eligibility; do not stop the shared updater for all
+applications. Livewire's separate automatic promoter runs at 12:30 HKT.
+
 Preserve all existing data and releases. A legacy manifest with mismatching
 hashes is not repaired by blessing its current bytes. Build and validate the
 initial immutable snapshot from protected canonical inputs. Deploy compatible
@@ -152,10 +163,14 @@ also exercises this rollback through `SilverRevisionPublisher.publish`: revision
 readable. A production invocation must first select and validate the intended
 historical manifest and confirm the current revision under the publisher lock.
 
-Legacy `rollback-legacy-basis` intentionally restores its selected original
-backup and has no applied-target hash in old sidecars. Its new lock and checksum
-checks do not authorize overwriting later completed writes. Any real rollback
-still needs the user's concrete data-change approval.
+Final review rejected unguarded legacy rollback. Verify that repair writes the
+original backup and exact candidate hash before mutation, and that resume keeps
+that undo metadata across a missing cursor update. Rollback must compare current
+bytes against the recorded applied hash under the symbol lock; a historical
+sidecar lacking that hash must refuse replacement, while already-restored bytes
+are an idempotent no-op. Test partial multi-symbol apply/rollback and changed
+inputs before replaying a pending candidate. Any real rollback still needs the
+user's concrete data-change approval.
 
 ## 6. Report closure only after a normal run
 

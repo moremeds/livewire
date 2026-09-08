@@ -105,6 +105,26 @@ def test_rebuild_preserves_bytes_pinned_by_prior_revision(tmp_path):
     assert old_path.read_bytes() == old_bytes
 
 
+def test_rebuild_preserves_provider_significant_case(tmp_path):
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    for symbol, close in (("BCPC", 10.0), ("BCpC", 20.0)):
+        _seed_bronze(root, symbol, [("2024-01-02", close)])
+    kwargs = {"data_lake_root": root, "silver_root": silver, "as_of_date": date(2026, 9, 8)}
+    rebuild_silver.run(["--full"], **kwargs)
+    original = SilverSnapshot.pin(silver)
+    _seed_bronze(root, "BCpC", [("2024-01-02", 21.0)])
+    rebuild_silver.run(["--tickers", "BCpC"], **kwargs)
+    changed = SilverSnapshot.pin(silver)
+    assert changed.files("1d", {"BCPC"}) == original.files("1d", {"BCPC"})
+    assert changed.files("1d", {"BCpC"}) != original.files("1d", {"BCpC"})
+    triage = root / "triage.json"
+    triage.write_text(json.dumps({"verdicts": [{"symbol": "BCpC", "verdict": "real_move", "date": "2024-01-02"}]}))
+    assert rebuild_silver._load_keep_dates(root, triage) == {"BCpC": {"2024-01-02"}}
+    (root / "bronze/asset_class=equity/symbol=BC%70C/1d.parquet").write_bytes(b"corrupt fixture")
+    rebuild_silver.run(["--full"], **kwargs)
+    assert {item.symbol for item in SilverSnapshot.pin(silver).artifacts} == {"BCPC"}
+
+
 def test_tampered_carried_reference_never_blesses_disk_bytes(tmp_path):
     root, silver = tmp_path / "lake", tmp_path / "silver"
     _seed_bronze(root, "AAPL", [("2024-01-02", 10.0), ("2024-01-03", 11.0)])

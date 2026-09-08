@@ -30,7 +30,7 @@ from clients.seed_boundary import classify_seed_boundary
 from clients.silver_client import PublishedArtifact, SilverClient
 from clients.silver_revision import AffectedSymbol, ManifestArtifact, SilverRevision, SilverRevisionPublisher
 from clients.silver_window import resolve_window
-from clients.symbol_paths import encode_symbol
+from clients.symbol_paths import canonical_symbol, encode_symbol
 from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, resolve_exit_code
 from livewire_scripts.job_runner_common import emit_progress
 from livewire_scripts.paths import data_lake_dir
@@ -154,7 +154,7 @@ def _load_keep_dates(root: Path, explicit: Path | None) -> dict[str, frozenset[s
         payload = json.loads(triage_path.read_text())
         for verdict in payload.get("verdicts", []):
             if verdict.get("verdict") == "real_move":
-                symbol = str(verdict["symbol"]).upper()
+                symbol = canonical_symbol(verdict["symbol"])
                 keep_by_symbol[symbol] = keep_by_symbol.get(symbol, frozenset()) | {str(verdict["date"])}
     elif explicit is not None:
         # An explicitly-named manifest that does not exist is an operator error, not
@@ -407,7 +407,7 @@ def _run_snapshot(
         symbols = (
             sorted(bronze.get_existing_symbols())
             if args.full
-            else list(dict.fromkeys(symbol.upper() for symbol in args.tickers))
+            else list(dict.fromkeys(canonical_symbol(symbol) for symbol in args.tickers))
         )
         if not symbols:
             raise SystemExit("no equity bronze symbols found")
@@ -543,7 +543,7 @@ def _run_snapshot(
         publishable = [item for item in staged if item.symbol not in regressed]
         changed = [item for item in publishable if not _matches_existing(client, item, current, artifact_index)]
         current_symbols = {item.symbol for item in (current.affected if current else ())}
-        scope = {symbol.upper() for symbol in symbols}
+        scope = {canonical_symbol(symbol) for symbol in symbols}
         if args.full:
             # Symbols removed from canonical Bronze are part of a full rebuild's scope
             # and must disappear from the next manifest without moving historical bytes.

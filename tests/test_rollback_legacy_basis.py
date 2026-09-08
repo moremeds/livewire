@@ -43,6 +43,26 @@ def test_rollback_restores_the_original_bytes(tmp_path):
     assert path.read_bytes() == before
 
 
+def test_rollback_refuses_to_overwrite_newer_bronze(tmp_path):
+    path, output_dir, _ = _repair(tmp_path)
+    bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
+    newer = {**bronze.read_symbol_rows("NVDA")[-1], "trade_date": "2026-09-08"}
+    bronze.merge_ticker_rows("NVDA", [newer])
+    changed = path.read_bytes()
+
+    assert rollback_legacy_basis.run(["--output-dir", str(output_dir)], data_lake_root=tmp_path) == 1
+    assert path.read_bytes() == changed
+    assert any(row["trade_date"] == "2026-09-08" for row in bronze.read_symbol_rows("NVDA"))
+
+
+def test_rollback_is_idempotent_when_target_is_already_restored(tmp_path):
+    path, output_dir, before = _repair(tmp_path)
+    assert rollback_legacy_basis.run(["--output-dir", str(output_dir)], data_lake_root=tmp_path) == 0
+    assert rollback_legacy_basis.run(["--output-dir", str(output_dir)], data_lake_root=tmp_path) == 0
+    assert path.read_bytes() == before
+    assert json.loads((output_dir / "symbols/NVDA.json").read_text())["status"] == "rolled_back"
+
+
 def test_rollback_participates_in_symbol_and_snapshot_lock_boundaries(tmp_path, monkeypatch):
     from clients.parquet_io import path_lock
 
@@ -135,6 +155,63 @@ def test_rollback_restores_only_the_requested_tickers(tmp_path):
     assert bronze.symbol_path("AMD").read_bytes() == repaired["AMD"]  # untouched
 
 
+def test_targeted_rollback_preserves_mixed_case_identity(tmp_path):
+    symbols = ("BCPC", "BCpC")
+    for symbol in symbols:
+        _seed_mixed(tmp_path, symbol)
+    bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
+    manifest_path = tmp_path / "audit.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "data_lake_root": str(tmp_path.resolve()),
+                "symbols": [
+                    {
+                        "symbol": symbol,
+                        "path": str(bronze.symbol_path(symbol)),
+                        "source_sha256": hashlib.sha256(bronze.symbol_path(symbol).read_bytes()).hexdigest(),
+                        "klass": "mixed",
+                        "break_date": "2021-06-18",
+                    }
+                    for symbol in symbols
+                ],
+            }
+        )
+    )
+    originals = {symbol: bronze.symbol_path(symbol).read_bytes() for symbol in symbols}
+    output_dir = tmp_path / "out"
+    assert (
+        repair_legacy_basis.run(
+            ["--audit-manifest", str(manifest_path), "--output-dir", str(output_dir)],
+            data_lake_root=tmp_path,
+            ib_factory=lambda: object(),
+            ib_fetcher_factory=_clean_ib_fetcher({symbol: _clean_ib_rows_for(symbol) for symbol in symbols}),
+        )
+        == 0
+    )
+    repaired = {symbol: bronze.symbol_path(symbol).read_bytes() for symbol in symbols}
+
+    assert (
+        rollback_legacy_basis.run(["--output-dir", str(output_dir), "--tickers", "BCpC"], data_lake_root=tmp_path) == 0
+    )
+    assert bronze.symbol_path("BCpC").read_bytes() == originals["BCpC"]
+    assert bronze.symbol_path("BCPC").read_bytes() == repaired["BCPC"]
+
+
+def test_old_sidecar_without_applied_hash_allows_already_restored_noop(tmp_path):
+    path, output_dir, before = _repair(tmp_path)
+    path.write_bytes(before)
+    sidecar_path = output_dir / "symbols/NVDA.json"
+    sidecar = json.loads(sidecar_path.read_text())
+    sidecar.pop("applied_sha256")
+    sidecar["status"] = "in_progress"
+    sidecar_path.write_text(json.dumps(sidecar))
+
+    assert rollback_legacy_basis.run(["--output-dir", str(output_dir)], data_lake_root=tmp_path) == 0
+    assert path.read_bytes() == before
+
+
 def test_rollback_reports_a_missing_backup_and_exits_nonzero(tmp_path):
     path, output_dir, _ = _repair(tmp_path)
     repaired = path.read_bytes()
@@ -162,7 +239,7 @@ def test_main_delegates_to_run(monkeypatch):
     assert seen["argv"] == ["--output-dir", "out"]
 
 
-def test_a_crash_between_the_bronze_mutation_and_the_final_sidecar_is_still_undoable(tmp_path):
+def test_old_in_progress_sidecar_without_applied_hash_refuses_to_guess(tmp_path):
     """Bronze is the system of record, so every mutation must be undoable by the
     supplied command — not merely by an operator who knows the backup naming scheme.
     _repair_one mutates bronze and only then returns, and the caller writes the
@@ -189,8 +266,5 @@ def test_a_crash_between_the_bronze_mutation_and_the_final_sidecar_is_still_undo
 
     rc = rollback_legacy_basis.run(["--output-dir", str(output_dir)], data_lake_root=tmp_path)
 
-    assert rc == 0
-    restored = bronze_path.read_bytes()
-    assert restored != mutated  # the mutation was undone, not stranded
-    assert restored == before
-    assert hashlib.sha256(restored).hexdigest() == sidecar["backup_sha256"]
+    assert rc == 1
+    assert bronze_path.read_bytes() == mutated

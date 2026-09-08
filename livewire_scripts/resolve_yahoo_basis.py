@@ -14,7 +14,6 @@ closed and are reported, not written.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -27,9 +26,9 @@ from clients.adjustment_engine import build_factor_intervals
 from clients.bronze_client import EQUITY_SOURCES, BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.ib_client import IBClient, IBConnectionError
-from clients.parquet_io import restore_parquet_exact, symbol_lock, write_json_atomic
+from clients.parquet_io import symbol_lock, write_json_atomic
 from clients.source_evidence import sha256_file
-from clients.symbol_paths import encode_symbol
+from clients.symbol_paths import canonical_symbol
 from clients.yahoo_basis import (
     AnchorVerdict,
     anchor_window,
@@ -42,7 +41,12 @@ from clients.yahoo_basis import (
 from clients.yahoo_client import YahooClient, YahooError, YahooNotFound
 from livewire_scripts.adjusted_history_sources import IBHistoryFetcher
 from livewire_scripts.paths import data_lake_dir
-from livewire_scripts.repair_legacy_basis import _order_symbols, _priority_rank
+from livewire_scripts.repair_legacy_basis import (
+    _order_symbols,
+    _priority_rank,
+    _publish_with_rollback,
+    _resume_repair_sidecar,
+)
 
 # Reason string Silver raises when a split lands on an unknown-basis row (the batch-1 target).
 _SPLIT_UNKNOWN_REASON = "unknown price_basis for split-affected row"
@@ -96,7 +100,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def _symbols(args: argparse.Namespace, *, root: Path) -> list[str]:
     if args.tickers:
-        return [t.upper() for t in args.tickers]
+        return [canonical_symbol(t) for t in args.tickers]
     if getattr(args, "failure_manifest", None):
         # Schema is rebuild-silver --failure-output: {"failures": [{"symbol", "error", ...}],
         # "data_lake_root": ...}. Verified against a real rev manifest — do not guess it.
@@ -107,7 +111,7 @@ def _symbols(args: argparse.Namespace, *, root: Path) -> list[str]:
         if Path(recorded).resolve() != root.resolve():
             raise ValueError(f"failure manifest is for {recorded}, active root is {root}")
         symbols = [
-            str(f["symbol"]).upper()
+            canonical_symbol(str(f["symbol"]))
             for f in payload.get("failures", [])
             if _SPLIT_UNKNOWN_REASON in str(f.get("error", ""))
         ]
@@ -118,7 +122,7 @@ def _symbols(args: argparse.Namespace, *, root: Path) -> list[str]:
     if args.symbols_file:
         payload = json.loads(args.symbols_file.read_text())
         raw = payload[args.symbols_key] if isinstance(payload, dict) else payload
-        return [str(t).upper() for t in raw]
+        return [canonical_symbol(str(t)) for t in raw]
     raise ValueError("provide --tickers, --symbols-file, or --failure-manifest")
 
 
@@ -324,35 +328,17 @@ def _backup_and_write(
         current_actions = sha256_file(action_path) if action_path.is_file() else None
         if current_source is None or (current_source, current_actions) != (source_sha256, action_sha256):
             raise ValueError("inputs changed during resolution; rerun resolver")
-        original = source.read_bytes()
-        sha = hashlib.sha256(original).hexdigest()
-        backup_path = output_dir / "backup" / f"{encode_symbol(symbol)}.1d.parquet"
-        backup_path.parent.mkdir(parents=True, exist_ok=True)
-        restore_parquet_exact(source, backup_path, sha)
-        sidecar_path = output_dir / "symbols" / f"{encode_symbol(symbol)}.json"
-        write_json_atomic(
-            sidecar_path,
-            {
-                "symbol": symbol,
-                "status": "in_progress",
+        return _publish_with_rollback(
+            symbol,
+            bronze=bronze,
+            output_dir=output_dir,
+            rows=new_rows,
+            sidecar_fields={
                 "mode": mode,
-                "backup_path": str(backup_path),
-                "backup_sha256": sha,
+                "action_path": str(action_path.resolve()),
+                "action_sha256": action_sha256,
             },
         )
-        normalized = bronze._normalize_rows(new_rows, symbol)
-        bronze._publish_symbol_rows(symbol, normalized)
-        written = len(normalized)
-        sidecar = {
-            "symbol": symbol,
-            "status": "done",
-            "mode": mode,
-            "backup_path": str(backup_path),
-            "backup_sha256": sha,
-            "rows_written": written,
-        }
-        write_json_atomic(sidecar_path, sidecar)
-        return sidecar
 
 
 def run(
@@ -392,16 +378,36 @@ def run(
         if loaded.get("identity") != cursor["identity"]:
             raise ValueError("resume cursor does not match the active data-lake root")
         cursor = loaded
+    if args.apply and cursor_path and not cursor_path.is_file():
+        write_json_atomic(cursor_path, cursor)
     counts: dict[str, int] = {}
     results = []
     processed = 0
     ib_client = None
     fetcher: Callable[[str, date, date], list[dict]] | None = None
     aborted = False
+    apply_failed = False
     try:
         for symbol in _ordered_symbols(args, _symbols(args, root=root)):
-            if args.resume and cursor["completed"].get(symbol, {}).get("status") == "done":
-                continue
+            if args.resume:
+                checkpoint = cursor["completed"].get(symbol, {})
+                if checkpoint.get("status") in {"done", "rolled_back"}:
+                    continue
+            if args.resume and args.apply:
+                try:
+                    recovered = _resume_repair_sidecar(bronze, symbol, args.output_dir)
+                except ValueError as exc:
+                    entry = {"symbol": symbol, "status": "error", "applied": f"resume_failed: {exc}"}
+                    counts["error"] = counts.get("error", 0) + 1
+                    results.append(entry)
+                    apply_failed = True
+                    continue
+                if recovered is not None:
+                    cursor["completed"][symbol] = {"status": recovered}
+                    write_json_atomic(cursor_path, cursor)
+                    counts["resumed"] = counts.get("resumed", 0) + 1
+                    results.append({"symbol": symbol, "status": "resumed", "applied": recovered})
+                    continue
             if args.limit is not None and processed >= args.limit:
                 break
             processed += 1
@@ -492,6 +498,7 @@ def run(
                         write_json_atomic(args.output_dir / "cursor.json", cursor)
                 except Exception as exc:
                     entry["applied"] = f"apply_failed: {exc}"
+                    apply_failed = True
             counts[entry["status"]] = counts.get(entry["status"], 0) + 1
             results.append(entry)
             print(
@@ -512,7 +519,7 @@ def run(
         )
     )
     print(json.dumps({"counts": counts, "symbols": len(results), "aborted": aborted}, sort_keys=True))
-    return 1 if aborted else 0
+    return 1 if aborted or apply_failed else 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

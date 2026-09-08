@@ -141,7 +141,7 @@ SE-05/06 的存储与 Apex 范围已随本计划实施批准；SE-10 开始前�
 | DuckDB coverage build | 目标数据库 `.publish.lock` 覆盖 staging 清理、构建及替换；每连接固定 Silver manifest | 失败保留旧目录；并发构建不能移除另一个构建的 staging |
 | OTC / universe archive | 统一 `archive_symbol`；equity input 独占锁、稳定 symbol 目录独占锁 | 同文件系统整体 rename；已有归档不覆盖；不执行跨盘 copy/delete |
 | filename migration | input 共享锁、目录独占锁、新旧文件锁 | 在锁内复核双文件冲突；旧 writer 完成后才 rename |
-| 手工 price-basis migrate / repair / rollback | migration 在 symbol 锁内读改写；repair/resolve 按 action → equity 顺序短时加锁取得哈希，网络后重新加锁比较；两类 rollback 复用精确字节验证/fsync/替换 | 输入变化则拒绝旧候选，不创建错误备份；legacy rollback 仍是显式恢复所选备份，旧 sidecar 无 applied-target 哈希，不能推断后续已完成写入是否应阻止该恢复 |
+| 手工 price-basis migrate / repair / rollback | migration 在 symbol 锁内读改写；repair/resolve 按 action → equity 顺序取得与复核哈希；写前持久保存原始备份、候选哈希和逐项状态；两类 rollback 复用精确字节验证/fsync/替换 | 输入变化拒绝旧候选；中断重试保留原始备份；回退比较当前与已记录的 applied 哈希；旧 sidecar 缺少该哈希时拒绝覆盖，已恢复到原始字节时仅作幂等确认 |
 | Shepherd repair | 已有 symbol 锁、候选完整验证、当前/源/备份哈希比较、fsync 与替换 | 沿用既有实现；`shepherd_universe` 的 copy 是临时 preflight，不是 canonical 写入 |
 
 调度器不再持有跨来源全湖锁。Silver 的输入复制不覆盖网络等待、调整计算或

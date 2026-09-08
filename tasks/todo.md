@@ -42,6 +42,26 @@ audit is complete. The final local configured coverage run passed 2,660 tests at
 95.08%; Ruff checks passed and Pyright reported zero errors (25 warnings).
 Full Mini disposable capacity measurements remain in progress.
 
+Final independent review reopened and corrected manual recovery acceptance: legacy repair and
+Yahoo resolution can lose/overwrite undo metadata after a crash before cursor
+completion; legacy rollback lacks a post-repair target guard; split repair's
+multi-item state is not restartable; selected manual commands collapse mixed
+case symbols. Durable per-item intent/resume, checksum-bound rollback, receipt
+failure preservation and canonical identities now pass independent re-review.
+The final local configured gate passes 2,687 tests at 95.01%; Ruff/format pass
+and Pyright reports zero errors (25 warnings). New exact-commit CI remains due.
+Historical sidecars without a known applied hash must fail closed rather than
+overwriting newer data. Mini capacity evidence remains pinned to unchanged
+snapshot code at `c11caa8`; it does not validate subsequent manual fixes or the
+later three-call correction preserving mixed-case Silver ticker identities.
+The measured fresh build publishes 13,279 members / 26,558 artifacts in
+1,971.265 seconds after a separate 773.162-second input copy. Its 269 input
+failures match 198 unknown price bases, 61 currency mismatches, five conflicting
+splits, four invalid dividends and one source-identical corrupt RJF daily file.
+Comparison with production revision 39 still finds 53 shorter history windows;
+fresh-baseline `window_regressions=0` does not resolve them. No-op/incremental/
+failure-retry measurements and production cutover remain open.
+
 Verification correction: `--cov=clients --cov=scripts` measures wrapper scripts
 and is not the required CI source set. The configured `--cov` gate correctly
 rejected a 94.99% candidate despite all 2,629 tests passing. Final evidence must

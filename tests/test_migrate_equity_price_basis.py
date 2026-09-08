@@ -44,6 +44,20 @@ def test_dry_run_reports_migration_without_writing(tmp_path, capsys):
     assert _sha(path) == before
 
 
+def test_explicit_symbols_preserve_provider_significant_case(tmp_path, capsys):
+    from clients.symbol_paths import encode_symbol
+
+    for symbol in ("BCpC", "BCPC"):
+        _legacy(tmp_path / f"symbol={encode_symbol(symbol)}/1d.parquet")
+    migrate_equity_price_basis.run(["--tickers", "BCpC", "BCPC"], bronze_root=tmp_path)
+    report = json.loads(capsys.readouterr().out)
+    assert {item["symbol"] for item in report["artifacts"]} == {"BCpC", "BCPC"}
+    assert report["migrated"] == 2
+    for symbol in ("BCpC", "BCPC"):
+        path = tmp_path / f"symbol={encode_symbol(symbol)}/1d.parquet"
+        assert "price_basis" in pq.ParquetFile(path).schema_arrow.names
+
+
 def test_migration_preserves_values_and_adds_legacy_metadata(tmp_path, capsys):
     path = tmp_path / "symbol=AAPL/1d.parquet"
     _legacy(path)

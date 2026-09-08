@@ -476,6 +476,58 @@ def test_resume_skips_symbol_marked_done_in_cursor(tmp_path):
     assert json.loads((tmp_path / "m.json").read_text())["symbols"] == []
 
 
+def test_resume_preserves_pristine_backup_and_uses_durable_candidate(tmp_path):
+    _seed_amc_multi(tmp_path)
+    output_dir = tmp_path / "batch"
+    output = tmp_path / "manifest.json"
+    argv = [
+        "--tickers",
+        "AMC",
+        "--output",
+        str(output),
+        "--apply",
+        "--output-dir",
+        str(output_dir),
+        "--allow-rewrite",
+        "--ib-verify",
+        "--ib-min-overlap",
+        "5",
+    ]
+    kwargs = {
+        "data_lake_root": tmp_path,
+        "yahoo_factory": _multi_yahoo,
+        "ib_factory": _FakeIB,
+        "ib_fetcher_factory": _fetcher(_AMC_IB_MATCH),
+        "as_of_date": AS_OF,
+    }
+    assert resolve_yahoo_basis.run(argv, **kwargs) == 0
+    backup = output_dir / "backup/AMC.1d.parquet"
+    pristine = backup.read_bytes()
+    cursor_path = output_dir / "cursor.json"
+    cursor = json.loads(cursor_path.read_text())
+    cursor["completed"] = {}
+    cursor_path.write_text(json.dumps(cursor))
+    sidecar_path = output_dir / "symbols/AMC.json"
+    sidecar = json.loads(sidecar_path.read_text())
+    sidecar["status"] = "in_progress"
+    sidecar_path.write_text(json.dumps(sidecar))
+
+    class NoYahoo:
+        def get_daily(self, *_args):
+            raise AssertionError("resume must not refetch Yahoo")
+
+    assert resolve_yahoo_basis.run(argv + ["--resume"], **{**kwargs, "yahoo_factory": NoYahoo}) == 0
+    assert backup.read_bytes() == pristine
+    assert json.loads(sidecar_path.read_text())["status"] == "done"
+    assert rollback_legacy_basis.run(["--output-dir", str(output_dir)], data_lake_root=tmp_path) == 0
+    assert _bronze_basis(tmp_path, "AMC") == {"unknown"}
+
+
+def test_symbol_inputs_preserve_provider_significant_case(tmp_path):
+    args = resolve_yahoo_basis.parse_args(["--tickers", "BCPC", "BCpC", "--output", str(tmp_path / "out")])
+    assert resolve_yahoo_basis._symbols(args, root=tmp_path) == ["BCPC", "BCpC"]
+
+
 def test_priority_order_orders_by_preset(tmp_path, monkeypatch):
     from livewire_scripts import resolve_yahoo_basis as R
 
