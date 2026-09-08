@@ -47,3 +47,4 @@
 - Do not run the macOS UI smoke harness unless the user explicitly asks for UI automation or smoke verification in that turn; default to build plus unit-test verification for ongoing implementation work.
 - When a recent-bar recovery fails for a single ticker, check whether the security was delisted before treating it as a provider outage; if it was delisted, remove it from future sync/backfill inputs and archive its parquet outside the canonical bronze tree.
 - When a user asks to turn a one-off strategy into a reusable module, default the design toward configurable universe inputs like presets, explicit ticker lists, and warehouse-discovered symbols instead of hard-wiring the first index used in the analysis.
+- For this user's Claude Code handoff, deliver an isolated worktree with code, an executive summary and a clear entry document. A ZIP of documents is not the requested runnable handoff.

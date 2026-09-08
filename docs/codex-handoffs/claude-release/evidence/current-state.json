@@ -1,0 +1,195 @@
+{
+  "observed_at_utc": "2026-09-08T05:35:21.351289+00:00",
+  "worktrees": {
+    "/Users/chenxi/projects/livewire/.worktrees/systematic-integrity": {
+      "status": "## fix/systematic-integrity...origin/fix/systematic-integrity\n",
+      "head": "a4003d3dc39d177db01d5e4e84ba83db32a65416",
+      "recent_commits": "a4003d3 docs: record integrity verification and recovery inventory\n38c90bb test: allow macOS to manage AppleDouble bytes\n52a5dcf fix: ignore AppleDouble repair receipt metadata\n062caa6 fix: preserve repair recovery intent and provider symbol identities\n"
+    },
+    "/Users/chenxi/projects/apex/.worktrees/livewire-snapshots": {
+      "status": "## fix/livewire-snapshots...origin/fix/livewire-snapshots\n",
+      "head": "ae57f93cfb6f772277c6a309f5ae428dd1ce3298",
+      "recent_commits": "ae57f93c fix: pin Livewire Silver manifests at the adapter boundary\n905cab6b Merge pull request #158 from moremeds/chore/changelog-0.1.4\nd6333b6f chore(release): fold Unreleased into the 0.1.4 section\n537a4c2f Merge pull request #157 from moremeds/feat/datalake-api-coverage\n"
+    },
+    "/Users/chenxi/projects/livewire": {
+      "status": "## main...origin/main\n M tasks/lessons.md\n M tasks/todo.md\n?? docs/plans/2026-09-08-datalake-integrity-end-state.md\n?? docs/plans/2026-09-08-datalake-integrity-implementation.md\n",
+      "head": "23e1de284f343e357f97100cfe83fb48ac4be9ec",
+      "recent_commits": "23e1de2 fix: reject partial catalogs and surface daily build failures (#124)\n62c9f14 docs(ib): correct the pinned Gateway version to 10.50 (#123)\n50c93c2 fix(presets): drop VIXTLT, retired by CBOE after 2026-07-30 (#122)\ndfd7710 fix(ingest): load the scheduled env for the two universe-refresh commands (#101)\n"
+    },
+    "/Users/chenxi/projects/apex": {
+      "status": "## master...origin/master\n M .serena/project.yml\nD  docs/superpowers/archive/plans/2026-06-14-phase0-carve.md\nD  docs/superpowers/archive/plans/2026-06-14-phase1-bars-in.md\nD  docs/superpowers/archive/plans/2026-06-14-phase2-subscription.md\nD  docs/superpowers/archive/plans/2026-06-14-phase3-signals-out.md\nD  docs/superpowers/archive/plans/2026-06-14-phase4-live-in.md\nD  docs/superpowers/archive/specs/2026-06-14-apex-phase0-carve.md\nD  docs/superpowers/archive/specs/2026-06-14-chart-read-surface-design.md\nD  docs/superpowers/archive/specs/2026-06-14-phase4-live-in-design.md\nD  docs/superpowers/specs/2026-06-14-apex-adaptation-design.md\n M uv.lock\n",
+      "head": "905cab6b562af1af87ad821e109e91f24958465e",
+      "recent_commits": "905cab6b Merge pull request #158 from moremeds/chore/changelog-0.1.4\nd6333b6f chore(release): fold Unreleased into the 0.1.4 section\n537a4c2f Merge pull request #157 from moremeds/feat/datalake-api-coverage\n2e3623a9 Merge pull request #156 from moremeds/fix/deploy-compose-drift\n"
+    }
+  },
+  "pull_requests": {
+    "125": {
+      "baseRefName": "main",
+      "headRefOid": "a4003d3dc39d177db01d5e4e84ba83db32a65416",
+      "isDraft": true,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-08T05:18:53Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/moremeds/livewire/actions/runs/34189986710/job/101945894239",
+          "name": "ci",
+          "startedAt": "2026-09-08T05:16:17Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-08T05:19:26Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/moremeds/livewire/actions/runs/34190023718/job/101946004775",
+          "name": "ci",
+          "startedAt": "2026-09-08T05:16:54Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        }
+      ],
+      "url": "https://github.com/moremeds/livewire/pull/125"
+    },
+    "161": {
+      "baseRefName": "master",
+      "headRefOid": "ae57f93cfb6f772277c6a309f5ae428dd1ce3298",
+      "isDraft": true,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-08T03:19:30Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/moremeds/apex/actions/runs/34183103803/job/101926000234",
+          "name": "Version Sync",
+          "startedAt": "2026-09-08T03:19:24Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-08T03:20:03Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/moremeds/apex/actions/runs/34183103729/job/101925999579",
+          "name": "claude-review",
+          "startedAt": "2026-09-08T03:19:24Z",
+          "status": "COMPLETED",
+          "workflowName": "Claude Code Review"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-08T03:19:46Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/moremeds/apex/actions/runs/34183103803/job/101926000189",
+          "name": "Lint",
+          "startedAt": "2026-09-08T03:19:23Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-08T03:19:36Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/moremeds/apex/actions/runs/34183103803/job/101926000272",
+          "name": "Dead Code Check",
+          "startedAt": "2026-09-08T03:19:24Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-08T03:19:41Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/moremeds/apex/actions/runs/34183103803/job/101926000170",
+          "name": "Complexity Check",
+          "startedAt": "2026-09-08T03:19:23Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-08T03:19:59Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/moremeds/apex/actions/runs/34183103803/job/101926000177",
+          "name": "Type Check",
+          "startedAt": "2026-09-08T03:19:24Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-08T03:19:43Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/moremeds/apex/actions/runs/34183103803/job/101926000060",
+          "name": "Security Scan",
+          "startedAt": "2026-09-08T03:19:23Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-08T03:19:45Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/moremeds/apex/actions/runs/34183103803/job/101926000150",
+          "name": "Signal & Regime Verification",
+          "startedAt": "2026-09-08T03:19:24Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-08T03:19:46Z",
+          "conclusion": "SKIPPED",
+          "detailsUrl": "https://github.com/moremeds/apex/actions/runs/34183103803/job/101926069478",
+          "name": "Unit Tests",
+          "startedAt": "2026-09-08T03:19:46Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-08T03:20:35Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/moremeds/apex/actions/runs/34183103803/job/101926068556",
+          "name": "Integration Tests",
+          "startedAt": "2026-09-08T03:19:48Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-08T03:19:46Z",
+          "conclusion": "SKIPPED",
+          "detailsUrl": "https://github.com/moremeds/apex/actions/runs/34183103803/job/101926069574",
+          "name": "Upload Coverage",
+          "startedAt": "2026-09-08T03:19:46Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-08T03:19:14Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://dash.cloudflare.com/?to=/6326dbfbc0dbfb512a0b52321a5b0993/pages/view/apex-dashboard/893cc3f8-3968-46d6-b533-fab345ceb7ce",
+          "name": "Cloudflare Pages",
+          "startedAt": "2026-09-08T03:19:14Z",
+          "status": "COMPLETED",
+          "workflowName": ""
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-08T03:19:50Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://dash.cloudflare.com/6326dbfbc0dbfb512a0b52321a5b0993/workers/services/view/apex-dashboard/production/builds/236a9b30-dc16-4c8a-8485-0ec411df60ea",
+          "name": "Workers Builds: apex-dashboard",
+          "startedAt": "2026-09-08T03:19:50Z",
+          "status": "COMPLETED",
+          "workflowName": ""
+        }
+      ],
+      "url": "https://github.com/moremeds/apex/pull/161"
+    }
+  }
+}
