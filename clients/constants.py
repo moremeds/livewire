@@ -22,7 +22,16 @@ import os
 #: behind a 3-8h Massive lane (pm:2026-07-28-daily-job-deadline-is-a-total).
 #: `run_daily_update_job` runs this list and `status` grades it; a lane that is
 #: not in this tuple exists in neither.
-LANE_ORDER: tuple[str, ...] = ("futures", "cmdty", "cboe", "fx", "corporate-actions", "equity", "silver")
+LANE_ORDER: tuple[str, ...] = (
+    "futures",
+    "cmdty",
+    "cboe",
+    "fx",
+    "corporate-actions",
+    "equity",
+    "silver",
+    "catalog",
+)
 
 #: Lanes with no provider fallback. A down Gateway degrades these rather than
 #: manufacturing a success (pm:2026-07-22-ib-not-a-single-point-of-failure).
@@ -42,6 +51,9 @@ DECLARED: dict[str, tuple[float, str]] = {
     # 08-30 2h51m, 08-31 1h18m. 7200 was a guess and it killed the first
     # budgeted run at 7201s on 2026-09-07; 4h clears the longest by 1h09m.
     "lane_budget_s/silver": (4 * 60 * 60, "s"),
+    # Reuse the established default until daily-run measurements are recorded;
+    # the 527s intraday catalog observation is not a daily cold-run budget.
+    "lane_budget_s/catalog": (30 * 60, "s"),
     "lane_budget_s/default": (30 * 60, "s"),
     # How long a lane is expected to wait for the lake-io lock. Global on
     # purpose: this is a property of the lock, not of a lane. 2340s is the

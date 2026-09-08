@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import os
 import re
 from collections.abc import Iterable, Iterator, Mapping
@@ -53,8 +52,6 @@ import pyarrow as pa
 
 from clients.symbol_paths import canonical_symbol, encode_symbol
 from livewire_scripts.paths import data_lake_dir, silver_dir, warehouse_dir
-
-log = logging.getLogger(__name__)
 
 # ponytail: TEMP views, not persisted ones. A read_only connection cannot
 # CREATE VIEW in the database but can create temporary ones, so this single
@@ -503,7 +500,8 @@ def build_coverage(
 
     A source whose asset class has no parquet at all contributes zero rows and
     is skipped rather than failing the build — ``cmdty`` and ``fx`` are legitimately
-    absent on a fresh lake. The build fails only if *every* source is empty.
+    absent on a fresh lake. A source that exists but cannot be read aborts the
+    build, and the build also fails if *every* source is empty.
 
     Returns row counts per source view.
     """
@@ -527,18 +525,25 @@ def build_coverage(
         for view_name, date_column in sources:
             try:
                 ensure_view(con, view_name, lake_root=lake_root, silver_root=silver_root)
-                con.execute(_coverage_insert(view_name, date_column))
-            except (duckdb.IOException, duckdb.InvalidInputException) as exc:
-                # IOException: no files behind this view yet. InvalidInputException:
-                # a corrupt/truncated parquet file in the glob (e.g. "No magic bytes
-                # found") -- read_parquet has no per-file skip in DuckDB 1.5, so one
-                # bad file fails the whole view's read. Either way, leave this view
-                # out of the build rather than aborting every other view along with
-                # it -- but say so; a silently empty view is a dead detector, not a
-                # healthy one. -> pm:2026-09-06-duckdb-coverage-corrupt-parquet-aborted-build
-                log.warning("duckdb build: leaving %s out of this build: %s", view_name, exc)
+            except duckdb.IOException as exc:
+                if not str(exc).startswith("IO Error: No files found that match the pattern "):
+                    raise
+                spec = view_spec(view_name, lake_root=lake_root, silver_root=silver_root)
+                try:
+                    with os.scandir(spec.directory) as partitions:
+                        for partition in partitions:
+                            if not partition.is_dir():
+                                continue
+                            try:
+                                (Path(partition.path) / spec.filename).stat()
+                            except FileNotFoundError:
+                                continue
+                            raise exc
+                except FileNotFoundError:
+                    pass
                 counts[view_name] = 0
                 continue
+            con.execute(_coverage_insert(view_name, date_column))
             counted = con.execute("SELECT count(*) FROM coverage WHERE view_name = ?", [view_name]).fetchone()
             counts[view_name] = int(counted[0]) if counted else 0
         if not any(counts.values()):

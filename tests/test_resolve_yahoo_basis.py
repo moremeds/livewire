@@ -299,9 +299,13 @@ def test_reads_symbols_file_and_main(tmp_path, monkeypatch):
     symbols_file.write_text('{"RESOLVED_validated": ["AMC"]}')
     output = tmp_path / "m.json"
     monkeypatch.setattr(resolve_yahoo_basis, "data_lake_dir", lambda: tmp_path)
-    monkeypatch.setattr(resolve_yahoo_basis, "YahooClient", _FakeYahoo)
     assert (
-        resolve_yahoo_basis.run(["--symbols-file", str(symbols_file), "--output", str(output)], as_of_date=AS_OF) == 0
+        resolve_yahoo_basis.run(
+            ["--symbols-file", str(symbols_file), "--output", str(output)],
+            yahoo_factory=_FakeYahoo,
+            as_of_date=AS_OF,
+        )
+        == 0
     )
     assert __import__("json").loads(output.read_text())["counts"]["would_resolve"] == 1
 

@@ -30,6 +30,7 @@ from livewire_scripts.run_daily_update_job import (
     build_config,
     build_corporate_action_command,
     build_daily_update_command,
+    build_duckdb_catalog_command,
     build_fx_command,
     build_log_file,
     build_silver_rebuild_command,
@@ -38,6 +39,7 @@ from livewire_scripts.run_daily_update_job import (
     node_binary_exists,
     run_cboe_volatility_sync,
     run_daily_update_attempt,
+    run_duckdb_catalog_build,
     run_fx_sync,
     run_post_success_quality,
     run_with_retries,
@@ -333,6 +335,12 @@ def no_real_quality_spawn(tmp_path, monkeypatch):
     monkeypatch.setenv("LW_RUN_ID", "daily-update-test")
     with patch("livewire_scripts.run_daily_update_job.run_post_success_quality") as spawn:
         yield spawn
+
+
+@pytest.fixture(autouse=True)
+def no_real_catalog_spawn(monkeypatch):
+    """Main tests must not rebuild the developer's catalog."""
+    monkeypatch.setattr(daily_runner, "run_duckdb_catalog_build", lambda *args, **kwargs: 0)
 
 
 def _config(tmp_path: Path, *, node_bin: str = "/opt/homebrew/bin/node") -> RunnerConfig:
@@ -1059,6 +1067,26 @@ class TestCboeVolatilitySync:
         assert "CBOE Volatility Sync Failed" in log_text
 
 
+class TestDuckDBCatalogBuild:
+    def test_catalog_uses_the_shared_lane_with_the_store_command(self, tmp_path):
+        config = _config(tmp_path)
+        with patch("livewire_scripts.run_daily_update_job._run_scheduled_lane", return_value=0) as lane:
+            assert run_duckdb_catalog_build(config, env={}) == 0
+
+        assert build_duckdb_catalog_command(config) == [
+            "/usr/bin/python3",
+            str(daily_runner.STORE_SCRIPT),
+            "duckdb",
+            "build",
+        ]
+        assert lane.call_args.args == (
+            config,
+            build_duckdb_catalog_command(config),
+            "DuckDB Catalog Build",
+            "catalog",
+        )
+
+
 class TestSilverScheduledLanes:
     def test_sunday_action_sync_requests_full_reconciliation(self, tmp_path):
         config = _config(tmp_path)
@@ -1119,6 +1147,62 @@ class TestMain:
             assert main(["--dry-run"]) == 0
 
         assert calls == ["futures", "cmdty", "cboe", "fx", "actions", "equity", "silver"]
+
+    def test_full_run_builds_catalog_after_silver_and_before_digest(self):
+        config = _config(Path("/tmp/test"))
+        calls = []
+
+        def daily(_config, args, **_kwargs):
+            calls.append(args[args.index("--asset-class") + 1])
+            return 0
+
+        with (
+            patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
+            patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=daily),
+            patch(
+                "livewire_scripts.run_daily_update_job.run_cboe_volatility_sync",
+                side_effect=lambda *_args, **_kwargs: calls.append("cboe") or 0,
+            ),
+            patch(
+                "livewire_scripts.run_daily_update_job.run_fx_sync",
+                side_effect=lambda *_args, **_kwargs: calls.append("fx") or 0,
+            ),
+            patch(
+                "livewire_scripts.run_daily_update_job.run_corporate_action_sync",
+                side_effect=lambda *_args, **_kwargs: calls.append("corporate-actions") or 0,
+            ),
+            patch(
+                "livewire_scripts.run_daily_update_job.run_silver_rebuild",
+                side_effect=lambda *_args, **_kwargs: calls.append("silver") or 0,
+            ),
+            patch("livewire_scripts.run_daily_update_job.silver_is_blocked", return_value=None),
+            patch(
+                "livewire_scripts.run_daily_update_job.run_duckdb_catalog_build",
+                side_effect=lambda *_args, **_kwargs: calls.append("catalog") or 0,
+            ),
+            patch(
+                "livewire_scripts.run_daily_update_job.run_post_success_quality",
+                side_effect=lambda *_args, **_kwargs: calls.append("digest"),
+            ),
+        ):
+            assert main([]) == 0
+
+        assert calls == ["futures", "cmdty", "cboe", "fx", "corporate-actions", "equity", "silver", "catalog", "digest"]
+
+    def test_dry_run_skips_catalog_mutation(self):
+        config = _config(Path("/tmp/test"))
+        with (
+            patch("livewire_scripts.run_daily_update_job.build_config", return_value=config),
+            patch("livewire_scripts.run_daily_update_job.run_with_retries", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_fx_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.silver_is_blocked", return_value=None),
+            patch("livewire_scripts.run_daily_update_job.run_duckdb_catalog_build") as catalog,
+        ):
+            assert main(["--dry-run"]) == 0
+        catalog.assert_not_called()
 
     def test_failed_action_sync_prevents_silver_rebuild(self):
         config = _config(Path("/tmp/test"))
@@ -1239,7 +1323,7 @@ class TestMain:
             assert main(["--asset-class", "futures"]) == GATEWAY_DOWN_EXIT_CODE
         assert ledger.query("select verdict from runs where verdict is not null") == [{"verdict": "DEGRADED"}]
 
-    def _main_with(self, *, lane_codes=None, action=0, cboe=0, fx=0, gateway_down=()):
+    def _main_with(self, *, lane_codes=None, action=0, cboe=0, fx=0, catalog=0, gateway_down=()):
         """Run main() with each lane's exit code stubbed. Returns (rc, silver_mock)."""
         config = _config(Path("/tmp/test"))
         codes = dict(lane_codes or {})
@@ -1286,6 +1370,7 @@ class TestMain:
             patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=cboe),
             patch("livewire_scripts.run_daily_update_job.run_fx_sync", return_value=fx),
             patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", return_value=0) as silver,
+            patch("livewire_scripts.run_daily_update_job.run_duckdb_catalog_build", return_value=catalog),
             patch("livewire_scripts.run_daily_update_job.append_log"),
         ):
             return main([]), silver
@@ -1328,6 +1413,16 @@ class TestMain:
         from clients import ledger
 
         assert ledger.query("select verdict from runs where verdict is not null") == [{"verdict": "DEGRADED"}]
+
+    @pytest.mark.parametrize("catalog", [7, GATEWAY_DOWN_EXIT_CODE])
+    @pytest.mark.parametrize("gateway_down", [(), ("futures", "cmdty")])
+    def test_catalog_failure_fails_the_run_even_with_ib_degradation(self, catalog, gateway_down, no_real_quality_spawn):
+        rc, _ = self._main_with(catalog=catalog, gateway_down=gateway_down)
+        assert rc == catalog
+        from clients import ledger
+
+        assert ledger.query("select verdict from runs where verdict is not null") == [{"verdict": "FAILED"}]
+        no_real_quality_spawn.assert_called_once()
 
     def test_quality_jobs_run_once_after_silver(self, no_real_quality_spawn):
         """Four asset classes used to mean four coverage runs and four digests.

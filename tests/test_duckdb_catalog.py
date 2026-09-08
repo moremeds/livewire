@@ -350,29 +350,65 @@ def test_build_coverage_fails_when_every_source_is_empty(tmp_path: Path) -> None
 
 def test_build_coverage_tolerates_individually_absent_asset_classes(tmp_path: Path, lake: Path, silver: Path) -> None:
     """cmdty/fx are legitimately absent on a fresh lake and must not abort the build."""
+    cmdty = lake / "bronze" / "asset_class=cmdty"
+    cmdty.mkdir(parents=True)
+    (cmdty / ".DS_Store").write_bytes(b"sidecar")
     counts = build_coverage(tmp_path / "analytics.duckdb", lake_root=lake, silver_root=silver)
     assert counts["bronze_cmdty_1d"] == 0
     assert counts["bronze_equity_1d"] == 2
 
 
-def test_build_coverage_tolerates_a_corrupt_parquet_in_the_glob(tmp_path: Path, lake: Path, silver: Path) -> None:
-    """One truncated file ("No magic bytes found") took the whole nightly duckdb
-    build down for three straight releases (7e11244/c58036d/7cc33b5b), 2026-09-03
-    through -05 -- every other asset class and silver went missing along with it.
-    DuckDB 1.5's read_parquet has no per-file skip for a glob (verified: passing
-    ignore_errors raises BinderException, it is not a real parameter), so the
-    view carrying the corrupt file still comes back empty; the fix is that it no
-    longer takes every *other* view down with it.
-    """
-    corrupt = lake / "bronze" / "asset_class=equity" / "symbol=HON" / "1d.parquet"
-    corrupt.write_bytes(corrupt.read_bytes()[:-8])
+def test_build_coverage_does_not_treat_other_io_errors_as_absent(
+    tmp_path: Path, lake: Path, silver: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_view(*args: object, **kwargs: object) -> None:
+        raise duckdb.IOException("permission denied")
 
+    monkeypatch.setattr("clients.duckdb_catalog.ensure_view", fail_view)
+    with pytest.raises(duckdb.IOException, match="permission denied"):
+        build_coverage(tmp_path / "analytics.duckdb", lake_root=lake, silver_root=silver)
+
+
+def test_build_coverage_rejects_unreadable_source_without_replacing_catalog(
+    tmp_path: Path, lake: Path, silver: Path
+) -> None:
     dest = tmp_path / "analytics.duckdb"
-    counts = build_coverage(dest, lake_root=lake, silver_root=silver)
+    build_coverage(dest, lake_root=lake, silver_root=silver)
+    previous = dest.read_bytes()
+    equity = lake / "bronze" / "asset_class=equity"
+    mode = equity.stat().st_mode & 0o777
+    equity.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            build_coverage(dest, lake_root=lake, silver_root=silver)
+        assert dest.read_bytes() == previous
+    finally:
+        equity.chmod(mode)
 
-    assert counts["bronze_equity_1d"] == 0
-    assert counts["silver_equity_1d"] == 1
-    assert dest.exists()
+
+@pytest.mark.parametrize("existing_catalog", [False, True])
+def test_build_coverage_rejects_corrupt_parquet_without_publishing(
+    tmp_path: Path, lake: Path, silver: Path, existing_catalog: bool
+) -> None:
+    dest = tmp_path / "analytics.duckdb"
+    if existing_catalog:
+        build_coverage(dest, lake_root=lake, silver_root=silver)
+    previous = dest.read_bytes() if existing_catalog else None
+
+    corrupt = lake / "bronze" / "asset_class=equity" / "symbol=HON" / "1d.parquet"
+    original = corrupt.read_bytes()
+    corrupt.write_bytes(original[:-8])
+
+    with pytest.raises(duckdb.InvalidInputException):
+        build_coverage(dest, lake_root=lake, silver_root=silver)
+
+    if existing_catalog:
+        assert dest.read_bytes() == previous
+    else:
+        assert not dest.exists()
+
+    corrupt.write_bytes(original)
+    assert build_coverage(dest, lake_root=lake, silver_root=silver)["bronze_equity_1d"] == 2
 
 
 def test_coverage_sources_are_daily_only() -> None:

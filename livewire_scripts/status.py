@@ -146,11 +146,20 @@ CHECKS: list[tuple[str, str]] = [
         "having count(*) > 0",
     ),
     (
-        "Silver advanced",
+        "Silver lane completed",
         "select case when outcome = 'done' then 'OK' else 'BAD' end as verdict, "
         "outcome, blocker from lane_results "
         "where run_id = '$run' and lane = 'silver' and outcome is not null "
         "order by ended desc limit 1",
+    ),
+    (
+        "Catalog build",
+        # The digest runs before its enclosing daily run closes. Read the
+        # terminal build directly, including the intraday writer's build.
+        "select case outcome when 'done' then 'OK' when 'blocked' then 'WARN' "
+        "else 'BAD' end as verdict, run_id, lane, outcome, exit_code, ended "
+        "from lane_results where lane in ('catalog', 'daily_backfill_duckdb_coverage') "
+        "and outcome is not null order by ended desc, started desc limit 1",
     ),
     (
         "Post-success tail",
@@ -178,9 +187,9 @@ CHECKS: list[tuple[str, str]] = [
         "order by elapsed_s desc",
     ),
     (
-        "Silver failures did not grow",
-        "select case when count(*) < 2 then 'UNKNOWN' "
-        "when max(case when rn = 1 then value end) > max(case when rn = 2 then value end) "
+        "Silver failures",
+        "select case when count(*) = 0 then 'UNKNOWN' "
+        "when max(case when rn = 1 then value end) > 0 "
         "then 'WARN' else 'OK' end as verdict, "
         "max(case when rn = 1 then value end) as failed_now, "
         "max(case when rn = 2 then value end) as failed_before from ("
@@ -266,7 +275,7 @@ _FIXES = {
         "from lane_results where run_id = '$open_run'\"   # which lane is still open"
     ),
     "Intraday catch-up ran": "launchctl start com.livewire.intraday-catchup",
-    "Silver failures did not grow": _SILVER_FIX,
+    "Silver failures": _SILVER_FIX,
     "Silver window regressions": _SILVER_FIX,
     "Coverage": "launchctl start com.livewire.coverage",
     "Coverage scan": "python scripts/livewire_quality.py coverage --no-recover",
@@ -277,7 +286,7 @@ _FIXES = {
         'python scripts/livewire_ops.py ledger query "select scope, value from measurements '
         "where name = 'lake_lock_wait_s' order by value desc\"   # who held the lake, and for how long"
     ),
-    "Silver advanced": _SILVER_FIX,
+    "Silver lane completed": _SILVER_FIX,
     "Post-success tail": "python scripts/livewire_quality.py digest --email",
     "Undelivered alerts": (
         'python scripts/livewire_ops.py ledger query "select receipt_json from executions '
@@ -487,7 +496,8 @@ _CATALOG_STALE_SESSIONS = 3
 #: View -> the lane that WRITES it. The catalog only reports; a stale view means
 #: its writer is behind, so the fix has to name the writer. Views are
 #: `bronze_<asset_class>_1d` over `duckdb_catalog._DAILY_ASSET_CLASSES` plus
-#: `silver_equity_1d`; an unmapped name falls back to rebuilding the table.
+#: `silver_equity_1d`. These are the production catalog's expected views, even
+#: when an earlier partial build omitted one; never infer that set from rows.
 _CATALOG_LANE_FIX: dict[str, str] = {
     "bronze_equity_1d": "python scripts/livewire_ingest.py daily --asset-class equity --source massive",
     "bronze_futures_1d": "python scripts/livewire_ingest.py daily --asset-class futures",
@@ -506,9 +516,10 @@ def _sessions_behind(newest: date, target: date, limit: int = 10) -> int:
     session behind but three days, and a calendar-day rule would flag every
     Monday morning as stale.
     """
-    from clients.trading_calendar import previous_trading_day
+    from clients.trading_calendar import is_trading_day, previous_trading_day
 
-    cursor, count = target, 0
+    cursor = target if is_trading_day(target) else previous_trading_day(target)
+    count = 0
     while cursor > newest and count < limit:
         cursor = previous_trading_day(cursor)
         count += 1
@@ -542,6 +553,20 @@ def _duckdb_section(target: date, database: Path | None = None) -> Section:
     # No broad `except Exception` here: collect() wraps every check in _safe(),
     # which already degrades an unexpected crash to UNKNOWN. The two caught
     # above are caught because each has a SPECIFIC, actionable message.
+
+    missing = sorted(name for name in _CATALOG_LANE_FIX if name not in headline)
+    empty = sorted(name for name, (count, last) in headline.items() if count <= 0 or last is None)
+    if headline and (missing or empty):
+        return Section(
+            "DuckDB catalog",
+            Verdict.BAD,
+            [
+                "DuckDB catalog: incomplete",
+                f"  missing views: {', '.join(missing) or 'none'}",
+                f"  empty or undated views: {', '.join(empty) or 'none'}",
+            ],
+            fix="python scripts/livewire_store.py duckdb build   # repair any reported source error before retrying",
+        )
 
     dated = [(name, last) for name, (_count, last) in headline.items() if last is not None]
     if not dated:
