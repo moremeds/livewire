@@ -134,26 +134,25 @@ Livewire implementation worktree is based on `23e1de2`:
 Apex implementation worktree is based on `905cab6b`; deployment must be checked
 again at cutover rather than inferred from the source checkout:
 
-- `src/infrastructure/adapters/livewire/ohlc_provider.py:139-160` constructs
-  fixed daily/factor paths. Resolve them from one committed manifest, and fail
-  closed when the requested artifact is absent. No fallback to a legacy file
-  that the manifest omitted.
-- `src/infrastructure/adapters/livewire/revisions.py`: its reader already
-  validates manifest artifact hashes but returns revision metadata without an
-  artifact path map. Retain a validated mapping for the pinned snapshot and
-  reuse it in bar reads rather than independently deriving paths.
+- `src/infrastructure/adapters/livewire/ohlc_provider.py` resolves daily/factor
+  paths from one pinned manifest and fails closed when the requested artifact
+  is absent. It does not fall back to a legacy file omitted by the manifest.
+- `src/infrastructure/adapters/livewire/revisions.py` validates the complete
+  manifest structure and retains its artifact mapping. Normal reads verify
+  hashes for the requested artifacts; the full verification mode checks all.
 - Minimal callers pass an accepted snapshot to adapter reads where required.
   Transactional reseeding, cache replacement and queued-signal invalidation
   remain Apex internal work, outside this release's atomicity claim.
-- `src/infrastructure/adapters/livewire/paths.py`, `src/api/server.py` and
-  `scripts/check_silver_canary.py`: audit remaining path construction, lifecycle
-  and mounting assumptions. Keep API responses unchanged where possible.
-- `tests/unit/infrastructure/livewire/test_ohlc_provider.py` and
-  `tests/integration/test_silver_revision_e2e.py`: exercise committed reads and
-  interrupted publication with the actual consumer implementations.
+- Chart and instrument request wiring and `scripts/check_silver_canary.py`
+  report/use the revision they pinned. `paths.py` and `server.py` retain their
+  existing configuration and lifecycle responsibilities.
+- `tests/unit/infrastructure/livewire/test_snapshots.py` and adapter/request
+  tests exercise committed reads, missing/corrupt data and manifest changes.
+  Livewire's `tests/contract/verify_apex_interop.py` runs the actual producer and
+  consumer using their separate Python environments.
 
-Locate all remaining consumers before implementation. The above is the reviewed
-minimum, not permission to silently leave another fixed-path consumer behind.
+This lists the implemented compatibility boundary. It does not establish
+transactional behavior for Apex consumers above that boundary.
 
 ## Rejected shortcuts
 
