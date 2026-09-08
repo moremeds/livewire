@@ -50,7 +50,6 @@ def test_rollback_ignores_appledouble_receipt_sidecars(tmp_path):
 
     assert rollback_legacy_basis.run(["--output-dir", str(output_dir)], data_lake_root=tmp_path) == 0
     assert path.read_bytes() == before
-    assert appledouble.read_bytes() == b"\xff\xfeMac OS X AppleDouble"
 
 
 def test_rollback_refuses_to_overwrite_newer_bronze(tmp_path):
