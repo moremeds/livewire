@@ -22,6 +22,13 @@ def _flag(category="range_shortfall", severity="critical"):
     )
 
 
+def test_first_alert_is_not_suppressed_during_first_five_minutes_of_boot(monkeypatch):
+    monkeypatch.setattr(quality_flags.time, "monotonic", lambda: 1.0)
+    monkeypatch.setattr(quality_flags.subprocess, "run", lambda *a, **kw: _ok())
+    quality_flags._RATE_LIMIT_CACHE.clear()
+    assert quality_flags.alert_on_flag(_flag(), source="ib", ticker="BOOT") is True
+
+
 def test_write_sidecar_atomic_temp_then_replace(tmp_path):
     parquet = tmp_path / "1d.parquet"
     parquet.write_bytes(b"")  # placeholder
