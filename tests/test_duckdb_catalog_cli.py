@@ -6,6 +6,8 @@ real bars as `test_duckdb_catalog.py`.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pyarrow as pa
@@ -44,6 +46,24 @@ def test_build_reports_counts_and_publishes(wired: Path, capsys: pytest.CaptureF
     out = capsys.readouterr().out
     assert "bronze_equity_1d: 3 symbols" in out
     assert (wired / "analytics.duckdb").exists()
+
+
+def test_build_process_rejects_corrupt_source_without_replacing_catalog(wired: Path) -> None:
+    assert main(["build"]) == 0
+    dest = wired / "analytics.duckdb"
+    previous = dest.read_bytes()
+    corrupt = wired / "data-lake" / "bronze" / "asset_class=equity" / "symbol=HON" / "1d.parquet"
+    corrupt.write_bytes(corrupt.read_bytes()[:-8])
+
+    result = subprocess.run(
+        [sys.executable, Path(__file__).parents[1] / "scripts" / "livewire_store.py", "duckdb", "build"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert str(corrupt) in result.stderr
+    assert dest.read_bytes() == previous
 
 
 def test_freshness_requires_a_built_catalog(wired: Path, capsys: pytest.CaptureFixture[str]) -> None:

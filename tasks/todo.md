@@ -2,6 +2,65 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Datalake integrity and release verification (2026-09-08)
+
+Goal: stop publishing a successful-looking incomplete catalog, make Silver
+interruption/recovery guarantees explicit and executable, and hand Claude Code
+an independent release verification procedure for the real Mac mini lake.
+
+Baseline: development `origin/main` at
+`62c9f14db6629465d9d6ccae5f9986d606d7523e`, clean before this task;
+Mac mini production `dfd77103a0a458258798ec88321b8c0eb08929d7`.
+Development worktree: `.worktrees/datalake-integrity`, branch
+`fix/datalake-integrity`. Production facts come only from `ssh macmini`.
+No production data replacement, Gateway restart, filesystem migration, or
+unrelated cleanup is included. Tests bind temporary roots explicitly.
+
+Dependency graph for the authorized release: `DI-1 -> {DI-2, DI-4} -> DI-5 -> DI-6`.
+`DI-1 -> DI-3` is the separate storage/consumer-contract decision; its code is
+not part of this release while approval is pending.
+
+- [x] **DI-1** (`depends_on: []`): Record source/deployment/dirty-state baseline
+  and trace catalog, Silver publisher, recovery, and consumer contracts.
+- [x] **DI-2** (`depends_on: [DI-1]`): Prevent a corrupt source from publishing
+  an incomplete successful catalog; retain the previous database on failure.
+  Grade missing expected catalog views explicitly. Reproduce with real damaged
+  Parquet bytes and prove subsequent recovery without changing source data.
+- [ ] **DI-3** (`depends_on: [DI-1]`): Resolve the Silver interruption design
+  against actual callers; implement the minimum authorized publisher/recovery
+  change with runnable interruption checks. Do not claim batch atomicity from
+  per-file replacement or silently change the downstream storage contract.
+  **Design complete, implementation awaiting explicit scope approval:** see
+  `docs/plans/2026-09-08-silver-atomic-publication.md`. Existing mutable Silver
+  files still do not provide an atomic snapshot; this release does not claim it.
+- [x] **DI-4** (`depends_on: [DI-1]`): Prepare Claude Code verification steps:
+  exact release SHA, isolated negative tests, mini source/root checks, real
+  catalog/Silver/consumer outcomes, rollback/stop conditions, and residual data
+  quality items. Distinguish code verification from production acceptance.
+- [x] **DI-5** (`depends_on: [DI-2, DI-4]`): Self-review and independent
+  review, focused regressions, CI-equivalent Python/static/Node checks; resolve
+  blocking findings and record exact outcomes.
+- [ ] **DI-6** (`depends_on: [DI-5]`): Deliver focused commits and PR; track
+  exact PR/merge/release SHAs and CI, and publish the final verification handoff.
+  Production acceptance remains a separate Claude Code verification step.
+
+Review ledger (quick cycle): self-review corrected the real permission-error
+seam and the digest's pre-close catalog-result visibility. Native independent
+review found a regular-sidecar edge case, now corrected and covered. Final
+independent source review has no blocking findings. The external tribunal was
+unavailable (Claude isolation flag unsupported, Gemini license 403, Cursor
+connection failures); it did not approve this patch. Quick mode skipped the
+full-cycle adversarial/simplicity passes. Assumption check: no source-data repair,
+no Silver snapshot guarantee, and no per-symbol completeness claim follows from
+the catalog's newest date. Those remain explicit release-verification checks.
+
+Local checks: full CI-style Python suite 2552 passed, coverage 95.09%; the
+resolver's existing network-leaking test was corrected to inject its fake via
+the existing factory argument and all 33 resolver tests passed independently.
+Ruff lint/format and lockfile checks passed; pyright: 0 errors, 26 warnings in
+untouched code. Node alert tests: 25 passed. Node's unchanged lockfile contains
+a Nodemailer advisory; dependency remediation is outside this patch.
+
 ## Livewire Shepherd execution (2026-08-31)
 
 Goal: periodically verify current S&P 500 and Nasdaq-100 market-data coverage,

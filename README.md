@@ -690,12 +690,17 @@ Two things to know before using it:
 * **`duckdb build` is the only thing that writes.** It publishes by replacing
   the database file, because DuckDB is single-writer and an in-place rebuild
   fails whenever a reader is connected. Concurrent read-only readers are fine.
+  An unreadable source fails the build and preserves the previous database;
+  it cannot publish a catalog with the corrupt source silently omitted.
+  Daily-update runs this step after Silver, before the digest, and propagates
+  a failed build. Status marks missing production views as BAD.
 
 Coverage is daily-only; intraday stays view-only because equity `1m` alone is
 23.57 GB against ~20 GiB of free disk.
 
-Rollback: delete `~/market-warehouse/analytics.duckdb` and rerun
-`duckdb build`. Nothing canonical lives there.
+After a failed build, diagnose the named source error and repair it through the
+appropriate ingestion path before retrying `duckdb build`. The existing catalog
+remains available but may be stale; do not delete it to retry.
 
 ---
 

@@ -259,6 +259,11 @@ def build_silver_rebuild_command(config: RunnerConfig, *, dry_run: bool) -> list
     return command
 
 
+def build_duckdb_catalog_command(config: RunnerConfig) -> list[str]:
+    """Build the daily coverage catalog from the post-Silver lake."""
+    return [config.python_bin, str(STORE_SCRIPT), "duckdb", "build"]
+
+
 def build_alert_command(config: RunnerConfig, request: AlertRequest) -> list[str]:
     return _build_alert_command(config.python_bin, config.alert_script, request, job_name="daily_update")
 
@@ -928,6 +933,25 @@ def run_silver_rebuild(
     )
 
 
+def run_duckdb_catalog_build(
+    config: RunnerConfig,
+    *,
+    env: dict[str, str] | None = None,
+    runner: callable = _run_in_own_process_group,
+    now_fn: callable = _utc_now,
+) -> int:
+    """Publish the catalog only after every daily writer, including Silver."""
+    return _run_scheduled_lane(
+        config,
+        build_duckdb_catalog_command(config),
+        "DuckDB Catalog Build",
+        "catalog",
+        env=env,
+        runner=runner,
+        now_fn=now_fn,
+    )
+
+
 def _without_flag(args: Sequence[str], flag: str) -> list[str]:
     """Drop every `flag value` / `flag=value` occurrence.
 
@@ -991,8 +1015,8 @@ def _run_main(argv: Sequence[str] | None = None) -> int:
         run_id=run_id(),
     )
 
-    def close_run(code: int, *, degraded: bool = False) -> int:
-        verdict = "DEGRADED" if degraded else ("FAILED" if code else "OK")
+    def close_run(code: int, *, verdict: str | None = None) -> int:
+        verdict = verdict or ("FAILED" if code else "OK")
         ledger.emit(
             "runs",
             [run_row | {"ended": _utc_now(), "exit_code": code, "verdict": verdict}],
@@ -1005,7 +1029,10 @@ def _run_main(argv: Sequence[str] | None = None) -> int:
         code = run_with_retries(config, args, env=env, completion_scope=_completion_scope_from_args(args))
         source_index = args.index("--source") + 1 if "--source" in args else len(args)
         source = args[source_index] if source_index < len(args) else "ib"
-        return close_run(code, degraded=code == GATEWAY_DOWN_EXIT_CODE and source == "ib")
+        return close_run(
+            code,
+            verdict="DEGRADED" if code == GATEWAY_DOWN_EXIT_CODE and source == "ib" else None,
+        )
 
     dry_run = "--dry-run" in args
     lane_codes: dict[str, int] = {
@@ -1122,16 +1149,23 @@ def _run_main(argv: Sequence[str] | None = None) -> int:
             log_file=log_file,
         )
 
+    # A dry run must leave the durable catalog untouched.  Its dry-run Silver
+    # summary is still useful evidence, but cannot validate a published catalog.
+    if not dry_run:
+        catalog_code = run_duckdb_catalog_build(config, env=env)
+        if catalog_code != 0:
+            final_code = final_code or catalog_code
+
     if degraded:
         append_log(
             build_log_file(config.log_dir, _utc_now()),
             f"DEGRADED: IB Gateway unreachable; lanes skipped: {', '.join(degraded)}",
         )
 
-    # Last, so the digest sees fresh coverage AND Silver's SUMMARY_JSON.
+    # Last, so the digest sees the catalog result and Silver's SUMMARY_JSON.
     run_post_success_quality(config, build_log_file(config.log_dir, _utc_now()))
 
-    return close_run(final_code, degraded=bool(degraded))
+    return close_run(final_code, verdict="DEGRADED" if not final_code and degraded else None)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

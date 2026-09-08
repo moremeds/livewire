@@ -33,6 +33,7 @@ EPOCH = date(1970, 1, 1)
 @pytest.fixture(autouse=True)
 def root(tmp_path, monkeypatch):
     monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    monkeypatch.setenv("MDW_DUCKDB_PATH", str(tmp_path / "analytics.duckdb"))
     return tmp_path / "ledger"
 
 
@@ -151,6 +152,23 @@ def _declared_or_measured(name, scope, value, source, run_id=RUN, unit="s", meas
     )
 
 
+@pytest.mark.parametrize("lane", ["catalog", "daily_backfill_duckdb_coverage"])
+@pytest.mark.parametrize("outcome, verdict", [("failed", Verdict.BAD), ("blocked", Verdict.WARN), ("done", Verdict.OK)])
+def test_catalog_build_reads_terminal_lane_before_run_closes(lane, outcome, verdict):
+    _run(started=NOW - timedelta(hours=2), ended=NOW - timedelta(hours=1))
+    _lane("catalog", started=NOW - timedelta(hours=2), ended=NOW - timedelta(hours=1))
+    _run(run_id="current-open", ended=None, verdict=None, exit_code=None)
+    _lane(lane, run_id="current-open", outcome=outcome, exit_code=7 if outcome == "failed" else 0)
+
+    section = _section("Catalog build")
+    assert section.verdict == verdict
+    assert "current-open" in " ".join(section.lines)
+
+
+def test_catalog_build_without_evidence_is_unknown():
+    assert _section("Catalog build").verdict == Verdict.UNKNOWN
+
+
 def _seed_drift(name, scope, declared_value, measured_values, unit="s"):
     _declared_or_measured(name, scope, declared_value, "declared", unit=unit)
     for index, value in enumerate(measured_values):
@@ -255,7 +273,7 @@ def test_a_run_still_open_at_watchdog_time_warns_and_grades_no_lane_bad():
     finished = _section("Daily update finished")
     assert finished.verdict is Verdict.WARN
     assert "running_minutes" in "\n".join(finished.lines)
-    for name in ("Lanes terminal", "Silver advanced", "Lanes within budget"):
+    for name in ("Lanes terminal", "Silver lane completed", "Lanes within budget"):
         assert _section(name).verdict is Verdict.UNKNOWN
 
 
@@ -274,13 +292,13 @@ def test_every_lane_terminal_is_ok():
 def test_silver_that_did_not_run_is_unknown():
     _run()
     _lane("equity")
-    assert _section("Silver advanced").verdict is Verdict.UNKNOWN
+    assert _section("Silver lane completed").verdict is Verdict.UNKNOWN
 
 
 def test_silver_blocked_is_bad():
     _run()
     _lane("silver", outcome="blocked", blocker="equity", exit_code=None)
-    assert _section("Silver advanced").verdict is Verdict.BAD
+    assert _section("Silver lane completed").verdict is Verdict.BAD
 
 
 def test_a_failed_digest_is_bad():
@@ -442,26 +460,38 @@ def _silver_failed(value: float, at: datetime):
     )
 
 
-def test_one_silver_measurement_is_not_a_change():
+def test_no_silver_measurement_is_unknown():
+    _run()
+    assert _section("Silver failures").verdict is Verdict.UNKNOWN
+
+
+def test_one_positive_silver_measurement_warns():
     _run()
     _silver_failed(4.0, NOW)
-    assert _section("Silver failures did not grow").verdict is Verdict.UNKNOWN
+    assert _section("Silver failures").verdict is Verdict.WARN
 
 
 def test_growing_silver_failures_warn():
     _run()
     _silver_failed(4.0, NOW - timedelta(days=1))
     _silver_failed(9.0, NOW)
-    section = _section("Silver failures did not grow")
+    section = _section("Silver failures")
     assert section.verdict is Verdict.WARN
     assert "9" in "\n".join(section.lines)
 
 
-def test_shrinking_silver_failures_are_ok():
+@pytest.mark.parametrize("remaining", [4.0, 9.0])
+def test_remaining_silver_failures_warn_even_when_not_growing(remaining):
     _run()
     _silver_failed(9.0, NOW - timedelta(days=1))
-    _silver_failed(4.0, NOW)
-    assert _section("Silver failures did not grow").verdict is Verdict.OK
+    _silver_failed(remaining, NOW)
+    assert _section("Silver failures").verdict is Verdict.WARN
+
+
+def test_zero_silver_failures_is_ok():
+    _run()
+    _silver_failed(0.0, NOW)
+    assert _section("Silver failures").verdict is Verdict.OK
 
 
 def test_a_broken_check_never_takes_the_report_down(monkeypatch):
@@ -572,6 +602,45 @@ def test_render_survives_markup_in_log_derived_text(capsys) -> None:
 
 def _no_catalog(_db):
     raise FileNotFoundError("analytics.duckdb")
+
+
+def test_catalog_expectations_match_the_declared_sources():
+    from clients.duckdb_catalog import COVERAGE_SOURCES
+
+    assert set(status._CATALOG_LANE_FIX) == {name for name, _date_column in COVERAGE_SOURCES}
+
+
+@pytest.mark.parametrize("missing", ["bronze_equity_1d", "silver_equity_1d", "bronze_rates_1d"])
+def test_one_missing_catalog_view_cannot_be_hidden_by_current_other_views(monkeypatch, missing):
+    headline = {name: (10, NOW.date()) for name in status._CATALOG_LANE_FIX if name != missing}
+    monkeypatch.setattr(status, "_coverage_headline", lambda _db: headline)
+
+    section = status._duckdb_section(NOW.date())
+
+    assert section.verdict is status.Verdict.BAD
+    assert missing in "\n".join(section.lines)
+    assert "duckdb build" in section.fix
+
+
+@pytest.mark.parametrize("entry", [(0, NOW.date()), (10, None)])
+def test_empty_or_undated_catalog_view_is_incomplete(monkeypatch, entry):
+    headline = {name: (10, NOW.date()) for name in status._CATALOG_LANE_FIX}
+    headline["bronze_equity_1d"] = entry
+    monkeypatch.setattr(status, "_coverage_headline", lambda _db: headline)
+
+    assert status._duckdb_section(NOW.date()).verdict is status.Verdict.BAD
+
+
+def test_complete_current_catalog_is_ok(monkeypatch):
+    headline = {name: (10, NOW.date()) for name in status._CATALOG_LANE_FIX}
+    monkeypatch.setattr(status, "_coverage_headline", lambda _db: headline)
+
+    assert status._duckdb_section(NOW.date()).verdict is status.Verdict.OK
+
+
+@pytest.mark.parametrize("target", [date(2026, 9, 5), date(2026, 9, 6), date(2026, 9, 7)])
+def test_catalog_does_not_count_weekends_or_labor_day_as_missing_sessions(target):
+    assert status._sessions_behind(date(2026, 9, 4), target) == 0
 
 
 def _fake_launchctl(_cmd, **_kw):
