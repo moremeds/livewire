@@ -27,7 +27,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from clients import constants, ledger
+from clients import ledger
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts.backfill_runner import (
     EQUITY_PRESETS,  # re-exported: ingest_daily_flatfiles imports it from here
@@ -35,7 +35,7 @@ from livewire_scripts.backfill_runner import (
     load_tickers,
 )
 from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, parse_last_summary_json
-from livewire_scripts.job_runner_common import LAKE_LOCK_BLOCKER, lake_lock
+from livewire_scripts.job_runner_common import process_group_guard
 
 logger = logging.getLogger("livewire.sync_runner")
 
@@ -45,11 +45,6 @@ TIMEOUT_EXIT_CODE = 124
 VOL_DAILY_PRESET = "presets/volatility.json"
 EQUITY_INTRADAY_TIMEFRAMES = ("1m", "5m", "1h")
 VOL_INTRADAY_TIMEFRAMES = ("30m", "5m")
-#: How often this job looks for a free lake-io lock. 60s, against the daily
-#: job's 1s: the intraday job is the low-priority holder, so a daily lane
-#: waiting at the moment of a release wins the next acquire by a wide margin
-#: (spec 2026-09-06-tiered-nightly-pipeline-design.md section 3).
-LAKE_LOCK_POLL_S = constants.declared("lake_lock_poll_s/intraday")
 
 
 def _emit_ledger(table: str, rows: list[dict], run: str) -> None:
@@ -137,13 +132,30 @@ def phase_timeout_seconds() -> int:
     return int(os.getenv("MDW_SYNC_PHASE_TIMEOUT_SECONDS", str(6 * 60 * 60)))
 
 
+def _run_in_own_process_group(command, *, stdout, stderr, text, check, timeout):
+    """Run one phase in its own session and clean up all descendants on timeout."""
+    with subprocess.Popen(
+        list(command),
+        stdout=stdout,
+        stderr=stderr,
+        text=text,
+        start_new_session=True,
+    ) as proc:
+        with process_group_guard(proc):
+            proc.communicate(timeout=timeout)
+        result = subprocess.CompletedProcess(list(command), proc.returncode)
+    if check and result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, result.args)
+    return result
+
+
 def run_phase(
     label: str,
     command: list[str],
     log_dir: Path,
     *,
     allow_completed_summary: bool = False,
-    runner: callable = subprocess.run,
+    runner: callable = _run_in_own_process_group,
     timeout: int | None = None,
 ) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -172,46 +184,21 @@ def run_phase(
             ],
             run,
         )
-    with lake_lock(label, poll_s=LAKE_LOCK_POLL_S, budget_s=float(budget)) as waited:
-        if waited is None:
-            # The daily job held the lake for this phase's whole budget. The
-            # intraday job is the one that defers, so this is not a failure and
-            # does not page -- it is one lane_results row and one measurement.
-            logger.warning("%s never got the lake-io lock within %ds; skipping", label, budget)
-            if run:
-                _emit_ledger(
-                    "lane_results",
-                    [
-                        {
-                            "run_id": run,
-                            "lane": label,
-                            "started": started,
-                            "ended": datetime.now(UTC),
-                            "exit_code": None,
-                            "budget_s": float(budget),
-                            "elapsed_s": 0.0,
-                            "outcome": "blocked",
-                            "blocker": LAKE_LOCK_BLOCKER,
-                        }
-                    ],
-                    run,
-                )
-            return 0
-        clock = time.monotonic()
-        with log_file.open("a", encoding="utf-8") as fh:
-            try:
-                result = runner(
-                    command,
-                    stdout=fh,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    check=False,
-                    timeout=budget,
-                )
-            except subprocess.TimeoutExpired:
-                logger.error("%s exceeded its %ds budget and was killed", label, budget)
-                result = subprocess.CompletedProcess(command, TIMEOUT_EXIT_CODE)
-        elapsed_s = time.monotonic() - clock
+    clock = time.monotonic()
+    with log_file.open("a", encoding="utf-8") as fh:
+        try:
+            result = runner(
+                command,
+                stdout=fh,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+                timeout=budget,
+            )
+        except subprocess.TimeoutExpired:
+            logger.error("%s exceeded its %ds budget and was killed", label, budget)
+            result = subprocess.CompletedProcess(command, TIMEOUT_EXIT_CODE)
+    elapsed_s = time.monotonic() - clock
 
     if result.returncode not in (0, TIMEOUT_EXIT_CODE):
         if allow_completed_summary:
@@ -265,7 +252,7 @@ def run_phase(
 def run_sync(
     config: SyncConfig,
     *,
-    runner: callable = subprocess.run,
+    runner: callable = _run_in_own_process_group,
     trading_day_fn: callable = latest_complete_trading_day,
 ) -> int:
     from clients.massive_flatfile_client import require_flatfile_credentials

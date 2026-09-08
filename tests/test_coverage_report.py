@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 from datetime import UTC, date, datetime, time
 from pathlib import Path
@@ -32,6 +33,101 @@ from livewire_scripts.coverage_report import (
     main,
     write_coverage_log,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_recovery_cursor(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_CURSOR_DIR", str(tmp_path / "cursors"))
+
+
+def test_active_minute_cursor_defers_repair_without_claiming_recovery(tmp_path):
+    from clients.parquet_io import path_lock
+    from livewire_scripts.paths import cursor_dir
+
+    with path_lock(cursor_dir() / "massive_flatfile_state.lock"):
+        with patch.object(coverage_report, "_run_child") as child:
+            result = auto_recover("5m", ["AAPL"], bronze_root=tmp_path / "bronze")
+    child.assert_not_called()
+    assert result.aborted and result.attempted == []
+    assert result.still_missing == ["AAPL"]
+    assert "DEFERRED" in result.reason and "identity unknown" in result.reason
+
+
+@pytest.mark.parametrize("failure", [subprocess.TimeoutExpired("repair", 7), OSError("cannot spawn")])
+def test_repair_child_failure_is_reported_not_raised(failure, monkeypatch):
+    monkeypatch.setenv("MDW_SYNC_PHASE_TIMEOUT_SECONDS", "7")
+    with patch.object(coverage_report, "_run_child", side_effect=failure) as child:
+        result = auto_recover("5m", ["AAPL"])
+    assert result.aborted and result.still_missing == ["AAPL"]
+    assert 0 < child.call_args.kwargs["timeout"] <= 7
+
+
+def test_repair_child_nonzero_does_not_claim_success():
+    with patch.object(coverage_report, "_run_child", return_value=SimpleNamespace(returncode=1)):
+        result = auto_recover("5m", ["AAPL"])
+    assert result.aborted and result.recovered == 0
+    assert result.still_missing == ["AAPL"]
+    assert "exited 1" in result.reason
+
+
+def test_daily_batch_failure_reports_only_dispatched_symbols():
+    with patch.object(coverage_report, "_run_child", return_value=SimpleNamespace(returncode=1)) as child:
+        result = auto_recover("1d", ["AAPL", "MSFT"], safety_cap=1)
+    child.assert_called_once()
+    assert result.attempted == ["AAPL"]
+    assert result.still_missing == ["AAPL", "MSFT"]
+
+
+def test_repair_recheck_failure_preserves_original_missing_set():
+    with (
+        patch.object(coverage_report, "_run_child", return_value=SimpleNamespace(returncode=0)),
+        patch.object(coverage_report, "compute_coverage", side_effect=RuntimeError("unreadable lake")),
+    ):
+        result = auto_recover("5m", ["AAPL"])
+    assert result.aborted and result.still_missing == ["AAPL"]
+    assert "recheck failed" in result.reason
+
+
+def test_repair_timeout_terminates_process_group():
+    from unittest.mock import MagicMock
+
+    proc = MagicMock()
+    proc.pid = 12345
+    proc.__enter__.return_value = proc
+    proc.communicate.side_effect = [subprocess.TimeoutExpired("repair", 1), None]
+    with patch.object(coverage_report.subprocess, "Popen", return_value=proc) as spawn:
+        with patch("livewire_scripts.job_runner_common.os.killpg") as kill:
+            with pytest.raises(subprocess.TimeoutExpired):
+                coverage_report._run_child(["repair"], timeout=1)
+    assert spawn.call_args.kwargs["start_new_session"] is True
+    kill.assert_called_once()
+    assert kill.call_args.args[0] == proc.pid
+    assert proc.communicate.call_count == 2
+
+
+@pytest.mark.parametrize("aborted", [False, True])
+def test_main_repairs_minute_date_once_for_all_rollups(tmp_path, monkeypatch, aborted):
+    monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setattr(sys, "argv", ["coverage_report.py", "--target-date", "2026-04-06"])
+    initial = {
+        tf: CoverageResult(tf, total=1, present=int(tf == "1d"), missing_symbols=[] if tf == "1d" else ["AAPL"])
+        for tf in coverage_report.TIMEFRAMES
+    }
+    recovered = {tf: CoverageResult(tf, total=1, present=1, missing_symbols=[]) for tf in initial}
+    outcome = RecoveryOutcome("1m", ["AAPL"], int(not aborted), ["AAPL"] if aborted else [], aborted, "DEFERRED")
+    with (
+        patch.object(coverage_report, "compute_coverage", side_effect=[initial, recovered]),
+        patch.object(coverage_report, "compute_non_equity_coverage", return_value={}),
+        patch.object(coverage_report, "_scan_and_write_artifacts", return_value="scan done"),
+        patch.object(coverage_report, "auto_recover", return_value=outcome) as repair,
+        patch.object(coverage_report, "_send_alert") as alert,
+    ):
+        main()
+    repair.assert_called_once()
+    assert repair.call_args.kwargs["timeframe"] == "1m"
+    assert alert.call_count == int(aborted)
+    report = (tmp_path / "logs" / "coverage_2026-04-06.log").read_text()
+    assert "30m recovery" in report
 
 
 def _error_summary(cmd) -> str:
@@ -434,7 +530,9 @@ class TestAutoRecover:
         """
         missing = [f"SYM{i}" for i in range(150)]
         with (
-            patch("livewire_scripts.coverage_report.subprocess.run") as mock_run,
+            patch(
+                "livewire_scripts.coverage_report._run_child", return_value=SimpleNamespace(returncode=0)
+            ) as mock_run,
             patch(
                 "livewire_scripts.coverage_report.compute_coverage",
                 return_value={"5m": CoverageResult("5m", total=150, present=150, missing_symbols=[])},
@@ -454,7 +552,9 @@ class TestAutoRecover:
         prove still prints is work that cannot succeed. It stays missing (the
         ratio must not lie) and it is still named in still_missing."""
         with (
-            patch("livewire_scripts.coverage_report.subprocess.run") as mock_run,
+            patch(
+                "livewire_scripts.coverage_report._run_child", return_value=SimpleNamespace(returncode=0)
+            ) as mock_run,
             patch(
                 "livewire_scripts.coverage_report.compute_coverage",
                 return_value={"1d": CoverageResult("1d", total=2, present=1, missing_symbols=[])},
@@ -468,7 +568,9 @@ class TestAutoRecover:
         assert outcome.still_missing == ["BK"]
 
     def test_an_all_withheld_gap_launches_no_subprocess_at_all(self):
-        with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
+        with patch(
+            "livewire_scripts.coverage_report._run_child", return_value=SimpleNamespace(returncode=0)
+        ) as mock_run:
             outcome = auto_recover("1d", ["BK"], target_date=date(2026, 4, 6), withheld=("BK",))
 
         assert mock_run.call_count == 0
@@ -479,7 +581,9 @@ class TestAutoRecover:
         """Over-cap used to be dropped entirely and re-emailed every night."""
         missing = [f"SYM{i}" for i in range(250)]
         with (
-            patch("livewire_scripts.coverage_report.subprocess.run") as mock_run,
+            patch(
+                "livewire_scripts.coverage_report._run_child", return_value=SimpleNamespace(returncode=0)
+            ) as mock_run,
             patch(
                 "livewire_scripts.coverage_report.compute_coverage",
                 return_value={"1d": CoverageResult("1d", total=250, present=250, missing_symbols=[])},
@@ -506,7 +610,7 @@ class TestAutoRecover:
             _write_intraday(seeded_bronze, "AAPL", "5m", [target])
             return SimpleNamespace(returncode=0)
 
-        with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run):
+        with patch("livewire_scripts.coverage_report._run_child", side_effect=fake_run):
             outcome = auto_recover("5m", ["AAPL"], bronze_root=seeded_bronze, target_date=target)
         assert outcome.recovered == 1
         assert outcome.still_missing == []
@@ -519,7 +623,7 @@ class TestAutoRecover:
             _write_daily(seeded_bronze, "AAPL", [target])
             return SimpleNamespace(returncode=0)
 
-        with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
+        with patch("livewire_scripts.coverage_report._run_child", side_effect=fake_run) as mock_run:
             outcome = auto_recover("1d", ["AAPL"], bronze_root=seeded_bronze, target_date=target)
         assert outcome.recovered == 1
         cmd = mock_run.call_args[0][0]
@@ -551,7 +655,9 @@ class TestAutoRecover:
         with patch.object(coverage_report, "datetime", FrozenDateTime):
             with patch.object(coverage_report, "date", FrozenLocalDate):
                 with patch.object(coverage_report, "compute_coverage", return_value=rechecked) as compute_mock:
-                    with patch.object(coverage_report.subprocess, "run") as run_mock:
+                    with patch.object(
+                        coverage_report, "_run_child", return_value=SimpleNamespace(returncode=0)
+                    ) as run_mock:
                         outcome = auto_recover("5m", ["AAPL"], bronze_root=tmp_path)
 
         command = run_mock.call_args.args[0]
@@ -580,7 +686,7 @@ class TestAutoRecover:
             _write_intraday(seeded_bronze, "AAPL", "5m", [target])
             return SimpleNamespace(returncode=0)
 
-        with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run):
+        with patch("livewire_scripts.coverage_report._run_child", side_effect=fake_run):
             outcome = auto_recover("5m", ["AAPL", "MSFT"], bronze_root=seeded_bronze, target_date=target)
         assert outcome.recovered == 1
         assert outcome.still_missing == ["MSFT"]
@@ -597,7 +703,9 @@ class TestSendAlert:
             RecoveryOutcome("5m", ["AAPL"], 0, ["AAPL"]),
             RecoveryOutcome("1h", ["MSFT"], 1, []),
         ]
-        with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
+        with patch(
+            "livewire_scripts.coverage_report._run_child", return_value=SimpleNamespace(returncode=0)
+        ) as mock_run:
             _send_alert(date(2026, 4, 6), outcomes, log_path)
         cmd = mock_run.call_args[0][0]
         assert cmd[0] == sys.executable
@@ -611,7 +719,9 @@ class TestSendAlert:
         log_path = tmp_path / "x.log"
         log_path.write_text("")
         outcomes = [RecoveryOutcome("5m", ["A"], 0, ["A"], aborted=True, reason="safety_cap")]
-        with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
+        with patch(
+            "livewire_scripts.coverage_report._run_child", return_value=SimpleNamespace(returncode=0)
+        ) as mock_run:
             _send_alert(date(2026, 4, 6), outcomes, log_path)
         cmd = mock_run.call_args[0][0]
         assert "ABORTED" in _error_summary(cmd)
@@ -675,7 +785,9 @@ class TestMain:
                 compute_coverage(d, bronze_root=seeded_bronze, as_of=as_of, **_disk_only(tmp_path))
             ),
         ):
-            with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
+            with patch(
+                "livewire_scripts.coverage_report._run_child", return_value=SimpleNamespace(returncode=0)
+            ) as mock_run:
                 with patch.object(
                     sys,
                     "argv",
@@ -706,7 +818,9 @@ class TestMain:
                 return_value={},
             ),
         ):
-            with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
+            with patch(
+                "livewire_scripts.coverage_report._run_child", return_value=SimpleNamespace(returncode=0)
+            ) as mock_run:
                 with patch.object(
                     sys,
                     "argv",
@@ -741,7 +855,7 @@ class TestMain:
                 compute_coverage(d, bronze_root=root, as_of=as_of, **_disk_only(tmp_path))
             ),
         ):
-            with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
+            with patch("livewire_scripts.coverage_report._run_child", side_effect=fake_run) as mock_run:
                 with patch.object(
                     sys,
                     "argv",
@@ -779,7 +893,7 @@ class TestMain:
                 compute_coverage(d, bronze_root=root, as_of=as_of, **_disk_only(tmp_path))
             ),
         ):
-            with patch("livewire_scripts.coverage_report.subprocess.run", side_effect=fake_run) as mock_run:
+            with patch("livewire_scripts.coverage_report._run_child", side_effect=fake_run) as mock_run:
                 with patch.object(
                     sys,
                     "argv",
@@ -810,7 +924,9 @@ class TestMain:
                 compute_coverage(d, bronze_root=root, as_of=as_of, **_disk_only(tmp_path))
             ),
         ):
-            with patch("livewire_scripts.coverage_report.subprocess.run") as mock_run:
+            with patch(
+                "livewire_scripts.coverage_report._run_child", return_value=SimpleNamespace(returncode=0)
+            ) as mock_run:
                 with patch.object(
                     sys,
                     "argv",
@@ -1310,7 +1426,7 @@ def test_a_registry_only_symbol_survives_a_recovery_that_could_not_fetch_it(tmp_
         "presets_dir": tmp_path / "presets",
         "as_of": datetime(2026, 8, 29, 16, 0, tzinfo=UTC),
     }
-    with patch.object(coverage_report.subprocess, "run") as run_mock:
+    with patch.object(coverage_report, "_run_child", return_value=SimpleNamespace(returncode=0)) as run_mock:
         outcome = auto_recover("1d", ["BK"], bronze_root=bronze, target_date=date(2026, 8, 28), **kwargs)
 
     assert run_mock.call_count == 1
@@ -1330,7 +1446,7 @@ def test_main_writes_both_repair_artifacts(seeded_bronze, monkeypatch, tmp_path)
             compute_coverage(d, bronze_root=seeded_bronze, as_of=as_of, **_disk_only(tmp_path))
         ),
     ):
-        with patch("livewire_scripts.coverage_report.subprocess.run"):
+        with patch("livewire_scripts.coverage_report._run_child", return_value=SimpleNamespace(returncode=0)):
             with patch.object(sys, "argv", ["coverage_report.py", "--target-date", "2026-04-06", "--no-recover"]):
                 main()
 

@@ -15,7 +15,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from livewire_scripts.duckdb_catalog_cli import main
-from tests.test_duckdb_catalog import _write_symbol
+from tests.test_duckdb_catalog import _write_silver, _write_symbol
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ def wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for symbol in ("NVDA", "HON", "ALLpI"):
         _write_symbol(equity, symbol)
     # Silver deliberately omits HON — the "absent from silver" case.
-    _write_symbol(lake / "silver" / "asset_class=equity", "NVDA")
+    _write_silver(lake / "silver")
 
     monkeypatch.setenv("MDW_DATA_LAKE", str(lake))
     monkeypatch.setenv("MDW_SILVER_DIR", str(lake / "silver"))

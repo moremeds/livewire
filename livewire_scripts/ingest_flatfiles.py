@@ -63,7 +63,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     warehouse = warehouse_dir()
     store = MassiveFlatfileStore(warehouse, bucket_count=int(os.getenv("MDW_FLATFILE_BUCKETS", "256")))
     state = MassiveFlatfileState(cursor_dir())
-    with MassiveFlatfileClient() as client:
+    with state.exclusive(), MassiveFlatfileClient() as client:
         plan = discover_plan(client, warehouse)
         log.info(
             "Massive flat files: %s to %s, %d days, %.2f GiB compressed, %.2f GiB projected, %.2f GiB free",
@@ -92,33 +92,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         download_stats = download_dates(
             client, store, state, dates, replace=args.mode == "repair", workers=args.workers
         )
-    bronze_dir = warehouse / "data-lake" / "bronze" / "asset_class=equity"
-    scope = f"{args.mode}_{dates[0].isoformat()}_{dates[-1].isoformat()}_{len(dates)}"
-    if args.mode == "repair":
-        state.reset_publish_scope(scope)
-    publish_stats = publish_dates(
-        store,
-        state,
-        dates,
-        bronze_dir,
-        replace_complete=args.mode == "backfill",
-        scope=scope,
-        workers=args.workers,
-    )
-    log.info(
-        "Downloaded=%d skipped=%d published_tickers=%d",
-        download_stats.downloaded,
-        download_stats.skipped,
-        publish_stats["tickers"],
-    )
-    quarantined = publish_stats.get("quarantined") or []
-    if quarantined:
-        log.error(
-            "%d symbol(s) had unreadable parquet and were quarantined; each needs a targeted backfill: %s",
-            len(quarantined),
-            ", ".join(sorted(quarantined)),
+        bronze_dir = warehouse / "data-lake" / "bronze" / "asset_class=equity"
+        scope = f"{args.mode}_{dates[0].isoformat()}_{dates[-1].isoformat()}_{len(dates)}"
+        if args.mode == "repair":
+            state.reset_publish_scope(scope)
+        publish_stats = publish_dates(
+            store,
+            state,
+            dates,
+            bronze_dir,
+            replace_complete=args.mode == "backfill",
+            scope=scope,
+            workers=args.workers,
         )
-    return verify_publish_coverage(store, dates, publish_stats)
+        log.info(
+            "Downloaded=%d skipped=%d published_tickers=%d",
+            download_stats.downloaded,
+            download_stats.skipped,
+            publish_stats["tickers"],
+        )
+        quarantined = publish_stats.get("quarantined") or []
+        if quarantined:
+            log.error(
+                "%d symbol(s) had unreadable parquet and were quarantined; each needs a targeted backfill: %s",
+                len(quarantined),
+                ", ".join(sorted(quarantined)),
+            )
+        failed = publish_stats.get("failed") or []
+        if failed:
+            log.error(
+                "Publish incomplete for %s; readable prior files retained; inspect write errors and retry same scope",
+                ", ".join(sorted(failed)),
+            )
+        coverage_exit = verify_publish_coverage(store, dates, publish_stats)
+        return coverage_exit or int(bool(quarantined or failed))
 
 
 def verify_publish_coverage(

@@ -19,17 +19,33 @@ physical limitation until a separately scoped recovery/redundancy plan is proven
 Graph: `SE-00 -> {SE-01, SE-02} -> SE-03 -> SE-04 -> {SE-05, SE-06} -> SE-07 -> SE-08 -> SE-09 -> SE-10 -> SE-11`.
 
 - [x] **SE-00** (`depends_on: []`): Pin source, deployment, process and data-root evidence.
-- [ ] **SE-01** (`depends_on: [SE-00]`): Inventory every writer/reader and trace actual failure boundaries.
-- [ ] **SE-02** (`depends_on: [SE-00]`): Make cross-platform tests and the 95% gate trustworthy.
-- [ ] **SE-03** (`depends_on: [SE-01, SE-02]`): Fix lock ownership, failure domains, recovery and warning contracts.
-- [ ] **SE-04** (`depends_on: [SE-03]`): Enforce shared write control and safe single-file publication.
-- [ ] **SE-05** (`depends_on: [SE-04]`): Implement approved immutable Silver publication.
-- [ ] **SE-06** (`depends_on: [SE-04]`): Implement approved pinned-snapshot readers across consumers.
+- [x] **SE-01** (`depends_on: [SE-00]`): Inventory writer/reader paths and trace failure boundaries; final caller matrix and explicit legacy rollback limitation are in the execution plan.
+- [x] **SE-02** (`depends_on: [SE-00]`): Make cross-platform tests and the 95% gate trustworthy. Linux run `34177232115` checked commit `39e32b8` at 95.09%; this is gate-fix evidence, not validation of the later uncommitted implementation.
+- [x] **SE-03** (`depends_on: [SE-01, SE-02]`): Fix lock ownership, failure domains, recovery and warning contracts.
+- [x] **SE-04** (`depends_on: [SE-03]`): Implement shared write control and safe single-file publication; local fault/concurrency checks pass, production proof remains SE-08/11.
+- [x] **SE-05** (`depends_on: [SE-04]`): Implement approved immutable Silver publication; local five-boundary SIGKILL/retry checks pass.
+- [x] **SE-06** (`depends_on: [SE-04]`): Stabilize the Livewire → Apex data contract and pinned-snapshot readers; actual writer-to-adapter daily/intraday checks pass. Apex changes stop at minimal adapter compatibility. Internal reseed/signals refactor is deferred by the user (2026-09-08).
 - [ ] **SE-07** (`depends_on: [SE-05, SE-06]`): Verify failure isolation, actionable warnings, recovery and crash acceptance.
 - [ ] **SE-08** (`depends_on: [SE-07]`): Measure capacity against actual runtime timelines.
 - [ ] **SE-09** (`depends_on: [SE-08]`): Independent review, mandatory checks and compatible release candidates.
 - [ ] **SE-10** (`depends_on: [SE-09]`): Execute approved cutover with writer/release protection.
 - [ ] **SE-11** (`depends_on: [SE-10]`): Claude independently verifies released code and a normal scheduled run.
+
+Current implementation evidence (2026-09-08, not deployed): immutable Silver
+publication has five real child-process SIGKILL/retry checks; temporary disk
+input snapshots replace the rejected whole-universe Python row retention.
+The 64-file Mini sample projected 16.005 GiB for row objects alone on a 16 GiB
+host, so that prior memory design was not viable. Request-level Apex adapters
+are narrowed as agreed; deferred internal changes were preserved in a verified
+backup before removal from the candidate. Manual repair/rollback/archive caller
+audit is complete. The final local configured coverage run passed 2,660 tests at
+95.08%; Ruff checks passed and Pyright reported zero errors (25 warnings).
+Full Mini disposable capacity measurements remain in progress.
+
+Verification correction: `--cov=clients --cov=scripts` measures wrapper scripts
+and is not the required CI source set. The configured `--cov` gate correctly
+rejected a 94.99% candidate despite all 2,629 tests passing. Final evidence must
+use `clients` plus `livewire_scripts`, at the final candidate revision.
 
 Correction to the earlier release checklist below: PR #124 was merged and
 release `23e1de284f343e357f97100cfe83fb48ac4be9ec` was verified on the mini in this

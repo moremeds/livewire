@@ -3,6 +3,16 @@
 状态：执行中。用户已批准本计划实施，包括所列 Livewire 存储与 Apex 消费者改造；
 具体生产切换和数据替换仍在候选版本可评审后按 SE-10 单独批准。
 
+2026-09-08 暂停后恢复的范围修订（用户明确批准）：稳定的是 Livewire → Apex
+的数据交付契约，而不是冻结 Apex 对外 API 或完成 Apex 内部重构。
+Livewire 负责可验证的原子发布、manifest/snapshot、数据及失败语义；Apex 数据
+适配层负责固定 snapshot、按契约读取并传递明确结果/错误。适配层之后的指标、
+缓存、订阅刷新、信号状态与事件队列属于 Apex 内部，留给后续重写。
+SE-06/07/09 的 Apex 工作仅保留契约接入必需的最小实现与契约测试；不得把
+当前布尔可用性开关写成原子 reseed 或旧排队信号隔离已完成的证明。
+Livewire 完整性与故障隔离验收仍保留。Apex 内部端到端信号验收明确延期，
+不以此宣称新组合可直接无条件上线；SE-10 仍需具体兼容与切换方案。
+
 执行基线（2026-09-08）：Livewire `origin/main` / mini release 均为
 `23e1de284f343e357f97100cfe83fb48ac4be9ec`；工作区
 `.worktrees/systematic-integrity`，分支 `fix/systematic-integrity`。
@@ -40,7 +50,8 @@ RJF 初始损坏原因仍未知；不能把一项防护修复写成历史因果�
 1. 所有 canonical 写入入口遵守同一协作边界，包括定时、coverage repair 和手工命令。
 2. 临时文件验证失败不覆盖有效旧文件；首次写入失败不留下可用目标。
 3. Silver artifact 不可变，完整 manifest 的 current 替换是唯一提交点。
-4. 一次读取或 reseed 固定一个 manifest；不存在固定路径补读旁路。
+4. 一次 adapter 读取固定一个 manifest；不存在固定路径补读旁路。
+   Apex 内部 reseed 事务边界在其后续重构中实现，不作为本候选的保证。
 5. 单 symbol 质量问题按证据隔离；只有仍然有效的旧数据才能沿用，并显示真实日期。
    被选入 manifest 的 artifact 校验失败或事务不完整，则中止整次提交。
 6. 提交成功、任务完成、数据健康与新鲜度是不同结论，不能互相代替。
@@ -117,6 +128,36 @@ SE-05/06 的存储与 Apex 范围已随本计划实施批准；SE-10 开始前�
 
 ## 任务与验收
 
+### 实施中的入口与锁责任（2026-09-08）
+
+| 入口 / 最终写入者 | 一致性边界 | 失败与恢复 |
+|---|---|---|
+| daily、robust、手工 Bronze ingest → `BronzeClient` / `IntradayBronzeClient` | 现有 `symbol_lock` 覆盖读改写；日线取得 equity input 共享锁，再取得稳定目录锁、文件锁 | 完整解码、fsync 后替换；坏临时文件不能覆盖旧文件 |
+| corporate-actions → `CorporateActionStore` | corporate_action input 共享锁、目录锁、文件锁 | 与 Silver 输入复制互斥；源网络等待不持有全湖锁 |
+| CBOE → `fetch_cboe_volatility` | 同一 symbol 锁覆盖读取、合并和 `publish_parquet` | 保留有效旧文件，其他来源不受 IB 故障影响 |
+| Massive daily/minute ingest | 各自 cursor 独占整个操作；raw 每日期独占发布，共享锁仅保护读者打开文件描述符 | 同流重入明确失败；raw 交换可恢复；桶或 symbol 失败仍继续无关桶，并返回不完整结果 |
+| coverage repair → 正常 `flatfile-ingest repair` | 复用 minute cursor 所有权；活动写入时报告 deferred | 同一日期只 repair 一次；子进程取消会清理整个进程组 |
+| `rebuild_silver` | 按 corporate_action → equity 顺序独占输入锁复制到临时磁盘；释放后逐 symbol 计算；Silver revision 锁保护提交 | baseline 前进则拒绝过期构建；新文件不可变，current 最后替换；保留旧读者与失败残留 |
+| DuckDB coverage build | 目标数据库 `.publish.lock` 覆盖 staging 清理、构建及替换；每连接固定 Silver manifest | 失败保留旧目录；并发构建不能移除另一个构建的 staging |
+| OTC / universe archive | 统一 `archive_symbol`；equity input 独占锁、稳定 symbol 目录独占锁 | 同文件系统整体 rename；已有归档不覆盖；不执行跨盘 copy/delete |
+| filename migration | input 共享锁、目录独占锁、新旧文件锁 | 在锁内复核双文件冲突；旧 writer 完成后才 rename |
+| 手工 price-basis migrate / repair / rollback | migration 在 symbol 锁内读改写；repair/resolve 按 action → equity 顺序短时加锁取得哈希，网络后重新加锁比较；两类 rollback 复用精确字节验证/fsync/替换 | 输入变化则拒绝旧候选，不创建错误备份；legacy rollback 仍是显式恢复所选备份，旧 sidecar 无 applied-target 哈希，不能推断后续已完成写入是否应阻止该恢复 |
+| Shepherd repair | 已有 symbol 锁、候选完整验证、当前/源/备份哈希比较、fsync 与替换 | 沿用既有实现；`shepherd_universe` 的 copy 是临时 preflight，不是 canonical 写入 |
+
+调度器不再持有跨来源全湖锁。Silver 的输入复制不覆盖网络等待、调整计算或
+Silver 输出；intraday 和其他资产也不受 equity 日线输入锁影响。进程超时、取消
+和主进程非零退出清理同一子进程组，防止后台后代继续持有写锁。
+
+本轮已运行真实子进程检查：Silver 五个发布阶段 SIGKILL 后的旧/新完整快照与
+重试、取消/非零退出后代锁释放、catalog staging 互斥、旧 filename writer 与
+迁移互斥。它们使用临时数据；不能替代 Mac mini 文件系统与正常调度验收。
+
+消融结果：删除无运行调用者的全湖锁 helper；Apex 的订阅/信号改动已从候选
+撤出并保留可复原备份。保留的共享原语各有具体作用：input 锁保护成对冻结输入，
+目录锁保护归档与文件写入，manifest resolver 阻断旧固定路径补读，raw 日期交换
+helper 被 daily/minute 两个真实 store 共用，精确 Parquet 恢复 helper 被两类
+rollback 共用以保留原始字节并在替换前验证。没有新增服务或依赖。
+
 ### SE-00：隔离工作、固定证据
 
 `depends_on: []`
@@ -153,7 +194,8 @@ SE-05/06 的存储与 Apex 范围已随本计划实施批准；SE-10 开始前�
 `depends_on: [SE-00]`
 
 - 复现覆盖率数值、舍入、退出码不一致；统一门禁判定，不降低阈值或扩大排除范围。
-- 修复 quality_flags 测试的模块导入/mock 接缝，去掉由该问题造成的 Linux 跳过。
+- 去掉 quality_flags 的 Linux 跳过，并按实际复现修复：进程 monotonic
+  时钟小于去重窗口时，默认零时间戳错误地抑制首次告警；缺失记录必须独立判断。
 - 用隔离的低覆盖率样例证明实际 CI 命令退出非零；用真实测试确认正常路径通过。
 
 主要范围：`pyproject.toml`、`.github/workflows/ci.yml`、`tests/test_quality_flags.py`
@@ -212,16 +254,20 @@ daily/intraday/coverage/rebuild 调用链及对应现有测试；最终范围以
 `depends_on: [SE-04]`；前置：与 SE-05 相同的已批准契约及 Apex 范围批准。
 
 - Livewire DuckDB、验证脚本、PIT 和 Apex 从固定 manifest 获取路径。
-- 一次请求、daily/factor 联读及 watcher reseed 共享同一 snapshot。
+- 一次 adapter 请求及 daily/factor 联读共享同一 snapshot；Apex 内部
+  watcher reseed 的事务一致性不属于本次范围。
 - 缺项明确拒绝；删除固定路径 fallback，不通过 glob 或 newest directory 补数据。
 - 用 SE-01 清单证明所有消费者都已覆盖，不只修改 Apex 一个 adapter。
 
 Livewire 主要文件：`clients/duckdb_catalog.py`、`clients/pit_silver_revision.py`、
 `livewire_scripts/validate_adjusted_history.py`、`shepherd_silver.py`（按需）。
-Apex 主要范围：`src/infrastructure/adapters/livewire/`、revision watcher、
-subscription reseed 及对应 unit/integration 测试；开始前核对真实 checkout。
+Apex 主要范围：`src/infrastructure/adapters/livewire/` 及对应契约测试，
+必要的现有调用接缝只做最小适配。watcher 通知只表示数据发布，不能表示
+内部重算或信号切换完成。内部 reseed/信号状态机制延期至 Apex 重构。
 
 验收：发布期间老读者仍读旧 snapshot，新读者读完整新 snapshot；历史 PIT 保持正确。
+两端共享一份交付契约，明确 provider、adapter 与 Apex 内部责任；内部信号一致性
+不是本阶段已实现保证，后续重构可用同一契约测试验证接入兼容性。
 
 ### SE-07：集成发布、目录、状态与恢复
 

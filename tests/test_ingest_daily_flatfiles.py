@@ -47,7 +47,8 @@ def test_discover_is_read_only(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("mode", ["backfill", "catch-up", "repair"])
-def test_main_executes_full_pipeline_modes(monkeypatch, tmp_path, mode):
+@pytest.mark.parametrize("failed", [0, 1])
+def test_main_executes_full_pipeline_modes(monkeypatch, tmp_path, mode, failed):
     monkeypatch.setenv("MASSIVE_S3_ACCESS_KEY", "x")
     monkeypatch.setenv("MASSIVE_S3_SECRET_KEY", "y")
     monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
@@ -75,10 +76,10 @@ def test_main_executes_full_pipeline_modes(monkeypatch, tmp_path, mode):
         ) as download,
         patch(
             "livewire_scripts.ingest_daily_flatfiles.publish_daily_dates",
-            return_value={"tickers": 1, "rows_1d": 1, "skipped_existing": 0},
+            return_value={"tickers": 1, "rows_1d": 1, "skipped_existing": 0, "failed": failed},
         ) as publish,
     ):
-        assert main(args) == 0
+        assert main(args) == int(bool(failed))
     assert capacity.call_count == (1 if mode == "backfill" else 0)
     assert download.call_count == 1
     assert publish.call_count == 1

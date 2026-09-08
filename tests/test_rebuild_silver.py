@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -28,6 +27,16 @@ def _summary_from(capsys) -> dict:
     summaries = parse_all_summary_json(capsys.readouterr().out)
     assert summaries, "rebuild-silver emitted no SUMMARY_JSON line the digest can parse"
     return summaries[-1]
+
+
+def _silver_artifact(silver, symbol, suffix):
+    manifest = json.loads((silver / "revisions/current.json").read_text())
+    relative = next(
+        item["path"]
+        for item in manifest["artifacts"]
+        if f"symbol={symbol}" in item["path"] and item["path"].endswith(suffix)
+    )
+    return silver / relative
 
 
 def _bronze(root, symbol, closes=(100.0, 100.0, 50.0)):
@@ -109,7 +118,7 @@ def test_continuity_allowlist_exempts_an_evidenced_date(tmp_path):
         rebuild_silver.run(["--tickers", "EQIX"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
         == 0
     )
-    trimmed = pq.ParquetFile(silver / "asset_class=equity/symbol=EQIX/1d.parquet").read().to_pylist()
+    trimmed = pq.ParquetFile(_silver_artifact(silver, "EQIX", "/1d.parquet")).read().to_pylist()
     assert [str(r["trade_date"]) for r in trimmed] == ["2003-01-02", "2003-01-03"]
 
     assert (
@@ -122,7 +131,7 @@ def test_continuity_allowlist_exempts_an_evidenced_date(tmp_path):
         == 0
     )
 
-    kept = pq.ParquetFile(silver / "asset_class=equity/symbol=EQIX/1d.parquet").read().to_pylist()
+    kept = pq.ParquetFile(_silver_artifact(silver, "EQIX", "/1d.parquet")).read().to_pylist()
     assert [str(r["trade_date"]) for r in kept] == ["2002-12-30", "2003-01-02", "2003-01-03"]
 
 
@@ -138,10 +147,10 @@ def test_targeted_rebuild_publishes_daily_factors_and_manifest(tmp_path, capsys)
     assert summary["action_count"] == 1
     assert summary["earliest_affected_date"] == "2026-01-01"
     assert summary["revision"] == 1
-    daily = pq.ParquetFile(silver / "asset_class=equity/symbol=NVDA/1d.parquet").read()
+    daily = pq.ParquetFile(_silver_artifact(silver, "NVDA", "/1d.parquet")).read()
     assert daily.column("adjustment_revision").to_pylist() == [1, 1, 1]
     assert daily.column("close").to_pylist()[0] == 50.0
-    factors = pq.ParquetFile(silver / "adjustments/asset_class=equity/symbol=NVDA/factors.parquet").read()
+    factors = pq.ParquetFile(_silver_artifact(silver, "NVDA", "/factors.parquet")).read()
     assert factors.column("adjustment_revision").to_pylist() == [1, 1]
     assert (silver / "revisions/current.json").exists()
 
@@ -176,10 +185,10 @@ def test_targeted_rebuild_excludes_announced_future_dividend(tmp_path, capsys):
         == 0
     )
 
-    daily = pq.ParquetFile(silver / "asset_class=equity/symbol=MSFT/1d.parquet").read()
+    daily = pq.ParquetFile(_silver_artifact(silver, "MSFT", "/1d.parquet")).read()
     assert daily.column("close").to_pylist() == [100.0, 100.0, 50.0]
     assert daily.column("price_adjustment_factor").to_pylist() == [1.0, 1.0, 1.0]
-    factors = pq.ParquetFile(silver / "adjustments/asset_class=equity/symbol=MSFT/factors.parquet").read()
+    factors = pq.ParquetFile(_silver_artifact(silver, "MSFT", "/factors.parquet")).read()
     assert factors.column("price_adjustment_factor").to_pylist() == [1.0]
     summary = _summary_from(capsys)
     assert summary["as_of_date"] == "2026-01-03"
@@ -216,9 +225,7 @@ def test_multi_symbol_rebuild_uses_injected_cutoff_for_every_symbol(tmp_path):
     )
 
     for symbol in ("MSFT", "AAPL"):
-        factors = pq.ParquetFile(
-            tmp_path / f"silver/adjustments/asset_class=equity/symbol={symbol}/factors.parquet"
-        ).read()
+        factors = pq.ParquetFile(_silver_artifact(tmp_path / "silver", symbol, "/factors.parquet")).read()
         assert factors.column("price_adjustment_factor").to_pylist() == [1.0]
         assert factors.column("split_volume_factor").to_pylist() == [1.0]
 
@@ -232,7 +239,7 @@ def test_full_rebuild_discovers_all_equity_bronze_symbols(tmp_path, capsys):
 
     summary = _summary_from(capsys)
     assert summary["rebuilt"] == 2
-    assert (tmp_path / "silver/asset_class=equity/symbol=AAPL/1d.parquet").exists()
+    assert _silver_artifact(tmp_path / "silver", "AAPL", "/1d.parquet").exists()
 
 
 def test_unchanged_second_run_is_manifest_noop(tmp_path, capsys):
@@ -283,8 +290,11 @@ def test_one_symbol_failure_still_publishes_healthy_symbols(tmp_path, capsys):
     assert summary["failed"] == 1
     assert summary["rebuilt"] == 1
     assert (silver / "revisions/current.json").exists()
-    assert (silver / "asset_class=equity/symbol=NVDA/1d.parquet").exists()
-    assert not (silver / "asset_class=equity/symbol=BAD/1d.parquet").exists()
+    assert _silver_artifact(silver, "NVDA", "/1d.parquet").exists()
+    assert not any(
+        "symbol=BAD" in item["path"]
+        for item in json.loads((silver / "revisions/current.json").read_text())["artifacts"]
+    )
 
 
 def test_total_staging_failure_fails_the_run_and_publishes_nothing(tmp_path, capsys):
@@ -376,9 +386,9 @@ def test_mixed_basis_symbol_publishes_its_window_not_nothing(tmp_path):
     # NVDA is no longer dropped whole: the lone bad 2021-06-18 bar breaks continuity
     # twice (into it and out of it), so the window starts after the second break and
     # publishes only the true-raw 2021-06-21 row — shorter, but every row correct.
-    published = pq.ParquetFile(tmp_path / "silver/asset_class=equity/symbol=NVDA/1d.parquet").read().to_pylist()
+    published = pq.ParquetFile(_silver_artifact(tmp_path / "silver", "NVDA", "/1d.parquet")).read().to_pylist()
     assert [str(r["trade_date"]) for r in published] == ["2021-06-21"]
-    assert (tmp_path / "silver/asset_class=equity/symbol=MSFT/1d.parquet").exists()
+    assert _silver_artifact(tmp_path / "silver", "MSFT", "/1d.parquet").exists()
     assert json.loads(failure_output.read_text())["failures"] == []
     assert rc == 0
 
@@ -412,8 +422,8 @@ def test_dry_run_preserves_existing_bronze_and_silver_bytes(tmp_path, capsys):
 
     watched = [
         tmp_path / "bronze/asset_class=equity/symbol=NVDA/1d.parquet",
-        silver / "asset_class=equity/symbol=NVDA/1d.parquet",
-        silver / "adjustments/asset_class=equity/symbol=NVDA/factors.parquet",
+        _silver_artifact(silver, "NVDA", "/1d.parquet"),
+        _silver_artifact(silver, "NVDA", "/factors.parquet"),
         silver / "revisions/current.json",
         silver / "revisions/revision=1.json",
     ]
@@ -538,7 +548,7 @@ def test_seed_corrupt_symbol_publishes_its_post_seed_window_rather_than_quaranti
     )
 
     assert json.loads(failures.read_text())["failures"] == []  # published, not quarantined
-    published = pq.ParquetFile(silver / "asset_class=equity/symbol=APH/1d.parquet").read().to_pylist()
+    published = pq.ParquetFile(_silver_artifact(silver, "APH", "/1d.parquet")).read().to_pylist()
     assert [str(r["trade_date"]) for r in published] == ["2021-06-11", "2021-06-14"]
 
 
@@ -557,8 +567,8 @@ def test_seed_trim_does_not_narrow_factor_coverage(tmp_path):
 
     rebuild_silver.run(["--tickers", "APH"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
 
-    daily = pq.ParquetFile(silver / "asset_class=equity/symbol=APH/1d.parquet").read().to_pylist()
-    factors = pq.ParquetFile(silver / "adjustments/asset_class=equity/symbol=APH/factors.parquet").read().to_pylist()
+    daily = pq.ParquetFile(_silver_artifact(silver, "APH", "/1d.parquet")).read().to_pylist()
+    factors = pq.ParquetFile(_silver_artifact(silver, "APH", "/factors.parquet")).read().to_pylist()
     assert min(str(r["trade_date"]) for r in daily) == "2021-06-11"  # daily IS floored
     assert min(str(f["effective_start"]) for f in factors) == "2021-06-09"  # factors are NOT
 
@@ -572,8 +582,8 @@ def test_factor_intervals_still_cover_dates_trimmed_out_of_the_daily_window(tmp_
 
     rebuild_silver.run(["--tickers", "EQIX"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
 
-    daily = pq.ParquetFile(silver / "asset_class=equity/symbol=EQIX/1d.parquet").read().to_pylist()
-    factors = pq.ParquetFile(silver / "adjustments/asset_class=equity/symbol=EQIX/factors.parquet").read().to_pylist()
+    daily = pq.ParquetFile(_silver_artifact(silver, "EQIX", "/1d.parquet")).read().to_pylist()
+    factors = pq.ParquetFile(_silver_artifact(silver, "EQIX", "/factors.parquet")).read().to_pylist()
     assert min(str(r["trade_date"]) for r in daily) == "2003-01-02"  # daily IS trimmed
     assert min(str(f["effective_start"]) for f in factors) == "2002-12-30"  # factors are NOT
 
@@ -591,7 +601,7 @@ def test_triage_confirmed_real_move_is_not_trimmed(tmp_path):
         as_of_date=date(2026, 7, 17),
     )
 
-    published = pq.ParquetFile(silver / "asset_class=equity/symbol=MRNA/1d.parquet").read().to_pylist()
+    published = pq.ParquetFile(_silver_artifact(silver, "MRNA", "/1d.parquet")).read().to_pylist()
     assert len(published) == 3
 
 
@@ -606,7 +616,7 @@ def test_verdicts_at_the_default_path_are_honoured_without_any_flag(tmp_path):
 
     rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
 
-    published = pq.ParquetFile(silver / "asset_class=equity/symbol=MRNA/1d.parquet").read().to_pylist()
+    published = pq.ParquetFile(_silver_artifact(silver, "MRNA", "/1d.parquet")).read().to_pylist()
     assert len(published) == 3
 
 
@@ -674,7 +684,7 @@ def test_a_new_bad_bar_that_shortens_the_window_does_not_publish(tmp_path):
     assert regression["new_start"] == "2024-01-05"
     assert payload["failures"] == []  # a regression is an alert, not a staging failure
     # The published artifact is UNCHANGED — the garbage singleton never shipped.
-    published = pq.ParquetFile(silver / "asset_class=equity/symbol=AAPL/1d.parquet").read().to_pylist()
+    published = pq.ParquetFile(_silver_artifact(silver, "AAPL", "/1d.parquet")).read().to_pylist()
     assert [str(r["trade_date"]) for r in published] == ["2024-01-02", "2024-01-03", "2024-01-04"]
     # ...and the symbol is still in the manifest, not evicted.
     current = json.loads((silver / "revisions/current.json").read_text())
@@ -700,7 +710,7 @@ def test_allow_window_regression_publishes_the_shorter_window(tmp_path):
         as_of_date=date(2026, 7, 17),
     )
 
-    published = pq.ParquetFile(silver / "asset_class=equity/symbol=AAPL/1d.parquet").read().to_pylist()
+    published = pq.ParquetFile(_silver_artifact(silver, "AAPL", "/1d.parquet")).read().to_pylist()
     assert [str(r["trade_date"]) for r in published] == ["2024-01-05"]
 
 
@@ -719,19 +729,16 @@ def test_no_regression_reported_when_the_window_is_stable(tmp_path):
     )
 
     assert json.loads(failures.read_text())["window_regressions"] == []
-    published = pq.ParquetFile(silver / "asset_class=equity/symbol=AAPL/1d.parquet").read().to_pylist()
+    published = pq.ParquetFile(_silver_artifact(silver, "AAPL", "/1d.parquet")).read().to_pylist()
     assert len(published) == 3  # the good new bar published normally
 
 
-def test_a_quarantined_symbols_stale_artifact_is_moved_not_just_unmanifested(tmp_path):
-    """Apex resolves symbols by path construction and never consults the manifest
-    (apex ohlc_provider.py:141-145). Un-manifesting a symbol leaves it serving stale
-    corrupt data forever; moving the file is the only eviction apex can perceive."""
+def test_a_quarantined_symbol_is_omitted_without_moving_historical_bytes(tmp_path):
     root, silver = tmp_path / "lake", tmp_path / "silver"
     _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
     _seed_bronze(root, "INTC", [("2000-07-28", 129.13), ("2000-07-31", 66.75)])
     rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
-    assert (silver / "asset_class=equity/symbol=INTC/1d.parquet").exists()
+    old_daily = _silver_artifact(silver, "INTC", "/1d.parquet")
 
     # INTC now fails staging: unknown-basis rows against its real 2000-07-31 1:2 split.
     _seed_bronze(root, "INTC", [("2000-07-28", 129.13), ("2000-07-31", 66.75)], price_basis="unknown")
@@ -739,27 +746,25 @@ def test_a_quarantined_symbols_stale_artifact_is_moved_not_just_unmanifested(tmp
 
     rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
 
-    assert not (silver / "asset_class=equity/symbol=INTC/1d.parquet").exists()
-    assert (silver / "asset_class=equity/symbol=AAPL/1d.parquet").exists()
+    assert old_daily.is_file()
+    assert _silver_artifact(silver, "AAPL", "/1d.parquet").exists()
     current = json.loads((silver / "revisions/current.json").read_text())
     assert not any("symbol=INTC" in a["path"] for a in current["artifacts"])
-    # Moved, not destroyed: an eviction must be reversible.
-    assert (silver / "evicted/2/asset_class=equity/symbol=INTC/1d.parquet").is_file()
+    assert not (silver / "evicted").exists()
 
 
-def test_eviction_leaves_the_factor_artifact_in_place(tmp_path):
-    """Apex joins bronze intraday onto factors independently of the daily file, so
-    removing the factor artifact is its own 500 rather than a clean fail-closed."""
+def test_quarantine_leaves_the_prior_factor_artifact_in_place(tmp_path):
     root, silver = tmp_path / "lake", tmp_path / "silver"
     _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
     _seed_bronze(root, "INTC", [("2000-07-28", 129.13), ("2000-07-31", 66.75)])
     rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    old_factor = _silver_artifact(silver, "INTC", "/factors.parquet")
     _seed_bronze(root, "INTC", [("2000-07-28", 129.13), ("2000-07-31", 66.75)], price_basis="unknown")
     _seed_split(root, "INTC", "2000-07-31", 1, 2)
 
     rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
 
-    assert (silver / "adjustments/asset_class=equity/symbol=INTC/factors.parquet").is_file()
+    assert old_factor.is_file()
 
 
 def test_a_dry_run_never_evicts(tmp_path):
@@ -767,12 +772,13 @@ def test_a_dry_run_never_evicts(tmp_path):
     _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
     _seed_bronze(root, "INTC", [("2000-07-28", 129.13), ("2000-07-31", 66.75)])
     rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    old_daily = _silver_artifact(silver, "INTC", "/1d.parquet")
     _seed_bronze(root, "INTC", [("2000-07-28", 129.13), ("2000-07-31", 66.75)], price_basis="unknown")
     _seed_split(root, "INTC", "2000-07-31", 1, 2)
 
     rebuild_silver.run(["--full", "--dry-run"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
 
-    assert (silver / "asset_class=equity/symbol=INTC/1d.parquet").is_file()  # untouched
+    assert old_daily.is_file()
 
 
 def test_an_all_quarantined_universe_refuses_to_publish_rather_than_evicting(tmp_path):
@@ -783,6 +789,7 @@ def test_an_all_quarantined_universe_refuses_to_publish_rather_than_evicting(tmp
     root, silver = tmp_path / "lake", tmp_path / "silver"
     _seed_bronze(root, "INTC", [("2000-07-28", 129.13), ("2000-07-31", 66.75)])
     rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    old_daily = _silver_artifact(silver, "INTC", "/1d.parquet")
     _seed_bronze(root, "INTC", [("2000-07-28", 129.13), ("2000-07-31", 66.75)], price_basis="unknown")
     _seed_split(root, "INTC", "2000-07-31", 1, 2)
 
@@ -790,27 +797,22 @@ def test_an_all_quarantined_universe_refuses_to_publish_rather_than_evicting(tmp
         rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
 
     # Nothing moved: the manifest and the tree still agree.
-    assert (silver / "asset_class=equity/symbol=INTC/1d.parquet").is_file()
+    assert old_daily.is_file()
 
 
-def test_a_vanished_artifact_is_not_carried_into_the_manifest(tmp_path):
-    """Apex verifies every manifested artifact's sha256 on each poll and rejects the
-    whole revision on a mismatch, so manifesting a file that is no longer on disk
-    would blank the service rather than drop one symbol."""
+def test_a_vanished_carried_artifact_aborts_the_new_manifest(tmp_path):
     root, silver = tmp_path / "lake", tmp_path / "silver"
     _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
     _seed_bronze(root, "MSFT", [("2024-01-02", 370.87), ("2024-01-03", 370.60)])
     rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
     # MSFT's artifact disappears out from under us (operator action, disk fault).
-    (silver / "asset_class=equity/symbol=MSFT/1d.parquet").unlink()
+    current_before = (silver / "revisions/current.json").read_bytes()
+    _silver_artifact(silver, "MSFT", "/1d.parquet").unlink()
     _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25), ("2024-01-04", 181.91)])
 
-    rebuild_silver.run(["--tickers", "AAPL"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
-
-    current = json.loads((silver / "revisions/current.json").read_text())
-    paths = [a["path"] for a in current["artifacts"]]
-    assert any("symbol=AAPL" in p for p in paths)
-    assert not any("symbol=MSFT" in p for p in paths)  # not manifested — it is gone
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        rebuild_silver.run(["--tickers", "AAPL"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    assert (silver / "revisions/current.json").read_bytes() == current_before
 
 
 def test_an_unreadable_published_artifact_is_treated_as_changed(tmp_path):
@@ -818,86 +820,19 @@ def test_an_unreadable_published_artifact_is_treated_as_changed(tmp_path):
     root, silver = tmp_path / "lake", tmp_path / "silver"
     _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
     rebuild_silver.run(["--tickers", "AAPL"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
-    (silver / "asset_class=equity/symbol=AAPL/1d.parquet").write_bytes(b"not a parquet")
+    old_path = _silver_artifact(silver, "AAPL", "/1d.parquet")
+    old_path.write_bytes(b"not a parquet")
 
     assert (
         rebuild_silver.run(["--tickers", "AAPL"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
         == 0
     )
 
-    published = pq.ParquetFile(silver / "asset_class=equity/symbol=AAPL/1d.parquet").read().to_pylist()
+    published = pq.ParquetFile(_silver_artifact(silver, "AAPL", "/1d.parquet")).read().to_pylist()
     assert len(published) == 2  # republished over the corruption
 
 
-def test_eviction_is_retried_after_a_previous_run_left_the_file_behind(tmp_path):
-    """A committed manifest omitting Q plus a failed eviction is a reachable state, and
-    every later run then assembles that SAME manifest. The publisher dedupes an
-    identical manifest to the current revision (silver_revision.py:110), which trips
-    the transaction's reserved-revision guard (:65) — so the run would crash before
-    reaching the eviction retry and Q would serve its stale artifact forever.
-    Real INTC closes around its real 2000-07-31 1:2 split; NVDA is the control."""
-    root, silver = tmp_path / "lake", tmp_path / "silver"
-    _seed_bronze(root, "INTC", [("2000-07-27", 137.00), ("2000-07-28", 129.13), ("2000-08-01", 64.63)])
-    _seed_bronze(root, "NVDA", [("2000-07-27", 1.71), ("2000-07-28", 1.66), ("2000-08-01", 1.80)])
-    args = ["--tickers", "INTC", "NVDA"]
-    assert rebuild_silver.run(args, data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17)) == 0
-    served = silver / "asset_class=equity/symbol=INTC/1d.parquet"
-    assert served.is_file()
-
-    # INTC becomes unstageable: `unknown` basis against a split it cannot resolve.
-    _seed_bronze(
-        root,
-        "INTC",
-        [("2000-07-27", 137.00), ("2000-07-28", 129.13), ("2000-08-01", 64.63)],
-        source="legacy",
-        price_basis="unknown",
-    )
-    _seed_split(root, "INTC", "2000-07-31", 1, 2)
-    rebuild_silver.run(args, data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
-    assert not served.is_file()  # evicted, manifest committed without it
-
-    # Simulate that run's eviction having failed AFTER the commit (os.replace can fail
-    # on a full or read-only volume): the manifest is already right, only the file is
-    # stale. The next run must retry the eviction rather than abort.
-    evicted_copy = next((silver / "evicted").rglob("symbol=INTC/1d.parquet"))
-    served.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(evicted_copy, served)
-
-    rebuild_silver.run(args, data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
-    assert not served.is_file()  # re-evicted, not left serving stale data
-
-
-def test_full_rebuild_remanifests_orphaned_silver_files(tmp_path, capsys):
-    # Two clean symbols → a full rebuild publishes both.
-    _bronze(tmp_path, "AAA")
-    _bronze(tmp_path, "BBB")
-    silver = tmp_path / "silver"
-    assert rebuild_silver.run(["--full"], data_lake_root=tmp_path, silver_root=silver) == 0
-    capsys.readouterr()
-
-    # Simulate manifest drift a past --tickers rebuild could leave: drop BBB from the
-    # manifest but keep its (still-correct) file on disk → an orphan apex can't serve.
-    current_path = silver / "revisions/current.json"
-    manifest = json.loads(current_path.read_text())
-    manifest["affected"] = [a for a in manifest["affected"] if a["symbol"] != "BBB"]
-    manifest["artifacts"] = [a for a in manifest["artifacts"] if "symbol=BBB" not in a["path"]]
-    current_path.write_text(json.dumps(manifest))
-    assert (silver / "asset_class=equity/symbol=BBB/1d.parquet").is_file()
-
-    # A full rebuild must re-manifest the orphan by reference (no rewrite) and advance rev.
-    assert rebuild_silver.run(["--full"], data_lake_root=tmp_path, silver_root=silver) == 0
-    summary = _summary_from(capsys)
-    assert summary["orphans_remanifested"] == 1
-    assert summary["rebuilt"] == 0  # BBB carried by reference, AAA unchanged
-    remanifested = json.loads(current_path.read_text())
-    assert {a["symbol"] for a in remanifested["affected"]} == {"AAA", "BBB"}
-
-
-def test_carried_symbol_takes_its_sha_from_disk_not_the_stale_manifest(tmp_path):
-    """The 2026-09-06 shape: a killed publish left MSFT's bytes on disk ahead of the
-    committed manifest. Staging then reproduces exactly those bytes, so MSFT is never
-    ``changed``, is carried forward, and a manifest sha from the previous revision makes
-    ``_validate_artifacts`` raise ``artifact checksum mismatch`` on every later run."""
+def test_carried_symbol_rejects_disk_bytes_that_disagree_with_manifest(tmp_path):
     root, silver = tmp_path / "lake", tmp_path / "silver"
     _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25)])
     _seed_bronze(root, "MSFT", [("2024-01-02", 370.87), ("2024-01-03", 370.60)])
@@ -905,18 +840,17 @@ def test_carried_symbol_takes_its_sha_from_disk_not_the_stale_manifest(tmp_path)
 
     # The interrupted run rewrote MSFT's artifacts and died before committing: same rows
     # (so staging still calls them unchanged), different bytes from the manifest's sha.
-    carried = silver / "adjustments/asset_class=equity/symbol=MSFT/factors.parquet"
+    current_before = (silver / "revisions/current.json").read_bytes()
+    carried = _silver_artifact(silver, "MSFT", "/factors.parquet")
     manifest_sha = hashlib.sha256(carried.read_bytes()).hexdigest()
     pq.write_table(pq.ParquetFile(carried).read(), carried, compression="gzip")
     assert hashlib.sha256(carried.read_bytes()).hexdigest() != manifest_sha
     # One genuinely changed symbol, so the run reaches the publish transaction at all.
     _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25), ("2024-01-04", 181.91)])
 
-    assert rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17)) == 0
-
-    current = json.loads((silver / "revisions/current.json").read_text())
-    entry = next(a for a in current["artifacts"] if a["path"].endswith("symbol=MSFT/factors.parquet"))
-    assert entry["sha256"] == hashlib.sha256(carried.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        rebuild_silver.run(["--tickers", "AAPL"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    assert (silver / "revisions/current.json").read_bytes() == current_before
 
 
 def test_full_rebuild_heartbeats_progress_to_the_ledger(tmp_path, monkeypatch):

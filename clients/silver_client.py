@@ -49,15 +49,27 @@ class SilverClient:
         ]
     )
 
-    def __init__(self, silver_root: Path):
+    def __init__(self, silver_root: Path, generation_id: str | None = None):
         self.root = Path(silver_root)
+        if generation_id is not None and (
+            generation_id in {"", ".", ".."} or Path(generation_id).name != generation_id
+        ):
+            raise ValueError("generation_id must be one path segment")
+        self.generation_id = generation_id
+        self.output_root = self.root if generation_id is None else self.root / "generations" / generation_id
+
+    def for_generation(self, generation_id: str) -> SilverClient:
+        """Return a writer whose artifacts are immutable within one publish attempt."""
+        return type(self)(self.root, generation_id)
 
     def daily_path(self, symbol: str) -> Path:
-        return self.root / "asset_class=equity" / f"symbol={encode_symbol(canonical_symbol(symbol))}" / "1d.parquet"
+        return (
+            self.output_root / "asset_class=equity" / f"symbol={encode_symbol(canonical_symbol(symbol))}" / "1d.parquet"
+        )
 
     def factor_path(self, symbol: str) -> Path:
         return (
-            self.root
+            self.output_root
             / "adjustments"
             / "asset_class=equity"
             / f"symbol={encode_symbol(canonical_symbol(symbol))}"
@@ -107,9 +119,10 @@ class SilverClient:
         table = pa.Table.from_pylist(rows, schema=self.factor_schema)
         return self._publish(self.factor_path(symbol), table, "effective_start")
 
-    @staticmethod
-    def _publish(path: Path, table: pa.Table, sort_column: str) -> PublishedArtifact:
+    def _publish(self, path: Path, table: pa.Table, sort_column: str) -> PublishedArtifact:
         with symbol_lock(path):
+            if self.generation_id is not None and path.exists():
+                raise FileExistsError(f"immutable Silver artifact already exists: {path}")
             publish_parquet(path, table, sort_column=sort_column)
             checksum = hashlib.sha256(path.read_bytes()).hexdigest()
         return PublishedArtifact(path=path, sha256=checksum, row_count=table.num_rows)

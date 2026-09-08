@@ -426,7 +426,7 @@ class TestMain:
 
         archived = []
 
-        def fake_archive(src, dst):
+        def fake_archive(src, *args, **kwargs):
             archived.append(src)
 
         with (
@@ -435,7 +435,7 @@ class TestMain:
             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
             patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
             patch.dict(os.environ, {"MDW_LOG_DIR": str(log_dir)}),
-            patch("shutil.move", fake_archive),
+            patch("livewire_scripts.universe_screener.archive_symbol", fake_archive),
             patch("subprocess.run"),
         ):
             main(["--force"])
@@ -508,7 +508,7 @@ class TestMain:
 
         archived = []
 
-        def fake_move(src, dst):
+        def fake_move(src, *args, **kwargs):
             archived.append(src)
 
         with (
@@ -517,7 +517,7 @@ class TestMain:
             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
             patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
             patch.dict(os.environ, {"MDW_LOG_DIR": str(log_dir)}),
-            patch("shutil.move", fake_move),
+            patch("livewire_scripts.universe_screener.archive_symbol", fake_move),
             patch("subprocess.run"),
         ):
             main(["--force"])
@@ -614,10 +614,7 @@ class TestMain:
         # Scanner returns only new tickers (OLDTICKER absent)
         mock_ib_client = _make_mock_ib_client(["AAPL"])
 
-        moves = []
-
-        def fake_move(src, dst):
-            moves.append((src, dst))
+        old_bytes = (old_sym_dir / "1d.parquet").read_bytes()
 
         with (
             patch("livewire_scripts.universe_screener.is_trading_day", return_value=True),
@@ -625,15 +622,16 @@ class TestMain:
             patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
             patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
             patch.dict(os.environ, {"MDW_LOG_DIR": str(log_dir)}),
-            patch("shutil.move", fake_move),
             patch("subprocess.run"),
         ):
             main(["--force"])
 
         # OLDTICKER should have been archived
-        assert len(moves) == 1
-        assert "OLDTICKER" in moves[0][0]
-        assert "bronze-delisted" in moves[0][1]
+        archived = data_lake / "bronze-delisted/asset_class=equity/symbol=OLDTICKER/1d.parquet"
+        assert archived.read_bytes() == old_bytes
+        assert not old_sym_dir.exists()
+        assert (bronze_dir / ".inputs.lock").exists()
+        assert (bronze_dir / ".symbol-locks/symbol=OLDTICKER.lock").exists()
 
     def test_already_ran_today_exits(self, tmp_path, monkeypatch):
         """Already ran today skips without --force."""

@@ -15,8 +15,9 @@ symbol's history to the current window.
 
 from __future__ import annotations
 
+import logging
 import threading
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import BrokenExecutor, ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from clients.bronze_client import BronzeClient
 from clients.massive_daily_flatfile_store import MassiveDailyFlatfileStore
 from clients.massive_flatfile_state import MassiveFlatfileState
 from clients.symbol_ids import stable_symbol_id
+
+log = logging.getLogger(__name__)
 
 
 def _bronze_rows(ticker: str, rows: list[dict]) -> list[dict]:
@@ -55,10 +58,10 @@ def _process_bucket_worker(
     days_iso: list[str],
     bucket: int,
     protected_symbols: frozenset[str],
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, list[dict[str, str]]]:
     """ProcessPool entrypoint — each worker re-instantiates its own clients.
 
-    Returns (tickers_written, rows_written, tickers_skipped).
+    Returns (tickers_written, rows_written, tickers_skipped, failures).
     """
     days = [date.fromisoformat(d) for d in days_iso]
     store = MassiveDailyFlatfileStore(Path(warehouse_dir), bucket_count=bucket_count)
@@ -66,18 +69,26 @@ def _process_bucket_worker(
     written = 0
     skipped = 0
     rows_written = 0
-    for ticker, raw_rows in store.scan_bucket_by_ticker(bucket, days):
-        if ticker in protected_symbols:
-            skipped += 1
-            continue
-        rows = _bronze_rows(ticker, raw_rows)
-        if not rows:
-            continue
-        # Merge, never replace: replace would truncate this symbol's history to
-        # the current catch-up window on every re-run.
-        rows_written += bronze.merge_ticker_rows(ticker, rows)
-        written += 1
-    return written, rows_written, skipped
+    failures = []
+    try:
+        for ticker, raw_rows in store.scan_bucket_by_ticker(bucket, days):
+            if ticker in protected_symbols:
+                skipped += 1
+                continue
+            try:
+                rows = _bronze_rows(ticker, raw_rows)
+                if not rows:
+                    continue
+                # Merge keeps history outside this catch-up window intact.
+                rows_written += bronze.merge_ticker_rows(ticker, rows)
+                written += 1
+            except (ValueError, OSError, TypeError, KeyError) as exc:
+                failures.append({"symbol": ticker, "error": f"{type(exc).__name__}: {exc}"})
+    except Exception as exc:
+        # A raw-bucket decode/scan failure cannot identify every remaining ticker.
+        # Preserve completed work and leave this bucket retryable.
+        failures.append({"symbol": f"bucket:{bucket}", "error": f"{type(exc).__name__}: {exc}"})
+    return written, rows_written, skipped, failures
 
 
 def publish_daily_dates(
@@ -104,11 +115,11 @@ def publish_daily_dates(
     fall back to threads (e.g. for in-test stubbing).
     """
     if not days:
-        return {"tickers": 0, "rows_1d": 0, "skipped_existing": 0}
+        return {"tickers": 0, "rows_1d": 0, "skipped_existing": 0, "failed": 0}
     scope = scope or f"daily_{days[0].isoformat()}_{days[-1].isoformat()}_{len(days)}"
     if protected_symbols is None:
         protected_symbols = frozenset()
-    totals = {"tickers": 0, "rows_1d": 0, "skipped_existing": 0}
+    totals = {"tickers": 0, "rows_1d": 0, "skipped_existing": 0, "failed": 0}
     totals_lock = threading.Lock()
 
     buckets = sorted(store.available_buckets(days))
@@ -117,25 +128,42 @@ def publish_daily_dates(
     def _record_start(bucket: int) -> None:
         state.record("bucket_started", scope=scope, bucket=bucket)
 
-    def _record_done(bucket: int, written: int, rows: int, skipped: int) -> None:
+    def _record_done(bucket: int, written: int, rows: int, skipped: int, failures: list[dict[str, str]]) -> None:
         with totals_lock:
             totals["tickers"] += written
             totals["rows_1d"] += rows
             totals["skipped_existing"] += skipped
-        state.mark_bucket_completed(scope, bucket)
+            totals["failed"] += len(failures)
+        if failures:
+            for failure in failures:
+                log.error(
+                    "Daily publish failed: bucket=%d symbol=%s error=%s; healthy work continues, bucket retry required",
+                    bucket,
+                    failure["symbol"],
+                    failure["error"],
+                )
+                state.record("bucket_failed", scope=scope, bucket=bucket, **failure)
+        else:
+            state.mark_bucket_completed(scope, bucket)
 
     if workers <= 1:
         for bucket in pending:
             _record_start(bucket)
-            written, rows, skipped = _process_bucket_worker(
-                str(store.warehouse_dir),
-                store.bucket_count,
-                str(bronze_dir),
-                [d.isoformat() for d in days],
-                bucket,
-                protected_symbols,
-            )
-            _record_done(bucket, written, rows, skipped)
+            try:
+                written, rows, skipped, failures = _process_bucket_worker(
+                    str(store.warehouse_dir),
+                    store.bucket_count,
+                    str(bronze_dir),
+                    [d.isoformat() for d in days],
+                    bucket,
+                    protected_symbols,
+                )
+            except BrokenExecutor:
+                raise
+            except Exception as exc:
+                written, rows, skipped = 0, 0, 0
+                failures = [{"symbol": f"bucket:{bucket}", "error": f"{type(exc).__name__}: {exc}"}]
+            _record_done(bucket, written, rows, skipped, failures)
         return totals
 
     executor_cls = ProcessPoolExecutor if use_processes else ThreadPoolExecutor
@@ -154,18 +182,14 @@ def publish_daily_dates(
                 protected_symbols,
             )
             futures[fut] = bucket
-        first_exc: Exception | None = None
         for fut in as_completed(futures):
             bucket = futures[fut]
             try:
-                written, rows, skipped = fut.result()
+                written, rows, skipped, failures = fut.result()
+            except BrokenExecutor:
+                raise  # Pool loss is a lane failure, never a successful partial run.
             except Exception as exc:
-                if first_exc is None:
-                    first_exc = exc
-                    for pending_fut in futures:
-                        pending_fut.cancel()
-                continue
-            _record_done(bucket, written, rows, skipped)
-        if first_exc is not None:
-            raise first_exc
+                written, rows, skipped = 0, 0, 0
+                failures = [{"symbol": f"bucket:{bucket}", "error": f"{type(exc).__name__}: {exc}"}]
+            _record_done(bucket, written, rows, skipped, failures)
     return totals

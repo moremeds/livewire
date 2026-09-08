@@ -70,7 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         cursor_dir(),
         name="massive_daily_flatfile",
     )
-    with MassiveFlatfileClient(prefix=S3_PREFIX_DAILY) as client:
+    with state.exclusive(), MassiveFlatfileClient(prefix=S3_PREFIX_DAILY) as client:
         plan = discover_plan(client, warehouse)
         log.info(
             "Massive day_aggs flat files: %s to %s, %d days, %.3f GiB compressed, %.3f GiB projected, %.2f GiB free",
@@ -99,25 +99,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         download_stats = download_dates(
             client, store, state, dates, replace=args.mode == "repair", workers=args.workers
         )
-    bronze_dir = warehouse / "data-lake" / "bronze" / "asset_class=equity"
-    scope = f"daily_{args.mode}_{dates[0].isoformat()}_{dates[-1].isoformat()}_{len(dates)}"
-    if args.mode == "repair":
-        state.reset_publish_scope(scope)
-    publish_stats = publish_daily_dates(
-        store,
-        state,
-        dates,
-        bronze_dir,
-        scope=scope,
-        workers=args.workers,
-        protected_symbols=frozenset(ticker_union(args.protect_preset)),
-    )
-    log.info(
-        "Downloaded=%d skipped=%d published_tickers=%d rows=%d skipped_existing=%d",
-        download_stats.downloaded,
-        download_stats.skipped,
-        publish_stats["tickers"],
-        publish_stats["rows_1d"],
-        publish_stats["skipped_existing"],
-    )
-    return 0
+        bronze_dir = warehouse / "data-lake" / "bronze" / "asset_class=equity"
+        scope = f"daily_{args.mode}_{dates[0].isoformat()}_{dates[-1].isoformat()}_{len(dates)}"
+        if args.mode == "repair":
+            state.reset_publish_scope(scope)
+        publish_stats = publish_daily_dates(
+            store,
+            state,
+            dates,
+            bronze_dir,
+            scope=scope,
+            workers=args.workers,
+            protected_symbols=frozenset(ticker_union(args.protect_preset)),
+        )
+        log.info(
+            "Downloaded=%d skipped=%d published_tickers=%d rows=%d skipped_existing=%d failed=%d",
+            download_stats.downloaded,
+            download_stats.skipped,
+            publish_stats["tickers"],
+            publish_stats["rows_1d"],
+            publish_stats["skipped_existing"],
+            publish_stats.get("failed", 0),
+        )
+        return 1 if publish_stats.get("failed", 0) else 0

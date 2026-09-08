@@ -10,6 +10,49 @@ import pytest
 from livewire_scripts.migrate_parquet_filename import main, migrate_parquet_files
 
 
+def test_filename_migration_waits_for_legacy_writer_before_renaming(tmp_path):
+    import subprocess
+    import sys
+    import time
+
+    from clients.parquet_io import path_lock
+
+    root = tmp_path / "bronze"
+    old = root / "asset_class=equity/symbol=AAPL/data.parquet"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"original")
+    ready = tmp_path / "ready"
+    child = """
+import sys
+from pathlib import Path
+from livewire_scripts.migrate_parquet_filename import migrate_parquet_files
+Path(sys.argv[2]).touch()
+migrate_parquet_files(Path(sys.argv[1]))
+"""
+    proc = None
+    try:
+        with path_lock(old.with_suffix(".parquet.lock")):
+            proc = subprocess.Popen(
+                [sys.executable, "-c", child, str(root), str(ready)],
+                cwd=Path(__file__).resolve().parents[1],
+            )
+            deadline = time.monotonic() + 10
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert ready.exists()
+            with pytest.raises(subprocess.TimeoutExpired):
+                proc.wait(timeout=0.1)
+            assert old.exists() and not old.with_name("1d.parquet").exists()
+            old.write_bytes(b"writer completed")
+        assert proc.wait(timeout=10) == 0
+        assert old.with_name("1d.parquet").read_bytes() == b"writer completed"
+        assert not old.exists()
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+
+
 class TestMigrateParquetFilename:
     def test_renames_data_to_1d(self, tmp_path):
         bronze = tmp_path / "bronze" / "asset_class=equity"

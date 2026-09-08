@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pyarrow as pa
@@ -9,6 +9,8 @@ import pyarrow.parquet as pq
 import pytest
 
 from clients.massive_client import MassiveDailyBar
+from clients.silver_client import PublishedArtifact
+from clients.silver_revision import AffectedSymbol, SilverRevisionPublisher
 from clients.symbol_paths import encode_symbol
 from livewire_scripts.validate_adjusted_history import run
 
@@ -49,6 +51,28 @@ def _write_history(root: Path, symbol: str = "TEST") -> tuple[Path, Path]:
         row.pop("price_basis")
     pq.write_table(pa.Table.from_pylist(bronze), bronze_path)
     pq.write_table(pa.Table.from_pylist(silver), silver_path)
+    factor = root / "silver/adjustments/asset_class=equity" / f"symbol={encode_symbol(symbol)}" / "factors.parquet"
+    factor.parent.mkdir(parents=True)
+    pq.write_table(
+        pa.table(
+            {
+                "effective_start": [DATES[0]],
+                "effective_end": [DATES[-1]],
+                "price_adjustment_factor": [1.0],
+                "split_volume_factor": [1.0],
+                "adjustment_revision": [1],
+            }
+        ),
+        factor,
+    )
+    SilverRevisionPublisher(root / "silver").publish(
+        [
+            PublishedArtifact(path, hashlib.sha256(path.read_bytes()).hexdigest(), len(silver))
+            for path in (silver_path, factor)
+        ],
+        [AffectedSymbol(symbol, DATES[0], ("1d",))],
+        datetime(2024, 1, 4, tzinfo=UTC),
+    )
     return bronze_path, silver_path
 
 

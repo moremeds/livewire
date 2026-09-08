@@ -118,8 +118,31 @@ def lake(tmp_path: Path) -> Path:
 def silver(tmp_path: Path) -> Path:
     """Silver holding only NVDA — HON is absent, mirroring the real gap."""
     root = tmp_path / "silver"
-    _write_symbol(root / "asset_class=equity", "NVDA")
+    _write_silver(root)
     return root
+
+
+def _write_silver(root: Path) -> None:
+    artifact = _write_symbol(root / "generations/test/asset_class=equity", "NVDA")
+    factor = root / "generations/test/adjustments/asset_class=equity/symbol=NVDA/factors.parquet"
+    factor.parent.mkdir(parents=True)
+    pq.write_table(
+        pa.table(
+            {
+                "effective_start": [date(2026, 7, 30)],
+                "effective_end": [date(2026, 8, 1)],
+                "price_adjustment_factor": [1.0],
+                "split_volume_factor": [1.0],
+                "adjustment_revision": [1],
+            }
+        ),
+        factor,
+    )
+    SilverRevisionPublisher(root).publish(
+        [PublishedArtifact(path, hashlib.sha256(path.read_bytes()).hexdigest(), 2) for path in (artifact, factor)],
+        [AffectedSymbol("NVDA", date(2026, 7, 30), ("1d",))],
+        datetime(2026, 8, 1, tzinfo=UTC),
+    )
 
 
 def test_view_specs_resolve_against_supplied_roots(lake: Path, silver: Path) -> None:
@@ -324,6 +347,47 @@ def test_build_coverage_leaves_no_staging_artifacts(tmp_path: Path, lake: Path, 
     assert not dest.with_name(dest.name + ".building").exists()
     assert not dest.with_name(dest.name + ".building.wal").exists()
     assert not dest.with_name(dest.name + ".wal").exists()
+
+
+def test_concurrent_catalog_builder_waits_before_touching_shared_staging(tmp_path, lake, silver):
+    import subprocess
+    import sys
+    import time
+
+    from clients.parquet_io import path_lock
+
+    dest = tmp_path / "analytics.duckdb"
+    staging = dest.with_name(dest.name + ".building")
+    ready = tmp_path / "ready"
+    child = """
+import sys
+from pathlib import Path
+from clients.duckdb_catalog import build_coverage
+dest, lake, silver, ready = map(Path, sys.argv[1:])
+ready.touch()
+build_coverage(dest, lake_root=lake, silver_root=silver)
+"""
+    proc = None
+    try:
+        with path_lock(dest.with_name(dest.name + ".publish.lock")):
+            staging.write_bytes(b"another build owns this staging file")
+            proc = subprocess.Popen(
+                [sys.executable, "-c", child, str(dest), str(lake), str(silver), str(ready)],
+                cwd=Path(__file__).resolve().parents[1],
+            )
+            deadline = time.monotonic() + 10
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert ready.exists()
+            with pytest.raises(subprocess.TimeoutExpired):
+                proc.wait(timeout=0.1)
+            assert staging.read_bytes() == b"another build owns this staging file"
+        assert proc.wait(timeout=10) == 0
+        assert dest.exists() and not staging.exists()
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
 
 
 def test_build_coverage_replaces_previous_database(tmp_path: Path, lake: Path, silver: Path) -> None:

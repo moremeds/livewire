@@ -24,12 +24,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import shutil
 from datetime import date, timedelta
 from pathlib import Path
 
 import pyarrow.parquet as pq
 
+from clients.parquet_io import fsync_directory, path_lock, symbol_directory_lock
 from livewire_scripts.paths import warehouse_dir
 
 _DEFAULT_UNIVERSE_DAYS = 20
@@ -117,14 +117,19 @@ def archive_symbol(
 
     Returns one of: ``"archived"``, ``"skipped_exists"``, ``"dry_run"``.
     """
-    dst = delisted_equity / f"symbol={sym}"
-    if dst.exists():
-        return "skipped_exists"
+    src = bronze_equity / f"symbol={sym}"
+    dst = delisted_equity / src.name
     if dry_run:
-        return "dry_run"
-    delisted_equity.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(bronze_equity / f"symbol={sym}"), str(dst))
-    return "archived"
+        return "skipped_exists" if dst.exists() else "dry_run"
+    with path_lock(bronze_equity / ".inputs.lock"), symbol_directory_lock(src):
+        if dst.exists():
+            return "skipped_exists"
+        delisted_equity.mkdir(parents=True, exist_ok=True)
+        # Refuse cross-device copy/delete: a crash must leave one whole partition.
+        src.rename(dst)
+        fsync_directory(bronze_equity)
+        fsync_directory(delisted_equity)
+        return "archived"
 
 
 def _staleness_cutoff(dates_used: list[str], staleness_days: int) -> str:

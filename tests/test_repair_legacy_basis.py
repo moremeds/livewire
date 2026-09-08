@@ -2,10 +2,46 @@ import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
+import pytest
+
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.massive_client import MassiveSplit
 from livewire_scripts import repair_legacy_basis
+
+
+@pytest.mark.parametrize("changed", ["bronze", "actions"])
+def test_repair_rejects_inputs_changed_during_unlocked_fetch(tmp_path, changed):
+    _seed_mixed(tmp_path, "NVDA")
+    bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
+    store = CorporateActionStore(tmp_path)
+    path = bronze.symbol_path("NVDA")
+    observed = {}
+
+    def fetch(*args):
+        # Real canonical writers must be able to run while the provider is active.
+        if changed == "bronze":
+            row = {**bronze.read_symbol_rows("NVDA")[-1], "trade_date": "2021-06-22"}
+            bronze.merge_ticker_rows("NVDA", [row])
+        else:
+            store.reconcile("NVDA", [], datetime(2022, 1, 1, tzinfo=UTC), full_reconcile=True)
+        observed["bytes"] = path.read_bytes()
+        return _clean_ib_rows_for("NVDA")
+
+    status, sidecar = repair_legacy_basis._repair_one(
+        "NVDA",
+        bronze=bronze,
+        store=store,
+        fetcher=fetch,
+        as_of=date(2026, 7, 17),
+        threshold=6.0,
+        backup_dir=tmp_path / "out/backup",
+        audit_sha256=None,
+    )
+    assert status == "failed"
+    assert "inputs changed" in sidecar["reason"]
+    assert path.read_bytes() == observed["bytes"]
+    assert not (tmp_path / "out/backup").exists()
 
 
 def _seed_mixed(root, ticker):

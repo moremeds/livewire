@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from clients.parquet_io import fsync_directory
 from clients.silver_client import PublishedArtifact
 from clients.symbol_paths import canonical_symbol
 
@@ -58,10 +59,19 @@ class SilverRevisionTransaction:
         artifacts: list[PublishedArtifact],
         affected: list[AffectedSymbol],
         actions_as_of: datetime,
+        *,
+        generation_id: str | None = None,
     ) -> SilverRevision:
         if self._committed:
             raise RuntimeError("Silver revision transaction already committed")
-        result = self.publisher._publish_locked(artifacts, affected, actions_as_of)
+        result = self.publisher._publish_locked(
+            artifacts,
+            affected,
+            actions_as_of,
+            current=self.current,
+            revision=self.revision,
+            generation_id=generation_id,
+        )
         # An identical manifest is a no-op: _publish_locked writes nothing and returns
         # the CURRENT revision, leaving the reservation unused. That is success, not a
         # failed commit. The caller cannot predict it -- whether the assembled manifest
@@ -90,9 +100,21 @@ class SilverRevisionPublisher:
         affected: list[AffectedSymbol],
         actions_as_of: datetime,
         published_at: datetime | None = None,
+        generation_id: str | None = None,
     ) -> SilverRevision:
         with self._lock():
-            return self._publish_locked(artifacts, affected, actions_as_of, published_at)
+            current = self._read_current()
+            self._quarantine_ahead_manifests(current)
+            revision = 1 if current is None else current.revision + 1
+            return self._publish_locked(
+                artifacts,
+                affected,
+                actions_as_of,
+                published_at,
+                current=current,
+                revision=revision,
+                generation_id=generation_id,
+            )
 
     def read_current(self) -> SilverRevision | None:
         """Read the current committed revision without creating the Silver root."""
@@ -102,8 +124,8 @@ class SilverRevisionPublisher:
     def transaction(self) -> Iterator[SilverRevisionTransaction]:
         """Reserve the next revision while holding the cross-process publish lock."""
         with self._lock():
-            self._recover_orphans()
             current = self._read_current()
+            self._quarantine_ahead_manifests(current)
             revision = 1 if current is None else current.revision + 1
             yield SilverRevisionTransaction(self, current, revision)
 
@@ -113,20 +135,43 @@ class SilverRevisionPublisher:
         affected: list[AffectedSymbol],
         actions_as_of: datetime,
         published_at: datetime | None = None,
+        *,
+        current: SilverRevision | None = None,
+        revision: int | None = None,
+        generation_id: str | None = None,
     ) -> SilverRevision:
         manifest_artifacts = self._validate_artifacts(artifacts)
         normalized_affected = self._validate_affected(affected)
-        self._recover_orphans()
-        current = self._read_current()
         if current and current.artifacts == manifest_artifacts and current.affected == normalized_affected:
             return current
 
-        revision = 1 if current is None else current.revision + 1
+        if revision is None:
+            current = self._read_current()
+            revision = 1 if current is None else current.revision + 1
+        previous = set(current.artifacts) if current is not None else set()
+        directories: set[Path] = set()
+        root = self.root.resolve()
+        for artifact in manifest_artifacts:
+            if artifact in previous:
+                continue
+            path = root / artifact.path
+            with path.open("rb") as handle:
+                os.fsync(handle.fileno())
+            directory = path.parent
+            while directory.is_relative_to(root):
+                directories.add(directory)
+                if directory == root:
+                    break
+                directory = directory.parent
+        # Flush each new directory once, after all its entries exist. Repeating
+        # ancestry fsync for each artifact adds tens of thousands of disk flushes.
+        for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+            fsync_directory(directory)
         # ponytail: an injectable clock, because a manifest stamped from the wall clock
         # cannot be tested against a frozen PIT as-of -- freeze one half and the pair
         # collides at some midnight. Production passes nothing and still gets now().
         published_at = (published_at or datetime.now(UTC)).astimezone(UTC)
-        generation_id = f"{published_at.strftime('%Y%m%dT%H%M%SZ')}-{revision}"
+        generation_id = generation_id or f"{published_at.strftime('%Y%m%dT%H%M%SZ')}-{revision}"
         silver_revision = SilverRevision(
             schema_version=1,
             revision=revision,
@@ -140,44 +185,24 @@ class SilverRevisionPublisher:
         immutable_path = self.revisions_dir / f"revision={revision}.json"
         self.revisions_dir.mkdir(parents=True, exist_ok=True)
         self._write_immutable(immutable_path, payload)
-        try:
-            self._replace_current(payload)
-        except Exception:
-            immutable_path.unlink(missing_ok=True)
-            raise
+        self._replace_current(payload)
         return silver_revision
 
-    def _recover_orphans(self) -> None:
-        """Reconcile a manifest left behind by a kill between the immutable write and
-        the ``current.json`` swap: the ``except`` that unlinks it never runs under
-        SIGKILL, so every later publish recomputed the same revision and died on
-        ``open("xb")`` -- permanently. A manifest at exactly ``current + 1`` that still
-        validates is adopted; anything else is quarantined, never deleted.
+    def _quarantine_ahead_manifests(self, current: SilverRevision | None) -> None:
+        """Move all manifests ahead of ``current.json`` aside without adopting them.
+
+        The pointer swap is the only commit point. A manifest left by a killed writer
+        is therefore uncommitted even when its body is valid; its generation files are
+        deliberately retained for later garbage collection.
         """
-        current = self._read_current()
         current_revision = 0 if current is None else current.revision
         candidates = sorted(
             (int(path.stem.split("=", 1)[1]), path)
             for path in self.revisions_dir.glob("revision=*.json")
             if path.stem.split("=", 1)[1].isdigit() and int(path.stem.split("=", 1)[1]) > current_revision
         )
-        for revision, path in candidates:
-            if revision != current_revision + 1 or not self._manifest_self_identifies(path, revision):
-                self._quarantine(path)
-                continue
-            self._replace_current(path.read_bytes())
-            current_revision = revision
-
-    @staticmethod
-    def _manifest_self_identifies(path: Path, revision: int) -> bool:
-        # The honest minimum, and deliberately not more: re-hashing the manifest's
-        # artifacts would re-read the whole Silver tree off a cold exFAT lake on every
-        # publish, and the publisher hashed them already before it wrote this file.
-        try:
-            payload = json.loads(path.read_bytes())
-        except (OSError, ValueError):
-            return False
-        return isinstance(payload, dict) and payload.get("schema_version") == 1 and payload.get("revision") == revision
+        for _, path in candidates:
+            self._quarantine(path)
 
     def _quarantine(self, path: Path) -> None:
         quarantine = self.revisions_dir / "quarantine"
@@ -230,12 +255,17 @@ class SilverRevisionPublisher:
     def _read_current(self) -> SilverRevision | None:
         if not self.current_path.exists():
             return None
-        payload = json.loads(self.current_path.read_text(encoding="utf-8"))
+        current_bytes = self.current_path.read_bytes()
+        payload = json.loads(current_bytes)
         if payload.get("schema_version") != 1:
             raise ValueError("unsupported Silver revision schema")
+        revision = int(payload["revision"])
+        immutable_path = self.revisions_dir / f"revision={revision}.json"
+        if not immutable_path.is_file() or immutable_path.read_bytes() != current_bytes:
+            raise ValueError("Silver current pointer differs from immutable manifest")
         return SilverRevision(
             schema_version=1,
-            revision=int(payload["revision"]),
+            revision=revision,
             generation_id=str(payload["generation_id"]),
             published_at=self._parse_timestamp(payload["published_at"]),
             corporate_actions_as_of=self._parse_timestamp(payload["corporate_actions_as_of"]),
@@ -284,6 +314,7 @@ class SilverRevisionPublisher:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+        fsync_directory(path.parent)
 
     def _replace_current(self, payload: bytes) -> None:
         temp_path = self.revisions_dir / f".current.{os.getpid()}.{time.time_ns()}.tmp"
@@ -293,6 +324,7 @@ class SilverRevisionPublisher:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp_path, self.current_path)
+            fsync_directory(self.revisions_dir)
         finally:
             temp_path.unlink(missing_ok=True)
 

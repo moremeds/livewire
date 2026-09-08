@@ -5,13 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import shutil
 from collections.abc import Sequence
 from pathlib import Path
 
 from clients.bronze_client import BronzeClient
-from clients.parquet_io import symbol_lock, write_json_atomic
+from clients.parquet_io import restore_parquet_exact, symbol_lock, write_json_atomic
 from clients.source_evidence import sha256_file
 from livewire_scripts.paths import data_lake_dir
 
@@ -24,15 +22,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     mode.add_argument("--rollback", action="store_true")
     parser.add_argument("--data-lake-root", type=Path)
     return parser.parse_args(list(argv) if argv is not None else None)
-
-
-def _restore_exact(backup: Path, target: Path) -> None:
-    temp = target.with_name(f".{target.name}.{os.getpid()}.rollback.tmp")
-    try:
-        shutil.copyfile(backup, temp)
-        os.replace(temp, target)
-    finally:
-        temp.unlink(missing_ok=True)
 
 
 def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None) -> int:
@@ -76,15 +65,13 @@ def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None
                     raise ValueError(f"{item['symbol']}: rollback backup is missing")
                 if sha256_file(target) != item.get("applied_sha256"):
                     raise ValueError(f"{item['symbol']}: stale target blocks rollback")
-                _restore_exact(backup, target)
-                if sha256_file(target) != item["source_sha256"]:
-                    raise ValueError(f"{item['symbol']}: rollback hash mismatch")
+                restore_parquet_exact(backup, target, item["source_sha256"])
             else:
                 if sha256_file(target) != item["source_sha256"]:
                     raise ValueError(f"{item['symbol']}: stale manifest source hash")
                 backup = manifest_path.with_name(f"{item['symbol']}.{item['source_sha256']}.parquet.bak")
                 if not backup.exists():
-                    shutil.copyfile(target, backup)
+                    restore_parquet_exact(target, backup, item["source_sha256"])
                 rows = client.read_symbol_rows(item["symbol"])
                 by_date = {row["trade_date"]: row for row in rows}
                 for replacement in item["replacements"]:

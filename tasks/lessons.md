@@ -8,6 +8,13 @@
   handling, next action and recovery condition. Aggregate persistent incidents;
   notify on meaningful change or required action, without hiding unresolved state.
 
+- When a consumer is scheduled for a rewrite, stabilize the producer-to-adapter
+  data contract and test that boundary. Do not reinterpret it as the consumer's
+  public API or expand producer delivery into consumer state/event architecture.
+  Keep deferred consumer guarantees explicit in compatibility and cutover notes.
+- Measure full-universe memory representation early: file bytes do not bound
+  Python row-object heap. A sampled projection is a capacity warning, not an SLA
+  or a full-run measurement; validate the replacement before calling it complete.
 - When the user names an exact plan path, open and execute that file; never infer a nearby plan from the branch name.
 - For whole-universe work, count canonical provider symbols rather than only
   uppercased labels: mixed-case identities such as `BCPC`/`BCpC` and `TPC`/`TpC`

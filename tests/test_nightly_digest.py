@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
 from subprocess import CompletedProcess
 
 import pytest
 
+from clients import ledger
 from livewire_scripts import nightly_digest, run_daily_update_job, status
 from livewire_scripts.nightly_digest import main
+from livewire_scripts.status import Section, Verdict
 
 
 @pytest.fixture(autouse=True)
@@ -111,6 +118,151 @@ def test_main_email_invokes_node_script(tmp_path, monkeypatch):
     assert body_file.exists()
     assert "Livewire nightly digest" in body_file.read_text(encoding="utf-8")
     assert list(log_dir.glob("*.marker")) == []
+    receipt = ledger.query("select receipt_json from executions where script = 'nightly_digest'")
+    assert json.loads(receipt[0]["receipt_json"])["delivery"] == "accepted"
+
+
+def test_unchanged_warning_state_does_not_send_a_second_scheduled_email(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_NODE_BIN", "node")
+    calls = []
+
+    def fake_runner(cmd, **kwargs):
+        calls.append(cmd)
+        return CompletedProcess(args=cmd, returncode=0)
+
+    args = ["--run-date", "2026-07-02", "--email", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path)]
+    assert main(args, runner=fake_runner) == 0
+    assert main(args, runner=fake_runner) == 0
+
+    assert len(calls) == 1
+
+
+def test_concurrent_digest_sends_are_serialized_by_delivery_receipt(tmp_path, monkeypatch):
+    original_lock = nightly_digest.path_lock
+    second_attempt = threading.Event()
+    counter_lock = threading.Lock()
+    attempts = 0
+    calls = []
+    monkeypatch.setattr(nightly_digest, "collect", lambda *_args: [Section("Test", Verdict.WARN)])
+
+    @contextmanager
+    def observed_lock(path):
+        nonlocal attempts
+        with counter_lock:
+            attempts += 1
+            if attempts == 2:
+                second_attempt.set()
+        with original_lock(path) as held:
+            yield held
+
+    monkeypatch.setattr(nightly_digest, "path_lock", observed_lock)
+
+    def send(cmd, **kwargs):
+        calls.append(cmd)
+        assert second_attempt.wait(5), "second invocation never reached the delivery lock"
+        return CompletedProcess(cmd, 0)
+
+    args = ["--email", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path)]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(main, args, send) for _ in range(2)]
+        assert [future.result(timeout=10) for future in futures] == [0, 0]
+    assert len(calls) == 1
+    assert len(ledger.query("select receipt_json from executions where script = 'nightly_digest'")) == 1
+
+
+def test_changed_scope_with_same_verdict_sends_a_new_notification(tmp_path, monkeypatch):
+    state = [{"verdict": "WARN", "lane": "silver", "failed_now": 1}]
+    monkeypatch.setattr(
+        nightly_digest,
+        "collect",
+        lambda *_args: [
+            Section("Example", Verdict.WARN, notification_key=status._notification_key("Example", Verdict.WARN, state))
+        ],
+    )
+    calls = []
+
+    def send(cmd, **kwargs):
+        calls.append(cmd)
+        return CompletedProcess(cmd, 0)
+
+    args = ["--email", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path)]
+    assert main(args, runner=send) == 0
+    state[0].update(run_id="another-run", failed_sends=10)
+    assert main(args, runner=send) == 0
+    assert len(calls) == 1
+    state[0]["failed_now"] = 10
+    assert main(args, runner=send) == 0
+    assert len(calls) == 2
+
+
+def test_digest_timeout_records_no_delivery_and_remains_retryable(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_SYNC_PHASE_TIMEOUT_SECONDS", "7")
+    monkeypatch.setattr(nightly_digest, "collect", lambda *_args: [])
+    args = ["--email", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path)]
+
+    def timeout(cmd, **kwargs):
+        assert kwargs["timeout"] == 7
+        raise subprocess.TimeoutExpired(cmd, 7)
+
+    assert main(args, runner=timeout) == nightly_digest.TIMEOUT_EXIT_CODE
+    assert not ledger.query("select * from executions where script = 'nightly_digest'")
+    assert main(args, runner=lambda cmd, **kwargs: CompletedProcess(cmd, 0)) == 0
+    assert len(ledger.query("select * from executions where script = 'nightly_digest'")) == 1
+
+
+def test_default_email_child_cleans_up_descendants_on_timeout(monkeypatch):
+    from unittest.mock import MagicMock
+
+    proc = MagicMock()
+    proc.pid = 12345
+    proc.__enter__.return_value = proc
+    proc.communicate.side_effect = [subprocess.TimeoutExpired("node", 1), None]
+    spawn = MagicMock(return_value=proc)
+    kill = MagicMock()
+    monkeypatch.setattr(nightly_digest.subprocess, "Popen", spawn)
+    monkeypatch.setattr("livewire_scripts.job_runner_common.os.killpg", kill)
+    with pytest.raises(subprocess.TimeoutExpired):
+        nightly_digest._run_email_child(["node"], timeout=1)
+    assert spawn.call_args.kwargs["start_new_session"] is True
+    kill.assert_called_once()
+    assert kill.call_args.args[0] == proc.pid
+
+
+def test_force_email_sends_even_when_the_warning_state_is_unchanged(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_NODE_BIN", "node")
+    calls = []
+
+    def fake_runner(cmd, **kwargs):
+        calls.append(cmd)
+        return CompletedProcess(args=cmd, returncode=0)
+
+    shared = ["--run-date", "2026-07-02", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path)]
+    assert main([*shared, "--email"], runner=fake_runner) == 0
+    assert main([*shared, "--force-email"], runner=fake_runner) == 0
+
+    assert len(calls) == 2
+
+
+def test_recovery_state_sends_a_new_digest_notification(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_NODE_BIN", "node")
+    prior, _ = nightly_digest._warning_fingerprint(
+        [Section("Silver publication", Verdict.BAD, notification_key="broken")]
+    )
+    nightly_digest._record_delivery(date(2026, 7, 1), prior, ["broken"])
+    monkeypatch.setattr(
+        nightly_digest, "collect", lambda *_args, **_kwargs: [Section("Silver publication", Verdict.OK)]
+    )
+    calls = []
+
+    assert (
+        main(
+            ["--run-date", "2026-07-02", "--email", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path)],
+            runner=lambda cmd, **kwargs: calls.append(cmd) or CompletedProcess(args=cmd, returncode=0),
+        )
+        == 0
+    )
+
+    assert len(calls) == 1
 
 
 def test_the_digest_lane_is_recorded_in_the_ledger(tmp_path, monkeypatch):

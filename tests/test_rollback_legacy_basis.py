@@ -43,6 +43,38 @@ def test_rollback_restores_the_original_bytes(tmp_path):
     assert path.read_bytes() == before
 
 
+def test_rollback_participates_in_symbol_and_snapshot_lock_boundaries(tmp_path, monkeypatch):
+    from clients.parquet_io import path_lock
+
+    path, output_dir, before = _repair(tmp_path)
+    original = rollback_legacy_basis.restore_parquet_exact
+
+    def restore(backup, target, checksum):
+        for lock in (target.with_suffix(".parquet.lock"), target.parent.parent / ".inputs.lock"):
+            with path_lock(lock, blocking=False) as held:
+                assert not held
+        return original(backup, target, checksum)
+
+    monkeypatch.setattr(rollback_legacy_basis, "restore_parquet_exact", restore)
+    rollback_legacy_basis.run(["--output-dir", str(output_dir)], data_lake_root=tmp_path)
+    assert path.read_bytes() == before
+
+
+def test_rollback_rejects_corrupt_backup_even_with_matching_hash(tmp_path):
+    path, output_dir, _ = _repair(tmp_path)
+    repaired = path.read_bytes()
+    sidecar_path = output_dir / "symbols/NVDA.json"
+    sidecar = json.loads(sidecar_path.read_text())
+    from pathlib import Path
+
+    Path(sidecar["backup_path"]).write_bytes(b"not parquet")
+    sidecar["backup_sha256"] = hashlib.sha256(b"not parquet").hexdigest()
+    sidecar_path.write_text(json.dumps(sidecar))
+    with pytest.raises(Exception, match="Parquet"):
+        rollback_legacy_basis.run(["--output-dir", str(output_dir)], data_lake_root=tmp_path)
+    assert path.read_bytes() == repaired
+
+
 def test_rollback_rejects_a_different_active_root(tmp_path):
     _, output_dir, _ = _repair(tmp_path)
     other = tmp_path / "other-lake"

@@ -1,5 +1,6 @@
 import csv
 import gzip
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 from unittest.mock import patch
 
@@ -136,6 +137,63 @@ def test_stage_replace_swaps_existing_dir(tmp_path):
     stats = store.stage_gzip(day, src2, replace=True)
     assert stats["symbols"] == 2
     assert not stale.exists()
+
+
+def test_read_recovers_interrupted_directory_swap(tmp_path):
+    day = date(2024, 6, 3)
+    source = tmp_path / "day.csv.gz"
+    _write_day(source, [_row("AAPL", _TS_20240603)])
+    store = MassiveDailyFlatfileStore(tmp_path, bucket_count=1)
+    store.stage_gzip(day, source)
+    final = store.raw_path(day)
+    previous = final.with_name(f".old-{final.name}")
+    final.rename(previous)  # Simulate a SIGKILL between the two directory renames.
+
+    assert store.has_raw_date(day)
+    assert store.raw_stats(day)["symbols"] == 1
+    assert not previous.exists()
+
+
+def test_same_date_nonreplace_writers_publish_one_complete_directory(tmp_path):
+    day = date(2024, 6, 3)
+    first = tmp_path / "first.csv.gz"
+    second = tmp_path / "second.csv.gz"
+    _write_day(first, [_row("AAPL", _TS_20240603)])
+    _write_day(second, [_row("MSFT", _TS_20240603)])
+
+    def stage(path):
+        return MassiveDailyFlatfileStore(tmp_path, bucket_count=1).stage_gzip(day, path)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(stage, [first, second]))
+
+    assert [{key: result[key] for key in ("rows", "symbols")} for result in results] == [
+        {"rows": 1, "symbols": 1},
+        {"rows": 1, "symbols": 1},
+    ]
+    assert MassiveDailyFlatfileStore(tmp_path, bucket_count=1).symbols_for_date(day) in ({"AAPL"}, {"MSFT"})
+
+
+def test_staging_decode_failure_preserves_the_prior_raw_date(tmp_path):
+    day = date(2024, 6, 3)
+    first = tmp_path / "first.csv.gz"
+    replacement = tmp_path / "replacement.csv.gz"
+    _write_day(first, [_row("AAPL", _TS_20240603)])
+    _write_day(replacement, [_row("MSFT", _TS_20240603)])
+    store = MassiveDailyFlatfileStore(tmp_path, bucket_count=1)
+    store.stage_gzip(day, first)
+    before = {path.name: path.read_bytes() for path in store.raw_path(day).iterdir()}
+
+    with (
+        patch(
+            "clients.massive_daily_flatfile_store.validate_and_fsync_raw_stage",
+            side_effect=OSError("bad parquet page"),
+        ),
+        pytest.raises(OSError, match="bad parquet page"),
+    ):
+        store.stage_gzip(day, replacement, replace=True)
+
+    assert {path.name: path.read_bytes() for path in store.raw_path(day).iterdir()} == before
 
 
 def test_scan_detects_cross_date_duplicate(tmp_path):

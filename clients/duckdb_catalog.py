@@ -46,10 +46,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from weakref import WeakKeyDictionary
 
 import duckdb
 import pyarrow as pa
 
+from clients.parquet_io import fsync_directory, path_lock
+from clients.silver_snapshot import SilverSnapshot
 from clients.symbol_paths import canonical_symbol, encode_symbol
 from livewire_scripts.paths import data_lake_dir, silver_dir, warehouse_dir
 
@@ -61,6 +64,19 @@ _SHEPHERD_VIEW_SQL = "CREATE OR REPLACE TEMP VIEW {name} AS SELECT * FROM read_p
 
 _EQUITY_INTRADAY = ("1m", "5m", "30m", "1h")
 _DAILY_ASSET_CLASSES = ("equity", "volatility", "futures", "rates", "fx", "cmdty")
+_SILVER_KINDS = {"silver_equity_1d": "1d", "silver_factors": "factors"}
+_SILVER_SNAPSHOTS: WeakKeyDictionary[duckdb.DuckDBPyConnection, SilverSnapshot] = WeakKeyDictionary()
+
+
+def _silver_snapshot(con: duckdb.DuckDBPyConnection, root: Path | None) -> SilverSnapshot:
+    resolved = (Path(root) if root is not None else silver_dir()).resolve()
+    snapshot = _SILVER_SNAPSHOTS.get(con)
+    if snapshot is None:
+        snapshot = SilverSnapshot.pin(resolved)
+        _SILVER_SNAPSHOTS[con] = snapshot
+    elif snapshot.root != resolved:
+        raise ValueError("one catalog connection cannot mix Silver roots")
+    return snapshot
 
 
 @dataclass(frozen=True)
@@ -233,6 +249,12 @@ def ensure_view(
     filesystem cache is warm, minutes when it is not. Register deliberately.
     """
     spec = view_spec(name, lake_root=lake_root, silver_root=silver_root)
+    if name in _SILVER_KINDS:
+        files = _silver_snapshot(con, silver_root).files(_SILVER_KINDS[name])
+        if not files:
+            raise FileNotFoundError(f"no committed artifacts for {name}")
+        con.execute(_VIEW_SQL.format(name=spec.name, glob=files))
+        return
     con.execute(_VIEW_SQL.format(name=spec.name, glob=spec.glob))
 
 
@@ -379,6 +401,7 @@ def symbol_files(
     lake_root: Path | None = None,
     silver_root: Path | None = None,
     missing_ok: bool = True,
+    snapshot: SilverSnapshot | None = None,
 ) -> list[str]:
     """Resolve explicit parquet paths for *symbols*, skipping absent ones.
 
@@ -387,6 +410,13 @@ def symbol_files(
     0.04s open per file. Use this for any query that names its symbols.
     """
     spec = view_spec(view_name, lake_root=lake_root, silver_root=silver_root)
+    if view_name in _SILVER_KINDS:
+        snapshot = snapshot or SilverSnapshot.pin(Path(silver_root) if silver_root is not None else silver_dir())
+        requested = {canonical_symbol(symbol) for symbol in symbols}
+        files = snapshot.files(_SILVER_KINDS[view_name], requested)
+        if not missing_ok and len(files) != len(requested):
+            raise FileNotFoundError(f"symbols missing from Silver revision {snapshot.revision}: {requested}")
+        return files
     resolved: list[str] = []
     for symbol in symbols:
         path = spec.path_for(symbol)
@@ -409,7 +439,15 @@ def read_symbols(
 
     Needs no registered view, which is the point — it never pays enumeration.
     """
-    files = symbol_files(view_name, symbols, lake_root=lake_root, silver_root=silver_root)
+    snapshot = _silver_snapshot(con, silver_root) if view_name in _SILVER_KINDS else None
+    files = symbol_files(
+        view_name,
+        symbols,
+        lake_root=lake_root,
+        silver_root=silver_root,
+        snapshot=snapshot,
+        missing_ok=snapshot is None,
+    )
     if not files:
         raise FileNotFoundError(f"no parquet files for {list(symbols)!r} in view {view_name!r}")
     return con.sql(f"SELECT * FROM read_parquet({files!r}, hive_partitioning=1)")
@@ -505,8 +543,13 @@ def build_coverage(
 
     Returns row counts per source view.
     """
-    verified_shepherd_rows = _validate_shepherd_rows(shepherd_rows)
     dest = Path(database) if database is not None else default_database()
+    with path_lock(dest.with_name(f"{dest.name}.publish.lock")):
+        return _build_coverage_locked(dest, sources, lake_root, silver_root, shepherd_rows)
+
+
+def _build_coverage_locked(dest, sources, lake_root, silver_root, shepherd_rows) -> dict[str, int]:
+    verified_shepherd_rows = _validate_shepherd_rows(shepherd_rows)
     dest.parent.mkdir(parents=True, exist_ok=True)
     staging = dest.with_name(f"{dest.name}.building")
     for leftover in (staging, staging.with_name(staging.name + ".wal")):
@@ -523,6 +566,16 @@ def build_coverage(
                 [(row.scope_hash, row.dimension, row.state, row.evidence_hash) for row in verified_shepherd_rows],
             )
         for view_name, date_column in sources:
+            if view_name in _SILVER_KINDS:
+                root = Path(silver_root) if silver_root is not None else silver_dir()
+                if not (root / "revisions/current.json").exists():
+                    counts[view_name] = 0
+                    continue
+                if not any(
+                    item.kind == _SILVER_KINDS[view_name] for item in _silver_snapshot(con, silver_root).artifacts
+                ):
+                    counts[view_name] = 0
+                    continue
             try:
                 ensure_view(con, view_name, lake_root=lake_root, silver_root=silver_root)
             except duckdb.IOException as exc:
@@ -557,7 +610,10 @@ def build_coverage(
     if stray_wal.exists():
         raise RuntimeError(f"refusing to publish: uncheckpointed WAL at {stray_wal}")
 
+    with staging.open("rb") as handle:
+        os.fsync(handle.fileno())
     os.replace(staging, dest)
+    fsync_directory(dest.parent)
     return counts
 
 

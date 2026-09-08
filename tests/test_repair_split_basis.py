@@ -101,6 +101,24 @@ def test_apply_and_rollback_restore_exact_bytes(tmp_path):
     assert bronze_path.read_bytes() == original
 
 
+def test_rollback_validates_backup_before_overwriting_current(tmp_path):
+    import hashlib
+    from pathlib import Path
+
+    bronze_path = _seed(tmp_path)
+    manifest = _manifest(tmp_path)
+    repair_split_basis.run(["--manifest", str(manifest), "--approve"], data_lake_root=tmp_path)
+    current = bronze_path.read_bytes()
+    payload = json.loads(manifest.read_text())
+    item = payload["symbols"][0]
+    Path(item["backup_path"]).write_bytes(b"invalid parquet")
+    item["source_sha256"] = hashlib.sha256(b"invalid parquet").hexdigest()
+    manifest.write_text(json.dumps(payload))
+    with pytest.raises(Exception, match="Parquet"):
+        repair_split_basis.run(["--manifest", str(manifest), "--rollback"], data_lake_root=tmp_path)
+    assert bronze_path.read_bytes() == current
+
+
 def test_manifest_can_be_reapplied_after_rollback(tmp_path):
     bronze_path = _seed(tmp_path)
     manifest = _manifest(tmp_path)

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import enum
+import json
 import shutil
 import subprocess
 import sys
@@ -64,6 +65,7 @@ class Section:
     verdict: Verdict
     lines: list[str] = field(default_factory=list)
     fix: str | None = None
+    notification_key: str | None = None
 
 
 def _lane_values(lanes: tuple[str, ...]) -> str:
@@ -229,7 +231,10 @@ CHECKS: list[tuple[str, str]] = [
         f"select case when count(last_session) < {len(constants.IB_ONLY_LANES)} then 'UNKNOWN' "
         "when max(behind) > $ib_slack_days then 'WARN' else 'OK' end as verdict, "
         "string_agg(lane || '@' || last_session || case when blocker is null then '' "
-        "else ' (' || blocker || ')' end, ', ') as lanes, max(behind) as sessions_behind from ("
+        "else ' (' || blocker || ')' end, ', ') as lanes, max(behind) as sessions_behind, "
+        "string_agg(lane, ', ' order by lane) filter (where last_session is null or behind > $ib_slack_days) "
+        "as affected_lanes, string_agg(blocker, ', ' order by blocker) "
+        "filter (where last_session is null or behind > $ib_slack_days) as blockers from ("
         "  select expected.lane, date '1970-01-01' + cast(m.value as int) as last_session, "
         "         date_diff('day', date '1970-01-01' + cast(m.value as int), date '$today') as behind, "
         "         (select l.blocker from lane_results l where l.lane = expected.lane "
@@ -313,6 +318,62 @@ def _substitute(sql: str, params: dict[str, str]) -> str:
     return sql
 
 
+def _notification_key(name: str, verdict: Verdict, rows: list[dict]) -> str:
+    """Stable fault identity plus its measured impact, never attempt chronology."""
+    fields = {
+        "scope",
+        "lane",
+        "lanes",
+        "affected_lanes",
+        "blocker",
+        "blockers",
+        "outcome",
+        "asset_class",
+        "symbol",
+        "symbols",
+        "ticker",
+        "tickers",
+        "timeframe",
+        "timeframes",
+        "name",
+        "script",
+        "failed_now",
+        "failed",
+        "failed_symbols",
+        "failed_count",
+        "missing",
+        "missing_count",
+        "unterminated",
+        "blocked",
+        "silver_failed",
+        "silver_window_regressions",
+        "worst_ratio",
+    }
+    identities = set()
+    for row in rows:
+        if row.get("verdict") == "OK":
+            continue
+        values = {key: value for key, value in row.items() if key in fields}
+        if "affected_lanes" in values:
+            values.pop("lanes", None)  # The human detail may include dated session evidence.
+        for key in ("lanes", "affected_lanes", "blockers"):
+            if isinstance(values.get(key), str):
+                values[key] = sorted({item.strip() for item in values[key].split(",")})
+        identities.add(json.dumps(values, sort_keys=True, separators=(",", ":")))
+    return f"{name}:{verdict.name}:" + "|".join(sorted(identities))
+
+
+def _warning_context(name: str, fix: str | None) -> list[str]:
+    return [
+        f"  Impact: {name} did not pass; affected scope and counts are limited to the ledger evidence above.",
+        "  Evidence: this named ledger check; absent fields remain unknown.",
+        "  Last valid: unknown; this check does not establish a previous valid result.",
+        "  Automatic handling: unknown; this status check is read-only and performs no recovery.",
+        f"  Next action: {fix or 'inspect the named check and its latest ledger evidence before changing data.'}",
+        "  Clear condition: the named check returns OK with sufficient current evidence.",
+    ]
+
+
 def run_check(name: str, sql: str, params: dict[str, str]) -> Section:
     """Execute one ledger check; missing evidence is never silently green."""
     rows = [row for row in ledger.query(_substitute(sql, params)) if any(value is not None for value in row.values())]
@@ -320,12 +381,26 @@ def run_check(name: str, sql: str, params: dict[str, str]) -> Section:
     if not rows:
         if name in _EMPTY_IS_OK:
             return Section(name, Verdict.OK, [f"{name}: none"])
-        return Section(name, Verdict.UNKNOWN, [f"{name}: no rows — nothing measured"], fix=fix)
+        return Section(
+            name,
+            Verdict.UNKNOWN,
+            [f"{name}: no rows — nothing measured", *_warning_context(name, fix)],
+            fix=fix,
+            notification_key=_notification_key(name, Verdict.UNKNOWN, []),
+        )
     verdict = max(Verdict[str(row["verdict"])] if row.get("verdict") else Verdict.OK for row in rows)
     lines = [f"{name}:"] + [
         "  " + "  ".join(f"{key}={value}" for key, value in row.items() if key != "verdict") for row in rows
     ]
-    return Section(name, verdict, lines, fix=fix if verdict is not Verdict.OK else None)
+    if verdict is not Verdict.OK:
+        lines.extend(_warning_context(name, fix))
+    return Section(
+        name,
+        verdict,
+        lines,
+        fix=fix if verdict is not Verdict.OK else None,
+        notification_key=_notification_key(name, verdict, rows),
+    )
 
 
 def _last_run_id(today: str, *, closed: bool, job: str = "daily-update") -> str:
@@ -336,6 +411,164 @@ def _last_run_id(today: str, *, closed: bool, job: str = "daily-update") -> str:
         f"and date(started) = date '{today}' {clause}order by started desc limit 1"
     )
     return str(rows[0]["run_id"]) if rows else ""
+
+
+def _silver_publication_section(data_lake: Path) -> Section:
+    """Describe the served Silver revision separately from the latest attempt.
+
+    A committed ``current.json`` answers only what readers may select.  It does
+    not turn a failed later rebuild into a success, nor prove a reader actually
+    consumed that revision.  The terminal lane row supplies the latter attempt
+    fact. A partial rebuild may publish a healthy subset and still exit nonzero;
+    no linkage between these facts is inferred without a publication receipt.
+    """
+    from clients.silver_revision import SilverRevisionPublisher
+
+    pointer = data_lake / "silver"
+    try:
+        committed = SilverRevisionPublisher(pointer).read_current()
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return Section(
+            "Silver publication",
+            Verdict.BAD,
+            [
+                "Silver publication: committed pointer is not readable",
+                "  Impact: Silver readers cannot safely select this manifest reference.",
+                f"  Evidence: {pointer / 'revisions/current.json'} — {exc}",
+                "  Last valid: manifest reference unknown; artifact hashes have not been checked here.",
+                "  Automatic handling: no replacement pointer is selected.",
+                "  Next action: inspect the manifest and restore only through rebuild-silver publication.",
+                "  Clear condition: current.json matches a valid immutable manifest and the next rebuild completes.",
+            ],
+            fix=_SILVER_FIX,
+            notification_key="silver-publication:pointer-invalid",
+        )
+
+    if committed is None:
+        return Section(
+            "Silver publication",
+            Verdict.UNKNOWN,
+            [
+                "Silver publication: no committed revision",
+                "  Impact: Silver readers have no snapshot to select.",
+                f"  Evidence: {pointer / 'revisions/current.json'} is absent.",
+                "  Last valid: manifest reference unknown; this is not a successful first publication.",
+                "  Automatic handling: no candidate is served.",
+                "  Next action: run the approved rebuild after its Bronze and corporate-action inputs are valid.",
+                "  Clear condition: a complete manifest is committed and readers can select it.",
+            ],
+            fix=_SILVER_FIX,
+            notification_key="silver-publication:pointer-missing",
+        )
+
+    rows = ledger.query(
+        "select run_id, outcome, blocker, exit_code, started, ended from lane_results "
+        "where lane = 'silver' and outcome is not null "
+        "order by ended desc nulls last, started desc limit 1"
+    )
+    latest = rows[0] if rows else None
+    incidents = ledger.query(
+        "select count(*) as attempts, min(started) as first_seen, max(ended) as last_seen "
+        "from lane_results where lane = 'silver' and outcome is not null and outcome <> 'done' "
+        "and ended > coalesce((select max(ended) from lane_results where lane = 'silver' and outcome = 'done' "
+        "and ended < (select max(ended) from lane_results where lane = 'silver' and outcome is not null)), "
+        "timestamptz '1970-01-01 00:00:00+00')"
+    )
+    incident = incidents[0] if incidents and incidents[0].get("attempts") else None
+    committed_line = (
+        f"  Current manifest reference: revision={committed.revision} published_at={committed.published_at.isoformat()} "
+        f"actions_as_of={committed.corporate_actions_as_of.isoformat()}; artifact hashes were not checked by status."
+    )
+    if latest is None:
+        return Section(
+            "Silver publication",
+            Verdict.UNKNOWN,
+            [
+                f"Silver publication: committed revision={committed.revision}; no rebuild attempt is recorded.",
+                "  Impact: readers may select the committed snapshot, but its current freshness is unmeasured.",
+                f"  Evidence: {pointer / 'revisions/current.json'} matches immutable revision={committed.revision}.json.",
+                committed_line,
+                "  Last valid: data snapshot unknown; a matching manifest reference does not establish artifact validity.",
+                "  Automatic handling: no later candidate is inferred from files on disk.",
+                "  Next action: run the normal daily rebuild; do not adopt uncommitted artifacts.",
+                "  Clear condition: a terminal rebuild fact and committed manifest agree.",
+            ],
+            fix=_SILVER_FIX,
+            notification_key="silver-publication:attempt-unmeasured",
+        )
+
+    outcome = str(latest["outcome"])
+    attempt = (
+        f"run_id={latest['run_id']} outcome={outcome} exit_code={latest['exit_code']} "
+        f"blocker={latest['blocker']} ended={latest['ended']}"
+    )
+    if outcome == "done":
+        recovery = []
+        if incident:
+            recovery.append(
+                "  Recovery: latest successful attempt follows "
+                f"{incident['attempts']} prior non-success attempt(s), first_seen={incident['first_seen']} "
+                f"last_seen={incident['last_seen']}."
+            )
+        return Section(
+            "Silver publication",
+            Verdict.OK,
+            [
+                f"Silver publication: committed revision={committed.revision}; latest rebuild completed.",
+                f"  Evidence: {attempt}; pointer={pointer / 'revisions/current.json'}.",
+                committed_line,
+                "  Last valid: data snapshot unknown; artifact hashes were not checked by status.",
+                "  Reader state: this is a committed publication fact, not proof that a consumer has run on it.",
+                "  Attempt linkage: unknown; no publication receipt ties this attempt to the current reference.",
+                *recovery,
+            ],
+            notification_key="silver-publication:healthy",
+        )
+
+    measurements = ledger.query(
+        "select name, value from measurements where name in ('silver_failed', 'silver_window_regressions') "
+        "and scope = 'silver' and run_id = (select run_id from lane_results where lane = 'silver' "
+        "and outcome is not null order by ended desc nulls last, started desc limit 1) "
+        "and measured_at >= (select started from lane_results where lane = 'silver' and outcome is not null "
+        "order by ended desc nulls last, started desc limit 1) "
+        "qualify row_number() over (partition by name order by measured_at desc) = 1"
+    )
+    impact_counts = {str(row["name"]): row["value"] for row in measurements}
+    impact = (
+        "a healthy subset may have advanced current.json despite the failed attempt; remaining failures need repair"
+    )
+    if outcome == "blocked":
+        impact = "the recorded attempt was blocked; the pointer is an independent publication fact"
+    return Section(
+        "Silver publication",
+        Verdict.BAD,
+        [
+            f"Silver publication: committed revision={committed.revision}; latest rebuild attempt {outcome}.",
+            f"  Impact: {impact} (revision={committed.revision}).",
+            f"  Evidence: {attempt}; pointer={pointer / 'revisions/current.json'}.",
+            "  Measured impact: "
+            + (
+                ", ".join(f"{key}={value}" for key, value in sorted(impact_counts.items()))
+                or "unknown; no counts for this run"
+            ),
+            (
+                "  Sustained incident: "
+                f"attempts={incident['attempts']} first_seen={incident['first_seen']} last_seen={incident['last_seen']}."
+                if incident
+                else "  Sustained incident: unknown; no aggregate attempt evidence is available."
+            ),
+            committed_line,
+            "  Last valid: data snapshot unknown; a matching manifest reference does not establish artifact validity.",
+            "  Automatic handling: normal publication may commit a healthy subset; this status check changes nothing.",
+            "  Attempt linkage: unknown; no publication receipt ties this attempt to the current reference.",
+            "  Next action: inspect the recorded failure, repair the named input through its normal publisher, then rerun rebuild-silver.",
+            "  Clear condition: a later rebuild completes and commits a valid manifest; a retry alone is not evidence.",
+        ],
+        fix=_SILVER_FIX,
+        notification_key=_notification_key(
+            "Silver publication", Verdict.BAD, [{"outcome": outcome, "blocker": latest["blocker"], **impact_counts}]
+        ),
+    )
 
 
 def _disk_section(data_lake: Path, warehouse: Path | None = None) -> Section:
@@ -655,6 +888,7 @@ def collect(
     return [
         _safe("launchd jobs", lambda: _launchd_section(runner=runner)),
         *[_safe(name, lambda n=name, sql=sql: run_check(n, sql, params)) for name, sql in CHECKS],
+        _safe("Silver publication", lambda: _silver_publication_section(data_lake)),
         _safe("DuckDB catalog", lambda: _duckdb_section(run_date, database)),
         _safe("Disk", lambda: _disk_section(data_lake, log_dir.parent)),
     ]

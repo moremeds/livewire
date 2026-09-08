@@ -45,6 +45,7 @@ from clients.gap_engine import (
 )
 from clients.gap_registry import RegistryError, load_registry
 from clients.intraday_bronze_client import INTRADAY_PARQUET_FILENAME
+from clients.parquet_io import path_lock
 from clients.symbol_paths import decode_symbol
 from clients.terminus import (
     RAW_MINUTE_AGGS,
@@ -55,7 +56,9 @@ from clients.terminus import (
 )
 from clients.trading_calendar import trading_dates_in_range
 from livewire_scripts.daily_update import _et_today, is_trading_day, previous_trading_day
-from livewire_scripts.paths import data_lake_dir, log_dir
+from livewire_scripts.job_runner_common import process_group_guard
+from livewire_scripts.paths import cursor_dir, data_lake_dir, log_dir
+from livewire_scripts.sync_runner import phase_timeout_seconds
 
 log = logging.getLogger(__name__)
 console = Console()
@@ -879,6 +882,18 @@ def write_coverage_log(
     return log_path
 
 
+def _run_child(command, *, check=False, timeout=None):
+    """Bound recovery descendants using the existing ingestion phase budget."""
+    budget = phase_timeout_seconds() if timeout is None else timeout
+    with subprocess.Popen(command, start_new_session=True) as proc:
+        with process_group_guard(proc):
+            proc.communicate(timeout=budget)
+        result = subprocess.CompletedProcess(command, proc.returncode)
+    if check and result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, command)
+    return result
+
+
 def auto_recover(
     timeframe: str,
     missing_symbols: list[str],
@@ -915,6 +930,28 @@ def auto_recover(
 
     effective_target = target_date or datetime.now(UTC).date()
 
+    def failed(reason, attempted=()):
+        return RecoveryOutcome(
+            timeframe,
+            list(attempted),
+            0,
+            missing_symbols + unfetchable,
+            aborted=True,
+            reason=reason,
+        )
+
+    if timeframe != "1d":
+        # Advisory only: the child takes the same lock authoritatively. A new
+        # owner winning after this probe is a failed child, never a second writer.
+        try:
+            with path_lock(cursor_dir() / "massive_flatfile_state.lock", blocking=False) as held:
+                if not held:
+                    return failed("DEFERRED: minute cursor is active; owner identity unknown")
+        except OSError as exc:
+            return failed(f"cannot inspect minute cursor ownership: {exc}")
+
+    commands = []
+
     if timeframe == "1d":
         batches = [missing_symbols[i : i + safety_cap] for i in range(0, len(missing_symbols), safety_cap)]
         if len(batches) > 1:
@@ -923,7 +960,7 @@ def auto_recover(
                 f"batch(es) of up to {safety_cap}[/cyan]"
             )
         for batch in batches:
-            subprocess.run(
+            commands.append(
                 [
                     sys.executable,
                     str(_INGEST_SCRIPT),
@@ -936,14 +973,13 @@ def auto_recover(
                     "--tickers",
                     *batch,
                 ],
-                check=False,
             )
     else:
         console.print(
             f"[cyan]Auto-recover {timeframe}: republishing {effective_target} "
             f"({len(missing_symbols)} symbols missing)[/cyan]"
         )
-        subprocess.run(
+        commands.append(
             [
                 sys.executable,
                 str(_INGEST_SCRIPT),
@@ -952,8 +988,21 @@ def auto_recover(
                 "--dates",
                 effective_target.isoformat(),
             ],
-            check=False,
         )
+
+    budget = phase_timeout_seconds()
+    deadline = time.monotonic() + budget
+    attempted = []
+    try:
+        for command in commands:
+            attempted.extend(command[command.index("--tickers") + 1 :] if timeframe == "1d" else missing_symbols)
+            result = _run_child(command, check=False, timeout=max(0.0, deadline - time.monotonic()))
+            if result.returncode:
+                return failed(f"recovery child exited {result.returncode}; inspect child output for cause", attempted)
+    except subprocess.TimeoutExpired:
+        return failed(f"recovery timed out at existing phase budget ({budget}s)", attempted)
+    except OSError as exc:
+        return failed(f"recovery could not start: {exc}", attempted)
 
     # Deliberately uncached. Recovery just republished parquet and this
     # re-measures within the same run, and exFAT stores mtime at 2-second
@@ -966,13 +1015,16 @@ def auto_recover(
     # would re-check with the DISK-GLOB denominator, so a registry-only symbol
     # like BK -- which has no file to glob -- vanishes from the universe and
     # reads as recovered by a fetch that could not have touched it.
-    rechecked = compute_coverage(
-        effective_target,
-        bronze_root=bronze_root,
-        registry_path=registry_path,
-        presets_dir=presets_dir,
-        as_of=as_of,
-    )[timeframe]
+    try:
+        rechecked = compute_coverage(
+            effective_target,
+            bronze_root=bronze_root,
+            registry_path=registry_path,
+            presets_dir=presets_dir,
+            as_of=as_of,
+        )[timeframe]
+    except Exception as exc:  # noqa: BLE001 - preserve the measured report and later diagnostics
+        return failed(f"recovery recheck failed: {exc}", attempted)
     still_missing = [s for s in missing_symbols if s in rechecked.missing_symbols]
     recovered = len(missing_symbols) - len(still_missing)
     return RecoveryOutcome(
@@ -1014,7 +1066,10 @@ def _send_alert(
         "--job-name",
         "coverage_report",
     ]
-    subprocess.run(cmd, check=False)
+    try:
+        _run_child(cmd, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log.warning("Coverage alert failed after durable report: %s", exc)
 
 
 def _resolve_target_date(force: bool, override: date | None) -> date | None:
@@ -1158,9 +1213,38 @@ def main() -> None:
 
     # Decide which timeframes need recovery
     outcomes: list[RecoveryOutcome] = []
+    intraday_outcome = None
+    intraday_rechecked = None
     for tf in TIMEFRAMES:
         r = results[tf]
         if r.ratio >= args.threshold:
+            continue
+        if tf != "1d" and intraday_outcome is not None:
+            # One minute-file repair republishes every derived timeframe. Never
+            # run the same whole-market date again for each lagging rollup.
+            if intraday_outcome.aborted:
+                outcomes.append(
+                    RecoveryOutcome(
+                        tf,
+                        [],
+                        0,
+                        r.missing_symbols,
+                        aborted=True,
+                        reason=intraday_outcome.reason,
+                    )
+                )
+            else:
+                if intraday_rechecked is None:
+                    try:
+                        intraday_rechecked = compute_coverage(target, as_of=as_of)
+                    except Exception as exc:  # noqa: BLE001 - keep remaining findings reportable
+                        intraday_outcome = RecoveryOutcome(
+                            tf, [], 0, r.missing_symbols, aborted=True, reason=f"rollup recheck failed: {exc}"
+                        )
+                        outcomes.append(intraday_outcome)
+                        continue
+                missing = [s for s in r.missing_symbols if s in intraday_rechecked[tf].missing_symbols]
+                outcomes.append(RecoveryOutcome(tf, r.missing_symbols, len(r.missing_symbols) - len(missing), missing))
             continue
         outcome = auto_recover(
             timeframe=tf,
@@ -1170,6 +1254,8 @@ def main() -> None:
             withheld=r.unconfirmed_terminus_symbols,
         )
         outcomes.append(outcome)
+        if tf != "1d":
+            intraday_outcome = outcome
 
     if not outcomes:
         if stale_non_equity:

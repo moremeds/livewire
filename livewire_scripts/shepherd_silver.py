@@ -35,6 +35,7 @@ def publish_pit(
         membership_revision=membership_revision,
         as_of=as_of,
         actions_receipt=actions,
+        silver_revision=silver.revision,
     )
     return {
         "version": 1,

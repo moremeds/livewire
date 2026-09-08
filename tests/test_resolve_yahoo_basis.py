@@ -16,6 +16,64 @@ from tests.test_rebuild_silver import _seed_bronze, _seed_split
 
 AS_OF = date(2026, 7, 17)
 
+
+@pytest.mark.parametrize("changed", ["bronze", "actions"])
+def test_apply_rejects_inputs_changed_while_yahoo_fetches(tmp_path, changed):
+    from datetime import UTC, datetime
+
+    from clients.corporate_action_store import CorporateActionStore
+
+    _seed_bronze(
+        tmp_path,
+        "AMC",
+        [("2023-08-23", 19.60), ("2023-08-24", 14.37), ("2023-08-25", 12.43)],
+        source="legacy",
+        price_basis="unknown",
+    )
+    _seed_split(tmp_path, "AMC", "2023-08-24", 10, 1)
+    bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
+    observed = {}
+
+    class ChangingYahoo(_FakeYahoo):
+        def get_daily(self, *args):
+            if changed == "bronze":
+                row = {**bronze.read_symbol_rows("AMC")[-1], "trade_date": "2023-08-28"}
+                bronze.merge_ticker_rows("AMC", [row])
+            else:
+                CorporateActionStore(tmp_path).reconcile(
+                    "AMC", [], datetime(2026, 8, 1, tzinfo=UTC), full_reconcile=True
+                )
+            observed["bytes"] = bronze.symbol_path("AMC").read_bytes()
+            return super().get_daily(*args)
+
+    output = tmp_path / "result.json"
+    batch = tmp_path / "batch"
+    resolve_yahoo_basis.run(
+        [
+            "--tickers",
+            "AMC",
+            "--output",
+            str(output),
+            "--apply",
+            "--allow-rewrite",
+            "--output-dir",
+            str(batch),
+            "--ib-verify",
+            "--ib-min-overlap",
+            "1",
+        ],
+        data_lake_root=tmp_path,
+        yahoo_factory=ChangingYahoo,
+        as_of_date=AS_OF,
+        ib_factory=_FakeIB,
+        ib_fetcher_factory=_fetcher(_AMC_IB_MATCH),
+    )
+    entry = json.loads(output.read_text())["symbols"][0]
+    assert "inputs changed" in entry["applied"]
+    assert bronze.symbol_path("AMC").read_bytes() == observed["bytes"]
+    assert not (batch / "backup").exists()
+
+
 # Real AMC Yahoo split-adjusted closes; the 1:10 reverse split multiplier is 0.1,
 # so the true raw pre-split close of 19.60 is 1.96.
 _AMC_BARS = [

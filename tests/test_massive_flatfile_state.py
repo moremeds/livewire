@@ -86,3 +86,19 @@ def test_publish_scopes_are_pruned(tmp_path):
     # The newest survive; the oldest are dropped.
     assert "scope-014" in kept
     assert "scope-000" not in kept
+
+
+def test_cursor_exclusive_owner_is_stream_scoped_and_reloads_state(tmp_path):
+    from clients.massive_flatfile_state import MassiveFlatfileState
+
+    first = MassiveFlatfileState(tmp_path)
+    stale = MassiveFlatfileState(tmp_path)
+    other = MassiveFlatfileState(tmp_path, name="daily")
+    with first.exclusive():
+        first.mark_raw_completed("2026-09-08")
+        with pytest.raises(RuntimeError, match="already in use"), stale.exclusive():
+            pass
+        with other.exclusive():
+            other.mark_raw_completed("2026-09-07")
+    with stale.exclusive():
+        assert stale.raw_completed("2026-09-08")

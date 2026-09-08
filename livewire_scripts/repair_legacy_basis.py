@@ -24,7 +24,7 @@ from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.ib_client import IBClient, IBConnectionError
 from clients.ingestion_common import load_preset
-from clients.parquet_io import write_json_atomic
+from clients.parquet_io import restore_parquet_exact, symbol_lock, write_json_atomic
 from clients.price_basis import prepare_ib_rows_for_publish
 from clients.seed_boundary import check_seed_boundary
 from clients.silver_continuity import check_adjusted_continuity
@@ -67,12 +67,7 @@ def backup_symbol(bronze: BronzeClient, symbol: str, backup_dir: Path) -> dict:
     backup_dir.mkdir(parents=True, exist_ok=True)
     destination = backup_dir / f"{encode_symbol(symbol)}.1d.parquet"
     payload = source.read_bytes()
-    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
-    try:
-        temporary.write_bytes(payload)
-        os.replace(temporary, destination)
-    finally:
-        temporary.unlink(missing_ok=True)
+    restore_parquet_exact(source, destination, hashlib.sha256(payload).hexdigest())
     return {"symbol": symbol, "backup_path": str(destination), "sha256": hashlib.sha256(payload).hexdigest()}
 
 
@@ -111,14 +106,17 @@ def _repair_one(
 ) -> tuple[str, dict]:
     """Return (status, sidecar). status in {'done','would-repair','ambiguous','failed'}."""
     path = bronze.symbol_path(symbol)
-    if audit_sha256 is not None and path.is_file():
-        if hashlib.sha256(path.read_bytes()).hexdigest() != audit_sha256:
-            # The audit's mixed/clean verdict describes bytes that no longer exist.
+    action_path = store.path_for(symbol)
+    # Match snapshot lock ordering: corporate actions before equity.
+    with symbol_lock(action_path), symbol_lock(path):
+        source_hash = sha256_file(path) if path.is_file() else None
+        if audit_sha256 is not None and source_hash != audit_sha256:
             return "failed", {"symbol": symbol, "reason": "bronze changed since the audit"}
-    existing = bronze.read_symbol_rows(symbol)
-    if not existing:
-        return "failed", {"symbol": symbol, "reason": "no_bronze_rows"}
-    actions = store.latest_active(symbol)
+        existing = bronze.read_symbol_rows(symbol)
+        if not existing:
+            return "failed", {"symbol": symbol, "reason": "no_bronze_rows"}
+        action_hash = sha256_file(action_path) if action_path.is_file() else None
+        actions = store.latest_active(symbol)
     # Re-fetch only the range bronze already covers — we're correcting the basis of
     # existing rows, not extending history. Fetching from an absolute 1980 floor
     # would issue ~46 empty yearly IB requests per symbol and hammer the gateway.
@@ -152,24 +150,30 @@ def _repair_one(
         return "ambiguous", {"symbol": symbol, "reason": f"post_merge_discontinuous: {exc}"}
     if backup_dir is None:
         return "would-repair", {"symbol": symbol, "rows_would_write": len(ib_only)}
-    saved = backup_symbol(bronze, symbol, backup_dir)
-    # Write-ahead intent, NOT a redundant sidecar: the next line mutates bronze, the
-    # system of record, and the caller does not write this symbol's sidecar until
-    # _repair_one returns. A crash in that window (OOM kill, power cut) would leave
-    # mutated bronze plus a backup that nothing points at, and rollback restores only
-    # symbols a sidecar names — i.e. a mutation that cannot be undone by the supplied
-    # command. Record where the undo lives BEFORE taking the action that needs undoing.
-    # The caller atomically replaces this with the terminal sidecar.
-    write_json_atomic(
-        backup_dir.parent / "symbols" / f"{encode_symbol(symbol)}.json",
-        {
-            "symbol": symbol,
-            "status": "in_progress",
-            "backup_path": saved["backup_path"],
-            "backup_sha256": saved["sha256"],
-        },
-    )
-    inserted = bronze.merge_ticker_rows(symbol, ib_only)
+    with symbol_lock(action_path), symbol_lock(path):
+        current_source = sha256_file(path) if path.is_file() else None
+        current_actions = sha256_file(action_path) if action_path.is_file() else None
+        if (current_source, current_actions) != (source_hash, action_hash):
+            return "failed", {"symbol": symbol, "reason": "inputs changed during repair; rerun audit"}
+        saved = backup_symbol(bronze, symbol, backup_dir)
+        # Write-ahead intent, NOT a redundant sidecar: the next line mutates bronze, the
+        # system of record, and the caller does not write this symbol's sidecar until
+        # _repair_one returns. A crash in that window (OOM kill, power cut) would leave
+        # mutated bronze plus a backup that nothing points at, and rollback restores only
+        # symbols a sidecar names — i.e. a mutation that cannot be undone by the supplied
+        # command. Record where the undo lives BEFORE taking the action that needs undoing.
+        # The caller atomically replaces this with the terminal sidecar.
+        write_json_atomic(
+            backup_dir.parent / "symbols" / f"{encode_symbol(symbol)}.json",
+            {
+                "symbol": symbol,
+                "status": "in_progress",
+                "backup_path": saved["backup_path"],
+                "backup_sha256": saved["sha256"],
+            },
+        )
+        inserted = len({r["trade_date"] for r in ib_only} - {r["trade_date"] for r in existing})
+        bronze._publish_symbol_rows(symbol, bronze._normalize_rows(merged, symbol))
     return "done", {
         "symbol": symbol,
         "rows_written": len(ib_only),

@@ -27,7 +27,8 @@ from clients.adjustment_engine import build_factor_intervals
 from clients.bronze_client import EQUITY_SOURCES, BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.ib_client import IBClient, IBConnectionError
-from clients.parquet_io import write_json_atomic
+from clients.parquet_io import restore_parquet_exact, symbol_lock, write_json_atomic
+from clients.source_evidence import sha256_file
 from clients.symbol_paths import encode_symbol
 from clients.yahoo_basis import (
     AnchorVerdict,
@@ -145,10 +146,18 @@ class _Resolution:
     result: dict
     corrected: list[dict] | None
     actions: list
+    source_sha256: str | None = None
+    action_sha256: str | None = None
 
 
 def _resolve(symbol: str, *, bronze: BronzeClient, store: CorporateActionStore, yahoo, as_of: date) -> _Resolution:
-    existing = bronze.read_symbol_rows(symbol)
+    source = bronze.symbol_path(symbol)
+    action_path = store.path_for(symbol)
+    with symbol_lock(action_path), symbol_lock(source):
+        source_hash = sha256_file(source) if source.is_file() else None
+        action_hash = sha256_file(action_path) if action_path.is_file() else None
+        existing = bronze.read_symbol_rows(symbol)
+        actions = store.latest_active(symbol)
     if not existing:
         return _Resolution({"symbol": symbol, "status": "no_bronze_rows"}, None, [])
     try:
@@ -159,7 +168,6 @@ def _resolve(symbol: str, *, bronze: BronzeClient, store: CorporateActionStore, 
         return _Resolution({"symbol": symbol, "status": "yahoo_error", "detail": str(exc)[:80]}, None, [])
     if not ybars:
         return _Resolution({"symbol": symbol, "status": "yahoo_empty"}, None, [])
-    actions = store.latest_active(symbol)
     split_ratios = _store_split_ratios(actions)
     # Bound reconciliation to in-history splits: a split on/before the first stored row
     # affects no stored row, so a Yahoo/store disagreement there is a false block.
@@ -221,7 +229,7 @@ def _resolve(symbol: str, *, bronze: BronzeClient, store: CorporateActionStore, 
         result["status"] = "stage_fail"
         result["detail"] = str(exc)[:120]
         return _Resolution(result, None, actions)
-    return _Resolution(result, corrected, actions)
+    return _Resolution(result, corrected, actions, source_hash, action_hash)
 
 
 def resolve_symbol(symbol: str, *, bronze: BronzeClient, store: CorporateActionStore, yahoo, as_of: date) -> dict:
@@ -295,43 +303,56 @@ def _corrected_rows(existing: list[dict], yahoo_raw: dict, yahoo_adjusted: dict,
     return corrected
 
 
-def _backup_and_write(symbol: str, *, bronze: BronzeClient, output_dir: Path, new_rows: list[dict], mode: str) -> dict:
+def _backup_and_write(
+    symbol: str,
+    *,
+    bronze: BronzeClient,
+    store: CorporateActionStore,
+    output_dir: Path,
+    new_rows: list[dict],
+    mode: str,
+    source_sha256: str,
+    action_sha256: str | None,
+) -> dict:
     """Back the parquet up verbatim, record a write-ahead intent sidecar, then replace the
     rows. A crash mid-write is still undoable by ``rollback-legacy-basis --output-dir``
     because the backup and its sha256 are durable before any bronze mutation."""
     source = bronze.symbol_path(symbol)
-    original = source.read_bytes()
-    sha = hashlib.sha256(original).hexdigest()
-    backup_path = output_dir / "backup" / f"{encode_symbol(symbol)}.1d.parquet"
-    backup_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = backup_path.with_name(f".{backup_path.name}.{os.getpid()}.tmp")
-    try:
-        tmp.write_bytes(original)
-        os.replace(tmp, backup_path)
-    finally:
-        tmp.unlink(missing_ok=True)
-    sidecar_path = output_dir / "symbols" / f"{encode_symbol(symbol)}.json"
-    write_json_atomic(
-        sidecar_path,
-        {
+    action_path = store.path_for(symbol)
+    with symbol_lock(action_path), symbol_lock(source):
+        current_source = sha256_file(source) if source.is_file() else None
+        current_actions = sha256_file(action_path) if action_path.is_file() else None
+        if current_source is None or (current_source, current_actions) != (source_sha256, action_sha256):
+            raise ValueError("inputs changed during resolution; rerun resolver")
+        original = source.read_bytes()
+        sha = hashlib.sha256(original).hexdigest()
+        backup_path = output_dir / "backup" / f"{encode_symbol(symbol)}.1d.parquet"
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        restore_parquet_exact(source, backup_path, sha)
+        sidecar_path = output_dir / "symbols" / f"{encode_symbol(symbol)}.json"
+        write_json_atomic(
+            sidecar_path,
+            {
+                "symbol": symbol,
+                "status": "in_progress",
+                "mode": mode,
+                "backup_path": str(backup_path),
+                "backup_sha256": sha,
+            },
+        )
+        normalized = bronze._normalize_rows(new_rows, symbol)
+        bronze._publish_symbol_rows(symbol, normalized)
+        written = len(normalized)
+        sidecar = {
             "symbol": symbol,
-            "status": "in_progress",
+            "status": "done",
             "mode": mode,
             "backup_path": str(backup_path),
             "backup_sha256": sha,
-        },
-    )
-    written = bronze.replace_ticker_rows(symbol, new_rows)
-    sidecar = {
-        "symbol": symbol,
-        "status": "done",
-        "mode": mode,
-        "backup_path": str(backup_path),
-        "backup_sha256": sha,
-        "rows_written": written,
-    }
-    write_json_atomic(sidecar_path, sidecar)
-    return sidecar
+            "rows_written": written,
+        }
+        write_json_atomic(sidecar_path, sidecar)
+        return sidecar
 
 
 def run(
@@ -450,11 +471,16 @@ def run(
                     # would refetch Yahoo and reread bronze/actions, so a change between the
                     # two calls would publish a candidate no anchor ever approved.
                     if args.allow_rewrite or entry.get("rewrite", 0) == 0:
+                        if resolution is None or resolution.corrected is None or resolution.source_sha256 is None:
+                            raise ValueError("resolved candidate has no captured source snapshot")
                         rewritten = bool(entry.get("rewrite", 0))
                         _backup_and_write(
                             symbol,
                             bronze=bronze,
                             output_dir=args.output_dir,
+                            store=store,
+                            source_sha256=resolution.source_sha256,
+                            action_sha256=resolution.action_sha256,
                             new_rows=resolution.corrected,
                             mode="rewrite" if rewritten else "relabel",
                         )

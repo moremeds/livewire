@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from collections.abc import Callable, Sequence
@@ -28,6 +29,7 @@ from clients.corporate_action_store import CorporateActionStore
 from clients.ib_client import IBClient
 from clients.massive_client import MassiveClient
 from clients.parquet_io import write_json_atomic
+from clients.silver_snapshot import SilverSnapshot
 from clients.source_evidence import sha256_file
 from clients.symbol_paths import decode_symbol, encode_symbol
 from livewire_scripts.adjusted_history_sources import (
@@ -285,6 +287,8 @@ def run(
     symbols = _symbols(bronze_root, args.tickers)
     action_store = CorporateActionStore(root)
     identity = _run_identity(args, root, silver_root)
+    snapshot = SilverSnapshot.pin(silver_root)
+    identity["silver_manifest_sha256"] = hashlib.sha256(snapshot.manifest).hexdigest()
     cursor_path = output / "cursor.json"
     cursor = _load_cursor(cursor_path, identity, args.resume)
     results: list[dict[str, Any]] = []
@@ -302,12 +306,15 @@ def run(
         with massive_context as massive:
             for symbol in symbols:
                 encoded = encode_symbol(symbol)
+                silver_files = snapshot.files("1d", {symbol})
+                silver_file = Path(silver_files[0]) if silver_files else None
                 paths = {
                     "bronze": bronze_root / f"symbol={encoded}" / "1d.parquet",
-                    "silver": silver_root / "asset_class=equity" / f"symbol={encoded}" / "1d.parquet",
                     "actions": action_store.path_for(symbol),
-                    "revision": silver_root / "revisions/current.json",
+                    "revision": silver_root / "revisions" / f"revision={snapshot.revision}.json",
                 }
+                if silver_file is not None:
+                    paths["silver"] = silver_file
                 before = _input_hashes(paths)
                 detail_path = output / "symbols" / f"{encoded}.json"
                 checkpoint = cursor["completed"].get(symbol)
@@ -321,7 +328,7 @@ def run(
                     results.append(json.loads(detail_path.read_text(encoding="utf-8")))
                     continue
 
-                if not paths["bronze"].is_file() or not paths["silver"].is_file():
+                if not paths["bronze"].is_file() or silver_file is None:
                     detail = {
                         "symbol": symbol,
                         "outcome": "provider-error",

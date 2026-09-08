@@ -7,11 +7,13 @@ import argparse
 import json
 import os
 from collections.abc import Sequence
+from contextlib import nullcontext
 from pathlib import Path
 
 import pyarrow.parquet as pq
 
 from clients.bronze_client import BronzeClient
+from clients.parquet_io import symbol_lock
 from clients.source_evidence import sha256_file
 from clients.symbol_paths import encode_symbol
 from livewire_scripts.paths import data_lake_dir
@@ -58,28 +60,29 @@ def run(
     unchanged = 0
     for symbol in symbols:
         path = root / f"symbol={encode_symbol(symbol)}" / "1d.parquet"
-        if not path.exists():
-            raise FileNotFoundError(path)
-        names = set(pq.ParquetFile(path).schema_arrow.names)
-        if {"source", "price_basis"} <= names:
-            unchanged += 1
-            if symbol in completed:
-                resumed += 1
-            elif not args.dry_run and cursor_path is not None:
-                completed.add(symbol)
-                _write_cursor(cursor_path, completed)
-            continue
-        source_hash = sha256_file(path)
-        artifact = {"symbol": symbol, "path": str(path), "source_sha256": source_hash}
-        if not args.dry_run:
-            rows = client.read_symbol_rows(symbol)
-            client.replace_ticker_rows(symbol, rows)
-            artifact["target_sha256"] = sha256_file(path)
-            if cursor_path is not None:
-                completed.add(symbol)
-                _write_cursor(cursor_path, completed)
-        artifacts.append(artifact)
-        migrated += 1
+        with nullcontext() if args.dry_run else symbol_lock(path):
+            if not path.exists():
+                raise FileNotFoundError(path)
+            names = set(pq.ParquetFile(path).schema_arrow.names)
+            if {"source", "price_basis"} <= names:
+                unchanged += 1
+                if symbol in completed:
+                    resumed += 1
+                elif not args.dry_run and cursor_path is not None:
+                    completed.add(symbol)
+                    _write_cursor(cursor_path, completed)
+                continue
+            source_hash = sha256_file(path)
+            artifact = {"symbol": symbol, "path": str(path), "source_sha256": source_hash}
+            if not args.dry_run:
+                rows = client.read_symbol_rows(symbol)
+                client._publish_symbol_rows(symbol, client._normalize_rows(rows, symbol))
+                artifact["target_sha256"] = sha256_file(path)
+                if cursor_path is not None:
+                    completed.add(symbol)
+                    _write_cursor(cursor_path, completed)
+            artifacts.append(artifact)
+            migrated += 1
     print(
         json.dumps(
             {

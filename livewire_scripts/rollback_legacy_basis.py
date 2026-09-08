@@ -9,13 +9,12 @@ the same contract the repair enforces.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import os
 from collections.abc import Sequence
 from pathlib import Path
 
 from clients.bronze_client import BronzeClient
+from clients.parquet_io import restore_parquet_exact, symbol_lock
 from livewire_scripts.paths import data_lake_dir
 
 
@@ -58,16 +57,9 @@ def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None
         if not backup_path.is_file():
             missing.append(symbol)
             continue
-        payload = backup_path.read_bytes()
-        if hashlib.sha256(payload).hexdigest() != sidecar["backup_sha256"]:
-            raise ValueError(f"backup checksum mismatch for {symbol}: refusing to restore")
         destination = bronze.symbol_path(symbol)
-        temporary = destination.with_name(f".{destination.name}.rollback.{os.getpid()}.tmp")
-        try:
-            temporary.write_bytes(payload)
-            os.replace(temporary, destination)
-        finally:
-            temporary.unlink(missing_ok=True)
+        with symbol_lock(destination):
+            restore_parquet_exact(backup_path, destination, sidecar["backup_sha256"])
         restored.append(symbol)
     print(json.dumps({"restored": len(restored), "missing_backup": sorted(missing)}, sort_keys=True))
     return 0 if not missing else 1
