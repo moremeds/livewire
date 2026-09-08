@@ -1,15 +1,10 @@
 import json
-import sys
 
 import pytest
 
+from clients import quality_flags
 from clients.quality_detector import QualityFlag
 from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
-
-_SKIP_LINUX = pytest.mark.skipif(
-    sys.platform == "linux",
-    reason="subprocess mock via monkeypatch doesn't intercept on Linux due to dual module objects from sys.path.insert",
-)
 
 
 @pytest.fixture(autouse=True)
@@ -112,13 +107,12 @@ def test_append_audit_oserror_returns_false(tmp_path, monkeypatch):
 def test_alert_below_threshold_skipped(tmp_path, monkeypatch):
     monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "critical")
     called = []
-    monkeypatch.setattr("subprocess.run", lambda *a, **kw: called.append(a) or _ok())
+    monkeypatch.setattr(quality_flags.subprocess, "run", lambda *a, **kw: called.append(a) or _ok())
     ok = alert_on_flag(_flag(severity="warning"), source="ib", ticker="SMH")
     assert ok is False
     assert called == []  # below threshold -> never spawned
 
 
-@_SKIP_LINUX
 def test_alert_above_threshold_spawns(tmp_path, monkeypatch):
     monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
     called = []
@@ -127,7 +121,7 @@ def test_alert_above_threshold_spawns(tmp_path, monkeypatch):
         called.append(a)
         return _ok()
 
-    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(quality_flags.subprocess, "run", fake_run)
     ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
     assert ok is True
     assert called, "subprocess.run should have been invoked"
@@ -136,7 +130,6 @@ def test_alert_above_threshold_spawns(tmp_path, monkeypatch):
     assert "flag-alert" in cmd
 
 
-@_SKIP_LINUX
 def test_alert_rate_limit_dedupes_within_window(tmp_path, monkeypatch):
     monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
     monkeypatch.setenv("MDW_ALERT_RATE_LIMIT_SECONDS", "300")
@@ -146,8 +139,7 @@ def test_alert_rate_limit_dedupes_within_window(tmp_path, monkeypatch):
         counts[0] += 1
         return _ok()
 
-    monkeypatch.setattr("subprocess.run", fake_run)
-    from clients import quality_flags
+    monkeypatch.setattr(quality_flags.subprocess, "run", fake_run)
 
     quality_flags._RATE_LIMIT_CACHE.clear()
     alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
@@ -155,15 +147,13 @@ def test_alert_rate_limit_dedupes_within_window(tmp_path, monkeypatch):
     assert counts[0] == 1
 
 
-@_SKIP_LINUX
 def test_alert_smtp_failure_records_execution(tmp_path, monkeypatch):
     monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
 
     def fake_run(*a, **kw):
         return _fail("SMTP timeout")
 
-    monkeypatch.setattr("subprocess.run", fake_run)
-    from clients import quality_flags
+    monkeypatch.setattr(quality_flags.subprocess, "run", fake_run)
 
     quality_flags._RATE_LIMIT_CACHE.clear()
     ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="HOOD")
@@ -173,11 +163,10 @@ def test_alert_smtp_failure_records_execution(tmp_path, monkeypatch):
     assert ledger.query("select script, exit_code from executions") == [{"script": "send_alert", "exit_code": 1}]
 
 
-@_SKIP_LINUX
 def test_alert_failure_without_an_orchestrator_run_id_is_still_recorded(monkeypatch):
     monkeypatch.delenv("LW_RUN_ID", raising=False)
     monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
-    monkeypatch.setattr("subprocess.run", lambda *a, **kw: _fail("SMTP timeout"))
+    monkeypatch.setattr(quality_flags.subprocess, "run", lambda *a, **kw: _fail("SMTP timeout"))
     assert alert_on_flag(_flag(), source="ib", ticker="HOOD") is False
     from clients import ledger
 
@@ -186,23 +175,21 @@ def test_alert_failure_without_an_orchestrator_run_id_is_still_recorded(monkeypa
     assert rows[0]["run_id"].startswith("quality-flag-")
 
 
-@_SKIP_LINUX
 def test_alert_invalid_rate_limit_env_uses_default(monkeypatch):
     monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
     monkeypatch.setenv("MDW_ALERT_RATE_LIMIT_SECONDS", "bad")
-    monkeypatch.setattr("subprocess.run", lambda *a, **kw: _ok())
+    monkeypatch.setattr(quality_flags.subprocess, "run", lambda *a, **kw: _ok())
     ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
     assert ok is True
 
 
-@_SKIP_LINUX
 def test_alert_spawn_exception_records_execution(tmp_path, monkeypatch):
     monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
 
     def boom(*a, **kw):
         raise OSError("node missing")
 
-    monkeypatch.setattr("subprocess.run", boom)
+    monkeypatch.setattr(quality_flags.subprocess, "run", boom)
     ok = alert_on_flag(_flag(severity="critical"), source="ib", ticker="TSLA")
     assert ok is False
     from clients import ledger
