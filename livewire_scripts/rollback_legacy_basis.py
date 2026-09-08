@@ -45,7 +45,8 @@ def run(argv: Sequence[str] | None = None, *, data_lake_root: Path | None = None
     already_restored: list[str] = []
     missing: list[str] = []
     blocked: list[str] = []
-    for sidecar_path in sorted((args.output_dir / "symbols").glob("*.json")):
+    sidecar_paths = (path for path in (args.output_dir / "symbols").glob("*.json") if not path.name.startswith("._"))
+    for sidecar_path in sorted(sidecar_paths):
         sidecar = json.loads(sidecar_path.read_text())
         symbol = sidecar.get("symbol")
         # "in_progress" means publication may or may not have reached Bronze. The

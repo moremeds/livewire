@@ -43,6 +43,16 @@ def test_rollback_restores_the_original_bytes(tmp_path):
     assert path.read_bytes() == before
 
 
+def test_rollback_ignores_appledouble_receipt_sidecars(tmp_path):
+    path, output_dir, before = _repair(tmp_path)
+    appledouble = output_dir / "symbols/._NVDA.json"
+    appledouble.write_bytes(b"\xff\xfeMac OS X AppleDouble")
+
+    assert rollback_legacy_basis.run(["--output-dir", str(output_dir)], data_lake_root=tmp_path) == 0
+    assert path.read_bytes() == before
+    assert appledouble.read_bytes() == b"\xff\xfeMac OS X AppleDouble"
+
+
 def test_rollback_refuses_to_overwrite_newer_bronze(tmp_path):
     path, output_dir, _ = _repair(tmp_path)
     bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
