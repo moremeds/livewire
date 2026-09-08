@@ -1,0 +1,279 @@
+# Systematic integrity: independent verification and cutover gate
+
+This is the successor to the PR #124 verification note. The candidate is on
+Livewire `fix/systematic-integrity` ([PR #125](https://github.com/moremeds/livewire/pull/125))
+and Apex `fix/livewire-snapshots` ([PR #161](https://github.com/moremeds/apex/pull/161)).
+Do not infer a release from these branch names, a passing local test, or a PR.
+Record exact reviewed commits from the PRs before beginning; record merged
+commits and deployed artifacts separately after an approved cutover.
+
+## Goal and boundary
+
+Prove that a failed writer cannot expose an incomplete Silver generation,
+destroy a valid catalog, leave descendants holding write locks, or prevent
+independent healthy symbols/buckets/providers from progressing. Warnings must
+identify affected work, evidence, retained data and the retry/clear condition.
+
+The stable interface is the
+[Livewire published-data contract](../plans/2026-09-08-silver-atomic-publication.md).
+Apex changes are request-level adapter compatibility. They do **not** provide
+transactional subscription reseeding, indicator/signal replacement or event
+epoch rejection. Those belong to the planned Apex rewrite and must not be
+reported as completed by this candidate.
+
+Production is accessed through `ssh macmini`. Do not inspect a MacBook lake as
+production evidence. Do not restart IB Gateway, submit orders, repair canonical
+data, delete generations, or trigger a production rebuild during verification.
+
+## 1. Establish the exact state
+
+- Record PR/base/head/merge SHAs and each actual CI job result. Livewire's
+  early `39e32b8` CI result proves the small gate/first-alert fix only.
+- On the Mini, resolve `~/market-warehouse/current`, compare its tracked source
+  files with the reviewed Git tree, and inspect the installed launchd arguments.
+  A directory named after a SHA alone is not proof of unchanged source bytes.
+- Check active writer/repair processes and their source/release paths. An empty
+  point-in-time process listing is not a maintenance fence.
+- Record the Apex running image ID, OCI revision, container mounts and actual
+  readable Silver root. The host checkout SHA is not the container revision.
+- Record current manifest bytes/revision, immutable manifest identity, free
+  internal/external space, and retained generation bytes. Hash actual selected
+  artifacts rather than treating existence as verification.
+
+Candidate evidence on 2026-09-08: final Livewire implementation
+`38c90bba46f668cf2d615c90f867a3e1e9220a09` passed locally at 2,688 tests and
+95.01% coverage. Ruff/format and lock checks passed; Pyright reported zero
+errors and 25 warnings. Independent re-review found no blocking issues.
+This adds the external-test-discovered AppleDouble receipt filter to `062caa6`;
+only rollback receipt enumeration and its regression test changed.
+The test checks real data restoration while ignoring metadata; it does not
+require macOS-owned AppleDouble bytes to remain unchanged on exFAT.
+At exact `38c90bb`, all 14 final recovery/identity cases passed on the Mini's
+external filesystem in 21.84 seconds. The fresh fixture is
+`/Volumes/DATA_LAKE/livewire/disposable/se08-20260908T1315-38c90bb`;
+`receipt.txt` records exit 0 and archive SHA-256
+`b7058cf59e204328948dacd3dafd36c14557bd870c7be03fd8fa8f7b7e8c7f69`,
+with results in `pytest-output.txt` and command/nodeids/source hashes in
+`command.txt`. This was correctness verification during
+the active production daily job, not another performance sample.
+
+Apex
+`ae57f93cfb6f772277c6a309f5ae428dd1ce3298` passed CI integration, but CI lint
+and type gates failed outside the adapter diff and unit CI was consequently
+skipped. This is not a fully green compatible release pair.
+Run `34183103803` passed 129 integration tests (one skipped). Lint failures
+are isort 9.0.1 on unchanged `backtest/execution/parallel.py` and
+`order_matching.py`; type checking fails at unchanged
+`backtest/optimization/bayesian.py:73` with CI's mypy 2.3.1 / Optuna 5.
+Local focused adapter checks passed 114 tests. The broader local unit run
+passed 2,091 tests with 79 skipped and two Yahoo network failures; local
+integration passed 129 with one skipped. Do not silently repair those
+unrelated Apex internals or dependencies as part of the contract change.
+
+The preceding recovery/identity candidate
+`062caa6157c102e639c0a09e98c16370b5ef4fbf` passed local and Linux CI
+(`34186169434`) with 2,687 tests and 95.01% coverage, zero type errors and
+25 warnings. Independent re-review closed the manual recovery findings,
+including a failed completion receipt after publication. The actual producer
+to Apex `ae57f93` interoperability check passed at this candidate; the later
+AppleDouble fix changes no producer or adapter code. Its external-volume
+13-case check exposed two receipt-parsing failures (11 passed), preserved at
+`/Volumes/DATA_LAKE/livewire/disposable/se08-20260908T1306-062caa6/pytest-output.txt`.
+Never substitute its green Linux CI for that external-filesystem result.
+
+Mini capacity receipts remain explicitly pinned to `c11caa8`, before the
+manual recovery changes and three symbol-normalization corrections. On the
+13,548-symbol disposable fixture, input copying took 773.162 seconds while
+holding input locks; first publication took 1,971.265 seconds and committed
+13,279 members / 26,558 artifacts. The observed sampled RSS peak was 691,488
+KiB, sampled after process startup. Full no-op took 743.799 seconds and kept
+revision 1 / rebuilt 0, with the same 269 input failures. AAPL targeted
+increment took 624.424 seconds, committing
+revision 2 / rebuilt 1; targeted publication still validates the complete carried
+artifact set, so this measurement is not evidence of constant-cost updates.
+Corrupting only fixture symbol A then running full took 1,319.281 seconds:
+exit 0, revision 3, rebuilt 0 and 270 reported failures. A was absent from
+the new manifest while all other previous members remained eligible; this
+tests healthy-subset publication, not an all-or-nothing failed transaction.
+Byte-for-byte fixture restoration followed by targeted retry took 652.258
+seconds, exit 0, revision 4 / rebuilt 1. Revisions 1, 2 and 4 have identical
+13,279-member sets; revision 3 differs only by omitting A (13,278 members).
+The continuation receipt records `complete=true`.
+These are separate stage measurements with internal
+input and external output, not one cold production run or an SLA.
+At 13:00 HKT the normal production daily job actually started while the
+fixture recovery retry was still running (launchd `com.livewire.daily-update`,
+PIDs 83252/83253 observed at 13:00:09). Retry timing from that point is
+contended, not an idle-host sample. Production was not interrupted.
+Final-current artifacts reference 775,354,298 bytes; the deduplicated union
+across revisions 1–4 retains 776,044,796 bytes / 26,562 files. At 05:07:23 UTC,
+free space was 65,011,445,760 bytes internally and 7,216,270,278,656 externally.
+These are manifest-referenced artifact bytes, not total filesystem allocation
+or a generations-directory orphan inventory; see `c11-retained-capacity.json`.
+
+Receipts on the Mini are under
+`/Volumes/DATA_LAKE/livewire/disposable/se08-20260908T1122-c11caa8/logs/`:
+`input-copy-receipt.json`, `scenario-receipt.json`, `continuation-receipt.json`,
+`full-migration-failures.json`, `window-manifest-comparison.json` and
+`run-scenarios-rss.tsv`. The first runner parsed the summary delimiter wrongly
+after the completed build; continuation attested its persisted exit/status,
+duration and revision before proceeding, without repeating the build.
+
+The five physical SIGKILL publication boundaries also passed on the Mini's
+external filesystem in 128.36 seconds, using the `c11caa8` publication code.
+The fsync/flock probe and crash receipts are at
+`/Volumes/DATA_LAKE/livewire/disposable/se08-architecture-_ab1q7_c/receipt.json`
+and its adjacent `pytest-output.txt`. Later recovery and symbol-identity edits
+require their separately recorded final-candidate checks.
+
+Current fixture failures: 198 unknown historical price bases, 61 dividend/
+Bronze currency mismatches, five conflicting splits, four invalid dividends
+and one corrupt RJF daily file. The canonical and fixture RJF bytes have the
+same SHA-256
+`54e59febc7d33de3d0b91d557821dadc6c8116332ea6f1d54ebb2d37986c4051`;
+neither was modified during verification. Comparing production revision 39
+with the fixture finds 53 shorter history windows, zero membership changes
+and one lengthened window (MUNJ). Fresh-baseline regression count zero does
+not resolve those 53; the comparison is metadata evidence, not a correctness
+endorsement of either history window.
+The [itemized recovery inventory](2026-09-08-integrity-recovery-inventory.md)
+accounts for all 269 failures and 53 shortened windows with source receipt
+hashes, record pointers, investigation actions and clearance conditions.
+Its completion prepares recovery review; it does not resolve those data issues.
+
+## 2. Reproduce the code checks in isolated checkouts
+
+Livewire's required coverage command uses the configured `clients` and
+`livewire_scripts` source set. Do not substitute the thin `scripts` wrappers.
+
+```sh
+uv lock --check
+uv run ruff check .
+uv run ruff format --check .
+uv run pyright
+uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning
+npm ci
+npm run test:alerts
+```
+
+Report the raw coverage value and process exit. A genuine 94.99% result must
+fail. Record baseline warnings separately from branch regressions. The unchanged
+Nodemailer dependency currently has an audit advisory; this task does not make
+a major dependency upgrade.
+
+For Apex, run its exact CI lint/type/unit/integration commands. The integration
+job explicitly excludes the live Futu and multi-broker test files. Do not run
+those as an unbounded substitute for a hermetic gate. At candidate preparation,
+two Yahoo-backed unit tests and five unchanged Black files failed locally;
+those are open baseline checks, not a full-suite pass. CI installed different
+tool versions: Black 26.5.1 passed, isort 9.0.1 rejected unchanged
+`src/backtest/execution/parallel.py` and `order_matching.py`; CI mypy rejected
+the unchanged `src/backtest/optimization/bayesian.py:73` direction argument.
+Record environment differences rather than conflating local and CI outcomes.
+
+Run the manual producer/consumer interoperability check from Livewire:
+
+```sh
+python tests/contract/verify_apex_interop.py \
+  --livewire-root /absolute/path/to/reviewed/livewire \
+  --apex-root /absolute/path/to/reviewed/apex
+```
+
+It must use each checkout's existing Python environment, publish with the real
+Livewire writer, then read through the real Apex adapter. Both adjusted daily
+and intraday values, trading dates and pinned revision must match. This does not
+exercise Apex's live signal lifecycle.
+
+## 3. Test crashes on disposable Mini storage
+
+Create a **new unique** disposable root on the external filesystem; keep scratch
+on the internal disk. Bind every `MDW_*`/`LW_*` output to the disposable root.
+Never reuse canonical paths or a pre-existing test directory that pytest could
+clear. First verify actual file/directory fsync and cross-process flock there.
+
+Using reviewed code, run the five cases in
+`tests/test_silver_atomic_publication.py`: kill the actual child after daily,
+factors, validation, immutable manifest persistence, and current replacement.
+Before current swaps, a newly pinned reader must still read old. After it swaps,
+the complete new pair must be readable. An already pinned old reader must remain
+usable in both cases. Retry must succeed without deleting abandoned attempts.
+
+Also verify the existing tests for corrupt staged bytes, unavailable scratch,
+unreadable symbol isolation, missing/withdrawn artifacts, raw-date recovery,
+catalog staging contention, manual repair stale-input rejection, migration
+contention, and process-group cleanup. Exception injection alone is not SIGKILL
+evidence. Filesystem fsync success is not proof against every power-loss mode.
+
+## 4. Measure the real workload shape
+
+Use copied daily Bronze, corporate-action events and optional triage inputs in
+the disposable root. Record source counts/bytes and copy duration separately;
+the copy is not a coherent production snapshot. Freeze the same as-of date for
+all scenarios so midnight does not invalidate the no-op comparison.
+
+Measure full first publication, no-op, one-symbol incremental update, failed
+attempt and retry. Record elapsed time, maximum RSS, input-copy lock duration,
+output/retained bytes, exit code, failed symbols and committed revision.
+Classify the earlier 269 failures/53 window regressions from current evidence;
+do not simply repeat those old counts. A healthy subset commit is not complete
+data health, and one full observation is not a p95 or a business SLA.
+
+The rejected in-memory design projected 16.005 GiB of row objects alone on the
+16 GiB Mini. The candidate instead copies inputs to temporary disk and retains
+per-symbol staged row files. Verify both memory and scratch/output capacity.
+The observed schedule is daily 13:00, intraday 18:00, coverage 19:00 HKT;
+the trigger spacing is not an agreed data-delivery deadline.
+
+## 5. Production approval is a separate final gate
+
+Before requesting approval, provide exact compatible commits, full CI results,
+disposable test receipts, space/time measurements, allowed interruption and a
+specific rollback/stop procedure. Keep automatic release promotion and all old
+writers from crossing the migration while maintaining a reversible record of
+their installed configuration. Merely merging Livewire could allow its next
+automatic promotion to activate the writer prematurely.
+
+Control discovery at 2026-09-08 03:38:39 UTC: Apex runs as
+`apex-deploy-api-1`, Compose project `apex-deploy`, configured by
+`/Users/moremeds/apex-deploy/compose.yml` on the Mini. The running image's OCI
+revision is `905cab6b562af1af87ad821e109e91f24958465e`, not the host checkout
+revision. Bronze, Silver and delisted mounts are read-only; adjusted mode polls
+every 30 seconds. Refresh these observations before acting. Apex also opts into
+the shared `xenon-watchtower-1` updater (60-second poll). Its stable-tag release
+workflow publishes the mutable `latest` image. Consumer cutover must control
+this service's image/update eligibility; do not stop the shared updater for all
+applications. Livewire's separate automatic promoter runs at 12:30 HKT.
+
+Preserve all existing data and releases. A legacy manifest with mismatching
+hashes is not repaired by blessing its current bytes. Build and validate the
+initial immutable snapshot from protected canonical inputs. Deploy compatible
+manifest-based readers before enabling the new writer. Return to an older data
+snapshot by publishing a new monotonic manifest referencing retained verified
+artifacts; reverting to a mutable writer is not a safe symlink rollback.
+The runnable regression `test_rebuild_preserves_bytes_pinned_by_prior_revision`
+also exercises this rollback through `SilverRevisionPublisher.publish`: revision
+3 references revision 1's retained artifacts while the pinned revision 2 remains
+readable. A production invocation must first select and validate the intended
+historical manifest and confirm the current revision under the publisher lock.
+
+Final review rejected unguarded legacy rollback. Verify that repair writes the
+original backup and exact candidate hash before mutation, and that resume keeps
+that undo metadata across a missing cursor update. Rollback must compare current
+bytes against the recorded applied hash under the symbol lock; a historical
+sidecar lacking that hash must refuse replacement, while already-restored bytes
+are an idempotent no-op. Test partial multi-symbol apply/rollback and changed
+inputs before replaying a pending candidate. Any real rollback still needs the
+user's concrete data-change approval.
+
+## 6. Report closure only after a normal run
+
+After the separately approved cutover, verify exact deployed files/container,
+current manifest and selected hashes, real adapter reads, catalog freshness and
+actionable warning/recovery delivery. Then observe one normally scheduled run,
+with named lane outcomes and current-data evidence. A manual migration is not
+that scheduled run.
+
+Report four verdicts separately: code/CI; disposable filesystem/crash behavior;
+deployment/cutover; normal production outcome. Keep Apex live-signal atomicity,
+complete-withdrawal representation in manifest v1, hardware redundancy and
+unproven backup recovery explicit. Do not convert them into a global “all fixed.”

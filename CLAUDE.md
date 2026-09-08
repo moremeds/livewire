@@ -41,7 +41,6 @@ livewire/                       # git repo
 │   └── quarantine/<stamp>/     # corrupt per-symbol parquet moved aside by the publisher
 ├── releases/<sha>/ + current   # immutable release artifacts; scheduled jobs run `current`
 ├── cursors/  logs/  .env       # resume state, job logs, credentials (a release carries no .env)
-├── locks/lake-io.lock          # the one lake-io flock; internal disk, never in the lake
 └── .venv/                      # runtime venv for launchd jobs (dev and CI use `uv run`)
 ```
 
@@ -57,7 +56,7 @@ verified on the mini or it is not verified.
 - DuckDB reads parquet in place; its only durable artifact is a small coverage table. It is never a second store.
 - Providers: equity daily IB → Massive fallback; equity intraday Massive flat files only; futures/cmdty daily and volatility intraday IB; CBOE vol indices CBOE API; rates FRED; fx/DXY Yahoo (+ Massive intraday).
 - Six launchd jobs on the mini: daily-update 05:00Z → intraday-catchup 10:00Z → watchdog 10:30Z → coverage 11:00Z (no timeout) → release-promote; universe-refresh weekly, from the repo.
-- Apex is the consumer. It resolves silver by path and never reads the manifest; a corrupt symbol renders as a plausible chart while a missing one fails closed (HTTP 500). Correctness outranks coverage.
+- Apex is the consumer. Its adapter must pin one committed Silver manifest and resolve only its immutable artifact references; it must fail closed for a missing or corrupt reference. The producer-to-adapter boundary is in `docs/plans/2026-09-08-silver-atomic-publication.md`.
 
 ## The one contract
 
@@ -110,7 +109,7 @@ gap      = expected − actual
 - A release carries no `.env` and no `node_modules`; `promote` runs `npm ci --omit=dev` before `freeze`. → test: `tests/test_release.py` · pm:2026-07-29-release-missing-node-modules
 - Lane budgets are per lane (`LANE_BUDGET_S`), not a total: a lane over budget is killed by process group, recorded `outcome='timeout'`, and **the next lane starts normally**. → test: `tests/test_run_daily_update_job.py::TestPerLaneBudgets` · pm:2026-07-28-daily-job-deadline-is-a-total
 - Lane order is no-fallback-first (futures → cmdty → CBOE → FX → corporate-actions → equity → silver): the IB-only lanes take minutes and cannot be back-sourced, so they never queue behind a 3–8h Massive lane. → test: `::test_main_runs_the_no_fallback_lanes_before_the_expensive_ones`
-- One `fcntl.flock` at `<warehouse>/locks/lake-io.lock` (internal disk, never in the lake) is held by every lane that touches the lake, in **both** runners' three lane bodies; the daily job polls at 1s and the intraday job at 60s, and a lane that waits past its own budget is recorded `outcome='blocked', blocker='lake_lock'` instead of running. Four nights of corporate-actions timeouts (10800s each) against a 39-minute lake-alone run preceded it. → test: `tests/test_run_intraday_catchup_job.py::TestBothRunnersTakeOneLock`, `tests/test_run_daily_update_job.py::TestTheLakeLock` · pm:2026-09-06-intraday-and-daily-shared-the-lake
+- Lock only the contested boundary: Bronze writers take per-symbol locks, Silver briefly excludes equity/action writers while copying inputs, and its publisher serializes the revision pointer. No runner-wide lake lock controls independent lanes. → test: `tests/test_parquet_io.py`, `tests/test_silver_atomic_publication.py`
 - The lane list is declared once (`clients.constants.LANE_ORDER`, `IB_ONLY_LANES`); the job runs it and `status` generates its CHECK SQL from it, so a new lane cannot be run but ungraded. → test: `tests/test_status.py::test_adding_a_lane_makes_it_appear_in_the_lanes_terminal_check`, `tests/test_constants.py::test_declared_lane_budgets_cover_exactly_the_lane_set`
 - The lane runner never runs the alert: `_page_failure` takes no runner parameter; `send_failure_alert` binds `subprocess.run` late. → test: `TestTheLaneRunnerNeverRunsTheAlert` · pm:2026-08-02-lane-runner-ran-the-alert
 - Every lane pages, the timeout branch included; `_run_scheduled_lane` is the single shared lane body (no private copies). → test: `tests/test_run_daily_update_job.py::test_terminal_failure_*` · pm:2026-07-28-lane-alert-paths-missing
@@ -140,11 +139,11 @@ gap      = expected − actual
 ### Silver
 
 - Two trims, in order: the deterministic 2021-06 seed-boundary check on raw bronze (trims to the post-seed window, never quarantines), then the blind >6.0 continuity scan on the adjusted series with durable triage verdicts exempting confirmed real moves. Everything published is silver grade _at the 6.0 definition_. → test: `tests/test_rebuild_silver.py::test_seed_corrupt_symbol_publishes_its_post_seed_window_rather_than_quarantining` · pm:2026-07-18-silver-seed-floor-blind-heuristic
-- Quarantine **moves** the artifact to `<silver>/evicted/<rev>/`; Apex never reads the manifest. Factor intervals stay wider than the daily window. → test: `tests/test_rebuild_silver.py::test_a_quarantined_symbols_stale_artifact_is_moved_not_just_unmanifested`
+- Quarantine omits a failed in-scope symbol from the next manifest; old immutable generations remain for already-pinned readers. Readers select daily and factors from the same pinned manifest. Factor intervals stay wider than the daily window. → test: `tests/test_silver_atomic_publication.py`
 - Two active splits on one ex-date: equal ratios collapse to one, unequal ratios fail closed. Count affected stored rows, not action records (16 symbols → 5 in history → 0 published). → test: `tests/test_adjustment_engine.py::test_one_split_restated_at_another_scale_is_collapsed_not_doubled`, `::test_conflicting_active_splits_on_one_ex_date_fail_closed` · pm:2026-08-02-two-active-splits-one-ex-date
 - Cancellation inference is provider-scoped: a Massive full reconcile never cancels a yahoo-sourced action (507 repairs undone over two Sundays before this). → test: `tests/test_corporate_action_store.py::test_full_reconcile_leaves_another_provider_alone` · pm:2026-07-19-cancellation-inference-provider-scoped
-- A carried-forward artifact takes its sha from the file on disk, never from the previous manifest; an interrupted publish leaves the lake ahead of the manifest and a stale sha then fails every later publish. → test: `tests/test_rebuild_silver.py::test_carried_symbol_takes_its_sha_from_disk_not_the_stale_manifest` · pm:2026-09-07-silver-carry-forward-trusted-a-stale-manifest-sha
-- Both publish entry points reconcile `revisions/` first: a manifest orphaned by SIGKILL between the immutable write and the `current.json` swap is adopted at exactly `current+1` or quarantined, never deleted and never left to wedge every later publish. → test: `tests/test_silver_revision.py::test_an_orphaned_manifest_no_longer_wedges_every_later_publish` · pm:2026-09-07-silver-manifest-orphan-wedged-every-later-publish
+- A carried generation reference retains the committed manifest hash; a mismatch fails the publish rather than blessing bytes from disk. → test: `tests/test_silver_atomic_publication.py`
+- A manifest left by SIGKILL before the `current.json` swap is uncommitted: retry quarantines its metadata, retains its generation, and uses a new attempt id. → test: `tests/test_silver_atomic_publication.py`
 - `--allow-window-regression` was for the rev-3 bootstrap, exactly once. → test: `tests/test_rebuild_silver.py::test_allow_window_regression_publishes_the_shorter_window`
 - A publish takes its clock from the run, so a frozen PIT `as_of` cannot expire (19 tests broke with no commit in between). → PR #93
 

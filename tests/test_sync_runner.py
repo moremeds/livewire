@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import subprocess
 from datetime import UTC
 from pathlib import Path
@@ -422,6 +423,21 @@ class TestRunSync:
         summary = parse_last_summary_json(capsys.readouterr().out)
         assert summary["failed"] == ["daily_backfill_fred_rates"]
 
+    def test_a_failed_early_phase_does_not_skip_later_phases(self, tmp_path):
+        config = _make_config(tmp_path)
+        commands: list[list[str]] = []
+
+        def selective(command, **kwargs):
+            commands.append(command)
+            rc = 1 if "daily" in command else 0
+            return CompletedProcess(args=command, returncode=rc)
+
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+            assert run_sync(config, runner=selective, trading_day_fn=lambda: "2026-05-28") == 1
+
+        assert len(commands) == 8
+        assert any("duckdb" in command for command in commands)
+
     def test_uses_target_date_from_config(self, tmp_path):
         config = _make_config(tmp_path)
         commands: list[list[str]] = []
@@ -589,6 +605,32 @@ class TestPhaseTimeout:
 
         assert seen["timeout"] == 42
 
+    def test_default_runner_kills_the_entire_process_group(self, tmp_path):
+        from unittest.mock import Mock
+
+        proc = Mock(pid=123, returncode=-9)
+        proc.communicate.side_effect = [subprocess.TimeoutExpired(["stuck"], 1), None]
+        context = Mock()
+        context.__enter__ = Mock(return_value=proc)
+        context.__exit__ = Mock(return_value=False)
+
+        with (
+            patch("livewire_scripts.sync_runner.subprocess.Popen", return_value=context) as popen,
+            patch("livewire_scripts.job_runner_common.os.killpg") as killpg,
+            pytest.raises(subprocess.TimeoutExpired),
+        ):
+            sync_runner._run_in_own_process_group(
+                ["stuck"],
+                stdout=None,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+                timeout=1,
+            )
+
+        assert popen.call_args.kwargs["start_new_session"] is True
+        killpg.assert_called_once_with(123, signal.SIGKILL)
+
     def test_phase_writes_entry_and_terminal_ledger_rows(self, tmp_path, monkeypatch):
         from clients import ledger
 
@@ -683,31 +725,14 @@ class TestAGatewayOutageDegradesRatherThanFails:
         assert summary["degraded"] == []
 
 
-class TestTheIntradayPhasesWaitForTheLake:
-    """The 6h flat-file phase is what crowded the daily lanes out for four nights."""
-
+class TestTheIntradayPhasesDoNotTakeTheLegacyLakeLock:
     @pytest.fixture(autouse=True)
     def warehouse(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
         monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
         monkeypatch.setenv("LW_RUN_ID", "intraday-catchup-20260906T100000Z-1")
 
-    def test_a_phase_records_the_time_it_waited(self, tmp_path):
-        from clients import ledger
-
-        rc = run_phase("daily_backfill_fred_rates", ["echo", "hi"], tmp_path, runner=_ok_runner)
-
-        assert rc == 0
-        assert ledger.query("select name, scope, source from measurements where name = 'lake_lock_wait_s'") == [
-            {
-                "name": "lake_lock_wait_s",
-                "scope": "daily_backfill_fred_rates",
-                "source": "measured",
-            }
-        ]
-
-    def test_a_phase_that_never_gets_the_lock_is_blocked_and_never_runs(self, tmp_path, monkeypatch):
-        from clients import ledger
+    def test_a_phase_starts_while_the_legacy_lock_is_held(self, tmp_path):
         from clients.parquet_io import path_lock
         from livewire_scripts.paths import lake_lock_path
 
@@ -718,27 +743,7 @@ class TestTheIntradayPhasesWaitForTheLake:
             return CompletedProcess(args=command, returncode=0)
 
         with path_lock(lake_lock_path()):
-            rc = run_phase(
-                "daily_backfill_intraday_equity_flatfiles",
-                ["cmd"],
-                tmp_path,
-                runner=_recording_runner,
-                timeout=0,
-            )
+            rc = run_phase("daily_backfill_intraday_equity_flatfiles", ["cmd"], tmp_path, runner=_recording_runner)
 
-        assert rc == 0  # a deferred phase must not page; it is the low-priority job
-        assert started == []
-        assert ledger.query("select lane, outcome, blocker from lane_results where outcome is not null") == [
-            {
-                "lane": "daily_backfill_intraday_equity_flatfiles",
-                "outcome": "blocked",
-                "blocker": "lake_lock",
-            }
-        ]
-
-    def test_the_intraday_job_polls_at_the_intraday_interval(self):
-        """Low priority is a real mechanism: it looks once a minute, not once a second."""
-        from clients import constants
-
-        assert constants.declared("lake_lock_poll_s/intraday") == sync_runner.LAKE_LOCK_POLL_S
-        assert constants.declared("lake_lock_poll_s/daily") < sync_runner.LAKE_LOCK_POLL_S
+        assert rc == 0
+        assert started == [["cmd"]]

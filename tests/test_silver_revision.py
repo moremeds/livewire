@@ -92,7 +92,7 @@ def test_missing_artifact_preserves_current(tmp_path):
     assert (tmp_path / "revisions/current.json").read_bytes() == current_bytes
 
 
-def test_failed_current_replace_removes_uncommitted_manifest_and_preserves_pointer(tmp_path, monkeypatch):
+def test_failed_current_replace_retains_uncommitted_manifest_and_preserves_pointer(tmp_path, monkeypatch):
     publisher = SilverRevisionPublisher(tmp_path)
     publisher.publish([_artifact(tmp_path, "a.parquet", b"valid")], AFFECTED, ACTIONS_AS_OF)
     current_path = tmp_path / "revisions/current.json"
@@ -109,7 +109,7 @@ def test_failed_current_replace_removes_uncommitted_manifest_and_preserves_point
         publisher.publish([_artifact(tmp_path, "b.parquet", b"new")], AFFECTED, ACTIONS_AS_OF)
 
     assert current_path.read_bytes() == current_bytes
-    assert not (tmp_path / "revisions/revision=2.json").exists()
+    assert (tmp_path / "revisions/revision=2.json").exists()
 
 
 def test_an_unusable_next_manifest_is_moved_aside_never_overwritten(tmp_path):
@@ -200,7 +200,7 @@ def test_a_revision_moved_by_another_writer_is_still_fatal(tmp_path):
     publisher = SilverRevisionPublisher(tmp_path)
     publisher.publish([_artifact(tmp_path, "a.parquet", b"one")], AFFECTED, ACTIONS_AS_OF)
 
-    with pytest.raises(RuntimeError, match="reserved Silver revision was not committed"):
+    with pytest.raises(FileExistsError):
         with publisher.transaction() as transaction:
             # Another process advanced current.json while we held our reservation.
             # Written through the already-locked path: publish() would re-take the
@@ -252,24 +252,23 @@ def test_an_orphaned_manifest_no_longer_wedges_every_later_publish(tmp_path):
 
     third = publisher.publish([_artifact(tmp_path, "c.parquet", b"three")], AFFECTED, ACTIONS_AS_OF)
 
-    assert third.revision == 3
-    assert json.loads((revisions / "current.json").read_text())["revision"] == 3
+    assert third.revision == 2
+    assert json.loads((revisions / "current.json").read_text())["revision"] == 2
     assert json.loads((revisions / "revision=2.json").read_text())["revision"] == 2
+    assert len(list((revisions / "quarantine").glob("revision=2.json.*.orphan"))) == 1
 
 
-def test_a_valid_orphan_at_current_plus_one_is_adopted_before_the_reservation(tmp_path):
-    """transaction() reserves the revision number before commit assembles the
-    manifest, so recovery has to run before the reservation or the reserved number
-    collides with the orphan it just adopted."""
+def test_a_valid_orphan_at_current_plus_one_is_quarantined_before_the_reservation(tmp_path):
     revisions = _crash_after_the_manifest_write(tmp_path)
     publisher = SilverRevisionPublisher(tmp_path)
 
     with publisher.transaction() as transaction:
-        assert transaction.revision == 3
-        assert json.loads((revisions / "current.json").read_text())["revision"] == 2
+        assert transaction.revision == 2
+        assert json.loads((revisions / "current.json").read_text())["revision"] == 1
         result = transaction.commit([_artifact(tmp_path, "c.parquet", b"three")], AFFECTED, ACTIONS_AS_OF)
 
-    assert result.revision == 3
+    assert result.revision == 2
+    assert len(list((revisions / "quarantine").glob("revision=2.json.*.orphan"))) == 1
 
 
 def test_an_out_of_sequence_orphan_is_quarantined_not_adopted(tmp_path):
@@ -282,11 +281,11 @@ def test_an_out_of_sequence_orphan_is_quarantined_not_adopted(tmp_path):
         [_artifact(tmp_path, "c.parquet", b"three")], AFFECTED, ACTIONS_AS_OF
     )
 
-    assert published.revision == 3
+    assert published.revision == 2
     assert not (revisions / "revision=7.json").exists()
-    quarantined = list((revisions / "quarantine").glob("revision=7.json.*.orphan"))
-    assert len(quarantined) == 1
-    assert json.loads(quarantined[0].read_text())["revision"] == 7
+    quarantined = list((revisions / "quarantine").glob("revision=*.orphan"))
+    assert len(quarantined) == 2
+    assert sorted(json.loads(path.read_text())["revision"] for path in quarantined) == [2, 7]
 
 
 @pytest.mark.parametrize(
@@ -311,20 +310,17 @@ def test_an_orphan_that_is_not_a_schema_1_manifest_is_quarantined(tmp_path, body
     assert [path.read_text() for path in quarantined] == [body]
 
 
-def test_a_chain_of_valid_orphans_is_adopted_in_order(tmp_path):
-    """Recovery walks the sequence: a kill during a previous recovery can leave both
-    N and N+1 on disk with current at N-1, and quarantining a valid N+1 would throw
-    away a published manifest."""
+def test_a_chain_of_valid_orphans_is_quarantined_without_moving_current(tmp_path):
     revisions = _crash_after_the_manifest_write(tmp_path)
     payload = json.loads((revisions / "revision=2.json").read_text())
     payload["revision"] = 3
     (revisions / "revision=3.json").write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
 
     with SilverRevisionPublisher(tmp_path).transaction() as transaction:
-        assert transaction.revision == 4
+        assert transaction.revision == 2
 
-    assert json.loads((revisions / "current.json").read_text())["revision"] == 3
-    assert not (revisions / "quarantine").exists()
+    assert json.loads((revisions / "current.json").read_text())["revision"] == 1
+    assert len(list((revisions / "quarantine").glob("revision=*.orphan"))) == 2
 
 
 def test_an_orphan_whose_body_disagrees_with_its_filename_is_quarantined(tmp_path):

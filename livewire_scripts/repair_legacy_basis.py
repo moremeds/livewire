@@ -15,6 +15,7 @@ import json
 import os
 import sys
 from collections.abc import Callable, Sequence
+from contextlib import ExitStack
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -24,12 +25,12 @@ from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.ib_client import IBClient, IBConnectionError
 from clients.ingestion_common import load_preset
-from clients.parquet_io import write_json_atomic
+from clients.parquet_io import publish_parquet, restore_parquet_exact, symbol_lock, write_json_atomic
 from clients.price_basis import prepare_ib_rows_for_publish
 from clients.seed_boundary import check_seed_boundary
 from clients.silver_continuity import check_adjusted_continuity
 from clients.source_evidence import sha256_file
-from clients.symbol_paths import encode_symbol
+from clients.symbol_paths import canonical_symbol, encode_symbol
 from livewire_scripts.adjusted_history_sources import IBHistoryFetcher
 from livewire_scripts.paths import data_lake_dir
 
@@ -67,13 +68,90 @@ def backup_symbol(bronze: BronzeClient, symbol: str, backup_dir: Path) -> dict:
     backup_dir.mkdir(parents=True, exist_ok=True)
     destination = backup_dir / f"{encode_symbol(symbol)}.1d.parquet"
     payload = source.read_bytes()
-    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
-    try:
-        temporary.write_bytes(payload)
-        os.replace(temporary, destination)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return {"symbol": symbol, "backup_path": str(destination), "sha256": hashlib.sha256(payload).hexdigest()}
+    checksum = hashlib.sha256(payload).hexdigest()
+    if destination.exists():
+        if sha256_file(destination) != checksum:
+            raise ValueError(f"{symbol}: existing backup does not match the current source")
+    else:
+        restore_parquet_exact(source, destination, checksum)
+    return {"symbol": symbol, "backup_path": str(destination), "sha256": checksum}
+
+
+def _publish_with_rollback(
+    symbol: str,
+    *,
+    bronze: BronzeClient,
+    output_dir: Path,
+    rows: list[dict],
+    sidecar_fields: dict,
+) -> dict:
+    """Stage exact replacement bytes and record both CAS hashes before publish."""
+    saved = backup_symbol(bronze, symbol, output_dir / "backup")
+    normalized = bronze._normalize_rows(rows, symbol)
+    candidate = output_dir / "candidates" / f"{encode_symbol(symbol)}.1d.parquet"
+    publish_parquet(candidate, bronze._table_from_rows(normalized), "trade_date")
+    applied_sha256 = sha256_file(candidate)
+    sidecar_path = output_dir / "symbols" / f"{encode_symbol(symbol)}.json"
+    intent = {
+        **sidecar_fields,
+        "symbol": symbol,
+        "status": "in_progress",
+        "backup_path": saved["backup_path"],
+        "backup_sha256": saved["sha256"],
+        "candidate_path": str(candidate),
+        "applied_sha256": applied_sha256,
+        "rows_written": len(normalized),
+    }
+    write_json_atomic(sidecar_path, intent)
+    restore_parquet_exact(candidate, bronze.symbol_path(symbol), applied_sha256)
+    done = {**intent, "status": "done"}
+    write_json_atomic(sidecar_path, done)
+    return done
+
+
+def _resume_repair_sidecar(bronze: BronzeClient, symbol: str, output_dir: Path) -> str | None:
+    """Finish or classify a durable repair intent without refetching providers."""
+    sidecar_path = output_dir / "symbols" / f"{encode_symbol(symbol)}.json"
+    if not sidecar_path.is_file():
+        return None
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    if sidecar.get("status") not in {"in_progress", "done", "rollback_in_progress", "rolled_back"}:
+        return None
+    if sidecar.get("symbol") != symbol:
+        raise ValueError(f"{symbol}: repair sidecar symbol mismatch")
+    backup = Path(sidecar.get("backup_path", ""))
+    backup_sha256 = sidecar.get("backup_sha256")
+    if not backup.is_file() or not backup_sha256 or sha256_file(backup) != backup_sha256:
+        raise ValueError(f"{symbol}: repair backup is missing or corrupt")
+    target = bronze.symbol_path(symbol)
+    action_path_value = sidecar.get("action_path")
+    action_path = Path(action_path_value) if action_path_value else None
+    with ExitStack() as locks:
+        if action_path is not None:
+            locks.enter_context(symbol_lock(action_path))
+        locks.enter_context(symbol_lock(target))
+        current_sha256 = sha256_file(target) if target.is_file() else None
+        applied_sha256 = sidecar.get("applied_sha256")
+        if current_sha256 == backup_sha256:
+            if sidecar["status"] in {"done", "rollback_in_progress", "rolled_back"} or not applied_sha256:
+                write_json_atomic(sidecar_path, {**sidecar, "status": "rolled_back"})
+                return "rolled_back"
+            candidate = Path(sidecar.get("candidate_path", ""))
+            if not candidate.is_file() or sha256_file(candidate) != applied_sha256:
+                raise ValueError(f"{symbol}: staged repair candidate is missing or corrupt")
+            if "action_sha256" not in sidecar or action_path is None:
+                raise ValueError(f"{symbol}: repair intent has no corporate-action identity")
+            current_action_sha256 = sha256_file(action_path) if action_path.is_file() else None
+            if current_action_sha256 != sidecar["action_sha256"]:
+                raise ValueError(f"{symbol}: corporate actions changed before repair publication")
+            restore_parquet_exact(candidate, target, applied_sha256)
+            current_sha256 = applied_sha256
+        if not applied_sha256 or current_sha256 != applied_sha256:
+            raise ValueError(f"{symbol}: current Bronze does not match repair source or applied bytes")
+        if sidecar["status"] in {"rollback_in_progress", "rolled_back"}:
+            raise ValueError(f"{symbol}: rollback is incomplete; finish rollback before repair resume")
+        write_json_atomic(sidecar_path, {**sidecar, "status": "done"})
+        return "done"
 
 
 def _priority_rank(presets_dir: Path) -> dict[str, int]:
@@ -86,7 +164,7 @@ def _priority_rank(presets_dir: Path) -> dict[str, int]:
         found += 1
         _, tickers, _ = load_preset(preset_path)
         for ticker in tickers:
-            rank.setdefault(ticker.upper(), tier)
+            rank.setdefault(canonical_symbol(ticker), tier)
     if not found:
         # --presets-dir defaults to a cwd-relative Path("presets"); from
         # ~/market-warehouse this silently repaired zero symbols and exited 0.
@@ -111,14 +189,17 @@ def _repair_one(
 ) -> tuple[str, dict]:
     """Return (status, sidecar). status in {'done','would-repair','ambiguous','failed'}."""
     path = bronze.symbol_path(symbol)
-    if audit_sha256 is not None and path.is_file():
-        if hashlib.sha256(path.read_bytes()).hexdigest() != audit_sha256:
-            # The audit's mixed/clean verdict describes bytes that no longer exist.
+    action_path = store.path_for(symbol)
+    # Match snapshot lock ordering: corporate actions before equity.
+    with symbol_lock(action_path), symbol_lock(path):
+        source_hash = sha256_file(path) if path.is_file() else None
+        if audit_sha256 is not None and source_hash != audit_sha256:
             return "failed", {"symbol": symbol, "reason": "bronze changed since the audit"}
-    existing = bronze.read_symbol_rows(symbol)
-    if not existing:
-        return "failed", {"symbol": symbol, "reason": "no_bronze_rows"}
-    actions = store.latest_active(symbol)
+        existing = bronze.read_symbol_rows(symbol)
+        if not existing:
+            return "failed", {"symbol": symbol, "reason": "no_bronze_rows"}
+        action_hash = sha256_file(action_path) if action_path.is_file() else None
+        actions = store.latest_active(symbol)
     # Re-fetch only the range bronze already covers — we're correcting the basis of
     # existing rows, not extending history. Fetching from an absolute 1980 floor
     # would issue ~46 empty yearly IB requests per symbol and hammer the gateway.
@@ -152,31 +233,25 @@ def _repair_one(
         return "ambiguous", {"symbol": symbol, "reason": f"post_merge_discontinuous: {exc}"}
     if backup_dir is None:
         return "would-repair", {"symbol": symbol, "rows_would_write": len(ib_only)}
-    saved = backup_symbol(bronze, symbol, backup_dir)
-    # Write-ahead intent, NOT a redundant sidecar: the next line mutates bronze, the
-    # system of record, and the caller does not write this symbol's sidecar until
-    # _repair_one returns. A crash in that window (OOM kill, power cut) would leave
-    # mutated bronze plus a backup that nothing points at, and rollback restores only
-    # symbols a sidecar names — i.e. a mutation that cannot be undone by the supplied
-    # command. Record where the undo lives BEFORE taking the action that needs undoing.
-    # The caller atomically replaces this with the terminal sidecar.
-    write_json_atomic(
-        backup_dir.parent / "symbols" / f"{encode_symbol(symbol)}.json",
-        {
-            "symbol": symbol,
-            "status": "in_progress",
-            "backup_path": saved["backup_path"],
-            "backup_sha256": saved["sha256"],
-        },
-    )
-    inserted = bronze.merge_ticker_rows(symbol, ib_only)
-    return "done", {
-        "symbol": symbol,
-        "rows_written": len(ib_only),
-        "inserted": inserted,
-        "backup_path": saved["backup_path"],
-        "backup_sha256": saved["sha256"],
-    }
+    with symbol_lock(action_path), symbol_lock(path):
+        current_source = sha256_file(path) if path.is_file() else None
+        current_actions = sha256_file(action_path) if action_path.is_file() else None
+        if (current_source, current_actions) != (source_hash, action_hash):
+            return "failed", {"symbol": symbol, "reason": "inputs changed during repair; rerun audit"}
+        inserted = len({r["trade_date"] for r in ib_only} - {r["trade_date"] for r in existing})
+        sidecar = _publish_with_rollback(
+            symbol,
+            bronze=bronze,
+            output_dir=backup_dir.parent,
+            rows=merged,
+            sidecar_fields={
+                "inserted": inserted,
+                "repaired_rows": len(ib_only),
+                "action_path": str(action_path.resolve()),
+                "action_sha256": action_hash,
+            },
+        )
+    return "done", sidecar
 
 
 def run(
@@ -218,6 +293,8 @@ def run(
         if loaded.get("identity") != identity:
             raise ValueError("resume cursor does not match the active audit manifest")
         cursor = loaded
+    if not args.dry_run and not cursor_path.is_file():
+        write_json_atomic(cursor_path, cursor)
 
     ib_client: Any = None
     fetcher: Callable[[str, date, date], list[dict]] | None = None
@@ -228,9 +305,22 @@ def run(
     try:
         for symbol in ordered:
             checkpoint = cursor["completed"].get(symbol)
-            if args.resume and checkpoint and checkpoint.get("status") == "done":
-                counts["done"] += 1
-                continue
+            if args.resume:
+                if checkpoint and checkpoint.get("status") in {"done", "rolled_back"}:
+                    counts[checkpoint["status"]] = counts.get(checkpoint["status"], 0) + 1
+                    continue
+                try:
+                    recovered = None if args.dry_run else _resume_repair_sidecar(bronze, symbol, args.output_dir)
+                except ValueError as exc:
+                    counts["failed"] += 1
+                    cursor["completed"][symbol] = {"status": "failed", "reason": str(exc)}
+                    write_json_atomic(cursor_path, cursor)
+                    continue
+                if recovered is not None:
+                    cursor["completed"][symbol] = {"status": recovered}
+                    write_json_atomic(cursor_path, cursor)
+                    counts[recovered] = counts.get(recovered, 0) + 1
+                    continue
             if fetcher is None:
                 # Lazy-connect once. A connection failure ABORTS the whole run —
                 # per CLAUDE.md, livewire never auto-retries IB connection failures
@@ -271,15 +361,29 @@ def run(
             except Exception as exc:  # non-connection per-symbol failure — mark, continue
                 status, sidecar = "failed", {"symbol": symbol, "reason": f"exception: {exc}"}
             sidecar_path = args.output_dir / "symbols" / f"{encode_symbol(symbol)}.json"
-            write_json_atomic(
-                sidecar_path,
-                {
-                    **sidecar,
-                    "status": status,
-                    "data_lake_root": str(root.resolve()),
-                    "repaired_at": datetime.now(UTC).isoformat(),
-                },
-            )
+            existing_sidecar = None
+            if status == "failed" and sidecar_path.is_file():
+                try:
+                    existing_sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    # A mutation may already have happened. Preserve even an unreadable
+                    # receipt for forensic recovery instead of replacing it with a
+                    # generic failure that rollback would skip.
+                    existing_sidecar = {"status": "unreadable"}
+            if not (
+                existing_sidecar
+                and existing_sidecar.get("status")
+                in {"in_progress", "done", "rollback_in_progress", "rolled_back", "unreadable"}
+            ):
+                write_json_atomic(
+                    sidecar_path,
+                    {
+                        **sidecar,
+                        "status": status,
+                        "data_lake_root": str(root.resolve()),
+                        "repaired_at": datetime.now(UTC).isoformat(),
+                    },
+                )
             cursor["completed"][symbol] = {
                 "source_sha256": next((i["source_sha256"] for i in audit["symbols"] if i["symbol"] == symbol), None),
                 "status": status,

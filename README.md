@@ -257,8 +257,8 @@ Silver is the reproducible adjusted layer derived from immutable bronze bars and
 canonical corporate actions:
 
 ```text
-data-lake/silver/asset_class=equity/symbol=<ticker>/1d.parquet
-data-lake/silver/adjustments/asset_class=equity/symbol=<ticker>/factors.parquet
+data-lake/silver/generations/<attempt-id>/asset_class=equity/symbol=<ticker>/1d.parquet
+data-lake/silver/generations/<attempt-id>/adjustments/asset_class=equity/symbol=<ticker>/factors.parquet
 data-lake/silver/revisions/{revision=<n>.json,current.json}
 ```
 
@@ -272,10 +272,16 @@ python scripts/livewire_store.py rebuild-silver --full --dry-run
 python scripts/livewire_store.py rebuild-silver --full --dry-run --failure-output /tmp/silver-dry.json
 ```
 
-The publisher holds a Silver-root lock, stamps one revision across all changed
-artifacts, writes immutable `revision=<n>.json`, and atomically replaces
-`current.json` last. A failed batch never advances the pointer. `MDW_SILVER_DIR`
-overrides the default `data-lake/silver` root.
+Each compliant reader pins `revisions/current.json` and uses only the immutable
+artifact references and hashes in that manifest; generation directories are
+never discovered by a glob or timestamp. A rebuild briefly locks equity/action inputs
+while copying its snapshot, publishes individual artifacts under their symbol
+locks, then serializes only the revision transaction. It writes immutable
+`revision=<n>.json` and atomically replaces `current.json` last. A failed batch
+never advances the pointer; an ahead immutable manifest is uncommitted and is
+quarantined on retry. The producer-to-Apex adapter boundary is specified in
+[the Silver atomic-publication plan](docs/plans/2026-09-08-silver-atomic-publication.md).
+`MDW_SILVER_DIR` overrides the default `data-lake/silver` root.
 
 #### Full-history adjusted validation
 

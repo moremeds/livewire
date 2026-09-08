@@ -1,0 +1,15 @@
+FILE: /tmp/livewire-final-exfat-coverage.log
+TOTAL                                             15736    785  95.01%
+Required test coverage of 95% reached. Total coverage: 95.01%
+====================== 2688 passed, 2 warnings in 44.60s =======================
+
+FILE: /tmp/livewire-final-appledouble-pyright.log
+0 errors, 25 warnings, 0 informations
+
+FILE: /tmp/livewire-a4003d3-ci.log
+ci	Pyright	2026-09-08T05:17:16.9242120Z 0 errors, 25 warnings, 0 informations
+ci	Pytest	2026-09-08T05:19:17.3255649Z TOTAL                                             15736    785  95.01%
+ci	Pytest	2026-09-08T05:19:17.8474669Z Required test coverage of 95% reached. Total coverage: 95.01%
+ci	Pytest	2026-09-08T05:19:17.8475559Z ================= 2688 passed, 4 warnings in 116.16s (0:01:56) =================
+ci	Node alert tests	2026-09-08T05:19:23.3350392Z # pass 25
+ci	Node alert tests	2026-09-08T05:19:23.3350991Z # fail 0

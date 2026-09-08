@@ -9,11 +9,12 @@ specified sort column.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import date, datetime
 from pathlib import Path
 
@@ -67,7 +68,7 @@ def write_json_atomic(path: Path, payload: object) -> None:
 
 
 @contextmanager
-def path_lock(lock_path: Path, *, blocking: bool = True) -> Iterator[bool]:
+def path_lock(lock_path: Path, *, blocking: bool = True, shared: bool = False) -> Iterator[bool]:
     """Hold a POSIX flock on `lock_path`, creating it and its parent on demand.
 
     Yields True while the lock is held; yields False, having taken nothing, when
@@ -75,14 +76,14 @@ def path_lock(lock_path: Path, *, blocking: bool = True) -> Iterator[bool]:
     released with the fd -- SIGKILL included -- so there is no cleanup path to
     write and none to get wrong.
 
-    One primitive, two scopes: `symbol_lock` serializes writers to one parquet
-    path, and `livewire_scripts.job_runner_common.lake_lock` serializes whole
-    lanes against the lake (spec 2026-09-06-tiered-nightly-pipeline-design.md
-    section 3). A second implementation would be a second lock domain, which is
-    the same as no lock.
+    Shared lock semantics let snapshot readers briefly exclude only the source
+    writers they need. Keep all local coordination on this primitive so writers
+    agree on the same lock domain.
     """
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+    flags = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+    if not blocking:
+        flags |= fcntl.LOCK_NB
     with lock_path.open("a", encoding="utf-8") as lock_file:
         try:
             fcntl.flock(lock_file.fileno(), flags)
@@ -96,7 +97,23 @@ def path_lock(lock_path: Path, *, blocking: bool = True) -> Iterator[bool]:
 
 
 @contextmanager
-def symbol_lock(parquet_path: Path) -> Iterator[Path]:
+def silver_input_lock(bronze_root: Path) -> Iterator[None]:
+    """Freeze equity daily and action inputs only while copying a snapshot."""
+    with ExitStack() as locks:
+        for asset in ("corporate_action", "equity"):
+            locks.enter_context(path_lock(bronze_root / f"asset_class={asset}" / ".inputs.lock"))
+        yield
+
+
+@contextmanager
+def symbol_directory_lock(directory: Path, *, shared: bool = False) -> Iterator[bool]:
+    """Keep the lock outside a partition that an archive operation may move."""
+    with path_lock(directory.parent / ".symbol-locks" / f"{directory.name}.lock", shared=shared) as held:
+        yield held
+
+
+@contextmanager
+def symbol_lock(parquet_path: Path, *, directory_exclusive: bool = False) -> Iterator[Path]:
     """Serialize writers for one parquet path using a local POSIX lock.
 
     The persistent sidecar is intentionally kept beside the parquet so separate
@@ -104,7 +121,15 @@ def symbol_lock(parquet_path: Path) -> Iterator[Path]:
     with working ``flock`` semantics; verified on the production exFAT data lake.
     """
     lock_path = parquet_path.with_suffix(parquet_path.suffix + ".lock")
-    with path_lock(lock_path):
+    with ExitStack() as locks:
+        asset_root = parquet_path.parent.parent
+        if asset_root.parent.name == "bronze" and (
+            (asset_root.name == "asset_class=equity" and parquet_path.name == "1d.parquet")
+            or (asset_root.name == "asset_class=corporate_action" and parquet_path.name == "events.parquet")
+        ):
+            locks.enter_context(path_lock(asset_root / ".inputs.lock", shared=True))
+        locks.enter_context(symbol_directory_lock(parquet_path.parent, shared=not directory_exclusive))
+        locks.enter_context(path_lock(lock_path))
         yield lock_path
 
 
@@ -130,12 +155,34 @@ def publish_parquet(
             compression_level=PARQUET_COMPRESSION_LEVEL,
         )
         validate_parquet_file(tmp_path, expected_rows=table.num_rows, sort_column=sort_column)
+        with tmp_path.open("rb") as handle:
+            os.fsync(handle.fileno())
         os.replace(tmp_path, out_path)
+        fsync_directory(out_path.parent)
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
 
     return out_path
+
+
+def restore_parquet_exact(backup: Path, target: Path, expected_sha256: str) -> None:
+    """Restore validated daily Parquet bytes; caller holds the target symbol lock."""
+    payload = backup.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
+        raise ValueError("backup checksum mismatch: refusing to restore")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.{time.time_ns()}.restore.tmp")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        validate_parquet_file(temporary, pq.read_metadata(temporary).num_rows, "trade_date")
+        os.replace(temporary, target)
+        fsync_directory(target.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def validate_parquet_file(
@@ -153,7 +200,9 @@ def validate_parquet_file(
     if sort_column not in schema.names:
         raise KeyError(f"sort column {sort_column!r} not in parquet")
 
-    table = pq.ParquetFile(path).read(columns=[sort_column])
+    # Decode every column before replacing the last valid file. A valid footer
+    # and date column do not establish that the price/volume pages are readable.
+    table = pq.ParquetFile(path).read()
     if table.num_rows != expected_rows:
         raise ValueError(f"{path}: expected {expected_rows} rows, found {table.num_rows}")
 

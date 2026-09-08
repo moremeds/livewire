@@ -129,8 +129,8 @@ def alert_on_flag(
     key = (source, ticker, flag.category)
     now = time.monotonic()
     rl = _resolve_rate_limit_seconds()
-    last = _RATE_LIMIT_CACHE.get(key, 0.0)
-    if rl > 0 and (now - last) < rl:
+    last = _RATE_LIMIT_CACHE.get(key)
+    if last is not None and rl > 0 and (now - last) < rl:
         _logger.info("alert rate-limited: %s/%s/%s", source, ticker, flag.category)
         return False
     _RATE_LIMIT_CACHE[key] = now

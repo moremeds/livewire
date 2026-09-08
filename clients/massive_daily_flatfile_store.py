@@ -6,6 +6,7 @@ import heapq
 import shutil
 import tempfile
 from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,12 @@ import pyarrow.compute as pc
 import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
+from clients.massive_raw_publication import (
+    publish_raw_date,
+    raw_date_lock,
+    recover_raw_date,
+    validate_and_fsync_raw_stage,
+)
 from clients.massive_time import massive_timestamp_to_trade_date
 from clients.parquet_io import PARQUET_COMPRESSION, PARQUET_COMPRESSION_LEVEL
 from clients.symbol_ids import stable_symbol_id
@@ -42,15 +49,28 @@ class MassiveDailyFlatfileStore:
         return self.raw_root / f"date={day.isoformat()}"
 
     def has_raw_date(self, day: date) -> bool:
+        with self._read_dates([day]):
+            return self._has_raw_date_unlocked(day)
+
+    def _has_raw_date_unlocked(self, day: date) -> bool:
         return (self.raw_path(day) / "_SUCCESS").exists()
+
+    def _date_lock(self, day: date, *, shared: bool = False):
+        return raw_date_lock(self.raw_root, day, shared=shared)
+
+    def _recover(self, day: date) -> None:
+        recover_raw_date(self.raw_path(day))
 
     def bucket_path(self, day: date, bucket: int) -> Path:
         return self.raw_path(day) / f"bucket={bucket:03d}.parquet"
 
     def stage_gzip(self, day: date, gzip_path: Path, *, replace: bool = False) -> dict[str, int]:
         final = self.raw_path(day)
-        if self.has_raw_date(day) and not replace:
-            return self.raw_stats(day)
+        if not replace:
+            with self._date_lock(day):
+                self._recover(day)
+                if self._has_raw_date_unlocked(day):
+                    return self._raw_stats_unlocked(day)
         self.raw_root.mkdir(parents=True, exist_ok=True)
         temp = Path(tempfile.mkdtemp(prefix=f".date={day}.", dir=self.raw_root))
         try:
@@ -135,30 +155,54 @@ class MassiveDailyFlatfileStore:
                 compression_level=PARQUET_COMPRESSION_LEVEL,
             )
             (temp / "_SUCCESS").write_text(f"rows={rows}\nsymbols={len(symbols)}\n", encoding="utf-8")
-            if final.exists():
-                old = final.with_name(f".old-{final.name}")
-                if old.exists():
-                    shutil.rmtree(old)
-                final.rename(old)
-                temp.rename(final)
-                shutil.rmtree(old)
-            else:
-                temp.rename(final)
+            validate_and_fsync_raw_stage(temp)
+            with self._date_lock(day):
+                self._recover(day)
+                if not replace and self._has_raw_date_unlocked(day):
+                    return self._raw_stats_unlocked(day)
+                publish_raw_date(temp, final)
             return {"rows": rows, "symbols": len(symbols)}
         finally:
             if temp.exists():
                 shutil.rmtree(temp)
 
     def symbols_for_date(self, day: date) -> set[str]:
+        with self._read_dates([day]):
+            return self._symbols_for_date_unlocked(day)
+
+    def _symbols_for_date_unlocked(self, day: date) -> set[str]:
         path = self.raw_path(day) / "_symbols.parquet"
         return set(pq.read_table(path).column("ticker").to_pylist()) if path.exists() else set()
 
     def available_buckets(self, days: list[date]) -> set[int]:
-        result: set[int] = set()
-        for day in days:
-            for path in self.raw_path(day).glob("bucket=*.parquet"):
-                result.add(int(path.stem.split("=")[1]))
-        return result
+        with self._read_dates(days):
+            result: set[int] = set()
+            for day in days:
+                for path in self.raw_path(day).glob("bucket=*.parquet"):
+                    result.add(int(path.stem.split("=")[1]))
+            return result
+
+    @contextmanager
+    def _read_dates(self, days: list[date]) -> Iterator[None]:
+        """Stabilize names under shared locks after any exclusive recovery."""
+        ordered = sorted(set(days))
+        while True:
+            for day in ordered:
+                with self._date_lock(day):
+                    self._recover(day)
+            with ExitStack() as stack:
+                for day in ordered:
+                    stack.enter_context(self._date_lock(day, shared=True))
+                if any(self.raw_path(day).with_name(f".old-{self.raw_path(day).name}").exists() for day in ordered):
+                    continue
+                yield
+                return
+
+    def _open_bucket_files(self, bucket: int, days: list[date]) -> list[pq.ParquetFile]:
+        with self._read_dates(days):
+            return [
+                pq.ParquetFile(self.bucket_path(day, bucket)) for day in days if self.bucket_path(day, bucket).exists()
+            ]
 
     def scan_bucket_by_ticker(
         self,
@@ -168,44 +212,45 @@ class MassiveDailyFlatfileStore:
         batch_size: int = 1024,
     ) -> Iterator[tuple[str, list[dict[str, Any]]]]:
         """K-way merge sorted daily bucket files, buffering one ticker at a time."""
-        iterators = [
-            self._iter_path_rows(self.bucket_path(day, bucket), batch_size)
-            for day in days
-            if self.bucket_path(day, bucket).exists()
-        ]
-        heap: list[tuple[str, str, int, dict[str, Any]]] = []
-        for index, rows in enumerate(iterators):
-            try:
-                row = next(rows)
-            except StopIteration:
-                continue
-            heapq.heappush(heap, (row["ticker"], row["trade_date"], index, row))
+        files = self._open_bucket_files(bucket, days)
+        try:
+            iterators = [self._iter_path_rows(file, batch_size) for file in files]
+            heap: list[tuple[str, str, int, dict[str, Any]]] = []
+            for index, rows in enumerate(iterators):
+                try:
+                    row = next(rows)
+                except StopIteration:
+                    continue
+                heapq.heappush(heap, (row["ticker"], row["trade_date"], index, row))
 
-        current_ticker: str | None = None
-        current_rows: list[dict[str, Any]] = []
-        previous_key: tuple[str, str] | None = None
-        while heap:
-            ticker, trade_date, index, row = heapq.heappop(heap)
-            key = (ticker, trade_date)
-            if key == previous_key:
-                raise ValueError(f"duplicate raw daily flat-file key: {ticker} {trade_date}")
-            previous_key = key
-            if current_ticker is not None and ticker != current_ticker:
+            current_ticker: str | None = None
+            current_rows: list[dict[str, Any]] = []
+            previous_key: tuple[str, str] | None = None
+            while heap:
+                ticker, trade_date, index, row = heapq.heappop(heap)
+                key = (ticker, trade_date)
+                if key == previous_key:
+                    raise ValueError(f"duplicate raw daily flat-file key: {ticker} {trade_date}")
+                previous_key = key
+                if current_ticker is not None and ticker != current_ticker:
+                    yield current_ticker, current_rows
+                    current_rows = []
+                current_ticker = ticker
+                current_rows.append(row)
+                try:
+                    following = next(iterators[index])
+                except StopIteration:
+                    continue
+                heapq.heappush(heap, (following["ticker"], following["trade_date"], index, following))
+            if current_ticker is not None:
                 yield current_ticker, current_rows
-                current_rows = []
-            current_ticker = ticker
-            current_rows.append(row)
-            try:
-                following = next(iterators[index])
-            except StopIteration:
-                continue
-            heapq.heappush(heap, (following["ticker"], following["trade_date"], index, following))
-        if current_ticker is not None:
-            yield current_ticker, current_rows
+        finally:
+            for file in files:
+                file.close()
 
     @staticmethod
-    def _iter_path_rows(path: Path, batch_size: int) -> Iterator[dict[str, Any]]:
-        for batch in pq.ParquetFile(path).iter_batches(batch_size=batch_size, columns=RAW_DAILY_SCHEMA.names):
+    def _iter_path_rows(parquet_file: pq.ParquetFile, batch_size: int) -> Iterator[dict[str, Any]]:
+        for batch in parquet_file.iter_batches(batch_size=batch_size, columns=RAW_DAILY_SCHEMA.names):
             yield from batch.to_pylist()
 
     @staticmethod
@@ -224,13 +269,17 @@ class MassiveDailyFlatfileStore:
             previous = key
 
     def raw_stats(self, day: date) -> dict[str, Any]:
+        with self._read_dates([day]):
+            return self._raw_stats_unlocked(day)
+
+    def _raw_stats_unlocked(self, day: date) -> dict[str, Any]:
         root = self.raw_path(day)
         paths = list(root.glob("bucket=*.parquet"))
         rows = sum(pq.read_metadata(p).num_rows for p in paths)
         size_bytes = sum(p.stat().st_size for p in paths)
         return {
             "rows": rows,
-            "symbols": len(self.symbols_for_date(day)),
+            "symbols": len(self._symbols_for_date_unlocked(day)),
             "size_bytes": size_bytes,
         }
 

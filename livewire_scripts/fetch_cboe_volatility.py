@@ -28,6 +28,7 @@ if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from clients.bronze_client import PARQUET_FILENAME
+from clients.parquet_io import publish_parquet, symbol_lock
 from livewire_scripts.paths import warehouse_dir
 
 console = Console()
@@ -177,43 +178,44 @@ def write_bronze_parquet(
     bronze_dir.mkdir(parents=True, exist_ok=True)
     parquet_path = bronze_dir / PARQUET_FILENAME
 
-    # Merge with existing data if present
-    if parquet_path.exists():
-        existing = pq.ParquetFile(parquet_path).read()
+    with symbol_lock(parquet_path):
+        # Merge with existing data if present
+        if parquet_path.exists():
+            existing = pq.ParquetFile(parquet_path).read()
 
-        # Normalize existing schema to match expected columns (handles schema drift)
-        expected_columns = table.column_names
-        extra_cols = set(existing.column_names) - set(expected_columns)
-        if extra_cols:
-            existing = existing.select(expected_columns)
+            # Normalize existing schema to match expected columns (handles schema drift)
+            expected_columns = table.column_names
+            extra_cols = set(existing.column_names) - set(expected_columns)
+            if extra_cols:
+                existing = existing.select(expected_columns)
 
-        existing_dates = set(d.as_py() for d in existing.column("trade_date"))
+            existing_dates = set(d.as_py() for d in existing.column("trade_date"))
 
-        # Filter to only new dates
-        new_dates_mask = pa.compute.invert(
-            pa.compute.is_in(
-                table.column("trade_date"),
-                pa.array(list(existing_dates), type=pa.date32()),
+            # Filter to only new dates
+            new_dates_mask = pa.compute.invert(
+                pa.compute.is_in(
+                    table.column("trade_date"),
+                    pa.array(list(existing_dates), type=pa.date32()),
+                )
             )
-        )
-        new_rows = table.filter(new_dates_mask)
+            new_rows = table.filter(new_dates_mask)
 
-        if new_rows.num_rows > 0:
-            table = pa.concat_tables([existing, new_rows])
-            console.print(f"  {symbol}: merged {new_rows.num_rows} new rows with {existing.num_rows} existing")
-        elif extra_cols:
-            # Rewrite to fix stale schema even without new data
-            table = existing
-            console.print(f"  {symbol}: rewriting to fix schema ({', '.join(sorted(extra_cols))} dropped)")
-        else:
-            console.print(f"  {symbol}: no new rows to add")
-            return parquet_path
+            if new_rows.num_rows > 0:
+                table = pa.concat_tables([existing, new_rows])
+                console.print(f"  {symbol}: merged {new_rows.num_rows} new rows with {existing.num_rows} existing")
+            elif extra_cols:
+                # Rewrite to fix stale schema even without new data
+                table = existing
+                console.print(f"  {symbol}: rewriting to fix schema ({', '.join(sorted(extra_cols))} dropped)")
+            else:
+                console.print(f"  {symbol}: no new rows to add")
+                return parquet_path
 
-    # Sort by date
-    indices = pa.compute.sort_indices(table, sort_keys=[("trade_date", "ascending")])
-    table = table.take(indices)
+        # Sort by date
+        indices = pa.compute.sort_indices(table, sort_keys=[("trade_date", "ascending")])
+        table = table.take(indices)
+        publish_parquet(parquet_path, table, sort_column="trade_date")
 
-    pq.write_table(table, parquet_path)
     console.print(f"  {symbol}: wrote {table.num_rows} rows to {parquet_path}")
     return parquet_path
 

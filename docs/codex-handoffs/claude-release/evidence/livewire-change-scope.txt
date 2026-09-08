@@ -1,0 +1,163 @@
+Local target ref: origin/main
+Merge base: 23e1de284f343e357f97100cfe83fb48ac4be9ec
+ .codex/project-memory.md                           |   6 +-
+ CLAUDE.md                                          |  11 +-
+ README.md                                          |  18 +-
+ clients/duckdb_catalog.py                          |  60 ++-
+ clients/massive_daily_flatfile_store.py            | 153 ++++--
+ clients/massive_flatfile_state.py                  |  20 +-
+ clients/massive_flatfile_store.py                  | 159 ++++--
+ clients/massive_raw_publication.py                 |  94 ++++
+ clients/parquet_io.py                              |  71 ++-
+ clients/pit_silver_revision.py                     |  10 +-
+ clients/quality_flags.py                           |   4 +-
+ clients/silver_client.py                           |  23 +-
+ clients/silver_revision.py                         | 108 ++--
+ clients/silver_snapshot.py                         |  81 +++
+ .../2026-09-08-integrity-recovery-inventory.md     | 406 ++++++++++++++
+ ...2026-09-08-systematic-integrity-verification.md | 279 ++++++++++
+ .../2026-09-08-datalake-integrity-end-state.md     | 305 +++++++++++
+ ...2026-09-08-datalake-integrity-implementation.md | 371 +++++++++++++
+ docs/plans/2026-09-08-silver-atomic-publication.md | 109 ++--
+ livewire_scripts/archive_otc_symbols.py            |  21 +-
+ livewire_scripts/coverage_report.py                | 112 +++-
+ livewire_scripts/daily_flatfile_publisher.py       | 100 ++--
+ livewire_scripts/fetch_cboe_volatility.py          |  72 +--
+ livewire_scripts/flatfile_publisher.py             | 203 ++++---
+ livewire_scripts/ingest_daily_flatfiles.py         |  47 +-
+ livewire_scripts/ingest_flatfiles.py               |  61 ++-
+ livewire_scripts/job_runner_common.py              | 115 ++--
+ livewire_scripts/migrate_equity_price_basis.py     |  53 +-
+ livewire_scripts/migrate_parquet_filename.py       |  30 +-
+ livewire_scripts/nightly_digest.py                 | 128 ++++-
+ livewire_scripts/rebuild_silver.py                 | 561 ++++++++++----------
+ livewire_scripts/repair_legacy_basis.py            | 212 ++++++--
+ livewire_scripts/repair_split_basis.py             | 151 +++---
+ livewire_scripts/resolve_yahoo_basis.py            | 125 +++--
+ livewire_scripts/rollback_legacy_basis.py          |  60 ++-
+ livewire_scripts/run_daily_update_job.py           | 230 ++++----
+ livewire_scripts/shepherd_silver.py                |   1 +
+ livewire_scripts/status.py                         | 240 ++++++++-
+ livewire_scripts/sync_runner.py                    |  85 ++-
+ livewire_scripts/universe_screener.py              |   8 +-
+ livewire_scripts/universe_sync.py                  |   6 +-
+ livewire_scripts/validate_adjusted_history.py      |  13 +-
+ pyproject.toml                                     |   1 +
+ tasks/lessons.md                                   |  15 +
+ tasks/todo.md                                      |  89 ++++
+ tests/contract/verify_apex_interop.py              | 124 +++++
+ tests/test_coverage_gate.py                        |  37 ++
+ tests/test_coverage_report.py                      | 150 +++++-
+ tests/test_daily_flatfile_publisher.py             |  93 +++-
+ tests/test_duckdb_catalog.py                       |  66 ++-
+ tests/test_duckdb_catalog_cli.py                   |   4 +-
+ tests/test_fetch_cboe_volatility.py                |  29 +
+ tests/test_flatfile_publisher.py                   | 124 +++++
+ tests/test_ingest_daily_flatfiles.py               |   7 +-
+ tests/test_job_runner_common.py                    | 186 +++----
+ tests/test_massive_daily_flatfile_store.py         |  58 ++
+ tests/test_massive_flatfile_state.py               |  16 +
+ tests/test_massive_flatfile_store.py               | 115 ++++
+ tests/test_massive_raw_publication.py              |  67 +++
+ tests/test_migrate_equity_price_basis.py           |  49 +-
+ tests/test_migrate_parquet_filename.py             |  43 ++
+ tests/test_nightly_digest.py                       | 152 ++++++
+ tests/test_parquet_io.py                           |  88 ++++
+ tests/test_quality_flags.py                        |  54 +-
+ tests/test_rebuild_silver.py                       | 194 +++----
+ tests/test_repair_legacy_basis.py                  | 179 ++++++-
+ tests/test_repair_split_basis.py                   | 139 +++++
+ tests/test_resolve_yahoo_basis.py                  | 110 ++++
+ tests/test_rollback_legacy_basis.py                | 127 ++++-
+ tests/test_run_daily_update_job.py                 |  71 +--
+ tests/test_run_intraday_catchup_job.py             |   8 +-
+ tests/test_silver_atomic_publication.py            | 584 +++++++++++++++++++++
+ tests/test_silver_legacy_repair_e2e.py             |   4 +-
+ tests/test_silver_revision.py                      |  42 +-
+ tests/test_silver_snapshot.py                      |  98 ++++
+ tests/test_status.py                               | 120 +++++
+ tests/test_sync_runner.py                          |  89 ++--
+ tests/test_universe_screener.py                    |  22 +-
+ tests/test_validate_adjusted_history.py            |  26 +-
+ 79 files changed, 6619 insertions(+), 1683 deletions(-)
+
+Changed paths:
+M	.codex/project-memory.md
+M	CLAUDE.md
+M	README.md
+M	clients/duckdb_catalog.py
+M	clients/massive_daily_flatfile_store.py
+M	clients/massive_flatfile_state.py
+M	clients/massive_flatfile_store.py
+A	clients/massive_raw_publication.py
+M	clients/parquet_io.py
+M	clients/pit_silver_revision.py
+M	clients/quality_flags.py
+M	clients/silver_client.py
+M	clients/silver_revision.py
+A	clients/silver_snapshot.py
+A	docs/codex-handoffs/2026-09-08-integrity-recovery-inventory.md
+A	docs/codex-handoffs/2026-09-08-systematic-integrity-verification.md
+A	docs/plans/2026-09-08-datalake-integrity-end-state.md
+A	docs/plans/2026-09-08-datalake-integrity-implementation.md
+M	docs/plans/2026-09-08-silver-atomic-publication.md
+M	livewire_scripts/archive_otc_symbols.py
+M	livewire_scripts/coverage_report.py
+M	livewire_scripts/daily_flatfile_publisher.py
+M	livewire_scripts/fetch_cboe_volatility.py
+M	livewire_scripts/flatfile_publisher.py
+M	livewire_scripts/ingest_daily_flatfiles.py
+M	livewire_scripts/ingest_flatfiles.py
+M	livewire_scripts/job_runner_common.py
+M	livewire_scripts/migrate_equity_price_basis.py
+M	livewire_scripts/migrate_parquet_filename.py
+M	livewire_scripts/nightly_digest.py
+M	livewire_scripts/rebuild_silver.py
+M	livewire_scripts/repair_legacy_basis.py
+M	livewire_scripts/repair_split_basis.py
+M	livewire_scripts/resolve_yahoo_basis.py
+M	livewire_scripts/rollback_legacy_basis.py
+M	livewire_scripts/run_daily_update_job.py
+M	livewire_scripts/shepherd_silver.py
+M	livewire_scripts/status.py
+M	livewire_scripts/sync_runner.py
+M	livewire_scripts/universe_screener.py
+M	livewire_scripts/universe_sync.py
+M	livewire_scripts/validate_adjusted_history.py
+M	pyproject.toml
+M	tasks/lessons.md
+M	tasks/todo.md
+A	tests/contract/verify_apex_interop.py
+A	tests/test_coverage_gate.py
+M	tests/test_coverage_report.py
+M	tests/test_daily_flatfile_publisher.py
+M	tests/test_duckdb_catalog.py
+M	tests/test_duckdb_catalog_cli.py
+M	tests/test_fetch_cboe_volatility.py
+M	tests/test_flatfile_publisher.py
+M	tests/test_ingest_daily_flatfiles.py
+M	tests/test_job_runner_common.py
+M	tests/test_massive_daily_flatfile_store.py
+M	tests/test_massive_flatfile_state.py
+M	tests/test_massive_flatfile_store.py
+A	tests/test_massive_raw_publication.py
+M	tests/test_migrate_equity_price_basis.py
+M	tests/test_migrate_parquet_filename.py
+M	tests/test_nightly_digest.py
+M	tests/test_parquet_io.py
+M	tests/test_quality_flags.py
+M	tests/test_rebuild_silver.py
+M	tests/test_repair_legacy_basis.py
+M	tests/test_repair_split_basis.py
+M	tests/test_resolve_yahoo_basis.py
+M	tests/test_rollback_legacy_basis.py
+M	tests/test_run_daily_update_job.py
+M	tests/test_run_intraday_catchup_job.py
+A	tests/test_silver_atomic_publication.py
+M	tests/test_silver_legacy_repair_e2e.py
+M	tests/test_silver_revision.py
+A	tests/test_silver_snapshot.py
+M	tests/test_status.py
+M	tests/test_sync_runner.py
+M	tests/test_universe_screener.py
+M	tests/test_validate_adjusted_history.py

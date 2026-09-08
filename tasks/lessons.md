@@ -1,5 +1,20 @@
 # Lessons
 
+- A systematic reliability plan must contain failures to actual dependencies:
+  a provider, symbol, catalog or notification failure must not stop unrelated
+  work. Audit shared locks as potential global waiting points. Do not claim a
+  single-host/single-disk system has eliminated physical single points of failure.
+- Warnings must state affected scope, evidence, last valid data, current automatic
+  handling, next action and recovery condition. Aggregate persistent incidents;
+  notify on meaningful change or required action, without hiding unresolved state.
+
+- When a consumer is scheduled for a rewrite, stabilize the producer-to-adapter
+  data contract and test that boundary. Do not reinterpret it as the consumer's
+  public API or expand producer delivery into consumer state/event architecture.
+  Keep deferred consumer guarantees explicit in compatibility and cutover notes.
+- Measure full-universe memory representation early: file bytes do not bound
+  Python row-object heap. A sampled projection is a capacity warning, not an SLA
+  or a full-run measurement; validate the replacement before calling it complete.
 - When the user names an exact plan path, open and execute that file; never infer a nearby plan from the branch name.
 - For whole-universe work, count canonical provider symbols rather than only
   uppercased labels: mixed-case identities such as `BCPC`/`BCpC` and `TPC`/`TpC`
@@ -32,3 +47,4 @@
 - Do not run the macOS UI smoke harness unless the user explicitly asks for UI automation or smoke verification in that turn; default to build plus unit-test verification for ongoing implementation work.
 - When a recent-bar recovery fails for a single ticker, check whether the security was delisted before treating it as a provider outage; if it was delisted, remove it from future sync/backfill inputs and archive its parquet outside the canonical bronze tree.
 - When a user asks to turn a one-off strategy into a reusable module, default the design toward configurable universe inputs like presets, explicit ticker lists, and warehouse-discovered symbols instead of hard-wiring the first index used in the analysis.
+- For this user's Claude Code handoff, deliver an isolated worktree with code, an executive summary and a clear entry document. A ZIP of documents is not the requested runnable handoff.

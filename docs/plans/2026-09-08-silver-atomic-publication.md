@@ -1,6 +1,6 @@
-# Silver atomic publication: proposed contract change
+# Silver atomic publication and consumer data contract
 
-Status: design for approval; no runtime implementation or production migration authorized by this document.
+Status: implementation authorized and in progress; production migration remains a separate cutover approval. This document defines the producer data contract, not Apex's internal API.
 
 ## Problem and acceptance boundary
 
@@ -15,9 +15,48 @@ manifest or the complete new one; never an intermediate file set. Daily and
 factor files selected for a symbol belong to the same publication decision.
 This does not promise a frozen Bronze snapshot for concurrent intraday reads.
 
-This requires approval for a Silver storage/path contract change and coordinated
-Apex consumer changes. A Livewire-only writer patch cannot satisfy the boundary
-while consumers keep constructing mutable paths.
+The approved storage/path change requires manifest-based consumers. The resumed
+scope keeps Apex changes inside its data adapter plus necessary caller wiring;
+subscription, cache, indicator, signal and event redesign is deferred to the Apex
+rewrite. Those internals must not define Livewire's publication contract.
+
+## Stable producer contract
+
+- Manifest v1 preserves `schema_version`, monotonic positive `revision`,
+  `generation_id`, UTC `published_at` and `corporate_actions_as_of`,
+  `affected[] {symbol, earliest_date, timeframes}`, and
+  `artifacts[] {path, sha256}`. Unknown incompatible versions fail explicitly.
+  `current.json` must equal the immutable revision manifest byte for byte.
+- `affected` is complete represented membership, including carried symbols,
+  rather than a change delta. Every member has one daily/factor pair.
+  `earliest_date` describes daily coverage; `timeframes` describes adjustment
+  applicability, not the existence of Bronze files for every timeframe.
+- Artifact paths are relative to Silver, stay within that root, and retain
+  encoded symbol partitions. Prefixes are opaque to consumers; `generation_id`
+  does not require every carried artifact to live in that generation directory.
+- Daily prices are adjusted and `adj_close == close`; volume changes only for
+  splits. Raw intraday timestamps are UTC; factor joins use their
+  America/New_York trading date and exactly one inclusive factor interval per
+  bar. A committed pair may contain carried artifact revisions older than the
+  manifest revision. Factor coverage can precede the trimmed daily window.
+- Missing references/files, invalid schema, hash mismatch or uncovered factors
+  fail explicitly for adjusted reads. Never substitute raw or fixed-path data.
+  Absence means no published artifact; disappearance establishes withdrawal,
+  but v1 does not encode its reason. Current implementation refuses an empty
+  publication: an all-failed run retains the previous pointer, so complete
+  withdrawal is not yet representable.
+- A nonzero attempt may still commit a healthy subset. Attempt failure and
+  committed publication are separate facts. Publication is not consumer
+  acknowledgement, recomputation completion or signal delivery.
+- Retain committed generations and abandoned attempts. Future deletion needs
+  an explicit retention and reader-lifetime agreement. Old pinned reads remain
+  usable after later publication or withdrawal. Bronze intraday is not frozen
+  by a Silver snapshot.
+
+The Apex adapter owns pinning, artifact verification, date/factor interpretation
+and explicit availability errors. Its Python classes and HTTP/WS behavior may
+change independently; this contract promises no atomic signal replacement,
+polling latency, tick replay or internal cache behavior.
 
 ## Smallest coherent design
 
@@ -61,7 +100,7 @@ omission from the new manifest; do not move files referenced by older revisions.
 
 ## Exact implementation surfaces
 
-Livewire source reviewed in worktree based on `62c9f14`:
+Livewire implementation worktree is based on `23e1de2`:
 
 - `clients/silver_client.py`: currently constructs fixed daily/factor paths and
   writes them; accept an attempt output root for writing and explicit committed
@@ -92,29 +131,28 @@ Livewire source reviewed in worktree based on `62c9f14`:
 - Update `README.md`, `CLAUDE.md` and `.codex/project-memory.md` after agreement
   so served-path and manifest semantics describe the same implementation.
 
-Apex source was read on the mini at checkout
-`54b26761dd95e358fcbe1b47d66166f1ebd1cc27`; its running deployment was not established:
+Apex implementation worktree is based on `905cab6b`; deployment must be checked
+again at cutover rather than inferred from the source checkout:
 
-- `src/infrastructure/adapters/livewire/ohlc_provider.py:139-160` constructs
-  fixed daily/factor paths. Resolve them from one committed manifest, and fail
-  closed when the requested artifact is absent. No fallback to a legacy file
-  that the manifest omitted.
-- `src/infrastructure/adapters/livewire/revisions.py`: its reader already
-  validates manifest artifact hashes but returns revision metadata without an
-  artifact path map. Retain a validated mapping for the pinned snapshot and
-  reuse it in bar reads rather than independently deriving paths.
-- `src/application/subscriptions/revision_watcher.py` and the subscription
-  manager refresh path: pass the accepted snapshot through a reseed, so reads
-  for a revision do not accidentally resolve a newer one midway through.
-- `src/infrastructure/adapters/livewire/paths.py`, `src/api/server.py` and
-  `scripts/check_silver_canary.py`: audit remaining path construction, lifecycle
-  and mounting assumptions. Keep API responses unchanged where possible.
-- `tests/unit/infrastructure/livewire/test_ohlc_provider.py` and
-  `tests/integration/test_silver_revision_e2e.py`: exercise committed reads and
-  interrupted publication with the actual consumer implementations.
+- `src/infrastructure/adapters/livewire/ohlc_provider.py` resolves daily/factor
+  paths from one pinned manifest and fails closed when the requested artifact
+  is absent. It does not fall back to a legacy file omitted by the manifest.
+- `src/infrastructure/adapters/livewire/revisions.py` validates the complete
+  manifest structure and retains its artifact mapping. Normal reads verify
+  hashes for the requested artifacts; the full verification mode checks all.
+- Minimal callers pass an accepted snapshot to adapter reads where required.
+  Transactional reseeding, cache replacement and queued-signal invalidation
+  remain Apex internal work, outside this release's atomicity claim.
+- Chart and instrument request wiring and `scripts/check_silver_canary.py`
+  report/use the revision they pinned. `paths.py` and `server.py` retain their
+  existing configuration and lifecycle responsibilities.
+- `tests/unit/infrastructure/livewire/test_snapshots.py` and adapter/request
+  tests exercise committed reads, missing/corrupt data and manifest changes.
+  Livewire's `tests/contract/verify_apex_interop.py` runs the actual producer and
+  consumer using their separate Python environments.
 
-Locate all remaining consumers before implementation. The above is the reviewed
-minimum, not permission to silently leave another fixed-path consumer behind.
+This lists the implemented compatibility boundary. It does not establish
+transactional behavior for Apex consumers above that boundary.
 
 ## Rejected shortcuts
 
@@ -149,14 +187,15 @@ minimum, not permission to silently leave another fixed-path consumer behind.
    validation, keep the consumer unavailable during cutover rather than serving
    an invented good state. Suspend legacy Silver writers until cutover completes.
 4. Enable the immutable writer, commit one validated snapshot, then verify both
-   direct Apex reads and watcher/subscription reseeds. Resume scheduled work and
+   direct Apex adapter reads. Assess deferred consumer lifecycle risks explicitly
+   before enabling it. Resume scheduled work and
    verify a normal nightly run separately from the migration run.
 5. Roll back code only to a version that understands the committed storage
    contract. Returning to the old mutable writer requires a separate maintenance
    procedure and data-layout restoration; it is not a safe release-symlink flip.
    To restore prior data, publish a **new monotonic manifest revision** referencing
-   retained verified artifacts from the chosen older generation, since Apex's
-   watcher rejects decreasing revision numbers. Preserve all evidence and files.
+   retained verified artifacts from the chosen older generation, preserving the
+   producer's monotonic revision contract. Preserve all evidence and files.
 
 ## Runnable acceptance and Claude Code release verification
 
@@ -186,8 +225,8 @@ coverage checks. Claude Code's independent release check must establish:
 - Disposable crash tests use released code and the production filesystem class;
   no destructive crash experiment runs against the real lake.
 - One real manifest and its referenced hashes pass validation, representative
-  daily and factor-backed reads match it, and watcher health identifies the same
-  accepted revision. Neither a successful command exit nor a new manifest alone
+  daily and factor-backed adapter reads match its accepted revision.
+  Neither a successful command exit nor a new manifest alone
   proves consumer correctness.
 - One subsequent normally scheduled run succeeds, records its lane outcome and
   commit, and does not expose uncommitted generations or revive omitted symbols.
@@ -198,7 +237,7 @@ coverage checks. Claude Code's independent release check must establish:
 
 - S1 approve storage and consumer boundary; `depends_on: []`.
 - S2 implement immutable writer and manifest resolution; `depends_on: [S1]`.
-- S3 implement Apex snapshot reads/reseed integration; `depends_on: [S1]`.
+- S3 implement Apex snapshot adapter reads and minimal wiring; `depends_on: [S1]`.
 - S4 cross-repo crash, migration and rollback tests; `depends_on: [S2, S3]`.
 - S5 reviewed releases and approved cutover; `depends_on: [S4]`.
 - S6 independent released-code and normal-run verification; `depends_on: [S5]`.

@@ -2,6 +2,95 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Systematic datalake integrity implementation (2026-09-08)
+
+Implementation approved and started; production cutover remains a separate gate.
+Authoritative execution plan:
+[systematic implementation](../docs/plans/2026-09-08-datalake-integrity-implementation.md).
+The end-state document supplies verified timing constraints; the Silver design
+supplies the storage/consumer contract. Preserve unrelated work and use isolated
+worktrees when implementation begins.
+
+Hard acceptance: contain failures to their actual dependencies; unrelated work
+must continue. Every warning names impact, evidence, last valid data, next action
+and recovery condition. Single-host/disk availability remains an explicit
+physical limitation until a separately scoped recovery/redundancy plan is proven.
+
+Graph: `SE-00 -> {SE-01, SE-02} -> SE-03 -> SE-04 -> {SE-05, SE-06} -> SE-07 -> SE-08 -> SE-09 -> SE-10 -> SE-11`.
+
+- [x] **SE-00** (`depends_on: []`): Pin source, deployment, process and data-root evidence.
+- [x] **SE-01** (`depends_on: [SE-00]`): Inventory writer/reader paths and trace failure boundaries; final caller matrix and explicit legacy rollback limitation are in the execution plan.
+- [x] **SE-02** (`depends_on: [SE-00]`): Make cross-platform tests and the 95% gate trustworthy. Linux run `34177232115` checked commit `39e32b8` at 95.09%; this is gate-fix evidence, not validation of the later uncommitted implementation.
+- [x] **SE-03** (`depends_on: [SE-01, SE-02]`): Fix lock ownership, failure domains, recovery and warning contracts.
+- [x] **SE-04** (`depends_on: [SE-03]`): Implement shared write control and safe single-file publication; local fault/concurrency checks pass, production proof remains SE-08/11.
+- [x] **SE-05** (`depends_on: [SE-04]`): Implement approved immutable Silver publication; local five-boundary SIGKILL/retry checks pass.
+- [x] **SE-06** (`depends_on: [SE-04]`): Stabilize the Livewire → Apex data contract and pinned-snapshot readers; actual writer-to-adapter daily/intraday checks pass. Apex changes stop at minimal adapter compatibility. Internal reseed/signals refactor is deferred by the user (2026-09-08).
+- [x] **SE-07** (`depends_on: [SE-05, SE-06]`): Candidate failure isolation, warning/recovery regressions and crash acceptance verified; Mini healthy-subset omission/restored retry and 14 final external-volume cases pass. The 269/53 itemized data issues remain recovery work, not resolved data.
+- [ ] **SE-08** (`depends_on: [SE-07]`): Measure capacity against actual runtime timelines.
+- [ ] **SE-09** (`depends_on: [SE-08]`): Independent review, mandatory checks and compatible release candidates.
+- [ ] **SE-10** (`depends_on: [SE-09]`): Execute approved cutover with writer/release protection.
+- [ ] **SE-11** (`depends_on: [SE-10]`): Claude independently verifies released code and a normal scheduled run.
+
+Current implementation evidence (2026-09-08, not deployed): immutable Silver
+publication has five real child-process SIGKILL/retry checks; temporary disk
+input snapshots replace the rejected whole-universe Python row retention.
+The 64-file Mini sample projected 16.005 GiB for row objects alone on a 16 GiB
+host, so that prior memory design was not viable. Request-level Apex adapters
+are narrowed as agreed; deferred internal changes were preserved in a verified
+backup before removal from the candidate. Manual repair/rollback/archive caller
+audit is complete. The initial configured coverage run passed 2,660 tests at
+95.08%; Ruff checks passed and Pyright reported zero errors (25 warnings).
+Full Mini disposable capacity measurements remain in progress.
+
+Final independent review reopened and corrected manual recovery acceptance: legacy repair and
+Yahoo resolution can lose/overwrite undo metadata after a crash before cursor
+completion; legacy rollback lacks a post-repair target guard; split repair's
+multi-item state is not restartable; selected manual commands collapse mixed
+case symbols. Durable per-item intent/resume, checksum-bound rollback, receipt
+failure preservation and canonical identities now pass independent re-review.
+The final local configured gate passes 2,687 tests at 95.01%; Ruff/format pass
+and Pyright reports zero errors (25 warnings). Linux CI run `34186169434`
+passes at exact implementation commit `062caa6` with the same test/coverage result.
+Historical sidecars without a known applied hash must fail closed rather than
+overwriting newer data. Mini capacity evidence remains pinned to unchanged
+snapshot code at `c11caa8`; it does not validate subsequent manual fixes or the
+later three-call correction preserving mixed-case Silver ticker identities.
+The measured fresh build publishes 13,279 members / 26,558 artifacts in
+1,971.265 seconds after a separate 773.162-second input copy. Its 269 input
+failures match 198 unknown price bases, 61 currency mismatches, five conflicting
+splits, four invalid dividends and one source-identical corrupt RJF daily file.
+Comparison with production revision 39 still finds 53 shorter history windows;
+fresh-baseline `window_regressions=0` does not resolve them. Full no-op took
+743.799 seconds, retaining revision 1 with zero rebuilt symbols. AAPL increment
+took 624.424 seconds (revision 2, rebuilt 1); fixture corruption took 1,319.281
+seconds (revision 3, only A omitted), then restored retry took 652.258 seconds
+(revision 4, A returned). Retry overlapped the actual 13:00 production daily
+job. These staged measurements do not prove a cold normal-run or coverage
+repair competition budget. The [recovery inventory](../docs/codex-handoffs/2026-09-08-integrity-recovery-inventory.md)
+accounts for all 269 failures and 53 shortened windows; their data recovery,
+Apex baseline CI failures and production cutover remain open.
+
+The final external-volume check caught AppleDouble `._*.json` metadata in
+legacy rollback's receipt enumeration. Candidate `38c90bb` filters only those
+metadata names and adds a portable recovery regression; ordinary corrupt
+receipt JSON still fails explicitly. The complete local suite again passes
+2,688 tests at 95.01%; runtime source Ruff/format and Pyright checks pass
+(zero errors, 25 warnings). Final external recheck passes all 14 cases at
+`38c90bb` (`se08-20260908T1315-38c90bb`). Record final PR-head CI separately
+from this implementation evidence; SE-09 remains open while Apex CI is not green.
+
+Verification correction: `--cov=clients --cov=scripts` measures wrapper scripts
+and is not the required CI source set. The configured `--cov` gate correctly
+rejected a 94.99% candidate despite all 2,629 tests passing. Final evidence must
+use `clients` plus `livewire_scripts`, at the final candidate revision.
+
+Correction to the earlier release checklist below: PR #124 was merged and
+release `23e1de284f343e357f97100cfe83fb48ac4be9ec` was verified on the mini in this
+conversation. However, Linux CI's successful status hid raw coverage of 94.89%.
+The earlier DI-5 check therefore does not establish complete acceptance; its
+gate issue is reopened as SE-02. Normal-run and Silver integrity acceptance
+remain open, separately from delivery of that release.
+
 ## Datalake integrity and release verification (2026-09-08)
 
 Goal: stop publishing a successful-looking incomplete catalog, make Silver

@@ -112,6 +112,29 @@ class TestPublishParquet:
 
 
 class TestValidateParquetFile:
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_corrupt_price_page_never_replaces_destination(self, tmp_path, monkeypatch, existing):
+        out = tmp_path / "data.parquet"
+        table = _table([{"trade_date": date(2026, 1, 5), "symbol_id": 1, "value": 1.0}])
+        if existing:
+            publish_parquet(out, table, "trade_date")
+        before = out.read_bytes() if existing else None
+        original = pq.write_table
+
+        def corrupt_price(table, path, **kwargs):
+            original(table, path, **kwargs)
+            column = pq.read_metadata(path).row_group(0).column(2)
+            offset = column.dictionary_page_offset or column.data_page_offset
+            with open(path, "r+b") as handle:
+                handle.seek(offset)
+                handle.write(b"\xff" * 8)
+
+        monkeypatch.setattr(pq, "write_table", corrupt_price)
+        with pytest.raises((pa.ArrowException, OSError)):
+            publish_parquet(out, table, "trade_date")
+        assert (out.read_bytes() if out.exists() else None) == before
+        assert not list(tmp_path.glob("*.tmp"))
+
     def test_valid_file_passes(self, tmp_path):
         out = tmp_path / "data.parquet"
         rows = [
@@ -259,3 +282,68 @@ def test_symbol_lock_still_serializes_one_parquet_path(tmp_path):
         assert lock_path == parquet.with_suffix(".parquet.lock")
         with path_lock(lock_path, blocking=False) as second:
             assert second is False
+
+
+def test_input_barriers_allow_writers_but_exclude_snapshot_across_processes(tmp_path):
+    import subprocess
+    import sys
+
+    from clients.parquet_io import symbol_lock
+
+    bronze = tmp_path / "bronze"
+    equity = bronze / "asset_class=equity"
+    with symbol_lock(equity / "symbol=A" / "1d.parquet"):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "\n".join(
+                    [
+                        "from pathlib import Path",
+                        "from clients.parquet_io import path_lock",
+                        f"root = Path({str(bronze)!r})",
+                        "with path_lock(root / 'asset_class=equity/.inputs.lock', blocking=False) as held:",
+                        "    assert not held",
+                        "with path_lock(root / 'asset_class=equity/.inputs.lock', shared=True, blocking=False) as held:",
+                        "    assert held",
+                        "with path_lock(root / 'asset_class=corporate_action/.inputs.lock', blocking=False) as held:",
+                        "    assert held",
+                    ]
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    assert result.returncode == 0, result.stderr
+
+
+def test_snapshot_does_not_block_intraday_or_other_assets(tmp_path):
+    from clients.parquet_io import path_lock, silver_input_lock, symbol_lock
+
+    bronze = tmp_path / "bronze"
+    with silver_input_lock(bronze):
+        for asset in ("corporate_action", "equity"):
+            with path_lock(bronze / f"asset_class={asset}" / ".inputs.lock", shared=True, blocking=False) as held:
+                assert not held
+        for asset, filename in (("equity", "1h.parquet"), ("index", "1d.parquet")):
+            with symbol_lock(bronze / f"asset_class={asset}" / "symbol=A" / filename):
+                pass
+
+
+def test_failed_file_sync_preserves_previous_publish(tmp_path, monkeypatch):
+    import clients.parquet_io as io
+
+    out = tmp_path / "data.parquet"
+    table = _table([{"trade_date": date(2026, 1, 5), "symbol_id": 1, "value": 1.0}])
+    publish_parquet(out, table, "trade_date")
+    before = out.read_bytes()
+
+    def fail(_descriptor):
+        raise OSError("sync failed")
+
+    monkeypatch.setattr(io.os, "fsync", fail)
+    with pytest.raises(OSError, match="sync failed"):
+        publish_parquet(out, table, "trade_date")
+    assert out.read_bytes() == before
+    assert not list(tmp_path.glob("*.tmp"))

@@ -44,6 +44,20 @@ def test_dry_run_reports_migration_without_writing(tmp_path, capsys):
     assert _sha(path) == before
 
 
+def test_explicit_symbols_preserve_provider_significant_case(tmp_path, capsys):
+    from clients.symbol_paths import encode_symbol
+
+    for symbol in ("BCpC", "BCPC"):
+        _legacy(tmp_path / f"symbol={encode_symbol(symbol)}/1d.parquet")
+    migrate_equity_price_basis.run(["--tickers", "BCpC", "BCPC"], bronze_root=tmp_path)
+    report = json.loads(capsys.readouterr().out)
+    assert {item["symbol"] for item in report["artifacts"]} == {"BCpC", "BCPC"}
+    assert report["migrated"] == 2
+    for symbol in ("BCpC", "BCPC"):
+        path = tmp_path / f"symbol={encode_symbol(symbol)}/1d.parquet"
+        assert "price_basis" in pq.ParquetFile(path).schema_arrow.names
+
+
 def test_migration_preserves_values_and_adds_legacy_metadata(tmp_path, capsys):
     path = tmp_path / "symbol=AAPL/1d.parquet"
     _legacy(path)
@@ -57,6 +71,35 @@ def test_migration_preserves_values_and_adds_legacy_metadata(tmp_path, capsys):
     assert after[0]["price_basis"] == "unknown"
     report = json.loads(capsys.readouterr().out)
     assert report["artifacts"][0]["source_sha256"] != report["artifacts"][0]["target_sha256"]
+
+
+def test_migration_holds_symbol_lock_from_read_through_publish(tmp_path, monkeypatch):
+    from clients.parquet_io import path_lock
+
+    path = tmp_path / "symbol=AAPL/1d.parquet"
+    _legacy(path)
+    original_read = migrate_equity_price_basis.BronzeClient.read_symbol_rows
+    original_publish = migrate_equity_price_basis.BronzeClient._publish_symbol_rows
+    observed = []
+
+    def check_lock():
+        with path_lock(path.with_suffix(".parquet.lock"), blocking=False) as held:
+            assert not held, "a concurrent writer could acquire the symbol during migration"
+
+    def read(client, symbol):
+        check_lock()
+        observed.append("read")
+        return original_read(client, symbol)
+
+    def publish(client, symbol, rows):
+        check_lock()
+        observed.append("publish")
+        return original_publish(client, symbol, rows)
+
+    monkeypatch.setattr(migrate_equity_price_basis.BronzeClient, "read_symbol_rows", read)
+    monkeypatch.setattr(migrate_equity_price_basis.BronzeClient, "_publish_symbol_rows", publish)
+    migrate_equity_price_basis.run(["--tickers", "AAPL"], bronze_root=tmp_path)
+    assert observed == ["read", "publish"]
 
 
 def test_second_run_is_noop(tmp_path, capsys):
@@ -90,7 +133,7 @@ def test_full_migration_resumes_after_interrupted_symbol(tmp_path, monkeypatch, 
     _legacy(tmp_path / "symbol=AAPL/1d.parquet")
     _legacy(tmp_path / "symbol=MSFT/1d.parquet")
     cursor = tmp_path / "migration-cursor.json"
-    original = migrate_equity_price_basis.BronzeClient.replace_ticker_rows
+    original = migrate_equity_price_basis.BronzeClient._publish_symbol_rows
     calls = 0
 
     def interrupt_second(client, symbol, rows):
@@ -100,7 +143,7 @@ def test_full_migration_resumes_after_interrupted_symbol(tmp_path, monkeypatch, 
             raise RuntimeError("interrupted")
         return original(client, symbol, rows)
 
-    monkeypatch.setattr(migrate_equity_price_basis.BronzeClient, "replace_ticker_rows", interrupt_second)
+    monkeypatch.setattr(migrate_equity_price_basis.BronzeClient, "_publish_symbol_rows", interrupt_second)
     with pytest.raises(RuntimeError, match="interrupted"):
         migrate_equity_price_basis.run(
             ["--full", "--cursor", str(cursor)],
@@ -108,7 +151,7 @@ def test_full_migration_resumes_after_interrupted_symbol(tmp_path, monkeypatch, 
         )
     assert json.loads(cursor.read_text())["completed"] == ["AAPL"]
 
-    monkeypatch.setattr(migrate_equity_price_basis.BronzeClient, "replace_ticker_rows", original)
+    monkeypatch.setattr(migrate_equity_price_basis.BronzeClient, "_publish_symbol_rows", original)
     assert (
         migrate_equity_price_basis.run(
             ["--full", "--cursor", str(cursor)],

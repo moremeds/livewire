@@ -71,10 +71,13 @@ class PitSilverRevisionPublisher:
         membership_revision: int,
         as_of: datetime,
         actions_receipt: dict[str, Any],
+        silver_revision: int | None = None,
     ) -> PitSilverRevision:
         if as_of.tzinfo is None or as_of.utcoffset() is None:
             raise ValueError("as-of must be timezone-aware")
-        core = self._build_core(index_id, membership_revision, as_of.astimezone(UTC), actions_receipt)
+        core = self._build_core(
+            index_id, membership_revision, as_of.astimezone(UTC), actions_receipt, silver_revision=silver_revision
+        )
         input_hash = f"sha256:{digest_bytes(canonical_bytes(core))}"
         self.silver_root.mkdir(parents=True, exist_ok=True)
         with self.lock.open("a", encoding="utf-8") as handle:
@@ -351,10 +354,11 @@ class PitSilverRevisionPublisher:
         if silver_revision is None:
             if not silver_current.is_file():
                 raise ValueError("missing current Silver revision")
-            silver_payload = json.loads(silver_current.read_bytes())
+            silver_bytes = silver_current.read_bytes()
+            silver_payload = json.loads(silver_bytes)
             silver_revision = int(silver_payload["revision"])
             immutable = self.silver_root / "revisions" / f"revision={silver_revision}.json"
-            if not immutable.is_file() or immutable.read_bytes() != silver_current.read_bytes():
+            if not immutable.is_file() or immutable.read_bytes() != silver_bytes:
                 raise ValueError("Silver revision pointer does not match immutable manifest")
         else:
             immutable = self.silver_root / "revisions" / f"revision={silver_revision}.json"

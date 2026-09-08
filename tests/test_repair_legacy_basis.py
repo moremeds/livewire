@@ -1,11 +1,48 @@
 import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from pathlib import Path
+
+import pytest
 
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.massive_client import MassiveSplit
-from livewire_scripts import repair_legacy_basis
+from livewire_scripts import repair_legacy_basis, rollback_legacy_basis
+
+
+@pytest.mark.parametrize("changed", ["bronze", "actions"])
+def test_repair_rejects_inputs_changed_during_unlocked_fetch(tmp_path, changed):
+    _seed_mixed(tmp_path, "NVDA")
+    bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
+    store = CorporateActionStore(tmp_path)
+    path = bronze.symbol_path("NVDA")
+    observed = {}
+
+    def fetch(*args):
+        # Real canonical writers must be able to run while the provider is active.
+        if changed == "bronze":
+            row = {**bronze.read_symbol_rows("NVDA")[-1], "trade_date": "2021-06-22"}
+            bronze.merge_ticker_rows("NVDA", [row])
+        else:
+            store.reconcile("NVDA", [], datetime(2022, 1, 1, tzinfo=UTC), full_reconcile=True)
+        observed["bytes"] = path.read_bytes()
+        return _clean_ib_rows_for("NVDA")
+
+    status, sidecar = repair_legacy_basis._repair_one(
+        "NVDA",
+        bronze=bronze,
+        store=store,
+        fetcher=fetch,
+        as_of=date(2026, 7, 17),
+        threshold=6.0,
+        backup_dir=tmp_path / "out/backup",
+        audit_sha256=None,
+    )
+    assert status == "failed"
+    assert "inputs changed" in sidecar["reason"]
+    assert path.read_bytes() == observed["bytes"]
+    assert not (tmp_path / "out/backup").exists()
 
 
 def _seed_mixed(root, ticker):
@@ -183,13 +220,21 @@ def test_ib_connection_failure_aborts_nonzero_without_burning_the_symbol(tmp_pat
     summary = json.loads((output_dir / "summary.json").read_text())
     assert summary["complete"] is False
     assert summary["counts"]["failed"] == 0  # NVDA was never attempted, so it is not burnt
-    assert not (output_dir / "cursor.json").is_file()  # nothing to resume past
+    cursor = json.loads((output_dir / "cursor.json").read_text())
+    assert cursor["completed"] == {}  # durable root identity exists, but the symbol was not burnt
 
 
 def test_priority_orders_sp500_before_ndx_before_r2k_before_rest():
     # tiers: sp500=0, ndx100=1, r2k=2, unranked=len(presets)=3
     rank = {"AAPL": 0, "ZM": 1, "IWM": 2}
     assert repair_legacy_basis._order_symbols(["ZZZ", "IWM", "AAPL", "ZM"], rank) == ["AAPL", "ZM", "IWM", "ZZZ"]
+
+
+def test_priority_rank_preserves_provider_significant_case(tmp_path, monkeypatch):
+    (tmp_path / "sp500.json").write_text("{}")
+    monkeypatch.setattr(repair_legacy_basis, "load_preset", lambda _path: ("equity", ["BCPC", "BCpC"], {}))
+    rank = repair_legacy_basis._priority_rank(tmp_path)
+    assert set(rank) == {"BCPC", "BCpC"}
 
 
 def _split_only_ib_rows():
@@ -701,6 +746,136 @@ def test_existing_cursor_without_resume_is_rejected(tmp_path):
             ib_factory=lambda: object(),
             ib_fetcher_factory=_clean_ib_fetcher({"NVDA": _clean_ib_rows_for("NVDA")}),
         )
+
+
+@pytest.mark.parametrize("target_state", ["applied", "source"])
+def test_resume_finishes_durable_intent_without_refetching(tmp_path, target_state):
+    _seed_mixed(tmp_path, "NVDA")
+    manifest = _audit_manifest(tmp_path, "NVDA")
+    output_dir = tmp_path / "out"
+    common = {
+        "data_lake_root": tmp_path,
+        "ib_factory": lambda: object(),
+        "ib_fetcher_factory": _clean_ib_fetcher({"NVDA": _clean_ib_rows_for("NVDA")}),
+    }
+    assert repair_legacy_basis.run(["--audit-manifest", str(manifest), "--output-dir", str(output_dir)], **common) == 0
+    bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
+    target = bronze.symbol_path("NVDA")
+    applied = target.read_bytes()
+    backup = output_dir / "backup/NVDA.1d.parquet"
+    pristine = backup.read_bytes()
+    cursor_path = output_dir / "cursor.json"
+    cursor = json.loads(cursor_path.read_text())
+    cursor["completed"] = {}
+    cursor_path.write_text(json.dumps(cursor))
+    sidecar_path = output_dir / "symbols/NVDA.json"
+    sidecar = json.loads(sidecar_path.read_text())
+    sidecar["status"] = "in_progress"
+    sidecar_path.write_text(json.dumps(sidecar))
+    if target_state == "source":
+        target.write_bytes(pristine)
+
+    def no_refetch(_client):
+        def fail(*_args):
+            raise AssertionError("resume must not contact the provider")
+
+        return fail
+
+    assert (
+        repair_legacy_basis.run(
+            ["--audit-manifest", str(manifest), "--output-dir", str(output_dir), "--resume"],
+            data_lake_root=tmp_path,
+            ib_factory=lambda: object(),
+            ib_fetcher_factory=no_refetch,
+        )
+        == 0
+    )
+    assert target.read_bytes() == applied
+    assert backup.read_bytes() == pristine
+    assert json.loads(sidecar_path.read_text())["status"] == "done"
+    assert json.loads(cursor_path.read_text())["completed"]["NVDA"]["status"] == "done"
+
+
+def test_resume_refuses_pending_candidate_when_actions_changed(tmp_path):
+    _seed_mixed(tmp_path, "NVDA")
+    manifest = _audit_manifest(tmp_path, "NVDA")
+    output_dir = tmp_path / "out"
+    common = {
+        "data_lake_root": tmp_path,
+        "ib_factory": lambda: object(),
+        "ib_fetcher_factory": _clean_ib_fetcher({"NVDA": _clean_ib_rows_for("NVDA")}),
+    }
+    assert repair_legacy_basis.run(["--audit-manifest", str(manifest), "--output-dir", str(output_dir)], **common) == 0
+    bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
+    target = bronze.symbol_path("NVDA")
+    backup = output_dir / "backup/NVDA.1d.parquet"
+    target.write_bytes(backup.read_bytes())
+    cursor_path = output_dir / "cursor.json"
+    cursor = json.loads(cursor_path.read_text())
+    cursor["completed"] = {}
+    cursor_path.write_text(json.dumps(cursor))
+    sidecar_path = output_dir / "symbols/NVDA.json"
+    sidecar = json.loads(sidecar_path.read_text())
+    sidecar["status"] = "in_progress"
+    sidecar_path.write_text(json.dumps(sidecar))
+    CorporateActionStore(tmp_path).reconcile("NVDA", [], datetime(2026, 9, 8, tzinfo=UTC), full_reconcile=True)
+
+    assert (
+        repair_legacy_basis.run(
+            ["--audit-manifest", str(manifest), "--output-dir", str(output_dir), "--resume"], **common
+        )
+        == 1
+    )
+    assert target.read_bytes() == backup.read_bytes()
+    preserved = json.loads(sidecar_path.read_text())
+    assert preserved["status"] == "in_progress"
+    assert preserved["backup_sha256"] == sidecar["backup_sha256"]
+
+
+@pytest.mark.parametrize("read_failure", [False, True])
+def test_failed_terminal_receipt_preserves_recovery_intent(tmp_path, monkeypatch, read_failure):
+    _seed_mixed(tmp_path, "NVDA")
+    manifest = _audit_manifest(tmp_path, "NVDA")
+    output_dir = tmp_path / "out"
+    real_write = repair_legacy_basis.write_json_atomic
+    failed_once = False
+    real_read = Path.read_text
+    read_failed_once = False
+
+    def fail_receipt_read(path, *args, **kwargs):
+        nonlocal read_failed_once
+        if read_failure and failed_once and path.name == "NVDA.json" and not read_failed_once:
+            read_failed_once = True
+            raise OSError("receipt temporarily unreadable")
+        return real_read(path, *args, **kwargs)
+
+    def fail_terminal_receipt(path, payload):
+        nonlocal failed_once
+        if path.name == "NVDA.json" and payload.get("status") == "done" and not failed_once:
+            failed_once = True
+            raise OSError("simulated receipt failure")
+        real_write(path, payload)
+
+    monkeypatch.setattr(repair_legacy_basis, "write_json_atomic", fail_terminal_receipt)
+    monkeypatch.setattr(Path, "read_text", fail_receipt_read)
+    assert (
+        repair_legacy_basis.run(
+            ["--audit-manifest", str(manifest), "--output-dir", str(output_dir)],
+            data_lake_root=tmp_path,
+            ib_factory=lambda: object(),
+            ib_fetcher_factory=_clean_ib_fetcher({"NVDA": _clean_ib_rows_for("NVDA")}),
+        )
+        == 1
+    )
+
+    assert read_failed_once == read_failure
+    sidecar = json.loads((output_dir / "symbols/NVDA.json").read_text())
+    assert sidecar["status"] == "in_progress"
+    assert sidecar["backup_sha256"]
+    assert sidecar["applied_sha256"]
+    assert sidecar["candidate_path"]
+    assert sidecar["action_path"] == str(CorporateActionStore(tmp_path).path_for("NVDA").resolve())
+    assert rollback_legacy_basis.run(["--output-dir", str(output_dir)], data_lake_root=tmp_path) == 0
 
 
 def test_bronze_changed_since_the_audit_is_skipped_not_repaired(tmp_path):

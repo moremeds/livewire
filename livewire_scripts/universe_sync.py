@@ -13,7 +13,6 @@ import argparse
 import json
 import logging
 import os
-import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +31,7 @@ from clients.universe_client import (
     fetch_r2k,
     fetch_sp500,
 )
+from livewire_scripts.archive_otc_symbols import archive_symbol
 from livewire_scripts.paths import data_lake_dir, warehouse_dir
 
 log = logging.getLogger(__name__)
@@ -137,8 +137,8 @@ def _archive_delisted(ticker: str, data_lake: Path) -> bool:
     if not src.exists():
         return False
     dst = data_lake / "bronze-delisted" / "asset_class=equity" / f"symbol={ticker}"
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(src), str(dst))
+    if archive_symbol(ticker, src.parent, dst.parent, dry_run=False) != "archived":
+        return False
     log.info("Archived %s to bronze-delisted/", ticker)
     return True
 

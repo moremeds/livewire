@@ -26,7 +26,6 @@ import asyncio
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 from datetime import UTC, date, datetime
@@ -40,6 +39,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from clients import BronzeClient
 from clients.ib_client import IBClient
+from livewire_scripts.archive_otc_symbols import archive_symbol
 from livewire_scripts.daily_update import is_trading_day
 from livewire_scripts.paths import data_lake_dir, log_dir
 
@@ -370,11 +370,9 @@ def main(argv: list[str] | None = None) -> None:
     delisted_base = data_lake_dir() / "bronze-delisted" / "asset_class=equity"
     for ticker in sorted(confirmed_removals):
         src = bronze_dir / f"symbol={ticker}"
-        dst = delisted_base / f"symbol={ticker}"
         if src.exists():
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src), str(dst))
-            log.info("Archived %s to bronze-delisted/", ticker)
+            result = archive_symbol(ticker, bronze_dir, delisted_base, dry_run=False)
+            log.info("Archive %s: %s", ticker, result)
 
     # ── Compute new universe and write preset ──────────────────────────
     new_universe = (current_universe | additions) - confirmed_removals

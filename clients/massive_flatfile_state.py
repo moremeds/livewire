@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
+
+from clients.parquet_io import path_lock, write_json_atomic
 
 # Enough to resume any in-flight run and its immediate predecessors. The
 # append-only manifest keeps the full history; this snapshot does not need to.
@@ -25,6 +29,18 @@ class MassiveFlatfileState:
         self.data: dict[str, Any] = self._load()
         # RLock so methods that call into one another (mark_* → record + save) re-enter safely.
         self._lock = threading.RLock()
+
+    @contextmanager
+    def exclusive(self) -> Iterator[None]:
+        """Reject overlapping owners of this stream's mutable resume cursor."""
+        with path_lock(self.state_path.with_suffix(".lock"), blocking=False) as held:
+            if not held:
+                raise RuntimeError(
+                    f"resume cursor already in use: {self.state_path}; "
+                    "this ingestion was not started; retry after its current owner finishes"
+                )
+            self.data = self._load()
+            yield
 
     def _load(self) -> dict[str, Any]:
         try:
@@ -49,9 +65,7 @@ class MassiveFlatfileState:
         with self._lock:
             self._prune_scopes()
             self.cursor_dir.mkdir(parents=True, exist_ok=True)
-            tmp = self.state_path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.data, indent=2, sort_keys=True), encoding="utf-8")
-            tmp.replace(self.state_path)
+            write_json_atomic(self.state_path, self.data)
 
     def _prune_scopes(self) -> None:
         """Keep only the most recent scopes.

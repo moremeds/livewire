@@ -16,6 +16,64 @@ from tests.test_rebuild_silver import _seed_bronze, _seed_split
 
 AS_OF = date(2026, 7, 17)
 
+
+@pytest.mark.parametrize("changed", ["bronze", "actions"])
+def test_apply_rejects_inputs_changed_while_yahoo_fetches(tmp_path, changed):
+    from datetime import UTC, datetime
+
+    from clients.corporate_action_store import CorporateActionStore
+
+    _seed_bronze(
+        tmp_path,
+        "AMC",
+        [("2023-08-23", 19.60), ("2023-08-24", 14.37), ("2023-08-25", 12.43)],
+        source="legacy",
+        price_basis="unknown",
+    )
+    _seed_split(tmp_path, "AMC", "2023-08-24", 10, 1)
+    bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
+    observed = {}
+
+    class ChangingYahoo(_FakeYahoo):
+        def get_daily(self, *args):
+            if changed == "bronze":
+                row = {**bronze.read_symbol_rows("AMC")[-1], "trade_date": "2023-08-28"}
+                bronze.merge_ticker_rows("AMC", [row])
+            else:
+                CorporateActionStore(tmp_path).reconcile(
+                    "AMC", [], datetime(2026, 8, 1, tzinfo=UTC), full_reconcile=True
+                )
+            observed["bytes"] = bronze.symbol_path("AMC").read_bytes()
+            return super().get_daily(*args)
+
+    output = tmp_path / "result.json"
+    batch = tmp_path / "batch"
+    resolve_yahoo_basis.run(
+        [
+            "--tickers",
+            "AMC",
+            "--output",
+            str(output),
+            "--apply",
+            "--allow-rewrite",
+            "--output-dir",
+            str(batch),
+            "--ib-verify",
+            "--ib-min-overlap",
+            "1",
+        ],
+        data_lake_root=tmp_path,
+        yahoo_factory=ChangingYahoo,
+        as_of_date=AS_OF,
+        ib_factory=_FakeIB,
+        ib_fetcher_factory=_fetcher(_AMC_IB_MATCH),
+    )
+    entry = json.loads(output.read_text())["symbols"][0]
+    assert "inputs changed" in entry["applied"]
+    assert bronze.symbol_path("AMC").read_bytes() == observed["bytes"]
+    assert not (batch / "backup").exists()
+
+
 # Real AMC Yahoo split-adjusted closes; the 1:10 reverse split multiplier is 0.1,
 # so the true raw pre-split close of 19.60 is 1.96.
 _AMC_BARS = [
@@ -416,6 +474,58 @@ def test_resume_skips_symbol_marked_done_in_cursor(tmp_path):
     )
     assert calls["n"] == 0  # AMC already done → never re-fetched
     assert json.loads((tmp_path / "m.json").read_text())["symbols"] == []
+
+
+def test_resume_preserves_pristine_backup_and_uses_durable_candidate(tmp_path):
+    _seed_amc_multi(tmp_path)
+    output_dir = tmp_path / "batch"
+    output = tmp_path / "manifest.json"
+    argv = [
+        "--tickers",
+        "AMC",
+        "--output",
+        str(output),
+        "--apply",
+        "--output-dir",
+        str(output_dir),
+        "--allow-rewrite",
+        "--ib-verify",
+        "--ib-min-overlap",
+        "5",
+    ]
+    kwargs = {
+        "data_lake_root": tmp_path,
+        "yahoo_factory": _multi_yahoo,
+        "ib_factory": _FakeIB,
+        "ib_fetcher_factory": _fetcher(_AMC_IB_MATCH),
+        "as_of_date": AS_OF,
+    }
+    assert resolve_yahoo_basis.run(argv, **kwargs) == 0
+    backup = output_dir / "backup/AMC.1d.parquet"
+    pristine = backup.read_bytes()
+    cursor_path = output_dir / "cursor.json"
+    cursor = json.loads(cursor_path.read_text())
+    cursor["completed"] = {}
+    cursor_path.write_text(json.dumps(cursor))
+    sidecar_path = output_dir / "symbols/AMC.json"
+    sidecar = json.loads(sidecar_path.read_text())
+    sidecar["status"] = "in_progress"
+    sidecar_path.write_text(json.dumps(sidecar))
+
+    class NoYahoo:
+        def get_daily(self, *_args):
+            raise AssertionError("resume must not refetch Yahoo")
+
+    assert resolve_yahoo_basis.run(argv + ["--resume"], **{**kwargs, "yahoo_factory": NoYahoo}) == 0
+    assert backup.read_bytes() == pristine
+    assert json.loads(sidecar_path.read_text())["status"] == "done"
+    assert rollback_legacy_basis.run(["--output-dir", str(output_dir)], data_lake_root=tmp_path) == 0
+    assert _bronze_basis(tmp_path, "AMC") == {"unknown"}
+
+
+def test_symbol_inputs_preserve_provider_significant_case(tmp_path):
+    args = resolve_yahoo_basis.parse_args(["--tickers", "BCPC", "BCpC", "--output", str(tmp_path / "out")])
+    assert resolve_yahoo_basis._symbols(args, root=tmp_path) == ["BCPC", "BCpC"]
 
 
 def test_priority_order_orders_by_preset(tmp_path, monkeypatch):

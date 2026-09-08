@@ -9,9 +9,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
+from contextlib import nullcontext
 from pathlib import Path
 
+from clients.parquet_io import fsync_directory, path_lock, symbol_lock
 from livewire_scripts.paths import data_lake_dir
 
 
@@ -34,18 +35,21 @@ def migrate_parquet_files(
     for old_path in sorted(root_dir.rglob("data.parquet")):
         new_path = old_path.with_name("1d.parquet")
 
-        if new_path.exists():
-            raise RuntimeError(
-                f"split-brain: both data.parquet and 1d.parquet exist in {old_path.parent}. "
-                "Manual investigation required."
-            )
-
-        if dry_run:
-            print(f"[DRY RUN] Would rename: {old_path} → {new_path}")
-            stats["renamed"] += 1
-        else:
-            os.rename(old_path, new_path)
-            print(f"Renamed: {old_path} → {new_path}")
+        with (
+            nullcontext() if dry_run else symbol_lock(new_path, directory_exclusive=True),
+            nullcontext() if dry_run else path_lock(old_path.with_suffix(".parquet.lock")),
+        ):
+            if new_path.exists():
+                raise RuntimeError(
+                    f"split-brain: both data.parquet and 1d.parquet exist in {old_path.parent}. "
+                    "Manual investigation required."
+                )
+            if dry_run:
+                print(f"[DRY RUN] Would rename: {old_path} → {new_path}")
+            else:
+                old_path.rename(new_path)
+                fsync_directory(new_path.parent)
+                print(f"Renamed: {old_path} → {new_path}")
             stats["renamed"] += 1
 
     return stats

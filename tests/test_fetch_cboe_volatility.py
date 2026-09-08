@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from livewire_scripts.fetch_cboe_volatility import (
     _symbol_id,
@@ -209,6 +210,34 @@ class TestWriteBronzeParquet:
         assert path.exists()
         read_table = _read_single_parquet(path)
         assert read_table.num_rows == 1
+
+    @pytest.mark.parametrize("existing_destination", [False, True])
+    def test_invalid_staged_parquet_is_not_published(self, tmp_path, monkeypatch, existing_destination):
+        path = tmp_path / "data-lake" / "bronze" / "asset_class=volatility" / "symbol=VXHYG" / "1d.parquet"
+        if existing_destination:
+            initial = bars_to_table(
+                "VXHYG",
+                [{"date": "2025-01-02", "open": "10", "high": "11", "low": "9", "close": "10.5", "volume": "0"}],
+            )
+            write_bronze_parquet(initial, "VXHYG", tmp_path)
+        previous = path.read_bytes() if existing_destination else None
+
+        def write_invalid(_table, staged, **_kwargs):
+            Path(staged).write_bytes(b"truncated parquet")
+
+        monkeypatch.setattr("clients.parquet_io.pq.write_table", write_invalid)
+        update = bars_to_table(
+            "VXHYG",
+            [{"date": "2025-01-03", "open": "11", "high": "12", "low": "10", "close": "11.5", "volume": "0"}],
+        )
+        with pytest.raises(pa.ArrowInvalid):
+            write_bronze_parquet(update, "VXHYG", tmp_path)
+
+        if existing_destination:
+            assert path.read_bytes() == previous
+        else:
+            assert not path.exists()
+        assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
 
     def test_merges_with_existing(self, tmp_path):
         """Merges new data with existing parquet file."""

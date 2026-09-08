@@ -382,10 +382,10 @@ class TestLaunchdTemplate:
         assert "/path/to/repo" not in text
 
 
-class TestBothRunnersTakeOneLock:
-    """CLAUDE.md rule 5, fix the twin: two lock files is the same as no lock."""
+class TestRunnersLeaveLockingToWriters:
+    """Scheduling independent lanes must not take a whole-lake lock."""
 
-    def test_the_daily_and_intraday_runners_lock_the_same_file(self, tmp_path, monkeypatch):
+    def test_daily_and_intraday_scheduling_does_not_create_a_global_lock(self, tmp_path, monkeypatch):
         import subprocess
 
         from livewire_scripts import run_daily_update_job as daily_runner
@@ -417,7 +417,7 @@ class TestBothRunnersTakeOneLock:
         )
         run_phase("daily_backfill_fred_rates", ["true"], tmp_path / "logs", runner=subprocess.run)
 
-        assert sorted((warehouse / "locks").iterdir()) == [warehouse / "locks" / "lake-io.lock"]
+        assert not (warehouse / "locks" / "lake-io.lock").exists()
 
     def test_the_lock_is_not_inside_the_lake(self, tmp_path, monkeypatch):
         from livewire_scripts.paths import data_lake_dir, lake_lock_path

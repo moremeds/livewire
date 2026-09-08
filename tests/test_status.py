@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import importlib
+import json
 import os
 import time
 from datetime import UTC, date, datetime, timedelta
@@ -122,6 +123,24 @@ def _measurement(name, scope, value, *, measured_at=NOW):
     )
 
 
+def _committed_silver(data_lake: Path, revision: int = 7) -> Path:
+    revisions = data_lake / "silver" / "revisions"
+    revisions.mkdir(parents=True)
+    payload = {
+        "schema_version": 1,
+        "revision": revision,
+        "generation_id": f"20260902T060000Z-{revision}",
+        "published_at": "2026-09-02T06:00:00Z",
+        "corporate_actions_as_of": "2026-09-02T05:00:00Z",
+        "affected": [],
+        "artifacts": [],
+    }
+    encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    (revisions / f"revision={revision}.json").write_bytes(encoded)
+    (revisions / "current.json").write_bytes(encoded)
+    return data_lake
+
+
 def _section(name, **kw):
     sections = status.collect(
         NOW.date(),
@@ -167,6 +186,107 @@ def test_catalog_build_reads_terminal_lane_before_run_closes(lane, outcome, verd
 
 def test_catalog_build_without_evidence_is_unknown():
     assert _section("Catalog build").verdict == Verdict.UNKNOWN
+
+
+def test_silver_publication_keeps_the_committed_revision_separate_from_a_failed_attempt(tmp_path):
+    lake = _committed_silver(tmp_path / "lake")
+    _lane("silver", outcome="failed", exit_code=1, blocker="RJF/1d validation")
+
+    section = status._silver_publication_section(lake)
+
+    assert section.verdict is Verdict.BAD
+    body = "\n".join(section.lines)
+    for field in ("Impact:", "Evidence:", "Last valid:", "Automatic handling:", "Next action:", "Clear condition:"):
+        assert field in body
+    assert "revision=7" in body and "latest rebuild attempt failed" in body and "Sustained incident: attempts=1" in body
+    assert "RJF/1d validation" in section.notification_key
+    assert "healthy subset may have advanced current.json" in body
+    assert "failed attempt did not replace" not in body
+    assert "artifact hashes were not checked by status" in body
+    assert "Attempt linkage: unknown" in body
+
+
+def test_silver_publication_done_is_a_commit_fact_not_a_reader_run(tmp_path):
+    lake = _committed_silver(tmp_path / "lake")
+    _lane("silver")
+
+    section = status._silver_publication_section(lake)
+
+    assert section.verdict is Verdict.OK
+    assert "not proof that a consumer has run on it" in "\n".join(section.lines)
+
+
+@pytest.mark.parametrize("latest_done", [False, True])
+def test_silver_incident_starts_after_previous_success(tmp_path, latest_done):
+    lake = _committed_silver(tmp_path / "lake")
+    for hours, outcome in [(5, "failed"), (4, "done"), (3, "failed"), (2, "failed")]:
+        when = NOW - timedelta(hours=hours)
+        _lane("silver", started=when, ended=when, outcome=outcome)
+    if latest_done:
+        _lane("silver", started=NOW, ended=NOW)
+    body = "\n".join(status._silver_publication_section(lake).lines)
+    assert ("2 prior non-success attempt(s)" if latest_done else "Sustained incident: attempts=2") in body
+    assert (NOW - timedelta(hours=5)).isoformat() not in body
+
+
+def test_silver_manifest_reference_does_not_claim_artifact_hash_validation(tmp_path):
+    lake = _committed_silver(tmp_path / "lake")
+    revisions = lake / "silver" / "revisions"
+    payload = json.loads((revisions / "current.json").read_text())
+    payload["artifacts"] = [
+        {"path": "generations/example/asset_class=equity/symbol=AAPL/1d.parquet", "sha256": "0" * 64}
+    ]
+    encoded = json.dumps(payload).encode()
+    (revisions / "current.json").write_bytes(encoded)
+    (revisions / "revision=7.json").write_bytes(encoded)
+    _lane("silver", outcome="failed", exit_code=1)
+    section = status._silver_publication_section(lake)
+    body = "\n".join(section.lines)
+    assert "Current manifest reference: revision=7" in body
+    assert "artifact hashes were not checked" in body
+    assert "data snapshot unknown" in body
+
+
+def test_silver_notification_tracks_measured_failure_scope_not_occurrence_count(tmp_path):
+    lake = _committed_silver(tmp_path / "lake")
+    _lane("silver", outcome="failed", exit_code=1)
+    _measurement("silver_failed", "silver", 2)
+    _measurement("silver_window_regressions", "silver", 1)
+    first = status._silver_publication_section(lake)
+    _lane("silver", outcome="failed", started=NOW + timedelta(seconds=1), ended=NOW + timedelta(seconds=2))
+    _measurement("silver_failed", "silver", 2, measured_at=NOW + timedelta(seconds=3))
+    _measurement("silver_window_regressions", "silver", 1, measured_at=NOW + timedelta(seconds=3))
+    same = status._silver_publication_section(lake)
+    assert same.notification_key == first.notification_key
+    _measurement("silver_failed", "silver", 20, measured_at=NOW + timedelta(seconds=4))
+    changed = status._silver_publication_section(lake)
+    assert changed.notification_key != first.notification_key
+    assert "silver_failed=20.0" in "\n".join(changed.lines)
+
+
+def test_generic_warning_identity_uses_scope_and_impact_not_run_chronology(monkeypatch):
+    rows = [
+        {
+            "verdict": "WARN",
+            "lane": "silver",
+            "blocker": "validation",
+            "failed_now": 2,
+            "run_id": "one",
+            "failed_sends": 1,
+        }
+    ]
+    monkeypatch.setattr(ledger, "query", lambda _sql: rows)
+    first = status.run_check("Example", "select 1", {})
+    rows[0].update(run_id="two", failed_sends=40, running_minutes=90, started=NOW, failed_before=10)
+    same = status.run_check("Example", "select 1", {})
+    assert same.notification_key == first.notification_key
+    rows[0]["lane"] = "equity"
+    scope_changed = status.run_check("Example", "select 1", {})
+    assert scope_changed.notification_key != first.notification_key
+    rows[0]["failed_now"] = 3
+    assert status.run_check("Example", "select 1", {}).notification_key != scope_changed.notification_key
+    for label in ("Impact:", "Evidence:", "Last valid:", "Automatic handling:", "Next action:", "Clear condition:"):
+        assert label in "\n".join(first.lines)
 
 
 def _seed_drift(name, scope, declared_value, measured_values, unit="s"):

@@ -1,0 +1,33 @@
+Local target ref: origin/master
+Merge base: 905cab6b562af1af87ad821e109e91f24958465e
+ scripts/check_silver_canary.py                     |   4 +-
+ src/api/routes/_chart_guards.py                    |  16 +--
+ src/api/routes/chart.py                            |   7 +-
+ src/api/routes/instruments.py                      |  33 +++--
+ .../adapters/livewire/ohlc_provider.py             |  62 ++++++--
+ src/infrastructure/adapters/livewire/revisions.py  | 121 ++++++++++++----
+ tests/integration/api/test_chart_routes.py         |  19 +++
+ tests/integration/api/test_instruments_routes.py   |  24 ++++
+ tests/support/silver_manifest.py                   | 158 +++++++++++++++++++++
+ tests/unit/api/test_health.py                      |   2 +
+ .../test_revision_watcher_manifest_swap.py         |  50 ++++---
+ .../infrastructure/livewire/test_ohlc_provider.py  |  16 ++-
+ .../unit/infrastructure/livewire/test_revisions.py |  87 ++++++++++--
+ .../unit/infrastructure/livewire/test_snapshots.py | 126 ++++++++++++++++
+ 14 files changed, 628 insertions(+), 97 deletions(-)
+
+Changed paths:
+M	scripts/check_silver_canary.py
+M	src/api/routes/_chart_guards.py
+M	src/api/routes/chart.py
+M	src/api/routes/instruments.py
+M	src/infrastructure/adapters/livewire/ohlc_provider.py
+M	src/infrastructure/adapters/livewire/revisions.py
+M	tests/integration/api/test_chart_routes.py
+M	tests/integration/api/test_instruments_routes.py
+A	tests/support/silver_manifest.py
+M	tests/unit/api/test_health.py
+M	tests/unit/application/subscriptions/test_revision_watcher_manifest_swap.py
+M	tests/unit/infrastructure/livewire/test_ohlc_provider.py
+M	tests/unit/infrastructure/livewire/test_revisions.py
+A	tests/unit/infrastructure/livewire/test_snapshots.py

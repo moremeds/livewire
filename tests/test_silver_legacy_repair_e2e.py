@@ -82,7 +82,9 @@ def test_mixed_symbol_is_repaired_then_published_clean(tmp_path):
     silver_root = tmp_path / "silver"
     rc = rebuild_silver.run(["--tickers", "NVDA"], data_lake_root=tmp_path, silver_root=silver_root)
     assert rc == 0
-    assert (silver_root / "asset_class=equity/symbol=NVDA/1d.parquet").exists()
+    from clients.silver_snapshot import SilverSnapshot
+
+    assert SilverSnapshot.pin(silver_root).files("1d", {"NVDA"})
 
 
 def test_quarantined_symbol_is_absent_from_published_manifest(tmp_path):
