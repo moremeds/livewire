@@ -39,9 +39,15 @@ def validate_and_fsync_raw_stage(stage: Path) -> None:
     A Parquet footer is insufficient: a bad page can remain unread until a
     future bucket scan. Every staged column is decoded before the success marker
     is made durable, so a failed candidate never replaces the last publication.
+
+    The staging directory lives on the exFAT lake volume, where macOS writes an
+    AppleDouble sidecar ``._x.parquet`` beside every ``x.parquet``. A sidecar is
+    not Parquet, so decoding one aborts the whole ingest. Readers glob
+    ``bucket=*.parquet``, which can never match a ``._`` name; this validator is
+    the one place that has to filter them out itself.
     """
     stage = Path(stage)
-    parquet_paths = sorted(stage.glob("*.parquet"))
+    parquet_paths = sorted(path for path in stage.glob("*.parquet") if not path.name.startswith("._"))
     if not parquet_paths:
         raise ValueError(f"{stage}: staged raw date has no parquet files")
     marker = stage / "_SUCCESS"
