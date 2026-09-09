@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The raw-date staging validator no longer decodes macOS AppleDouble
+  sidecars. The staging directory is created inside the raw root on the
+  exFAT lake, so `glob("*.parquet")` also matched `._bucket=000.parquet`,
+  and its missing Parquet footer aborted every Massive raw publication on
+  2026-09-09. A stage holding only sidecars still fails as having no
+  parquet files.
 - A Silver rebuild that produces a byte-identical manifest no longer crashes.
   The publisher dedupes an unchanged manifest by returning the current revision
   and writing nothing, which left the transaction's reservation unused and was

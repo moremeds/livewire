@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from clients.massive_raw_publication import raw_date_lock, validate_and_fsync_raw_stage
 
@@ -65,3 +66,32 @@ def test_stage_validation_decodes_all_files_and_syncs_marker_and_directory(tmp_p
 
     assert fsync.call_count == 3
     fsync_directory.assert_called_once_with(stage)
+
+
+def test_stage_validation_ignores_the_appledouble_sidecars_of_the_exfat_lake(tmp_path):
+    """A `._bucket=000.parquet` sidecar is skipped, not decoded.
+
+    The staging directory is created inside the raw root on the exFAT volume, so
+    macOS writes one AppleDouble sidecar per file. Readers glob
+    `bucket=*.parquet` and can never match a `._` name; the validator globbed
+    `*.parquet` and crashed the ingest on the sidecar's missing footer.
+    """
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    pq.write_table(pa.table({"ticker": ["AAPL"]}), stage / "bucket=000.parquet")
+    pq.write_table(pa.table({"ticker": ["AAPL"]}), stage / "_symbols.parquet")
+    (stage / "._bucket=000.parquet").write_bytes(b"\x00\x05\x16\x07" + b"\x00" * 4092)
+    (stage / "._symbols.parquet").write_bytes(b"\x00\x05\x16\x07" + b"\x00" * 4092)
+    (stage / "_SUCCESS").write_text("rows=1\n", encoding="utf-8")
+
+    validate_and_fsync_raw_stage(stage)
+
+
+def test_a_stage_holding_only_sidecars_still_has_no_parquet_files(tmp_path):
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "._bucket=000.parquet").write_bytes(b"\x00\x05\x16\x07" + b"\x00" * 4092)
+    (stage / "_SUCCESS").write_text("rows=0\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="no parquet files"):
+        validate_and_fsync_raw_stage(stage)
