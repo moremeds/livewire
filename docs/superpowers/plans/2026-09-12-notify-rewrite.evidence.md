@@ -1182,3 +1182,123 @@ $ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
   `_NOW` — main computes today itself and a `_NOW`-anchored tag (2026-08-06)
   is legitimately >14d old on the real clock and got deleted before the
   rotate could append (caught by the append test, fixed).
+
+## T15 — verification for T13/T14 (local V5 + mini M6/M7)
+
+Mini ground rules honored: only writable location was
+`V=/Users/moremeds/tmp/notify-verify-20260912T125640Z/` (created, deleted at
+the end — `~/tmp` re-verified clean); every invocation ran from `$V/src` (the
+rsync'd worktree copy, not `~/projects/livewire`, not `current/`); all env
+overrides were `LW_LEDGER_ROOT=$V/ledger MDW_LOG_DIR=$V/logs
+MDW_DATA_LAKE=$V/empty MDW_WAREHOUSE_DIR=$V` — the last also redirects the
+scheduled-env loader's warehouse `.env` lookup to absent `$V/.env`, so nothing
+could override the isolation (key names in `~/market-warehouse/.env` were
+listed first: no `MDW_DATA_LAKE`, `MDW_LOG_DIR`, or `LW_LEDGER_ROOT`; values
+never printed). No `launchctl load/unload/kickstart/bootstrap/bootout`; no
+running job was touched.
+
+### Precheck
+
+```text
+$ ssh macmini 'date -u ...; launchctl list | grep -i livewire; ps aux | grep -iE livewire'
+now 2026-09-12 12:55:49Z Saturday
+coverage 0 / watchdog 0 / daily-update 124 / intraday-catchup 0 /
+universe-refresh 0 / release-promote 0   (no livewire process running —
+intraday-catchup had finished at 12:55:17Z, 30s before the precheck)
+```
+
+### V5 (local)
+
+```text
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+2710 passed, 95.04%, exit 0          (the T14 gate — same committed tree)
+
+$ npm run test:alerts → pass 12, fail 0
+
+$ LW_LEDGER_ROOT=$V5/a/ledger MDW_DATA_LAKE=$V5/a/lake MDW_LOG_DIR=$V5/a/logs \
+    uv run python scripts/livewire_quality.py coverage --no-wait --no-recover \
+    --target-date 2026-04-06
+→ exit 0; ledger holds coverage_scan_ok=1 plus coverage_pct/total rows;
+  ZERO coverage_skipped rows.
+
+$ (seed open intraday-catchup run row started today into $V5/b/ledger)
+$ LW_COVERAGE_MAX_WAIT_S=0 LW_LEDGER_ROOT=$V5/b/ledger MDW_DATA_LAKE=$V5/b/lake \
+    MDW_LOG_DIR=$V5/b/logs uv run python scripts/livewire_quality.py coverage \
+    --no-recover --target-date 2026-04-06
+→ "coverage skipped: jobs_still_running:intraday-catchup", exit 0
+→ ledger query: exactly one {coverage_skipped, jobs_still_running:intraday-catchup, 1.0};
+  no coverage_scan_ok.
+```
+
+### M6 (mini — coverage gate against a real seeded ledger)
+
+```text
+$ cp -r ~/market-warehouse/data-lake/ledger/runs/date=2026-09-12 $V/ledger/runs/
+  (4 parquet files: entry+terminal rows for daily-update and intraday-catchup)
+
+$ cd $V/src && MDW_WAREHOUSE_DIR=$V LW_LEDGER_ROOT=$V/ledger MDW_LOG_DIR=$V/logs \
+    MDW_DATA_LAKE=$V/empty LW_COVERAGE_MAX_WAIT_S=0 \
+    ~/market-warehouse/.venv/bin/python scripts/livewire_quality.py coverage \
+    --no-recover --target-date 2026-04-06
+coverage gate open          ← the plan's second allowed outcome
+Coverage Report  target_date=2026-04-06
+2026-04-06 coverage: 1d=0/518 (0.00%) 1m=0/0 (UNKNOWN) ...
+M6_EXIT=0
+
+$ ledger query "select job, count(*), max(ended) from runs group by job"
+daily-update       2 rows, last_ended 2026-09-12 10:26:29Z  (the exit-124 run)
+intraday-catchup   2 rows, last_ended 2026-09-12 12:55:17Z
+
+$V/ledger then held coverage_scan_ok + coverage_pct/total — written ONLY to $V.
+```
+
+**Before/after proof:** `ls -la ~/market-warehouse/data-lake/ledger/measurements/`
+identical — 10 date partitions, `date=2026-09-12` at 75 entries / 19:19 mtime
+before and after.
+
+### M7 (mini — launchd log rotation, contained in $V)
+
+```text
+$ cp -p /tmp/com.livewire.*.log $V/launchd/    # -p preserves the real mtimes
+$ python scripts/livewire_ops.py housekeeping --log-dir $V --dry-run
+would rotate ...daily-update-watchdog.stderr.log -> ...stderr.2026-09-10.log
+would rotate ...daily-update-watchdog.stdout.log -> ...stdout.2026-09-10.log
+would rotate ...daily-update.stdout.log          -> ...stdout.2026-09-10.log
+would rotate ...intraday-catchup.stderr.log      -> ...stderr.2026-09-06.log
+would rotate ...intraday-catchup.stdout.log      -> ...stdout.2026-09-11.log
+would rotate ...release-promote.stdout.log       -> ...stdout.2026-09-10.log
+would rotate ...universe-refresh.stdout.log      -> ...stdout.2026-09-06.log
+0 item(s) would be deleted, 7 launchd log(s) would rotate
+
+$ python scripts/livewire_ops.py housekeeping --log-dir $V --apply
+7 rotated lines; "0 item(s) deleted, 7 launchd log(s) rotated, 0 failed"
+$V/launchd then held the 7 tagged names + the 4 untagged today's files
+(coverage.stdout/stderr, daily-update.stderr, release-promote.stderr —
+mtimes 2026-09-12 → correctly left live).
+```
+
+**Before/after proof:** `ls -la /tmp/com.livewire.*.log` identical — all 11
+files, same sizes and mtimes (rotation happened only inside `$V`).
+
+### Deviations
+
+1. `coverage` has no `--data-lake` flag (the dispatcher forwards argv to
+   `coverage_report`'s parser, which never had one) — the empty lake was
+   supplied via `MDW_DATA_LAKE=<dir>`, exactly what the flag would have meant.
+2. Today is Saturday 2026-09-12 — `_resolve_target_date` returns None for a
+   non-trading day before the gate is reached, so `--target-date 2026-04-06`
+   was passed in both V5 and M6 to exercise the gate.
+3. M7's first `cp` lost mtimes (copies read as "today", correctly planning
+   zero rotates); re-copied with `cp -p` — the rotate-by-mtime-date plan the
+   task describes requires preserved mtimes.
+4. `MDW_WAREHOUSE_DIR=$V` added on the mini: it makes `--apply` hermetic —
+   `release.prune` resolves `releases/` under it (absent → no-op) instead of
+   the real warehouse, and the scheduled-env loader reads absent `$V/.env`.
+
+### Teardown
+
+`rm -rf $V` on the mini — `~/tmp` re-verified: only the pre-existing
+`alert-sample/` (9 Sep) remains; `ls -d ~/tmp/notify-verify-*` → no match.
+Local `/tmp/lw-v5-*` removed. Nothing under `~/market-warehouse` was created,
+modified or deleted; no plist was loaded or touched; no running job existed
+or was interrupted.
