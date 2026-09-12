@@ -271,3 +271,22 @@ Required test coverage of 95% reached. Total coverage: 95.02%
 NOT a deleted-mjs test: notify.py has no caller until T3 adds the
 `livewire_ops.py notify` subcommand (plan ordering — T2 creates, T3 wires).
 No test skipped or deleted; reported per instruction.
+
+## T2 fix — failed dedup lookup never suppresses a send
+
+Reviewer-required change on top of 22a7962 (new commit, no amend).
+
+`send` wraps `already_sent` so any Exception prints
+`notify: dedup lookup failed: <exc>; sending` to stderr and proceeds —
+fail open. The recorded row carries `receipt_json.dedup_error`.
+
+```
+$ uv run pytest tests/test_notify.py -q
+exit 0
+9 passed in 0.42s   (new: test_a_failed_dedup_lookup_sends_and_records_dedup_error)
+```
+
+Test-authoring note: the first draft restored the patched `ledger.query` via
+`monkeypatch.undo()`, which also reverted conftest's shared-instance
+`LW_LEDGER_ROOT`/`MDW_LOG_DIR` env — the read-back then queried the real lake
+(0 rows). Fixed by re-setting the attribute to the saved original instead.

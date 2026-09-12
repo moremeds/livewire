@@ -92,6 +92,26 @@ def test_force_bypasses_dedup():
     assert all(json.loads(r["receipt_json"])["skipped"] is False for r in rows)
 
 
+def test_a_failed_dedup_lookup_sends_and_records_dedup_error(monkeypatch, capsys):
+    def boom(*args, **kwargs):
+        raise RuntimeError("ledger down")
+
+    original_query = notify.ledger.query
+    monkeypatch.setattr(notify.ledger, "query", boom)
+    runner, calls = _fake_runner([0])
+
+    assert notify.send(_notice(fp_keys=["dedup-fails"]), runner=runner) == 0
+    assert len(calls) == 1
+    assert "dedup lookup failed: ledger down; sending" in capsys.readouterr().err
+
+    monkeypatch.setattr(notify.ledger, "query", original_query)  # restore, then read the row back
+    rows = _rows()
+    assert len(rows) == 1
+    receipt = json.loads(rows[0]["receipt_json"])
+    assert receipt["dedup_error"] == "ledger down"
+    assert receipt["skipped"] is False
+
+
 def test_timeout_is_exit_1_with_error_in_receipt():
     runner, _ = _fake_runner([subprocess.TimeoutExpired(["node"], 120)])
     assert notify.send(_notice(fp_keys=["t"]), runner=runner) == 1

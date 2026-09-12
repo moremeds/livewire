@@ -150,18 +150,24 @@ def send(
     if notice.kind not in KINDS:
         raise ValueError(f"unknown notice kind {notice.kind!r}")
     started = datetime.now(UTC)
-    if not force and already_sent(notice.fingerprint):
-        print(f"notify: {notice.kind} {notice.fingerprint[:12]} already sent within 24h; skipped")
-        receipt = {
-            "kind": notice.kind,
-            "fingerprint": notice.fingerprint,
-            "subject": notice.subject,
-            "skipped": True,
-        }
-        if receipt_extra:
-            receipt.update(receipt_extra)
-        _record(notice, started, datetime.now(UTC), 0, receipt)
-        return 0
+    dedup_error = None
+    if not force:
+        try:
+            if already_sent(notice.fingerprint):
+                print(f"notify: {notice.kind} {notice.fingerprint[:12]} already sent within 24h; skipped")
+                receipt = {
+                    "kind": notice.kind,
+                    "fingerprint": notice.fingerprint,
+                    "subject": notice.subject,
+                    "skipped": True,
+                }
+                if receipt_extra:
+                    receipt.update(receipt_extra)
+                _record(notice, started, datetime.now(UTC), 0, receipt)
+                return 0
+        except Exception as exc:  # fail open: a dedup outage must never eat a page
+            dedup_error = str(exc)
+            print(f"notify: dedup lookup failed: {exc}; sending", file=sys.stderr)
 
     path = body_path or log_dir() / f"notify_{notice.kind}_{started:%Y%m%dT%H%M%SZ}.txt"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -188,6 +194,8 @@ def send(
     }
     if error:
         receipt["error"] = error
+    if dedup_error:
+        receipt["dedup_error"] = dedup_error
     if receipt_extra:
         receipt.update(receipt_extra)
     _record(notice, started, datetime.now(UTC), exit_code, receipt)
