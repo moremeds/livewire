@@ -323,6 +323,8 @@ Rename `"Post-success tail"` SQL `lane = 'digest'` → `lane = 'tail'`. Add `"Un
 - [ ] **Step 4:** PASS.
 - [ ] **Step 5: commit** `refactor(daily-update): page via notify; digest leaves the tail`
 
+**Amendment A1 (reviewer, 2026-09-12, after T3):** the twin path. `livewire_scripts/run_intraday_catchup_job.py` (scheduled intraday-catchup 10:00Z) pages through `job_runner_common.build_alert_command` → `send-alert`, which T3 removed. In this same task: its failure path builds `notify.page_for_lane(run_date, "intraday_catchup", exit_code, error_summary, log_tail)` and calls `notify.send`; delete `AlertRequest` and `build_alert_command` from `livewire_scripts/job_runner_common.py` and the local `build_alert_command` wrapper; update `tests/test_run_intraday_catchup_job.py` and `tests/test_job_runner_common.py` (`_KNOWN_INLINE_ALERT_BUILDERS`) accordingly.
+
 ### Task 7: watchdog = `collect()` → `page_from_sections` → `send`
 
 **Files:** rewrite `livewire_scripts/check_daily_update_watchdog.py`; tests `tests/test_check_daily_update_watchdog.py`.
@@ -390,7 +392,7 @@ STATUS (every check)
 - [ ] **Step 4:** PASS.
 - [ ] **Step 5: commit** `refactor(quality): flags are findings, not emails`
 
-### Task 10: why is the 1d denominator empty since 2026-09-09? (bounded diagnosis)
+**Amendment A2 (reviewer, 2026-09-12, after T3):** three more senders outside the two kinds, all deleted in this task, same commit: `livewire_scripts/health_check.py` `_send_alert` (interior-gap scan; not scheduled, `status` does not grade it), `livewire_scripts/data_quality_report.py` `_send_email` (old `--mode daily-summary`, superseded by the digest), `livewire_scripts/universe_screener.py` the additions/removals `send-alert` call (informational, not BAD). Each keeps its log/ledger output and loses only the subprocess; delete the corresponding tests and add one per module asserting no subprocess is spawned. Step 3's grep widens to `send-alert\|send_alert` → zero hits outside `docs/postmortems/` and this plan. why is the 1d denominator empty since 2026-09-09? (bounded diagnosis)
 
 **Files:** none until the cause is known; then the one file + one test.
 

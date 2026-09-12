@@ -332,3 +332,35 @@ and tests (`test_job_runner_common._KNOWN_INLINE_ALERT_BUILDERS`,
 `job_runner_common` appear in NO task's file map — flagging for reviewer: their
 send-alert argv now exits 2 at the argparse boundary (loud, not silent) if
 invoked, and V4's zero-hit grep cannot pass until they are handled.
+
+## T4 — status checks: today's truth, deadlines, per-scope UNKNOWN
+
+Plan file refreshed from main first: byte-identical, only diffs are the
+reviewer's Amendment A1 (after T6 step 5) and Amendment A2 (end of T9). NOTE for
+reviewer: in main's copy the A2 paragraph absorbed the `### Task 10:` heading —
+Task 10's title text trails the amendment paragraph and its body follows without
+a heading (line ~395). Cosmetic; content intact.
+
+`status.py`: `collect(..., now=None)` → `params["now"]`; seven rows
+replaced/added per plan SQL verbatim ("Daily update ran" 07:00 deadline,
+"Undelivered notifications" on script='notify', "Digest sent today" 12:45,
+"Coverage ran today" 12:00, per-scope "Coverage" with UNKNOWN(expected=0),
+"Coverage recovery" deferred-x2, "Stale non-equity"); "Post-success tail" reads
+lane='tail'; _EMPTY_IS_OK swaps "Undelivered alerts"→"Undelivered notifications"
++"Stale non-equity"; _FIXES rekeyed.
+
+Tests: 8 new (plan's list) + 3 replaced (send_alert/digest-lane/coverage-scan
+tests); `test_no_run_row_at_all_is_unknown_not_ok` now freezes now=05:30 —
+unfrozen it would depend on wall-clock vs the 07:00 deadline. Boundary note:
+plan text says "now=07:00Z → BAD" but its SQL is strict `>`; tested at 07:00:30.
+
+```
+$ uv run pytest tests/test_status.py -q   # pre-impl
+exit 1   10 failed, 92 passed (StopIteration on new names; TypeError now=)
+
+$ uv run pytest tests/test_status.py -q   # post-impl
+exit 0   102 passed
+
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+exit 0   2705 passed, 2 warnings   TOTAL coverage 95.02% (>=95)
+```
