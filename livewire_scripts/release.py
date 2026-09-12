@@ -132,11 +132,11 @@ def build_node_modules(dest: Path) -> None:
 
     `git archive` exports only tracked files and `node_modules/` is gitignored,
     so every release built since the artifact cutover shipped without
-    nodemailer. The failure alert is the one message a broken nightly run
+    nodemailer. The failure page is the one message a broken nightly run
     depends on, and it could not send:
 
         Cannot find package 'nodemailer' imported from
-          <release>/livewire_node/send_daily_update_failure_email.mjs
+          <release>/livewire_node/send_mail.mjs
 
     Must run before `freeze`, which makes the tree read-only.
 

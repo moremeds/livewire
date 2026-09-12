@@ -784,3 +784,262 @@ Deviations / readings:
    file map: both asserted deleted behavior (`--email`, flag-alert mail,
    completion-marker watchdog) and AGENTS.md itself requires project-memory
    updates when stable facts change.
+
+## T12 — verification: V1–V4 (local) + M1–M5 (mini)
+
+Mini ground rules honored: the only writable location was
+`V=/Users/moremeds/tmp/notify-verify-20260912T112704Z/` (created, deleted at
+M5); every notify/digest invocation ran with `LW_LEDGER_ROOT=$V/ledger
+MDW_LOG_DIR=$V/logs` and body files under `$V`; no `launchctl
+load/unload/kickstart/bootstrap/bootout`; nothing under `~/market-warehouse/`
+was created, modified or deleted (before/after listings below). No
+`MDW_ALERT_SMTP_*` value was ever printed — env key *names* only where noted.
+
+### Precheck — running jobs never interrupted
+
+```text
+$ ssh macmini 'date -u "+now %Y-%m-%d %H:%M:%SZ"; launchctl list | grep -i livewire;
+               ps aux | grep -iE "livewire|coverage" | grep -v grep | head -10'
+now 2026-09-12 11:26:49Z          (= Sat 19:26 HKT)
+-	0	com.livewire.coverage            (coverage 19:00 HKT run finished, exit 0)
+-	0	com.livewire.daily-update-watchdog
+-	124	com.livewire.daily-update        (today's run interrupted — the "Daily update ran" BAD below)
+99150	0	com.livewire.intraday-catchup  ← RUNNING (spawned 18:00 HKT; daily-backfill + flatfile-ingest children active)
+-	0	com.livewire.universe-refresh
+-	0	com.livewire.release-promote
+PRECHECK_EXIT=0
+```
+
+All T12 mini steps ran read-only beside the live intraday-catchup; nothing was
+interrupted.
+
+### Setup
+
+```text
+$ ssh macmini 'TS=$(date -u +%Y%m%dT%H%M%SZ); V=$HOME/tmp/notify-verify-$TS; mkdir -p $V/src $V/logs && echo V=$V'
+V=/Users/moremeds/tmp/notify-verify-20260912T112704Z
+$ rsync -a --exclude .git --exclude .venv --exclude node_modules --exclude .worktrees ./ macmini:$V/src/ && ssh macmini 'cd $V/src && npm ci --omit=dev'
+SETUP_EXIT=0   (nodemailer installed under $V/src/node_modules)
+```
+
+Code under test on the mini = the worktree copy at `$V/src` — not
+`~/projects/livewire`, not `current/`.
+
+### V1 — full pytest gate
+
+```text
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+2686 passed, 2 warnings
+TOTAL coverage: 95.06%
+exit 0
+```
+
+### V2 — node transport tests
+
+```text
+$ npm run test:alerts
+pass 12 / fail 0
+exit 0
+```
+
+### V3 — digest through stream transport, temp ledger
+
+```text
+$ MDW_ALERT_TRANSPORT=stream MDW_ALERT_EMAIL_FROM=a@b MDW_ALERT_EMAIL_TO=c@d \
+  LW_LEDGER_ROOT=$(mktemp -d) \
+  uv run python scripts/livewire_ops.py digest --run-date 2026-09-11 --email
+EXIT=0
+Livewire digest — 2026-09-11 (sent 11:24Z)
+COVERAGE as of UNKNOWN (no scan row)
+…
+{"script": "notify", "exit_code": 0, "s": "Digest 2026-09-11", "k": "digest"}   ← exactly one notify,0 row on the temp root
+```
+
+**Deviation (documented, not a defect):** the plan's "`Subject:` in stdout"
+lives in the *receipt*, not the outer stdout — `notify.send` captures the
+child's stream output into `receipt_json.node_stdout` rather than echoing it.
+M4's ledger row below shows the generated line verbatim:
+`Subject: [Livewire] PAGE 2026-09-12: Daily update ran; Coverage`. Outer
+stdout carries the digest body + the one-line `{"script":"notify",…}` receipt
+summary; the Subject is confirmed on the receipt.
+
+### V4 — removed names gone from live surfaces
+
+```text
+$ git grep -n -iE 'send.alert|alert_on_flag|MDW_ALERT_SEVERITY|MDW_ALERT_RATE_LIMIT|MDW_UNDELIVERED|send_daily_update_failure_email|send_digest_email|send_mail_daily' \
+    -- clients/ livewire_scripts/ scripts/ tests/ launchd/ livewire_node/ README.md CLAUDE.md AGENTS.md docs/runbook.md .env.example
+(exit 1 — zero hits)
+```
+
+One stale hit was found and fixed in this task: `livewire_scripts/release.py`'s
+`build_node_modules` docstring still named
+`send_daily_update_failure_email.mjs` → now `send_mail.mjs` (the "failure
+alert" phrase → "failure page"). That one-line docstring fix is the only
+non-evidence change in this commit — the "proven issue" the task allows.
+
+### M1 — real status through the new checks
+
+```text
+$ ssh macmini 'set -a; source ~/market-warehouse/.env; set +a;
+               source ~/market-warehouse/.venv/bin/activate; cd $V/src;
+               python scripts/livewire_ops.py status'
+exit 0 — real-ledger verdicts (installed release 4cffb2c predates notify, so
+         "Digest sent today" is UNKNOWN and "Undelivered notifications" OK):
+[BAD ] Daily update ran:      run_id=daily-update-20260912T050003Z-85116 (the exit-124 interruption)
+[BAD ] Coverage:              scopes=1d=UNKNOWN(expected=0) 1h=28.7% 1m=26.5% 30m=33.5% 5m=31.0%
+[?? ] Digest sent today:      not sent yet (no notify rows — correct)
+[OK ] Undelivered notifications: none
+[OK ] Coverage ran today:     measured_at=2026-09-12 11:18:33 (the 19:00 HKT run)
+[?? ] Intraday catch-up ran:  no rows — job still running (lane_results land at lane end)
+[WARN] Intraday catch-up finished: running_minutes=87
+```
+
+### M2 — body-only render; real lake untouched
+
+```text
+$ ssh macmini 'ls -la ~/market-warehouse/data-lake/ledger/executions/ | tail -3'   # BEFORE
+drwxr-xr-x@ 4  date=2026-09-10   10 Sep 17:17
+drwxr-xr-x@ 4  date=2026-09-11   11 Sep 17:15
+drwxr-xr-x@ 4  date=2026-09-12   12 Sep 18:26
+
+$ ssh macmini 'set -a; source .env; set +a; source .venv/bin/activate; cd $V/src;
+               LW_LEDGER_ROOT=$V/ledger MDW_LOG_DIR=$V/logs \
+               python scripts/livewire_ops.py digest --run-date 2026-09-12 --body-out $V/digest.txt'
+exit 0 — $V/digest.txt written; no send, no executions row.
+
+$ grep -c 'COVERAGE as of' $V/digest.txt
+1   →  line 3: "COVERAGE as of UNKNOWN (no scan row)"
+```
+
+`COVERAGE as of` count = exactly 1 as required. It reads UNKNOWN because the
+plan's own command points `LW_LEDGER_ROOT` at the empty temp root (the "no
+scan" fallback the plan anticipated); the `bronze_*`/`silver_*` freshness rows
+in the body come from the DuckDB-catalog check, a read-only lake probe.
+Confirmed the override holds: `livewire_ops.py digest` calls
+`load_scheduled_env`, which *overwrites* `os.environ` — env-key audit
+(`grep -oE '^[A-Z_]+=' ~/market-warehouse/.env`, names only) shows the file
+defines no `LW_LEDGER_ROOT`/`MDW_LOG_DIR`, so the command-line roots survived.
+
+```text
+$ ls -la ~/market-warehouse/data-lake/ledger/executions/ | tail -3               # AFTER — identical
+drwxr-xr-x@ 4  date=2026-09-10   10 Sep 17:17
+drwxr-xr-x@ 4  date=2026-09-11   11 Sep 17:15
+drwxr-xr-x@ 4  date=2026-09-12   12 Sep 18:26
+```
+
+### M3 — real SMTP send from the $V copy
+
+```text
+$ ssh macmini 'set -a; source ~/market-warehouse/.env; set +a;   # subshell only; no value ever printed
+               source ~/market-warehouse/.venv/bin/activate; cd $V/src;
+               LW_LEDGER_ROOT=$V/ledger MDW_LOG_DIR=$V/logs \
+               python scripts/livewire_ops.py notify --kind digest \
+                 --subject "VERIFY digest 2026-09-12 notify-rewrite T12" \
+                 --body-file $V/digest.txt --force'
+M3_SEND_EXIT=0   (outer stdout empty — same receipt-capture behavior as V3)
+```
+
+Delivered subject: `[Livewire] VERIFY digest 2026-09-12 notify-rewrite T12`
+(operator: look for that subject in the alert mailbox).
+
+Temp-ledger row (`select * from executions`, `$V/ledger`):
+
+```text
+{"script":"notify","attempt":1,"release_sha":"4cffb2c…","started":"2026-09-12 11:30:45.701134+00:00",
+ "ended":"2026-09-12 11:30:50.195825+00:00","exit_code":0,"run_id":"notify-20260912T113050Z-39448",
+ "receipt_json":{"kind":"digest","subject":"VERIFY digest 2026-09-12 notify-rewrite T12",
+   "fingerprint":"1168dbc5…","node_exit":0,"skipped":false,
+   "node_stdout":"{\"accepted\":[\"chenxi.li08@outlook.com\"],\"messageId\":\"<c1f10363-70dc-6a86-e17a-a142ce565237@gmail.com>\"}",
+   "body_file":"$V/logs/notify_digest_20260912T113045Z.txt"}}
+```
+
+Node stdout JSON (accepted/messageId) — the real SMTP proof:
+
+```text
+{"accepted":["chenxi.li08@outlook.com"],"messageId":"<c1f10363-70dc-6a86-e17a-a142ce565237@gmail.com>"}
+```
+
+Real `data-lake/ledger/executions/` listing after M3 — unchanged (tail still
+`date=2026-09-12` mtime `12 Sep 18:26`, the scheduled coverage run that
+predates this session).
+
+### M4 — page dedup against real status, temp ledger
+
+Real status had BAD sections ("Daily update ran", "Coverage"), so M4 was
+exercisable. Helper `$V/m4.py` (plan-required shape — grade real root, switch
+ledger root only for the send):
+
+```python
+import os, sys
+from datetime import date
+from livewire_scripts import notify, status
+from livewire_scripts.paths import data_lake_dir, log_dir
+
+today = date.today()
+sections = status.collect(today, log_dir(), data_lake_dir())   # REAL root — read-only
+notice = notify.page_from_sections(sections, today)
+if notice is None:
+    print("M4: no BAD sections today — page not exercisable"); sys.exit(0)
+os.environ["LW_LEDGER_ROOT"] = os.environ["M4_TEMP_LEDGER"]     # switch AFTER collect
+os.environ["MDW_LOG_DIR"]    = os.environ["M4_TEMP_LOGS"]
+print(f"M4 page subject: {notice.subject}")
+sys.exit(notify.send(notice))
+```
+
+(`ledger_root()` resolves `LW_LEDGER_ROOT` lazily per call — verified.)
+
+```text
+$ PYTHONPATH=$V/src M4_TEMP_LEDGER=$V/ledger M4_TEMP_LOGS=$V/logs \
+  MDW_ALERT_TRANSPORT=stream python $V/m4.py        # RUN 1
+M4 page subject: PAGE 2026-09-12: Daily update ran; Coverage
+M4_RUN1_EXIT=0
+
+$ … same command                                              # RUN 2
+M4 page subject: PAGE 2026-09-12: Daily update ran; Coverage
+notify: page b1f2e614969b already sent within 24h; skipped
+M4_RUN2_EXIT=0
+```
+
+Temp ledger afterwards — exactly the M4 contract (`select run_id, exit_code,
+receipt_json from executions where script='notify' order by started`):
+
+| run_id | kind | skipped | notes |
+|---|---|---|---|
+| notify-20260912T113050Z-39448 | digest | false | M3's real send (accepted/messageId above) |
+| notify-20260912T113119Z-42217 | page | **false** | node_exit=0; node_stdout = full stream message, `Subject: [Livewire] PAGE 2026-09-12: Daily update ran; Coverage` |
+| notify-20260912T113129Z-43292 | page | **true** | same fingerprint `b1f2e614969b…`; **no node fields at all** — send_mail.mjs never invoked on the dedup hit |
+
+First send `skipped=false`, repeat `skipped=true` — dedup proven end-to-end on
+the real grading.
+
+### M5 — teardown; final lake proof
+
+```text
+$ ssh macmini 'ls -la ~/market-warehouse/data-lake/ledger/executions/ | tail -4;   # FINAL — unchanged
+               rm -rf $V; ls $HOME/tmp/'
+drwxr-xr-x@ 4  date=2026-09-09    9 Sep 17:31
+drwxr-xr-x@ 4  date=2026-09-10   10 Sep 17:17
+drwxr-xr-x@ 4  date=2026-09-11   11 Sep 17:15
+drwxr-xr-x@ 4  date=2026-09-12   12 Sep 18:26
+RM_EXIT=0
+alert-sample          ← $HOME/tmp after teardown; $V gone, only pre-existing dir remains
+M5_EXIT=0
+```
+
+### Result
+
+| step | result |
+|---|---|
+| V1 | exit 0 — 2686 passed, coverage 95.06% |
+| V2 | exit 0 — 12 pass / 0 fail |
+| V3 | exit 0 — digest body + one `notify,0` row; `Subject:` verified in receipt (see deviation) |
+| V4 | clean — zero live hits; stale `release.py` docstring fixed in this commit |
+| M1 | exit 0 — real status graded; new sections live |
+| M2 | exit 0 — body rendered, `COVERAGE as of` ×1, executions dir identical |
+| M3 | exit 0 — real send `accepted/messageId`, row on temp root only |
+| M4 | exit 0 — `skipped=false` then `skipped=true`, dedup row pair proven |
+| M5 | exit 0 — `$V` removed, `~/tmp` clean, executions dir unchanged end-to-end |
+
+Deviations: V3/M3 outer-stdout subject capture (receipt-verified); V4 docstring
+fix; M2's "no scan row" is the empty-temp-root fallback the plan's own command
+produces. No substitutions — every step ran as written.
