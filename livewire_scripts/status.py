@@ -187,7 +187,7 @@ CHECKS: list[tuple[str, str]] = [
         "from executions where script = 'notify' and exit_code = 0 "
         "and json_extract_string(receipt_json,'$.kind') = 'digest' "
         "and date(started) = date '$today' "
-        "union all select case when timestamp '$now' > timestamp '$today 12:45:00' "
+        "union all select case when timestamp '$now' > timestamp '$today 20:00:00' "
         "then 'BAD' else 'UNKNOWN' end, null, 'not sent yet' "
         "where not exists (select 1 from executions where script = 'notify' and exit_code = 0 "
         "and json_extract_string(receipt_json,'$.kind') = 'digest' "
@@ -244,11 +244,21 @@ CHECKS: list[tuple[str, str]] = [
     ),
     (
         "Coverage ran today",
-        "select case when value = 1 then 'OK' else 'WARN' end as verdict, measured_at "
+        # A deliberate stand-down is a fact too: coverage_skipped reads UNKNOWN
+        # with its reason, and a later real scan supersedes it. With no fact at
+        # all, BAD only after 17:30Z — coverage starts 15:05Z and may wait on
+        # upstreams, so a no-row afternoon is pending, not absent.
+        "select case when value = 1 then 'OK' else 'WARN' end as verdict, measured_at, null as reason "
         "from measurements where name = 'coverage_scan_ok' and date(measured_at) = date '$today' "
-        "union all select case when timestamp '$now' > timestamp '$today 12:00:00' "
-        "then 'BAD' else 'UNKNOWN' end, null "
+        "union all select 'UNKNOWN', measured_at, scope as reason "
+        "from measurements where name = 'coverage_skipped' and date(measured_at) = date '$today' "
+        "and not exists (select 1 from measurements where name = 'coverage_scan_ok' "
+        "and date(measured_at) = date '$today') "
+        "union all select case when timestamp '$now' > timestamp '$today 17:30:00' "
+        "then 'BAD' else 'UNKNOWN' end, null, null "
         "where not exists (select 1 from measurements where name = 'coverage_scan_ok' "
+        "and date(measured_at) = date '$today') "
+        "and not exists (select 1 from measurements where name = 'coverage_skipped' "
         "and date(measured_at) = date '$today') "
         "order by measured_at desc nulls last limit 1",
     ),

@@ -10,7 +10,7 @@ import pytest
 
 from clients import ledger
 from livewire_scripts import nightly_digest, run_daily_update_job, status
-from livewire_scripts.nightly_digest import build_digest, main
+from livewire_scripts.nightly_digest import build_digest, main, wait_for_coverage_fact
 from livewire_scripts.status import Section, Verdict
 
 
@@ -33,6 +33,10 @@ def _isolated_ledger(tmp_path, monkeypatch):
             [], 0, stdout="".join(f"-\t0\t{label}\n" for label in status._LAUNCHD_JOBS), stderr=""
         ),
     )
+    # The send path waits on today's coverage fact (up to 4h real time);
+    # tests that exercise send/render stub the gate open and TestWaitForCoverageFact
+    # covers the wait itself.
+    monkeypatch.setattr(nightly_digest, "wait_for_coverage_fact", lambda *a, **k: True, raising=False)
 
 
 def _measurement(name, scope, value, *, measured_at):
@@ -242,3 +246,65 @@ def test_the_tail_lane_is_recorded_in_the_ledger(tmp_path, monkeypatch):
     assert ledger.query("select lane, outcome from lane_results where lane = 'tail'") == [
         {"lane": "tail", "outcome": "done"}
     ]
+
+
+class _Clock:
+    """Fake wall clock for the coverage-fact wait: now() reads it, sleep() advances it."""
+
+    def __init__(self, start: datetime):
+        self.t = start
+
+    def now(self) -> datetime:
+        return self.t
+
+    def sleep(self, seconds: float) -> None:
+        self.t += timedelta(seconds=seconds)
+
+
+class TestWaitForCoverageFact:
+    def test_digest_waits_for_todays_coverage_fact(self, tmp_path, monkeypatch):
+        """Polls until a coverage_scan_ok OR coverage_skipped row dated today exists."""
+        today = date.today()
+        clock = _Clock(datetime.now(UTC))
+        emitted = {"done": False}
+
+        def sleep_then_emit(seconds: float) -> None:
+            clock.sleep(seconds)
+            if not emitted["done"]:
+                _measurement("coverage_scan_ok", "all", 1, measured_at=clock.now())
+                emitted["done"] = True
+
+        assert wait_for_coverage_fact(today, poll_s=300, max_wait_s=3600, now_fn=clock.now, sleep_fn=sleep_then_emit)
+        assert emitted["done"]
+
+        # A skip row is also a fact — coverage deliberately stood down.
+        skipped_day = today - timedelta(days=1)
+        _measurement(
+            "coverage_skipped",
+            "session_not_due",
+            1,
+            measured_at=datetime.combine(skipped_day, datetime.min.time(), tzinfo=UTC) + timedelta(hours=21),
+        )
+        assert wait_for_coverage_fact(skipped_day, poll_s=300, max_wait_s=3600, now_fn=clock.now, sleep_fn=clock.sleep)
+
+    def test_wait_times_out_when_no_fact_lands(self, tmp_path, monkeypatch):
+        clock = _Clock(datetime.now(UTC))
+        assert not wait_for_coverage_fact(
+            date.today(), poll_s=300, max_wait_s=0, now_fn=clock.now, sleep_fn=clock.sleep
+        )
+
+    def test_digest_after_max_wait_sends_anyway_with_a_first_line_saying_coverage_did_not_finish(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(nightly_digest, "collect", lambda *a, **k: _sections(Verdict.OK))
+        monkeypatch.setattr(
+            nightly_digest,
+            "wait_for_coverage_fact",
+            lambda d: wait_for_coverage_fact(d, poll_s=0, max_wait_s=0),
+        )
+        bodies = []
+        monkeypatch.setattr(nightly_digest.notify, "send", lambda notice, **kw: bodies.append(notice.body) or 0)
+        assert main(["--run-date", date.today().isoformat(), "--email"]) == 0
+        assert len(bodies) == 1
+        assert bodies[0].startswith("COVERAGE DID NOT FINISH TODAY (waited 4h)")
+        assert "status below is as of" in bodies[0].splitlines()[0]

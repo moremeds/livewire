@@ -1043,3 +1043,82 @@ M5_EXIT=0
 Deviations: V3/M3 outer-stdout subject capture (receipt-verified); V4 docstring
 fix; M2's "no scan row" is the empty-temp-root fallback the plan's own command
 produces. No substitutions — every step ran as written.
+
+## T13 — coverage and digest wait for ledger facts, not the clock
+
+Plan sync first: the main checkout's plan (with the T13/T14/T15 sections added
+by the user) was copied over the worktree copy; `cmp` reported identical and
+`git diff` on the plan shows exactly the 61-line insertion before
+`## Self-review`.
+
+### FAIL first (before implementation)
+
+```text
+$ uv run pytest tests/test_coverage_report.py tests/test_nightly_digest.py \
+    tests/test_status.py tests/test_launchd_templates.py -q
+12 failed — ImportError/AttributeError on wait_for_upstream, wait_for_coverage_fact,
+coverage_skipped semantics, --no-wait, and the old 11:00/12:15 plist assertions.
+```
+
+### What landed
+
+- `clients/ledger.py`: `open_runs(jobs, day)` — job names among `jobs` with a
+  run started on `day` whose `run_id` group has `max(ended) is null` (a run
+  emits an entry row then a terminal row; same grouping status.py uses).
+- `coverage_report.py`: `UPSTREAM_JOBS = ("daily-update", "intraday-catchup")`,
+  `DEFAULT_MAX_WAIT_S = 6h` (`LW_COVERAGE_MAX_WAIT_S` overrides),
+  `wait_for_upstream(target, ...)` polls every 300s until no upstream run for
+  today is open AND `session_due_at(target)` has passed — one
+  `coverage waiting on <reason>` line per poll; on give-up returns the reason
+  (`jobs_still_running:<names>` or `session_not_due`). On timeout main emits
+  exactly one `coverage_skipped` measurement (scope=reason, boolean,
+  source='measured'), prints `coverage skipped: <reason>`, exits 0 — and emits
+  no `coverage_scan_ok`. `--no-wait` bypasses the gate for manual runs.
+- `nightly_digest.py`: `COVERAGE_FACT_WAIT_S = 4h`,
+  `wait_for_coverage_fact(run_date, ...)` polls for a `coverage_scan_ok` OR
+  `coverage_skipped` row dated today; only the `--email` path waits
+  (`--body-out` still renders instantly). On timeout the send proceeds anyway
+  with `COVERAGE DID NOT FINISH TODAY (waited 4h) — status below is as of
+  <UTC>` as the body's first line.
+- `status.py`: "Coverage ran today" deadline 12:00Z→17:30Z; a same-day
+  `coverage_skipped` row reads UNKNOWN with the reason in the detail lines,
+  superseded by a later `coverage_scan_ok`; the no-row fallback now excludes
+  skip rows so a skip cannot also read BAD. "Digest sent today" deadline
+  12:45Z→20:00Z.
+- `launchd`: coverage 19:00→23:05 HKT (=15:05Z, five minutes past the 15:00Z
+  `session_due_at` instant; the job itself still waits on facts) and digest
+  20:15→23:45 HKT (=15:45Z); header comments updated.
+- `docs/runbook.md`: coverage/digest sections document the gates,
+  `LW_COVERAGE_MAX_WAIT_S`, `--no-wait`, and the timeout banner; schedule
+  table 15:05/15:45Z; watchdog paragraph corrected (both passes now precede
+  coverage's gate).
+- `CLAUDE.md` (one line, deviation): architecture line updated to
+  coverage 15:05Z waits-on-facts / digest 15:45Z waits-≤4h — the plan's file
+  list did not name it, but the old claim was wrong on merge.
+
+### PASS
+
+```text
+$ uv run pytest tests/test_coverage_report.py tests/test_nightly_digest.py \
+    tests/test_status.py tests/test_launchd_templates.py tests/test_ledger.py -q
+249 passed
+
+$ uv run ruff check <touched files> && uv run ruff format <touched files>
+All checks passed; 3 test files reformatted (line-length only)
+
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+2697 passed, 95.07%, exit 0
+```
+
+### Readings taken
+
+- `wait_for_upstream` scopes `open_runs` to the *current* day (the day
+  coverage fires): it asks "is today's upstream work still writing?", not
+  "has any historical run closed" — a zombie entry row from a SIGKILLed
+  run (terminal row never written) must not block coverage forever.
+- `coverage_skipped` supersession is by query, not by deletion: the
+  measurements table is append-only, so status's SQL prefers a same-day
+  `coverage_scan_ok` over earlier skips.
+- `emit_coverage_skipped` reads `LW_RUN_ID` after main's `setdefault` — a
+  manual `--no-wait`-less run still gets a run id; emit failure logs and does
+  not abort (matches `emit_coverage_scan_measurement`).

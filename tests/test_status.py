@@ -472,8 +472,10 @@ def test_undelivered_notifications_reads_the_notify_script():
 
 
 def test_digest_sent_today_is_bad_after_its_deadline():
-    before = NOW.replace(hour=12, minute=10)
-    after = NOW.replace(hour=12, minute=50)
+    # The digest waits up to 4h for today's coverage fact from its 15:45Z start,
+    # so "sent" can legitimately land as late as ~19:45Z.
+    before = NOW.replace(hour=19, minute=50)
+    after = NOW.replace(hour=20, minute=5)
     assert _section("Digest sent today", now=before).verdict is Verdict.UNKNOWN
     assert _section("Digest sent today", now=after).verdict is Verdict.BAD
     _execution("notify", 1, receipt={"kind": "digest", "subject": "digest x"})
@@ -593,14 +595,31 @@ def test_coverage_a_zero_denominator_scope_is_unknown_not_one_hundred():
 
 
 def test_coverage_ran_today_is_bad_after_the_deadline():
-    before = NOW.replace(hour=11, minute=30)
-    after = NOW.replace(hour=12, minute=10)
+    # Coverage fires 15:05Z and may legitimately wait on upstream runs, so the
+    # BAD deadline is 17:30Z, not the old clock-time noon.
+    before = NOW.replace(hour=17, minute=0)
+    after = NOW.replace(hour=17, minute=40)
     assert _section("Coverage ran today", now=before).verdict is Verdict.UNKNOWN
     assert _section("Coverage ran today", now=after).verdict is Verdict.BAD
     _measurement("coverage_scan_ok", "all", 0)
     assert _section("Coverage ran today", now=after).verdict is Verdict.WARN
     _measurement("coverage_scan_ok", "all", 1, measured_at=NOW + timedelta(seconds=1))
     assert _section("Coverage ran today", now=after).verdict is Verdict.OK
+
+
+def test_coverage_skipped_reads_unknown_with_the_reason():
+    # A skip is a recorded decision, not a missed deadline: UNKNOWN, with the
+    # gate's reason string visible, even after the 17:30Z deadline.
+    _measurement("coverage_skipped", "jobs_still_running:intraday-catchup", 1)
+    section = _section("Coverage ran today", now=NOW.replace(hour=18, minute=0))
+    assert section.verdict is Verdict.UNKNOWN
+    assert "jobs_still_running:intraday-catchup" in "\n".join(section.lines)
+
+
+def test_a_scan_row_after_a_skip_supersedes_it():
+    _measurement("coverage_skipped", "session_not_due", 1)
+    _measurement("coverage_scan_ok", "all", 1, measured_at=NOW + timedelta(seconds=1))
+    assert _section("Coverage ran today", now=NOW.replace(hour=18, minute=0)).verdict is Verdict.OK
 
 
 def test_coverage_recovery_deferred_twice_is_bad():

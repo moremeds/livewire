@@ -16,7 +16,7 @@ it. Order across files by ``ended nulls first``, never by ``seq``.
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pyarrow as pa
@@ -181,3 +181,19 @@ def query(sql: str) -> list[dict]:
     from clients.duckdb_catalog import ledger_query
 
     return ledger_query(sql, root=ledger_root(), tables=LEDGER_TABLES)
+
+
+def open_runs(jobs: tuple[str, ...], day: date) -> list[str]:
+    """Job names among `jobs` that have a run started on `day` with ended IS NULL.
+
+    A run emits an entry row (``ended`` NULL) and later a terminal row, so a
+    run is open exactly when no row for its ``run_id`` has ``ended`` set —
+    the same ``max(ended) is null`` grouping status.py uses.
+    """
+    names = ", ".join(f"'{job}'" for job in jobs)
+    rows = query(
+        f"select job from runs where job in ({names}) "
+        f"and date(started) = date '{day.isoformat()}' "
+        "group by run_id, job having max(ended) is null"
+    )
+    return sorted({row["job"] for row in rows})

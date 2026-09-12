@@ -537,6 +537,73 @@ def emit_coverage_measurements(results: dict[str, CoverageResult], *, elapsed_s:
         log.error("could not write coverage measurements: %s", exc)
 
 
+# Coverage measures a finished world. A run while daily-update or
+# intraday-catchup is still ingesting reads a half-written lake (2026-09-12:
+# coverage fired at 11:00Z into an in-flight catch-up and measured 1m 26.5% of
+# a denominator still changing), and a session whose delivery allowance has
+# not elapsed has no honest denominator (T10's 1d 0/0). Both legs are ledger
+# facts, not clock guesses.
+UPSTREAM_JOBS = ("daily-update", "intraday-catchup")
+DEFAULT_MAX_WAIT_S = 6 * 3600
+
+
+def wait_for_upstream(
+    target_date: date,
+    *,
+    now_fn=None,
+    sleep_fn=time.sleep,
+    poll_s: int = 300,
+    max_wait_s: int = DEFAULT_MAX_WAIT_S,
+) -> str | None:
+    """Block until no UPSTREAM_JOBS run is open and session_due_at(target) passed.
+
+    Returns None when the gate opened, else the reason string
+    (``jobs_still_running:<names>`` or ``session_not_due``) after max_wait_s.
+    One console line per poll.
+    """
+    now_fn = now_fn or (lambda: datetime.now(UTC))
+    started = now_fn()
+    while True:
+        now = now_fn()
+        open_jobs = ledger.open_runs(UPSTREAM_JOBS, now.date())
+        reason = (
+            f"jobs_still_running:{','.join(open_jobs)}"
+            if open_jobs
+            else ("session_not_due" if session_due_at(target_date) > now else None)
+        )
+        if reason is None:
+            return None
+        elapsed = (now - started).total_seconds()
+        if elapsed >= max_wait_s:
+            return reason
+        console.print(f"coverage waiting on {reason} (elapsed {elapsed:.0f}s, cap {max_wait_s}s)")
+        sleep_fn(poll_s)
+
+
+def emit_coverage_skipped(reason: str) -> None:
+    """Publish that coverage deliberately stood down — status reads it UNKNOWN."""
+    now = datetime.now(UTC)
+    run = os.environ["LW_RUN_ID"]
+    try:
+        ledger.emit(
+            "measurements",
+            [
+                {
+                    "name": "coverage_skipped",
+                    "scope": reason,
+                    "measured_at": now,
+                    "value": 1.0,
+                    "unit": "boolean",
+                    "source": "measured",
+                    "run_id": run,
+                }
+            ],
+            run_id=run,
+        )
+    except Exception as exc:  # pragma: no cover - reporting must not abort coverage
+        log.error("could not write coverage_skipped measurement: %s", exc)
+
+
 def emit_coverage_scan_measurement(success: bool) -> None:
     """Publish whether the classifier half of coverage completed."""
     now = datetime.now(UTC)
@@ -1177,12 +1244,28 @@ def main() -> None:
         action="store_true",
         help="Run on a non-trading day (uses the previous trading day).",
     )
+    parser.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="Skip the upstream/session gate — manual runs only; the scheduled job waits.",
+    )
     args = parser.parse_args()
 
     target = _resolve_target_date(args.force, args.target_date)
     if target is None:
         console.print(f"[yellow]{date.today()} is not a trading day. Use --force or --target-date.[/yellow]")
         return
+
+    if not args.no_wait:
+        reason = wait_for_upstream(
+            target, max_wait_s=int(os.environ.get("LW_COVERAGE_MAX_WAIT_S") or DEFAULT_MAX_WAIT_S)
+        )
+        if reason is not None:
+            emit_coverage_skipped(reason)
+            console.print(f"coverage skipped: {reason}")
+            log.info("coverage skipped: %s", reason)
+            return
+        console.print("coverage gate open")
 
     console.print(f"\n[bold]Coverage Report[/bold]  target_date={target}")
     # One clock for the whole run. Established here and passed to every consumer

@@ -16,18 +16,20 @@
 
     <key>StartCalendarInterval</key>
     <dict>
-        <!-- Target: 12:15 UTC daily, ~1h after coverage (verified 11:00Z on the -->
-        <!-- mini, Task-0 evidence) so the digest always reports today's scan. -->
+        <!-- Target: 15:45 UTC daily — 40 minutes after coverage's 15:05Z -->
+        <!-- start. The digest itself waits up to 4h for today's coverage fact -->
+        <!-- (coverage_scan_ok or coverage_skipped), so this gap is a start -->
+        <!-- hint, not a dependency on coverage's runtime. -->
         <!-- launchd has no TimeZone key, so Hour/Minute are Mac-local: -->
-        <!--   America/Los_Angeles: Hour=5  Minute=15 (PDT) -->
-        <!--   America/New_York:    Hour=8  Minute=15 (EDT) -->
-        <!--   UTC:                 Hour=12 Minute=15 -->
-        <!--   Asia/Hong_Kong:      Hour=20 Minute=15 -->
+        <!--   America/Los_Angeles: Hour=8  Minute=45 (PDT) -->
+        <!--   America/New_York:    Hour=11 Minute=45 (EDT) -->
+        <!--   UTC:                 Hour=15 Minute=45 -->
+        <!--   Asia/Hong_Kong:      Hour=23 Minute=45 -->
         <!-- Defaults below assume Asia/Hong_Kong. -->
         <key>Hour</key>
-        <integer>20</integer>
+        <integer>23</integer>
         <key>Minute</key>
-        <integer>15</integer>
+        <integer>45</integer>
     </dict>
 
     <key>StandardOutPath</key>

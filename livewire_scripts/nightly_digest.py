@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -167,6 +168,44 @@ def _status_block(sections: list[Section]) -> str:
     return "\n".join(lines)
 
 
+# The digest's own coverage wait. Coverage starts 15:05Z and may wait on
+# upstream runs up to 6h; the digest waits up to 4h for either fact
+# (coverage_scan_ok or coverage_skipped) and then mails whatever exists —
+# unconditional means unconditional, so a timeout prepends a banner rather
+# than skipping the email.
+COVERAGE_FACT_WAIT_S = 4 * 3600
+
+
+def wait_for_coverage_fact(
+    run_date: date,
+    *,
+    poll_s: int = 300,
+    max_wait_s: int = COVERAGE_FACT_WAIT_S,
+    now_fn=None,
+    sleep_fn=time.sleep,
+) -> bool:
+    """Poll the ledger until a coverage fact dated *run_date* lands.
+
+    A fact is a ``coverage_scan_ok`` row (the scan ran) or a
+    ``coverage_skipped`` row (coverage deliberately stood down — also an
+    answer). Returns True when one exists, False after max_wait_s.
+    """
+    now_fn = now_fn or (lambda: datetime.now(UTC))
+    started = now_fn()
+    while True:
+        if ledger.query(
+            "select 1 as ok from measurements "
+            "where name in ('coverage_scan_ok', 'coverage_skipped') "
+            f"and date(measured_at) = date '{run_date.isoformat()}' limit 1"
+        ):
+            return True
+        now = now_fn()
+        if (now - started).total_seconds() >= max_wait_s:
+            return False
+        print(f"digest waiting on coverage fact for {run_date.isoformat()}")
+        sleep_fn(poll_s)
+
+
 def build_digest(
     run_date: date,
     sections: list[Section],
@@ -195,8 +234,14 @@ def main(argv=None, runner=None) -> int:
     parser.add_argument("--data-lake", type=Path, default=data_lake_dir())
     args = parser.parse_args(argv)
 
+    prefix = ""
+    if args.email and not wait_for_coverage_fact(args.run_date):
+        prefix = (
+            f"COVERAGE DID NOT FINISH TODAY (waited {COVERAGE_FACT_WAIT_S // 3600}h)"
+            f" — status below is as of {datetime.now(UTC):%Y-%m-%d %H:%M}Z\n\n"
+        )
     sections = collect(args.run_date, args.log_dir, args.data_lake)
-    body = build_digest(
+    body = prefix + build_digest(
         args.run_date,
         sections,
         previous_verdicts=_previous_verdicts(),

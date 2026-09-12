@@ -649,7 +649,7 @@ python scripts/livewire_store.py rollback-legacy-basis --output-dir <.../batch1>
 
 ## 7. Quality & observability
 
-### Coverage (own launchd job, 11:00 UTC)
+### Coverage (own launchd job, 15:05 UTC / 23:05 HKT)
 
 For each tracked timeframe (`1d`, `1m`, `1h`, `5m`, `30m`) it counts how many
 symbols in the active bronze universe for that timeframe have bars current as-of
@@ -658,12 +658,22 @@ present if it is current OR absent from the day's raw traded set (no-trade is no
 missing). Writes a one-line summary to
 `~/market-warehouse/logs/coverage_YYYY-MM-DD.log`.
 
+**The job waits for facts, not the clock.** Before scanning it blocks until (a) no
+`daily-update`/`intraday-catchup` run started today is still open in the ledger
+and (b) `session_due_at(target)` has passed — one `coverage waiting on …` line
+per 5-minute poll, capped at 6h (`LW_COVERAGE_MAX_WAIT_S` overrides, seconds).
+On give-up it emits one `coverage_skipped` measurement with the reason as scope,
+prints `coverage skipped: <reason>`, and exits 0 — status reads it UNKNOWN.
+`--no-wait` bypasses the gate for manual runs.
+
 ```bash
-python scripts/livewire_quality.py coverage                                # Today's coverage + auto-recovery
+python scripts/livewire_quality.py coverage                                # Today's coverage + auto-recovery (waits)
 python scripts/livewire_quality.py coverage --no-recover                   # Report only
+python scripts/livewire_quality.py coverage --no-wait                      # Manual run — skip the upstream/session gate
 python scripts/livewire_quality.py coverage --target-date 2026-04-06       # Specific trading day
 python scripts/livewire_quality.py coverage --threshold 0.99               # Stricter threshold
 python scripts/livewire_quality.py coverage --force                        # Run on a non-trading day
+LW_COVERAGE_MAX_WAIT_S=0 python scripts/livewire_quality.py coverage       # Gate gives up immediately (diagnosis)
 ```
 
 Gap-engine artifacts written by the same command:
@@ -764,17 +774,20 @@ sidecar and audit JSONL schemas are in
 ### Nightly digest
 
 ```bash
-python scripts/livewire_ops.py digest --email                          # unconditional send (the scheduled 12:15Z job)
+python scripts/livewire_ops.py digest --email                          # unconditional send (the scheduled 15:45Z job)
 python scripts/livewire_ops.py digest --run-date YYYY-MM-DD --email    # a specific day
 python scripts/livewire_ops.py digest --body-out /tmp/digest.txt       # render only; no send, no ledger row
 ```
 
-Runs from its own launchd job at 12:15 UTC, after coverage. It is
+Runs from its own launchd job at 15:45 UTC / 23:45 HKT, after coverage's start.
+The send path first waits up to 4h for today's coverage fact
+(`coverage_scan_ok` or `coverage_skipped` row dated today); on timeout it mails
+anyway with `COVERAGE DID NOT FINISH TODAY` as the body's first line. It is
 unconditional — no dedup — and renders today's ledger state: coverage as of the
 latest scan, what changed since yesterday's digest, every `notify` row sent in
-the last 24h, and the full `status` surface. `livewire_quality.py digest` is a
-compatibility alias and does **not** load the scheduled env — use the
-`livewire_ops.py` form for sends.
+the last 24h, and the full `status` surface. `--body-out` renders without
+waiting. `livewire_quality.py digest` is a compatibility alias and does **not**
+load the scheduled env — use the `livewire_ops.py` form for sends.
 
 ### Watchdog
 
@@ -783,7 +796,8 @@ python scripts/livewire_quality.py watchdog
 ```
 
 Runs at 10:30 and 12:00 UTC daily and pages only when a ledger-backed status
-check is BAD. The 12:00 pass grades coverage before the 12:15 digest.
+check is BAD. Both passes run before coverage's 15:05Z gate; an upstream job
+still open past 17:30Z turns "Coverage ran today" BAD on the next status read.
 
 ### Notices
 
@@ -960,16 +974,16 @@ conversion table to other Mac timezones.
 | `com.livewire.daily-update`          | 05:00 daily         | `livewire_ops.py run-daily-job`                                                             |
 | `com.livewire.intraday-catchup`      | 10:00 daily         | `livewire_ops.py run-intraday-catchup-job`                                                  |
 | `com.livewire.daily-update-watchdog` | 10:30 + 12:00 daily | `livewire_quality.py watchdog`                                                              |
-| `com.livewire.coverage`              | 11:00 daily         | `livewire_quality.py coverage` (also runs the windowed gap classifier)                      |
-| `com.livewire.digest`                | 12:15 daily         | `livewire_ops.py digest --email`                                                            |
+| `com.livewire.coverage`              | 15:05 daily         | `livewire_quality.py coverage` (waits on upstreams + session due, then runs the gap classifier) |
+| `com.livewire.digest`                | 15:45 daily         | `livewire_ops.py digest --email` (waits ≤4h for today's coverage fact)                     |
 | `com.livewire.universe-refresh`      | Sunday 13:00 weekly | `livewire_ingest.py universe-sync && livewire_ingest.py shepherd-universe` (reads the repo) |
 
 > The two lake writers are ordered by the code, not by these times: every lane
 > holds `<warehouse>/locks/lake-io.lock` while it runs, `daily-update` polls for
 > it every second and `intraday-catchup` every 60s. The times only set the
-> arrival order. `coverage` (11:00) overlaps `intraday-catchup` and does **not**
-> take the lock — it is untimed by design, so contention costs it wall-clock and
-> cannot fail it.
+> arrival order. `coverage` additionally waits for both writers' runs to close
+> before scanning — an open run or a not-yet-due session makes it poll (one
+> `coverage waiting on …` line per 5 minutes) rather than measure a half-state.
 
 `run-daily-job` syncs equities, futures and cmdty via IB, then all volatility
 indices via CBOE and DXY/FX via Yahoo+Massive, in a single invocation; pass

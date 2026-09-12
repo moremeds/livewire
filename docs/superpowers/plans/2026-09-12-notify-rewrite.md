@@ -451,6 +451,67 @@ Every command below runs as `ssh macmini 'set -a; source ~/market-warehouse/.env
 
 swe2 may run the O3/O4 `ledger query` and `status` commands read-only on the operator's request after O1/O2, and nothing else in this block.
 
+### Task 13: coverage and the digest wait for facts, not for the clock (added 2026-09-12 after T12)
+
+**Why:** 2026-09-12: daily-update timed out (124), intraday-catchup started 10:00Z and was still ingesting at 12:08Z, coverage fired at 11:00Z regardless and measured a half-state (1m 26.5%, denominator mid-change); the digest would have mailed it. The user's rule: _coverage runs only when every upstream process has finished; a number measured mid-run means nothing._ The same gate closes T10: the 1d target session is due at 15:00Z, so the gate also waits for `session_due_at`.
+
+**Files:** modify `livewire_scripts/coverage_report.py` (main, before the scan), `livewire_scripts/nightly_digest.py` (main, before `send`), `livewire_scripts/status.py` (two deadlines), `launchd/com.livewire.coverage.plist.example` (23:05 HKT), `launchd/com.livewire.digest.plist.example` (23:45 HKT), `docs/runbook.md`; tests `tests/test_coverage_report.py`, `tests/test_nightly_digest.py`, `tests/test_status.py`, `tests/test_launchd_templates.py`.
+
+**Interfaces (produces):**
+
+```python
+# clients/ledger.py — one query helper, no new table
+def open_runs(jobs: tuple[str, ...], day: date) -> list[str]:
+    """Job names among `jobs` that have a run started on `day` with ended IS NULL."""
+
+# livewire_scripts/coverage_report.py
+UPSTREAM_JOBS = ("daily-update", "intraday-catchup")
+def wait_for_upstream(target_date: date, *, now_fn=..., sleep_fn=time.sleep,
+                      poll_s: int = 300, max_wait_s: int = 6 * 3600) -> str | None:
+    """Block until (a) ledger.open_runs(UPSTREAM_JOBS, today) is empty and
+    (b) session_due_at(target_date) <= now. Returns None when the gate opened,
+    else the reason string ('jobs_still_running:intraday-catchup' or
+    'session_not_due') after max_wait_s. Logs one line per poll."""
+```
+
+- [ ] **Step 1: failing tests.** `test_wait_returns_none_when_no_open_runs_and_session_due`; `test_wait_polls_until_the_open_run_closes` (fake sleep, ledger rows change between polls); `test_wait_gives_up_after_max_wait_and_names_the_job`; `test_main_records_coverage_skipped_and_exits_0_when_the_gate_never_opens` (one `measurements(name='coverage_skipped', scope=<reason>, value=1)` row, no scan, no `coverage_scan_ok` row); `test_no_wait_flag_skips_the_gate`; digest: `test_digest_waits_for_todays_coverage_fact` (polls until a `coverage_scan_ok` OR `coverage_skipped` row dated today exists), `test_digest_after_max_wait_sends_anyway_with_a_first_line_saying_coverage_did_not_finish`; status: "Coverage ran today" BAD after **17:30Z** (23:05 HKT + 6h wait − margin), and reads `coverage_skipped` as `UNKNOWN` with the reason in the detail; "Digest sent today" BAD after **20:00Z**; launchd: coverage hour 23 minute 5, digest hour 23 minute 45, and `test_the_digest_fires_after_coverage` still passes.
+- [ ] **Step 2:** FAIL.
+- [ ] **Step 3:** implement. `coverage_report.main`: `--no-wait` flag (manual runs), otherwise `reason = wait_for_upstream(target_date)`; on a reason: `ledger.emit("measurements", [{name:"coverage_skipped", scope:reason, value:1.0, unit:"boolean", source:"measured", measured_at:now, run_id}])`, log `coverage skipped: <reason>`, return 0. `nightly_digest.main`: `wait_for_coverage_fact(run_date, poll_s=300, max_wait_s=4*3600)`; on timeout prepend the body with `COVERAGE DID NOT FINISH TODAY (waited 4h) — status below is as of <now>`. Plists: coverage `Hour 23 Minute 5`, digest `Hour 23 Minute 45`, both with a comment naming the due instant (15:00Z) and the wait cap. Runbook: the two waits, `--no-wait`, and the new times.
+- [ ] **Step 4:** PASS, full gate.
+- [ ] **Step 5: commit** `T13 feat(coverage): wait for upstream runs and the session due instant; digest waits for coverage`
+
+### Task 14: launchd stdout/stderr out of /tmp, date-tagged, 14-day retention (added 2026-09-12)
+
+**Why:** `/tmp/com.livewire.*.log` are launchd append files: never rotated (coverage stdout 1.2 MB / 21k lines on 2026-09-12), the 09-09 traceback sat in stderr for three days and was mistaken for a live failure, and macOS purges `/tmp` on its own schedule.
+
+**Files:** modify all 7 `launchd/*.plist.example` (`StandardOutPath`/`StandardErrorPath` → `/path/to/warehouse/logs/launchd/<label>.stdout.log` / `.stderr.log`), `livewire_scripts/housekeeping.py` (new `plan_launchd_logs`), `docs/runbook.md` (install section: `mkdir -p ~/market-warehouse/logs/launchd`); tests `tests/test_launchd_templates.py` (`test_every_template_logs_under_the_warehouse_not_tmp`), `tests/test_housekeeping.py`.
+
+**Interfaces (produces):**
+
+```python
+# livewire_scripts/housekeeping.py
+LAUNCHD_LOG_RETENTION_DAYS = 14
+def plan_launchd_logs(log_dir: Path, *, today: date, retention_days: int = LAUNCHD_LOG_RETENTION_DAYS) -> list[tuple[str, Path, Path | None]]:
+    """For every logs/launchd/<label>.<stream>.log with mtime date < today:
+    ('rotate', src, logs/launchd/<label>.<stream>.<mtime YYYY-MM-DD>.log).
+    For every already-tagged file older than retention_days: ('delete', path, None).
+    A file whose target name exists is appended to it, never overwritten."""
+```
+
+- [ ] **Step 1: failing tests.** `test_rotate_tags_by_mtime_date_and_leaves_todays_file_alone`; `test_rotate_appends_when_the_dated_target_exists`; `test_delete_only_tagged_files_older_than_retention` (a 13-day file stays, a 15-day one goes, an untagged live file is never deleted); `test_dry_run_moves_nothing`; `test_apply_rotates_then_deletes`; launchd: no template mentions `/tmp`.
+- [ ] **Step 2:** FAIL.
+- [ ] **Step 3:** implement. Rotation is `mv` (a still-running job keeps writing to the moved inode; launchd reopens the fixed path on its next launch — state this in a comment). Wire into `main` after the existing log-retention block, dry-run by default, `--apply` performs it; the nightly tail already runs `housekeeping --apply`.
+- [ ] **Step 4:** PASS, full gate.
+- [ ] **Step 5: commit** `T14 feat(housekeeping): rotate launchd logs by date, keep 14 days`
+
+### Task 15: verification for T13/T14 (local + mini, same rules as Task 12)
+
+- [ ] **V5 (local):** full gate + `npm run test:alerts`; `uv run python scripts/livewire_quality.py coverage --no-wait --no-recover --data-lake <tmp empty lake>` exits 0 and emits no `coverage_skipped`; with an open `intraday-catchup` run row in a temp ledger and `max_wait_s=0` it emits exactly one `coverage_skipped` row and no `coverage_scan_ok`.
+- [ ] **M6 (mini, read-only, temp ledger):** with `LW_LEDGER_ROOT=$V/ledger` seeded by copying **only** `data-lake/ledger/runs/date=<today>/` into `$V/ledger/runs/` (cp out of the lake is a read), run `python scripts/livewire_quality.py coverage --data-lake $V/empty --no-recover` from the `$V/src` copy with `LW_COVERAGE_MAX_WAIT_S=0` (add this env override in T13; document it) → paste the `coverage skipped: <reason>` line or, if no run is open, the gate-opened line; prove `ls -la data-lake/ledger/measurements/` before/after is identical.
+- [ ] **M7 (mini, read-only):** `cp /tmp/com.livewire.*.log $V/launchd/` then `python scripts/livewire_ops.py housekeeping --log-dir $V --dry-run` → the plan lists one `rotate` per file with the mtime date; then `--apply` inside `$V` only → `ls $V/launchd` shows the tagged names; `/tmp/com.livewire.*.log` untouched (`ls -la` before/after).
+- [ ] **O6 (operator):** after promote, `mkdir -p ~/market-warehouse/logs/launchd`, reinstall the 7 plists, confirm next night's files land there.
+- [ ] **commit** `T15 verification: T13/T14 local and mini`
+
 ## Self-review
 
 - Spec §3 coverage: watchdog as `collect()` caller ✔ (T7); digest renders `collect()` ✔ (T8, plus three ledger-only blocks); failed send = `executions` row ✔ (T2, extended to successes — deviation stated); coverage emits measurements not `coverage:` lines ✔ (existing + T5); marker file deviation stated ✔.

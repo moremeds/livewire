@@ -55,7 +55,7 @@ verified on the mini or it is not verified.
 - Silver = fully back-adjusted daily bars + factor intervals, derived from bronze equity and the corporate-action store — both Massive-backed. Bronze is read-only to it; IB is never an input.
 - DuckDB reads parquet in place; its only durable artifact is a small coverage table. It is never a second store.
 - Providers: equity daily IB → Massive fallback; equity intraday Massive flat files only; futures/cmdty daily and volatility intraday IB; CBOE vol indices CBOE API; rates FRED; fx/DXY Yahoo (+ Massive intraday).
-- Seven launchd jobs on the mini: daily-update 05:00Z → intraday-catchup 10:00Z → watchdog 10:30Z and 12:00Z → coverage 11:00Z (no timeout) → digest 12:15Z → release-promote; universe-refresh weekly, from the repo.
+- Seven launchd jobs on the mini: daily-update 05:00Z → intraday-catchup 10:00Z → watchdog 10:30Z and 12:00Z → coverage 15:05Z (waits on upstream runs + session_due_at, ≤6h; no timeout) → digest 15:45Z (waits ≤4h for the coverage fact) → release-promote; universe-refresh weekly, from the repo.
 - Apex is the consumer. Its adapter must pin one committed Silver manifest and resolve only its immutable artifact references; it must fail closed for a missing or corrupt reference. The producer-to-adapter boundary is in `docs/plans/2026-09-08-silver-atomic-publication.md`.
 
 ## The one contract

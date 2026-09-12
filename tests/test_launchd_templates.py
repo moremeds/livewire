@@ -96,14 +96,22 @@ def test_the_two_lake_writers_start_five_hours_apart():
 
 
 def test_the_digest_runs_after_coverage_and_the_watchdog_runs_twice():
-    """Coverage fires at 19:00 HKT (verified on the mini, T0 launchctl print —
-    the template now carries that hour); the digest's 20:15 must clear it by an
-    hour."""
-    payload = plistlib.loads((LAUNCHD_DIR / "com.livewire.digest.plist.example").read_bytes())
-    coverage_hour = plistlib.loads((LAUNCHD_DIR / "com.livewire.coverage.plist.example").read_bytes())[
+    """Coverage fires at 23:05 HKT — five minutes past the 15:00Z session-due
+    instant — and waits on upstream runs itself; the digest's 23:45 is a start
+    hint since it waits up to 4h for today's coverage fact. Both gates are in
+    the jobs now, so the ordering only needs to be strict, not an hour."""
+    digest_interval = plistlib.loads((LAUNCHD_DIR / "com.livewire.digest.plist.example").read_bytes())[
         "StartCalendarInterval"
-    ]["Hour"]
-    assert payload["StartCalendarInterval"]["Hour"] >= coverage_hour + 1
+    ]
+    coverage_interval = plistlib.loads((LAUNCHD_DIR / "com.livewire.coverage.plist.example").read_bytes())[
+        "StartCalendarInterval"
+    ]
+    assert (coverage_interval["Hour"], coverage_interval["Minute"]) == (23, 5)
+    assert (digest_interval["Hour"], digest_interval["Minute"]) == (23, 45)
+    assert (digest_interval["Hour"], digest_interval["Minute"]) > (
+        coverage_interval["Hour"],
+        coverage_interval["Minute"],
+    )
 
     watchdog = plistlib.loads((LAUNCHD_DIR / "com.livewire.daily-update-watchdog.plist.example").read_bytes())
     assert watchdog["StartCalendarInterval"] == [
