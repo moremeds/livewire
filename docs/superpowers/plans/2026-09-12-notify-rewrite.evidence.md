@@ -222,3 +222,52 @@ exit 0
 ℹ fail 0
 ✔ the CLI runs when invoked through a symlinked dir and a relative path
 ```
+
+## T2 — notify.py: render, dedup, send, record
+
+All commands in `.worktrees/notify-rewrite`; conftest autouse already points
+`LW_LEDGER_ROOT` and `MDW_LOG_DIR` at tmp_path for every test.
+
+### Step 1/2 — failing tests, then FAIL
+
+```
+$ uv run pytest tests/test_notify.py -q
+exit 2
+ImportError: cannot import name 'notify' from 'livewire_scripts'
+```
+
+### Step 3/4 — implement, PASS
+
+`livewire_scripts/notify.py`: Notice dataclass, `node_bin()`
+(MDW_NODE_BIN → which → /opt/homebrew/bin/node — the T0-verified chain),
+`fingerprint`, `already_sent`, `sent_within`, `page_from_sections` (None when no
+BAD; fp over sorted notification_key|name:verdict keys), `page_for_lane`
+(fp keys = [LW_RUN_ID, lane]), `send` — dedup skip emits its own row with
+skipped=true, body lands in log_dir as notify_<kind>_<utc>.txt (or --body-path),
+node runs in its own process group via process_group_guard, Timeout/OSError →
+exit 1 + receipt_json.error, every row evidence_hash=sha256(body),
+release_sha=readlink(warehouse/current) or None, ledger emit wrapped in
+try→stderr. Subjects are passed WITHOUT "[Livewire] " — the prefix is
+send_mail.mjs's subjectPrefix job (plan parenthetical).
+
+```
+$ uv run pytest tests/test_notify.py -q
+exit 0
+........                                       [100%]
+8 passed in 7.82s
+```
+
+### Full gate
+
+```
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+exit 1
+FAILED tests/test_no_dead_modules.py::test_no_module_is_unreachable_from_the_entrypoints
+  unreachable == ['livewire_scripts.notify']
+Required test coverage of 95% reached. Total coverage: 95.02%
+2697 passed, 1 failed
+```
+
+NOT a deleted-mjs test: notify.py has no caller until T3 adds the
+`livewire_ops.py notify` subcommand (plan ordering — T2 creates, T3 wires).
+No test skipped or deleted; reported per instruction.
