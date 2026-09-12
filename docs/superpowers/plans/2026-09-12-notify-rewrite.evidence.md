@@ -472,3 +472,67 @@ What changed:
 - External callers verified unaffected: `livewire_quality.py` command table and `test_livewire_entrypoints.py:648` only reference the module + `--run-date` argv.
 
 Deviations: none beyond the test file adding two extra tests (UNKNOWN/WARN no-page and the main() dispatch) — both within the task's own files.
+
+## T8 — unconditional daily digest after coverage; own launchd job
+
+Focused FAIL first: `module 'livewire_scripts.nightly_digest' has no attribute '_coverage_rows'`
+(old build_digest signature + fingerprint/lock internals) → PASS after rewrite.
+
+```
+uv run pytest tests/test_nightly_digest.py tests/test_launchd_templates.py -q
+→ 38 passed in 0.41s  (exit 0)
+```
+
+Full gate:
+
+```
+uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+→ 2698 passed, 2 warnings in 43.81s  (exit 0)   TOTAL coverage 95.08%
+```
+
+What changed:
+
+- `nightly_digest.py` rewritten (~225 lines): pure `build_digest(run_date, sections, *,
+  previous_verdicts, coverage_rows, sent_rows, now=None)` renders four blocks —
+  COVERAGE (per-scope pct/total with prev from the second-latest row, deferred-streak
+  xN, still_missing, non-equity stale+session line), CHANGED (verdict diff vs the
+  previous digest row's receipt_json.verdicts, "(new)" for unseen checks), SENT
+  (notify.sent_within(24), skipped rows marked), STATUS (every check, same glyph/fix
+  rules as render()). `main`: `--run-date`, `--email`, `--body-out PATH` (renders from
+  the ledger, writes the file, no send and no ledger write). Send path is
+  `notify.send(force=True, receipt_extra={"verdicts": {name: verdict}})` with
+  fingerprint("digest", [run_date]). Deleted: `_warning_fingerprint`,
+  `_last_delivered_fingerprint`, `_record_delivery`, `path_lock`, `_run_email_child`,
+  `_send_email`, `--force-email`, the send_daily_update_failure_email.mjs argv.
+- `livewire_ops.py`: `"digest"` added to COMMANDS (module is `nightly_digest`) and to
+  the load_scheduled_env set — the plist starts cold and needs the SMTP env.
+  `livewire_quality.py digest` mapping kept for compatibility.
+- `launchd/com.livewire.digest.plist.example` created: `livewire_ops.py digest --email`,
+  20:15 HKT = 12:15Z (≥1h after coverage's verified 19:00 HKT; T0 launchctl print).
+- `launchd/com.livewire.daily-update-watchdog.plist.example`: StartCalendarInterval
+  is now an array of two dicts, 18:30 + 20:00 HKT (10:30Z + 12:00Z); the second pass
+  pages a coverage-degraded status 15 min before the digest reports it.
+- `test_launchd_templates.py`: `"com.livewire.digest"` in JOB_TEMPLATES; new
+  `test_the_digest_runs_after_coverage_and_the_watchdog_runs_twice` asserts digest
+  Hour ≥ verified-coverage-hour 19 + 1 and watchdog has exactly the two intervals.
+- `test_nightly_digest.py` rewritten (14 tests): the plan's six plus body-out,
+  verdicts-in-receipt, previous-verdicts-from-last-row, sent-block, failed-send
+  exit code, default-date; `test_the_tail_lane_is_recorded_in_the_ledger` kept.
+
+Deviations / readings:
+
+1. The body-example non-equity line (`cmdty 1/1@09-12`) is not renderable from the
+   plan's listed queries: T5 emits only `stale_non_equity` counts per class — no
+   per-class totals exist in the ledger. Rendered as `<class> missing=<n>@<MM-DD>`
+   (session from `last_session`, lane scope ↔ class via `{"volatility":"cboe",
+   "corporate_action":"corporate-actions"}`). Similarly `x/y` per equity scope is
+   `total−still_missing/total` when a still_missing row exists, else `n total`.
+   `recovery=deferred xN` counts the latest-two rows (max x2 — the plan only lists
+   "latest two" per scope).
+2. `build_digest` gained a keyword-only `now` param for the "(sent HH:MMZ)" header;
+   pure otherwise. `test_the_digest_runs_after_coverage` compares against the
+   T0-verified production hour (19), NOT the coverage template — the template's
+   23:30 HKT is stale vs the loaded 19:00 plist; flagged, not fixed (outside T8's
+   file map).
+3. Old dedup machinery (fingerprint/lock/force-email) deleted per plan; the digest
+   is now unconditional and concurrency safety is inherited from notify's append.

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.livewire.digest</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <!-- Replace /path/to/warehouse with your actual warehouse path. Runs the
+             immutable release `current` points at, not the dev checkout. -->
+        <string>cd /path/to/warehouse/current &amp;&amp; .venv/bin/python scripts/livewire_ops.py digest --email</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <!-- Target: 12:15 UTC daily, ~1h after coverage (verified 11:00Z on the -->
+        <!-- mini, Task-0 evidence) so the digest always reports today's scan. -->
+        <!-- launchd has no TimeZone key, so Hour/Minute are Mac-local: -->
+        <!--   America/Los_Angeles: Hour=5  Minute=15 (PDT) -->
+        <!--   America/New_York:    Hour=8  Minute=15 (EDT) -->
+        <!--   UTC:                 Hour=12 Minute=15 -->
+        <!--   Asia/Hong_Kong:      Hour=20 Minute=15 -->
+        <!-- Defaults below assume Asia/Hong_Kong. -->
+        <key>Hour</key>
+        <integer>20</integer>
+        <key>Minute</key>
+        <integer>15</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/com.livewire.digest.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/com.livewire.digest.stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- /opt/homebrew/bin is load-bearing: the digest sends through the
+             Nodemailer CLI. Without it launchd's minimal PATH cannot find
+             `node` and the send dies. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

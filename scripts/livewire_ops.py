@@ -26,6 +26,7 @@ COMMANDS = {
     "housekeeping": "livewire_scripts.housekeeping",
     "ledger": "livewire_scripts.ledger_cli",
     "status": "livewire_scripts.status",
+    "digest": "livewire_scripts.nightly_digest",
 }
 
 
@@ -76,7 +77,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "notify":
         return _dispatch_notify(rest)
-    if args.command in {"run-daily-job", "run-intraday-catchup-job"}:
+    if args.command in {"run-daily-job", "run-intraday-catchup-job", "digest"}:
         load_scheduled_env(REPO_ROOT)
     return _dispatch_module(COMMANDS[args.command], rest, f"livewire_ops.py {args.command}")
 

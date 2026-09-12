@@ -24,6 +24,7 @@ JOB_TEMPLATES = (
     "com.livewire.daily-update-watchdog",
     "com.livewire.intraday-catchup",
     "com.livewire.coverage",
+    "com.livewire.digest",
 )
 REPO_TEMPLATES = ("com.livewire.release-promote", "com.livewire.universe-refresh")
 ALL_TEMPLATES = (*JOB_TEMPLATES, *REPO_TEMPLATES)
@@ -92,3 +93,17 @@ def test_the_two_lake_writers_start_five_hours_apart():
     assert _hour("com.livewire.daily-update") == 13
     assert _hour("com.livewire.intraday-catchup") == 18
     assert _hour("com.livewire.intraday-catchup") - _hour("com.livewire.daily-update") == 5
+
+
+def test_the_digest_runs_after_coverage_and_the_watchdog_runs_twice():
+    """Coverage is verified on the mini at 19:00 HKT (T0 launchctl print); the
+    digest's 20:15 must clear it by an hour. The repo's coverage template still
+    shows a stale 23:30 — the comparison is against the verified 19, not it."""
+    payload = plistlib.loads((LAUNCHD_DIR / "com.livewire.digest.plist.example").read_bytes())
+    assert payload["StartCalendarInterval"]["Hour"] >= 19 + 1
+
+    watchdog = plistlib.loads((LAUNCHD_DIR / "com.livewire.daily-update-watchdog.plist.example").read_bytes())
+    assert watchdog["StartCalendarInterval"] == [
+        {"Hour": 18, "Minute": 30},
+        {"Hour": 20, "Minute": 0},
+    ]

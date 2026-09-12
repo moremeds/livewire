@@ -1,35 +1,26 @@
-"""Tests for livewire_scripts.nightly_digest."""
+"""Tests for livewire_scripts.nightly_digest — the unconditional daily digest."""
 
 from __future__ import annotations
 
 import json
-import subprocess
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
-from datetime import UTC, date, datetime
-from pathlib import Path
+from datetime import UTC, date, datetime, timedelta
 from subprocess import CompletedProcess
 
 import pytest
 
 from clients import ledger
 from livewire_scripts import nightly_digest, run_daily_update_job, status
-from livewire_scripts.nightly_digest import main
+from livewire_scripts.nightly_digest import build_digest, main
 from livewire_scripts.status import Section, Verdict
 
 
 @pytest.fixture(autouse=True)
-def _no_real_launchctl(tmp_path, monkeypatch):
-    """build_digest reaches collect(), which shells out to launchctl AND opens
-    the operator's real analytics.duckdb.
-
-    Every digest assertion here would otherwise depend on which plists happen
-    to be loaded on the machine running the test — green on this Mac, a
-    different verdict on CI, and an unmocked subprocess either way.
-    """
+def _isolated_ledger(tmp_path, monkeypatch):
+    """collect() reaches launchctl and the real analytics.duckdb; nothing here
+    may depend on which plists are loaded on the machine running the test."""
     monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
-    monkeypatch.setenv("LW_RUN_ID", "daily-update-test")
+    monkeypatch.setenv("LW_RUN_ID", "digest-test")
+    monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
     monkeypatch.setattr(
         status,
         "_coverage_headline",
@@ -44,231 +35,194 @@ def _no_real_launchctl(tmp_path, monkeypatch):
     )
 
 
-def _body_file_from_cmd(cmd) -> Path:
-    return Path(cmd[cmd.index("--body-file") + 1])
-
-
-def test_disk_tripwire_warns_under_reserve(tmp_path, monkeypatch):
-    """The reserve is read at call time, so the override bites without a reload.
-
-    150 GiB free is far above the declared 25 GiB reserve; only an override
-    read after this module was imported can turn it into a warning.
-    """
-    monkeypatch.setenv("LW_DECLARED_FLATFILE_MIN_FREE_GB", "100")
-
-    from livewire_scripts import nightly_digest
-
-    class _Usage:
-        total = 400 * (1024**3)
-        used = 250 * (1024**3)
-        free = 150 * (1024**3)  # 150 GiB < 2*100, but well over 2*25
-
-    monkeypatch.setattr(nightly_digest.shutil, "disk_usage", lambda p: _Usage())
-    out = nightly_digest.build_digest(date(2026, 7, 2), tmp_path / "logs", tmp_path)
-    assert "⚠" in out and "raw retention deferred" in out
-
-    monkeypatch.delenv("LW_DECLARED_FLATFILE_MIN_FREE_GB")
-    assert "raw retention deferred" not in nightly_digest.build_digest(date(2026, 7, 2), tmp_path / "logs", tmp_path)
-
-
-def test_main_prints_and_no_email_by_default(tmp_path, capsys):
-    rc = main(["--run-date", "2026-07-02", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path)])
-    assert rc == 0
-    assert "Livewire nightly digest" in capsys.readouterr().out
-
-
-def test_default_run_date_is_utc(tmp_path, capsys, monkeypatch):
-    from livewire_scripts import nightly_digest
-
-    class FrozenDateTime:
-        @classmethod
-        def now(cls, tz=None):
-            if tz is UTC:
-                return datetime(2026, 4, 6, 1, 0, tzinfo=UTC)
-            return datetime(2026, 4, 5, 18, 0)
-
-    monkeypatch.setattr(nightly_digest, "datetime", FrozenDateTime, raising=False)
-
-    rc = nightly_digest.main(["--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path)])
-
-    assert rc == 0
-    assert "Livewire nightly digest — 2026-04-06" in capsys.readouterr().out
-
-
-def test_main_email_invokes_node_script(tmp_path, monkeypatch):
-    monkeypatch.setenv("MDW_NODE_BIN", "node")
-    calls = []
-
-    def fake_runner(cmd, **kwargs):
-        calls.append(cmd)
-        return CompletedProcess(args=cmd, returncode=0)
-
-    log_dir = tmp_path / "logs"
-    rc = main(
-        ["--run-date", "2026-07-02", "--email", "--log-dir", str(log_dir), "--data-lake", str(tmp_path)],
-        runner=fake_runner,
-    )
-    assert rc == 0
-    assert len(calls) == 1
-    cmd = calls[0]
-    assert "--mode" in cmd and "digest" in cmd
-    assert "--body-file" in cmd
-    body_file = _body_file_from_cmd(cmd)
-    assert body_file.parent == log_dir
-    assert body_file.exists()
-    assert "Livewire nightly digest" in body_file.read_text(encoding="utf-8")
-    assert list(log_dir.glob("*.marker")) == []
-    receipt = ledger.query("select receipt_json from executions where script = 'nightly_digest'")
-    assert json.loads(receipt[0]["receipt_json"])["delivery"] == "accepted"
-
-
-def test_unchanged_warning_state_does_not_send_a_second_scheduled_email(tmp_path, monkeypatch):
-    monkeypatch.setenv("MDW_NODE_BIN", "node")
-    calls = []
-
-    def fake_runner(cmd, **kwargs):
-        calls.append(cmd)
-        return CompletedProcess(args=cmd, returncode=0)
-
-    args = ["--run-date", "2026-07-02", "--email", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path)]
-    assert main(args, runner=fake_runner) == 0
-    assert main(args, runner=fake_runner) == 0
-
-    assert len(calls) == 1
-
-
-def test_concurrent_digest_sends_are_serialized_by_delivery_receipt(tmp_path, monkeypatch):
-    original_lock = nightly_digest.path_lock
-    second_attempt = threading.Event()
-    counter_lock = threading.Lock()
-    attempts = 0
-    calls = []
-    monkeypatch.setattr(nightly_digest, "collect", lambda *_args: [Section("Test", Verdict.WARN)])
-
-    @contextmanager
-    def observed_lock(path):
-        nonlocal attempts
-        with counter_lock:
-            attempts += 1
-            if attempts == 2:
-                second_attempt.set()
-        with original_lock(path) as held:
-            yield held
-
-    monkeypatch.setattr(nightly_digest, "path_lock", observed_lock)
-
-    def send(cmd, **kwargs):
-        calls.append(cmd)
-        assert second_attempt.wait(5), "second invocation never reached the delivery lock"
-        return CompletedProcess(cmd, 0)
-
-    args = ["--email", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path)]
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(main, args, send) for _ in range(2)]
-        assert [future.result(timeout=10) for future in futures] == [0, 0]
-    assert len(calls) == 1
-    assert len(ledger.query("select receipt_json from executions where script = 'nightly_digest'")) == 1
-
-
-def test_changed_scope_with_same_verdict_sends_a_new_notification(tmp_path, monkeypatch):
-    state = [{"verdict": "WARN", "lane": "silver", "failed_now": 1}]
-    monkeypatch.setattr(
-        nightly_digest,
-        "collect",
-        lambda *_args: [
-            Section("Example", Verdict.WARN, notification_key=status._notification_key("Example", Verdict.WARN, state))
+def _measurement(name, scope, value, *, measured_at):
+    ledger.emit(
+        "measurements",
+        [
+            {
+                "name": name,
+                "scope": scope,
+                "measured_at": measured_at,
+                "value": float(value),
+                "unit": "ratio",
+                "source": "measured",
+                "run_id": "coverage-run",
+            }
         ],
+        run_id="coverage-run",
     )
-    calls = []
-
-    def send(cmd, **kwargs):
-        calls.append(cmd)
-        return CompletedProcess(cmd, 0)
-
-    args = ["--email", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path)]
-    assert main(args, runner=send) == 0
-    state[0].update(run_id="another-run", failed_sends=10)
-    assert main(args, runner=send) == 0
-    assert len(calls) == 1
-    state[0]["failed_now"] = 10
-    assert main(args, runner=send) == 0
-    assert len(calls) == 2
 
 
-def test_digest_timeout_records_no_delivery_and_remains_retryable(tmp_path, monkeypatch):
-    monkeypatch.setenv("MDW_SYNC_PHASE_TIMEOUT_SECONDS", "7")
-    monkeypatch.setattr(nightly_digest, "collect", lambda *_args: [])
-    args = ["--email", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path)]
+def _ok_runner(calls: list) -> object:
+    def runner(command, timeout=None):
+        calls.append(command)
+        return CompletedProcess(command, 0, stdout='{"accepted":["ops@example.com"],"messageId":"m"}')
 
-    def timeout(cmd, **kwargs):
-        assert kwargs["timeout"] == 7
-        raise subprocess.TimeoutExpired(cmd, 7)
-
-    assert main(args, runner=timeout) == nightly_digest.TIMEOUT_EXIT_CODE
-    assert not ledger.query("select * from executions where script = 'nightly_digest'")
-    assert main(args, runner=lambda cmd, **kwargs: CompletedProcess(cmd, 0)) == 0
-    assert len(ledger.query("select * from executions where script = 'nightly_digest'")) == 1
+    return runner
 
 
-def test_default_email_child_cleans_up_descendants_on_timeout(monkeypatch):
-    from unittest.mock import MagicMock
-
-    proc = MagicMock()
-    proc.pid = 12345
-    proc.__enter__.return_value = proc
-    proc.communicate.side_effect = [subprocess.TimeoutExpired("node", 1), None]
-    spawn = MagicMock(return_value=proc)
-    kill = MagicMock()
-    monkeypatch.setattr(nightly_digest.subprocess, "Popen", spawn)
-    monkeypatch.setattr("livewire_scripts.job_runner_common.os.killpg", kill)
-    with pytest.raises(subprocess.TimeoutExpired):
-        nightly_digest._run_email_child(["node"], timeout=1)
-    assert spawn.call_args.kwargs["start_new_session"] is True
-    kill.assert_called_once()
-    assert kill.call_args.args[0] == proc.pid
+def _sections(*verdicts) -> list[Section]:
+    return [Section(f"Check {i}", v, [f"{v.name} detail"]) for i, v in enumerate(verdicts)]
 
 
-def test_force_email_sends_even_when_the_warning_state_is_unchanged(tmp_path, monkeypatch):
-    monkeypatch.setenv("MDW_NODE_BIN", "node")
-    calls = []
+class TestBuildDigest:
+    def test_coverage_block_is_today_and_per_scope(self):
+        now = datetime(2026, 9, 13, 11, 14, tzinfo=UTC)
+        for name, value in (("coverage_pct", 0.9996), ("coverage_total", 13547)):
+            _measurement(name, "1d", value, measured_at=now)
+            _measurement(name, "1d", 0.9993 if name == "coverage_pct" else 13540, measured_at=now - timedelta(hours=2))
+        _measurement("coverage_pct", "1m", 0.356, measured_at=now)
+        _measurement("coverage_total", "1m", 11956, measured_at=now)
+        _measurement("coverage_recovery_deferred", "1m", 1, measured_at=now)
+        _measurement("coverage_recovery_deferred", "1m", 1, measured_at=now - timedelta(hours=2))
+        _measurement("coverage_still_missing", "1m", 7700, measured_at=now)
+        _measurement("coverage_scan_ok", "all", 1, measured_at=now)
+        _measurement("coverage_elapsed_s", "all", 1402, measured_at=now)
+        rows = nightly_digest._coverage_rows()
+        body = build_digest(date(2026, 9, 13), [], previous_verdicts={}, coverage_rows=rows, sent_rows=[], now=now)
+        assert f"COVERAGE as of {now:%Y-%m-%d %H:%M}Z (scan ok=1, 1402s)" in body
+        assert "1d" in body and "99.96%" in body and "99.93%" in body
+        assert "1m" in body and "35.60%" in body
+        assert "recovery=deferred x2" in body
+        assert "still_missing=7700" in body
 
-    def fake_runner(cmd, **kwargs):
-        calls.append(cmd)
-        return CompletedProcess(args=cmd, returncode=0)
-
-    shared = ["--run-date", "2026-07-02", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path)]
-    assert main([*shared, "--email"], runner=fake_runner) == 0
-    assert main([*shared, "--force-email"], runner=fake_runner) == 0
-
-    assert len(calls) == 2
-
-
-def test_recovery_state_sends_a_new_digest_notification(tmp_path, monkeypatch):
-    monkeypatch.setenv("MDW_NODE_BIN", "node")
-    prior, _ = nightly_digest._warning_fingerprint(
-        [Section("Silver publication", Verdict.BAD, notification_key="broken")]
-    )
-    nightly_digest._record_delivery(date(2026, 7, 1), prior, ["broken"])
-    monkeypatch.setattr(
-        nightly_digest, "collect", lambda *_args, **_kwargs: [Section("Silver publication", Verdict.OK)]
-    )
-    calls = []
-
-    assert (
-        main(
-            ["--run-date", "2026-07-02", "--email", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path)],
-            runner=lambda cmd, **kwargs: calls.append(cmd) or CompletedProcess(args=cmd, returncode=0),
+    def test_a_missing_coverage_row_renders_UNKNOWN_not_blank(self):
+        now = datetime(2026, 9, 13, 11, 14, tzinfo=UTC)
+        _measurement("coverage_pct", "1d", 0.9996, measured_at=now)
+        _measurement("coverage_total", "1d", 13547, measured_at=now)
+        body = build_digest(
+            date(2026, 9, 13), [], previous_verdicts={}, coverage_rows=nightly_digest._coverage_rows(), sent_rows=[]
         )
-        == 0
-    )
+        assert "1d" in body
+        assert "1m" in body and "UNKNOWN" in body
 
-    assert len(calls) == 1
+    def test_build_never_raises_on_empty_ledger(self):
+        body = build_digest(date(2026, 9, 13), [], previous_verdicts={}, coverage_rows=[], sent_rows=[])
+        assert "Livewire digest — 2026-09-13" in body
+        assert "UNKNOWN" in body or "no coverage" in body.lower()
+
+    def test_status_block_renders_every_section(self):
+        sections = _sections(Verdict.OK, Verdict.WARN)
+        body = build_digest(date(2026, 9, 13), sections, previous_verdicts={}, coverage_rows=[], sent_rows=[])
+        assert "STATUS" in body
+        assert "[OK ] Check 0" in body
+        assert "[WARN] Check 1" in body
+
+    def test_sent_block_lists_notify_rows(self):
+        rows = [
+            {
+                "started": datetime(2026, 9, 13, 10, 31, tzinfo=UTC),
+                "exit_code": 0,
+                "kind": "page",
+                "subject": "PAGE 2026-09-13: Coverage recovery",
+                "skipped": "false",
+            },
+            {
+                "started": datetime(2026, 9, 13, 12, 1, tzinfo=UTC),
+                "exit_code": 0,
+                "kind": "page",
+                "subject": "PAGE 2026-09-13: Coverage recovery",
+                "skipped": "true",
+            },
+        ]
+        body = build_digest(date(2026, 9, 13), [], previous_verdicts={}, coverage_rows=[], sent_rows=rows)
+        assert "SENT to you" in body
+        assert "PAGE 2026-09-13: Coverage recovery" in body
+        assert "skipped" in body
+
+    def test_changed_block_diffs_verdicts_against_the_previous_digest(self):
+        sections = [
+            Section("Coverage recovery", Verdict.BAD),
+            Section("Silver failures", Verdict.WARN),
+            Section("Daily update ran", Verdict.OK),
+        ]
+        previous = {"Coverage recovery": "WARN", "Silver failures": "WARN", "Daily update ran": "OK"}
+        body = build_digest(date(2026, 9, 13), sections, previous_verdicts=previous, coverage_rows=[], sent_rows=[])
+        assert "CHANGED" in body
+        assert "Coverage recovery: WARN -> BAD" in body
+        assert "Silver failures" not in body.split("CHANGED")[1].split("STATUS")[0]
+
+
+class TestMain:
+    def test_digest_is_sent_every_day_even_when_unchanged(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(nightly_digest, "collect", lambda *a, **k: _sections(Verdict.OK))
+        calls = []
+        args = ["--run-date", "2026-09-13", "--email"]
+        assert main(args, runner=_ok_runner(calls)) == 0
+        assert main(args, runner=_ok_runner(calls)) == 0
+        assert len(calls) == 2
+        rows = ledger.query(
+            "select json_extract_string(receipt_json,'$.skipped') as skipped, "
+            "json_extract_string(receipt_json,'$.kind') as kind "
+            "from executions where script = 'notify' order by started"
+        )
+        assert len(rows) == 2
+        assert all(r["kind"] == "digest" and r["skipped"] == "false" for r in rows)
+
+    def test_the_digest_row_carries_todays_verdicts(self, tmp_path, monkeypatch):
+        sections = [Section("Daily update ran", Verdict.OK), Section("Coverage", Verdict.WARN)]
+        monkeypatch.setattr(nightly_digest, "collect", lambda *a, **k: sections)
+        assert main(["--run-date", "2026-09-13", "--email"], runner=_ok_runner([])) == 0
+        row = ledger.query("select receipt_json from executions where script = 'notify'")[0]
+        verdicts = json.loads(row["receipt_json"])["verdicts"]
+        assert verdicts == {"Daily update ran": "OK", "Coverage": "WARN"}
+
+    def test_previous_verdicts_come_from_the_last_digest_row(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(nightly_digest, "collect", lambda *a, **k: [Section("Coverage", Verdict.WARN)])
+        assert main(["--run-date", "2026-09-12", "--email"], runner=_ok_runner([])) == 0
+        monkeypatch.setattr(nightly_digest, "collect", lambda *a, **k: [Section("Coverage", Verdict.BAD)])
+        assert main(["--run-date", "2026-09-13", "--email"], runner=_ok_runner([])) == 0
+        body = capsys.readouterr().out
+        assert "Coverage: WARN -> BAD" in body
+
+    def test_sent_block_lists_todays_notify_rows(self, tmp_path, monkeypatch, capsys):
+        from livewire_scripts import notify
+
+        page = notify.page_for_lane(date(2026, 9, 13), "equity", 1, "boom", "tail")
+        notify.send(page, runner=_ok_runner([]))
+        monkeypatch.setattr(nightly_digest, "collect", lambda *a, **k: _sections(Verdict.OK))
+        assert main(["--run-date", "2026-09-13", "--email"], runner=_ok_runner([])) == 0
+        body = capsys.readouterr().out
+        assert "SENT to you" in body
+        assert "lane equity failed" in body
+
+    def test_body_out_writes_the_body_and_sends_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(nightly_digest, "collect", lambda *a, **k: _sections(Verdict.BAD))
+        out = tmp_path / "digest.txt"
+        calls = []
+
+        def runner(command, timeout=None):
+            calls.append(command)
+            raise AssertionError("send must not run for --body-out")
+
+        assert main(["--run-date", "2026-09-13", "--body-out", str(out)], runner=runner) == 0
+        assert "Livewire digest — 2026-09-13" in out.read_text(encoding="utf-8")
+        assert calls == []
+        assert ledger.query("select * from executions") == []
+
+    def test_a_failed_send_is_the_exit_code_and_still_a_row(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(nightly_digest, "collect", lambda *a, **k: _sections(Verdict.OK))
+
+        def runner(command, timeout=None):
+            return CompletedProcess(command, 1, stdout="smtp refused")
+
+        assert main(["--run-date", "2026-09-13", "--email"], runner=runner) == 1
+        rows = ledger.query("select exit_code from executions where script = 'notify'")
+        assert rows == [{"exit_code": 1}]
+
+    def test_default_run_date_is_utc_today(self, tmp_path, monkeypatch, capsys):
+        class FrozenDateTime:
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 4, 6, 1, 0, tzinfo=UTC)
+
+        monkeypatch.setattr(nightly_digest, "datetime", FrozenDateTime, raising=False)
+        monkeypatch.setattr(nightly_digest, "collect", lambda *a, **k: _sections(Verdict.OK))
+        assert main([], runner=_ok_runner([])) == 0
+        assert "Livewire digest — 2026-04-06" in capsys.readouterr().out
 
 
 def test_the_tail_lane_is_recorded_in_the_ledger(tmp_path, monkeypatch):
-    from clients import ledger
-
-    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
     monkeypatch.setenv("LW_RUN_ID", "daily-update-20260902T060000Z-1")
     config = run_daily_update_job.RunnerConfig(
         warehouse_dir=tmp_path,
@@ -288,36 +242,3 @@ def test_the_tail_lane_is_recorded_in_the_ledger(tmp_path, monkeypatch):
     assert ledger.query("select lane, outcome from lane_results where lane = 'tail'") == [
         {"lane": "tail", "outcome": "done"}
     ]
-
-
-def test_no_quality_marker_is_written_anywhere(tmp_path, monkeypatch):
-    monkeypatch.setenv("MDW_NODE_BIN", "/bin/true")
-    nightly_digest.main(
-        ["--run-date", "2026-09-02", "--log-dir", str(tmp_path), "--email"],
-        runner=lambda *args, **kwargs: CompletedProcess([], 0),
-    )
-    assert list(tmp_path.glob("*.marker")) == []
-
-
-def test_body_file_honors_log_dir_override(tmp_path, monkeypatch):
-    monkeypatch.setenv("MDW_NODE_BIN", "node")
-    wrong_log_dir = tmp_path / "module_logs"
-    custom_log_dir = tmp_path / "custom_logs"
-    calls = []
-
-    def fake_runner(cmd, **kwargs):
-        calls.append(cmd)
-        return CompletedProcess(args=cmd, returncode=0)
-
-    monkeypatch.setenv("MDW_LOG_DIR", str(wrong_log_dir))
-
-    rc = main(
-        ["--run-date", "2026-07-02", "--email", "--log-dir", str(custom_log_dir), "--data-lake", str(tmp_path)],
-        runner=fake_runner,
-    )
-
-    assert rc == 0
-    body_file = _body_file_from_cmd(calls[0])
-    assert body_file.parent == custom_log_dir
-    assert body_file.exists()
-    assert not (wrong_log_dir / "nightly_digest_2026-07-02.txt").exists()
