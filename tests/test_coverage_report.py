@@ -22,7 +22,6 @@ from livewire_scripts.coverage_report import (
     CoverageResult,
     RecoveryOutcome,
     _resolve_target_date,
-    _send_alert,
     auto_recover,
     compute_coverage,
     compute_non_equity_coverage,
@@ -120,24 +119,23 @@ def test_main_repairs_minute_date_once_for_all_rollups(tmp_path, monkeypatch, ab
         patch.object(coverage_report, "compute_non_equity_coverage", return_value={}),
         patch.object(coverage_report, "_scan_and_write_artifacts", return_value="scan done"),
         patch.object(coverage_report, "auto_recover", return_value=outcome) as repair,
-        patch.object(coverage_report, "_send_alert") as alert,
+        patch.object(coverage_report, "_run_child") as child,
     ):
         main()
     repair.assert_called_once()
     assert repair.call_args.kwargs["timeframe"] == "1m"
-    assert alert.call_count == int(aborted)
+    child.assert_not_called()  # recovery outcomes are measurements, not an email
+    from clients import ledger
+
+    deferred = {
+        row["scope"]: row["value"]
+        for row in ledger.query(
+            "select scope, value from measurements where name = 'coverage_recovery_deferred'"
+        )
+    }
+    assert deferred["1m"] == float(aborted)
     report = (tmp_path / "logs" / "coverage_2026-04-06.log").read_text()
     assert "30m recovery" in report
-
-
-def _error_summary(cmd) -> str:
-    """The summary is one `--error-summary=<text>` token.
-
-    The two-token form could not carry a value beginning with "--", which is
-    exactly what the log-derived summary is (see the 2026-08-08 lost page).
-    """
-    token = next(a for a in cmd if a.startswith("--error-summary="))
-    return token.removeprefix("--error-summary=")
 
 
 def test_coverage_emits_its_percentage_and_elapsed_seconds(tmp_path, monkeypatch):
@@ -450,7 +448,7 @@ class TestComputeCoverage:
         for tf in ("1d", "1m", "1h", "5m"):
             assert results[tf].total == 0
             assert results[tf].present == 0
-            assert results[tf].ratio == 1.0  # vacuous truth
+            assert results[tf].ratio == 0.0  # a zero denominator is UNKNOWN, never a fake 1.0
 
     def test_empty_parquet_snapshot_counts_as_missing(self, tmp_path):
         root = tmp_path / "bronze"
@@ -692,39 +690,67 @@ class TestAutoRecover:
         assert outcome.still_missing == ["MSFT"]
 
 
-# ── _send_alert ──────────────────────────────────────────────────────────────
+# ── recovery / staleness measurements ────────────────────────────────────────
 
 
-class TestSendAlert:
-    def test_invokes_node_script_with_summary(self, tmp_path):
-        log_path = tmp_path / "coverage.log"
-        log_path.write_text("x")
-        outcomes = [
-            RecoveryOutcome("5m", ["AAPL"], 0, ["AAPL"]),
-            RecoveryOutcome("1h", ["MSFT"], 1, []),
-        ]
-        with patch(
-            "livewire_scripts.coverage_report._run_child", return_value=SimpleNamespace(returncode=0)
-        ) as mock_run:
-            _send_alert(date(2026, 4, 6), outcomes, log_path)
-        cmd = mock_run.call_args[0][0]
-        assert cmd[0] == sys.executable
-        assert "livewire_ops.py" in cmd[1]
-        assert cmd[2] == "send-alert"
-        assert "--job-name" in cmd
-        summary = _error_summary(cmd)
-        assert "5m" in summary and "1h" in summary
+def test_recovery_abort_is_a_measurement_not_an_email(tmp_path, monkeypatch):
+    from clients import ledger
 
-    def test_aborted_outcome_in_summary(self, tmp_path):
-        log_path = tmp_path / "x.log"
-        log_path.write_text("")
-        outcomes = [RecoveryOutcome("5m", ["A"], 0, ["A"], aborted=True, reason="safety_cap")]
-        with patch(
-            "livewire_scripts.coverage_report._run_child", return_value=SimpleNamespace(returncode=0)
-        ) as mock_run:
-            _send_alert(date(2026, 4, 6), outcomes, log_path)
-        cmd = mock_run.call_args[0][0]
-        assert "ABORTED" in _error_summary(cmd)
+    monkeypatch.setenv("LW_RUN_ID", "coverage-20260912T110000Z-1")
+    results = {
+        tf: CoverageResult(tf, total=10, present=9, missing_symbols=["AAPL"])
+        for tf in coverage_report.TIMEFRAMES
+    }
+    outcomes = [RecoveryOutcome("1m", ["AAPL"], 0, ["AAPL"], aborted=True, reason="DEFERRED")]
+    with patch.object(coverage_report, "_run_child") as child:
+        coverage_report.emit_recovery_measurements(results, outcomes)
+    child.assert_not_called()
+    deferred = {
+        row["scope"]: row["value"]
+        for row in ledger.query("select scope, value from measurements where name = 'coverage_recovery_deferred'")
+    }
+    assert deferred["1m"] == 1.0
+    assert deferred["1d"] == 0.0
+    still_missing = {
+        row["scope"]: row["value"]
+        for row in ledger.query("select scope, value from measurements where name = 'coverage_still_missing'")
+    }
+    assert still_missing["1m"] == 1.0
+
+
+def test_stale_non_equity_is_a_measurement(tmp_path, monkeypatch):
+    from clients import ledger
+
+    monkeypatch.setenv("LW_RUN_ID", "coverage-20260912T110000Z-1")
+    non_equity = {
+        "volatility": CoverageResult("volatility", total=2, present=1, missing_symbols=["VIXTLT"]),
+        "rates": CoverageResult("rates", total=4, present=4, missing_symbols=[]),
+    }
+    with patch.object(coverage_report, "_run_child") as child:
+        coverage_report.emit_stale_non_equity(non_equity)
+    child.assert_not_called()
+    rows = ledger.query(
+        "select scope, value, unit from measurements where name = 'stale_non_equity' order by scope"
+    )
+    assert rows == [
+        {"scope": "rates", "value": 0.0, "unit": "symbols"},
+        {"scope": "volatility", "value": 1.0, "unit": "symbols"},
+    ]
+
+
+def test_zero_denominator_prints_unknown(tmp_path, monkeypatch):
+    from clients import ledger
+
+    monkeypatch.setenv("LW_RUN_ID", "coverage-20260912T110000Z-1")
+    results = {
+        tf: CoverageResult(tf, total=0, present=0, missing_symbols=[])
+        for tf in coverage_report.TIMEFRAMES
+    }
+    line = format_one_liner(date(2026, 9, 12), results)
+    assert "1d=0/0 (UNKNOWN)" in line
+    coverage_report.emit_coverage_measurements(results, elapsed_s=1.0)
+    rows = ledger.query("select value from measurements where name = 'coverage_pct' and scope = '1d'")
+    assert rows == [{"value": 0.0}]
 
 
 # ── _resolve_target_date ─────────────────────────────────────────────────────
@@ -866,7 +892,7 @@ class TestMain:
         node_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "node"]
         assert node_calls == []
 
-    def test_below_threshold_partial_recovery_sends_email(self, tmp_path, monkeypatch):
+    def test_below_threshold_partial_recovery_is_a_measurement(self, tmp_path, monkeypatch):
         root = tmp_path / "bronze"
         target = date(2026, 4, 6)
         _write_daily(root, "AAPL", [target])
@@ -901,7 +927,16 @@ class TestMain:
                 ):
                     main()
         alert_calls = [c for c in mock_run.call_args_list if "livewire_ops.py" in str(c[0][0])]
-        assert len(alert_calls) == 1  # email sent for partial recovery
+        assert alert_calls == []  # partial recovery is a measurement; nothing mails
+        from clients import ledger
+
+        still_missing = {
+            row["scope"]: row["value"]
+            for row in ledger.query(
+                "select scope, value from measurements where name = 'coverage_still_missing'"
+            )
+        }
+        assert still_missing["5m"] == 1.0
 
     def test_large_intraday_outage_still_recovers_in_main(self, tmp_path, monkeypatch):
         root = tmp_path / "bronze"
@@ -938,7 +973,16 @@ class TestMain:
         fetch_calls = [c for c in mock_run.call_args_list if "livewire_ingest.py" in str(c[0][0])]
         alert_calls = [c for c in mock_run.call_args_list if "livewire_ops.py" in str(c[0][0])]
         assert fetch_calls != []
-        assert len(alert_calls) == 1
+        assert alert_calls == []
+        from clients import ledger
+
+        still_missing = {
+            row["scope"]: row["value"]
+            for row in ledger.query(
+                "select scope, value from measurements where name = 'coverage_still_missing'"
+            )
+        }
+        assert still_missing["5m"] == 200.0
 
 
 class TestIntradayDenominator:

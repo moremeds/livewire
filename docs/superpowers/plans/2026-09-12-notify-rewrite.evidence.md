@@ -364,3 +364,51 @@ exit 0   102 passed
 $ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
 exit 0   2705 passed, 2 warnings   TOTAL coverage 95.02% (>=95)
 ```
+
+## T5 — coverage emits facts, sends nothing
+
+Plan file re-copied from main (only diff: restored `### Task 10:` heading; cmp-verified).
+
+`coverage_report.py`: `_send_alert` and `_OPS_SCRIPT` deleted; module docstring
+updated. `CoverageResult.ratio` → `0.0` for `total == 0` (was vacuous 1.0);
+`format_one_liner` prints `tf=p/t (UNKNOWN)` for a zero denominator — spec §17
+`=`/parens shape kept (plan text "1d 0/0 UNKNOWN" read as intent, test asserts
+the literal `1d=0/0 (UNKNOWN)`). New `emit_recovery_measurements(results,
+outcomes)` and `emit_stale_non_equity(results)` beside
+`emit_coverage_scan_measurement`, same try/except-log shape.
+
+Two deliberate readings beyond the plan's letter, both anti-stale-flag:
+- both emitters write a row for EVERY scope each run (0 when clean), so a
+  deferred/stale flag cannot outlive its condition — matches the
+  "WARN nobody can clear is worse than silence" rule in _launchd_section.
+  `emit_stale_non_equity` takes the full non-equity results dict, not just the
+  stale subset the plan named the arg after.
+- recovery gate gained `or not r.missing_symbols`: ratio 0.0 on total=0 would
+  otherwise enter auto_recover (which early-returns on empty input anyway);
+  the guard keeps the old skip semantics explicit.
+- `--no-recover` still returns before emit_recovery_measurements — recovery
+  was not attempted, so its last state correctly stands.
+- "Coverage recovery"/"Stale non-equity" WARN rows now have live data; status
+  check keys verified end-to-end by the T4 tests reading these names.
+
+Tests: deleted TestSendAlert (2) + `_error_summary` helper + `_send_alert`
+import; `test_main_repairs_minute_date_once_for_all_rollups` now asserts
+`_run_child` never called and reads deferred rows; two TestMain tests assert
+alert_calls == [] + still_missing values; `test_empty_bronze` ratio 1.0 → 0.0.
+`_KNOWN_INLINE_ALERT_BUILDERS` (test_job_runner_common.py) lost
+coverage_report.py — the meta-test fails the gate otherwise; the remaining
+three names leave with A2/T9.
+
+```
+$ uv run pytest tests/test_coverage_report.py -q   # pre-impl
+exit 1   6 failed (missing emitters, ratio 1.0, email-shape asserts)
+
+$ uv run pytest tests/test_coverage_report.py tests/test_status.py -q   # mid
+exit 1   2 failed (TestMain email asserts) — updated, then
+
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+exit 1   FAILED test_only_one_module_encodes_the_alert_contract
+         (coverage_report.py no longer carries "send-alert")
+         → removed it from _KNOWN_INLINE_ALERT_BUILDERS, re-ran:
+exit 0   2706 passed, 2 warnings   TOTAL coverage 95.05% (>=95)
+```

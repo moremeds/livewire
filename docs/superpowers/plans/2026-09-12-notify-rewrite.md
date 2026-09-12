@@ -392,7 +392,9 @@ STATUS (every check)
 - [ ] **Step 4:** PASS.
 - [ ] **Step 5: commit** `refactor(quality): flags are findings, not emails`
 
-**Amendment A2 (reviewer, 2026-09-12, after T3):** three more senders outside the two kinds, all deleted in this task, same commit: `livewire_scripts/health_check.py` `_send_alert` (interior-gap scan; not scheduled, `status` does not grade it), `livewire_scripts/data_quality_report.py` `_send_email` (old `--mode daily-summary`, superseded by the digest), `livewire_scripts/universe_screener.py` the additions/removals `send-alert` call (informational, not BAD). Each keeps its log/ledger output and loses only the subprocess; delete the corresponding tests and add one per module asserting no subprocess is spawned. Step 3's grep widens to `send-alert\|send_alert` → zero hits outside `docs/postmortems/` and this plan. why is the 1d denominator empty since 2026-09-09? (bounded diagnosis)
+**Amendment A2 (reviewer, 2026-09-12, after T3):** three more senders outside the two kinds, all deleted in this task, same commit: `livewire_scripts/health_check.py` `_send_alert` (interior-gap scan; not scheduled, `status` does not grade it), `livewire_scripts/data_quality_report.py` `_send_email` (old `--mode daily-summary`, superseded by the digest), `livewire_scripts/universe_screener.py` the additions/removals `send-alert` call (informational, not BAD). Each keeps its log/ledger output and loses only the subprocess; delete the corresponding tests and add one per module asserting no subprocess is spawned. Step 3's grep widens to `send-alert\|send_alert` → zero hits outside `docs/postmortems/` and this plan.
+
+### Task 10: why is the 1d denominator empty since 2026-09-09? (bounded diagnosis)
 
 **Files:** none until the cause is known; then the one file + one test.
 

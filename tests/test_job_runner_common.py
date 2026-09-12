@@ -137,7 +137,6 @@ def test_build_log_file_takes_its_clock_from_the_shared_seam():
 #: not the scheduled-job runners this module consolidated; folding them in is a
 #: separate change. Frozen here so a NEW encoding of the contract fails the run.
 _KNOWN_INLINE_ALERT_BUILDERS = {
-    "coverage_report.py",
     "data_quality_report.py",
     "health_check.py",
     "universe_screener.py",
