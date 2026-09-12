@@ -129,9 +129,7 @@ def test_main_repairs_minute_date_once_for_all_rollups(tmp_path, monkeypatch, ab
 
     deferred = {
         row["scope"]: row["value"]
-        for row in ledger.query(
-            "select scope, value from measurements where name = 'coverage_recovery_deferred'"
-        )
+        for row in ledger.query("select scope, value from measurements where name = 'coverage_recovery_deferred'")
     }
     assert deferred["1m"] == float(aborted)
     report = (tmp_path / "logs" / "coverage_2026-04-06.log").read_text()
@@ -698,8 +696,7 @@ def test_recovery_abort_is_a_measurement_not_an_email(tmp_path, monkeypatch):
 
     monkeypatch.setenv("LW_RUN_ID", "coverage-20260912T110000Z-1")
     results = {
-        tf: CoverageResult(tf, total=10, present=9, missing_symbols=["AAPL"])
-        for tf in coverage_report.TIMEFRAMES
+        tf: CoverageResult(tf, total=10, present=9, missing_symbols=["AAPL"]) for tf in coverage_report.TIMEFRAMES
     }
     outcomes = [RecoveryOutcome("1m", ["AAPL"], 0, ["AAPL"], aborted=True, reason="DEFERRED")]
     with patch.object(coverage_report, "_run_child") as child:
@@ -729,9 +726,7 @@ def test_stale_non_equity_is_a_measurement(tmp_path, monkeypatch):
     with patch.object(coverage_report, "_run_child") as child:
         coverage_report.emit_stale_non_equity(non_equity)
     child.assert_not_called()
-    rows = ledger.query(
-        "select scope, value, unit from measurements where name = 'stale_non_equity' order by scope"
-    )
+    rows = ledger.query("select scope, value, unit from measurements where name = 'stale_non_equity' order by scope")
     assert rows == [
         {"scope": "rates", "value": 0.0, "unit": "symbols"},
         {"scope": "volatility", "value": 1.0, "unit": "symbols"},
@@ -742,10 +737,7 @@ def test_zero_denominator_prints_unknown(tmp_path, monkeypatch):
     from clients import ledger
 
     monkeypatch.setenv("LW_RUN_ID", "coverage-20260912T110000Z-1")
-    results = {
-        tf: CoverageResult(tf, total=0, present=0, missing_symbols=[])
-        for tf in coverage_report.TIMEFRAMES
-    }
+    results = {tf: CoverageResult(tf, total=0, present=0, missing_symbols=[]) for tf in coverage_report.TIMEFRAMES}
     line = format_one_liner(date(2026, 9, 12), results)
     assert "1d=0/0 (UNKNOWN)" in line
     coverage_report.emit_coverage_measurements(results, elapsed_s=1.0)
@@ -932,9 +924,7 @@ class TestMain:
 
         still_missing = {
             row["scope"]: row["value"]
-            for row in ledger.query(
-                "select scope, value from measurements where name = 'coverage_still_missing'"
-            )
+            for row in ledger.query("select scope, value from measurements where name = 'coverage_still_missing'")
         }
         assert still_missing["5m"] == 1.0
 
@@ -978,9 +968,7 @@ class TestMain:
 
         still_missing = {
             row["scope"]: row["value"]
-            for row in ledger.query(
-                "select scope, value from measurements where name = 'coverage_still_missing'"
-            )
+            for row in ledger.query("select scope, value from measurements where name = 'coverage_still_missing'")
         }
         assert still_missing["5m"] == 200.0
 

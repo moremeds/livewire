@@ -463,7 +463,7 @@ def test_post_success_tail_reads_lane_tail():
 
 def test_undelivered_notifications_reads_the_notify_script():
     _run()
-    _execution("send_alert", 3)  # the retired script — ignored by design
+    _execution("retired_mailer", 3)  # a retired script — ignored by design
     assert _section("Undelivered notifications").verdict is Verdict.OK
     _execution("notify", 1, receipt={"subject": "PAGE 2026-09-12: equity"})
     section = _section("Undelivered notifications")

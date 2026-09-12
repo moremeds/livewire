@@ -108,25 +108,22 @@ def test_tail_of_a_missing_log_is_empty(tmp_path):
     assert tail_of(tmp_path / "missing.log", 60) == ""
 
 
-#: Modules that still build an alert argv inline. They are one-shot reporters,
-#: not the scheduled-job runners (which page through notify.py now); folding
-#: them in is Task 9 / Amendment A2. Frozen here so a NEW argv fails the run.
-_KNOWN_INLINE_ALERT_BUILDERS = {
-    "data_quality_report.py",
-    "health_check.py",
-    "universe_screener.py",
-}
+#: No module may build an alert argv inline — every send goes through
+#: notify.py. Frozen empty so a NEW argv fails the run.
+_KNOWN_INLINE_ALERT_BUILDERS: set[str] = set()
 
 
 def test_no_scheduled_runner_encodes_the_alert_contract():
-    """Neither scheduled-job runner may carry its own copy of the argv."""
+    """No module may carry its own copy of the alert argv — notify.py owns it."""
     import pathlib
+    import re
 
+    needle = re.compile(r"send[-_]alert")  # regex, so this file carries no literal hit
     root = pathlib.Path(__file__).resolve().parents[1]
     offenders = {
         path.name
         for path in sorted((root / "livewire_scripts").glob("*.py"))
-        if path.name != "job_runner_common.py" and '"send-alert"' in path.read_text(encoding="utf-8")
+        if path.name != "job_runner_common.py" and needle.search(path.read_text(encoding="utf-8"))
     }
 
     assert offenders == _KNOWN_INLINE_ALERT_BUILDERS

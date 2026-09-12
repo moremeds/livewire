@@ -48,12 +48,10 @@ from livewire_scripts.paths import data_lake_dir, log_dir
 TARGET_SIZE = 1000
 GRACE_DAYS = 3
 MAX_REMOVALS = 50
-EMAIL_THRESHOLD = 10
 _SCANNER_THROTTLE_SECONDS = 1.0
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _INGEST_SCRIPT = PROJECT_ROOT / "scripts" / "livewire_ingest.py"
-_OPS_SCRIPT = PROJECT_ROOT / "scripts" / "livewire_ops.py"
 _PRESET_PATH = PROJECT_ROOT / "presets" / "screened-universe.json"
 _CORE_ETFS_PATH = PROJECT_ROOT / "presets" / "core-etfs.json"
 _STATE_PATH: Path | None = None
@@ -230,35 +228,6 @@ async def run_scanner_sweeps(ib) -> set[str]:
     return symbols
 
 
-# ── Alert ──────────────────────────────────────────────────────────────────
-
-
-def _send_screener_alert(
-    run_date: date,
-    additions: set[str],
-    removals: set[str],
-) -> None:
-    """Send an email alert via the existing Nodemailer CLI."""
-    error_summary = (
-        f"universe_screener: {len(additions)} additions, {len(removals)} removals on {run_date.isoformat()}."
-    )
-    cmd = [
-        sys.executable,
-        str(_OPS_SCRIPT),
-        "send-alert",
-        "--run-date",
-        run_date.isoformat(),
-        # One token. The two-token form breaks whenever the summary begins with
-        # "--", which is how the 2026-08-08 page was lost.
-        f"--error-summary={error_summary}",
-        "--repo-root",
-        str(PROJECT_ROOT),
-        "--job-name",
-        "universe_screener",
-    ]
-    subprocess.run(cmd, check=False)
-
-
 # ── Main entry point ────────────────────────────────────────────────────────
 
 
@@ -405,11 +374,6 @@ def main(argv: list[str] | None = None) -> None:
         ]
         log.info("Triggering backfill for %d new tickers: %s", len(additions), sorted(additions))
         subprocess.run(cmd, check=False)
-
-    # ── Send alert if significant changes ──────────────────────────────
-    total_changes = len(additions) + len(confirmed_removals)
-    if total_changes >= EMAIL_THRESHOLD:
-        _send_screener_alert(today, additions, confirmed_removals)
 
 
 if __name__ == "__main__":

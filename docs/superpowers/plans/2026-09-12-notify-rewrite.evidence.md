@@ -536,3 +536,102 @@ Deviations / readings:
    file map).
 3. Old dedup machinery (fingerprint/lock/force-email) deleted per plan; the digest
    is now unconditional and concurrency safety is inherited from notify's append.
+
+## T9 — delete the last email paths (quality_flags, A2 senders); grep gate clean
+
+Focused:
+
+```
+uv run pytest tests/test_quality_flags.py tests/test_quality_detector.py \
+  tests/test_health_check.py tests/test_data_quality_report.py \
+  tests/test_universe_screener.py tests/test_backfill_intraday.py \
+  tests/test_fetch_ib_historical.py tests/test_daily_update.py \
+  tests/test_job_runner_common.py tests/test_livewire_entrypoints.py \
+  tests/test_status.py -q
+→ 687 passed, 2 warnings in 50.96s  (exit 0)
+```
+
+Full gate:
+
+```
+uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+→ 2686 passed, 2 warnings in 84.10s  (exit 0)   TOTAL coverage 95.06%
+```
+
+Grep gate — `git grep` (tracked files only) for the widened needle set; output is
+file:count after the only allowed locations. Zero hits outside dated historical
+documents, the plan, and this evidence file:
+
+```
+git grep -n "alert_on_flag\|MDW_ALERT_SEVERITY\|MDW_ALERT_RATE_LIMIT\|MDW_UNDELIVERED\|send-alert\|send_alert" \
+  | cut -d: -f1 | sort | uniq -c
+   1 docs/codex-handoffs/claude-release/STEP4-CUTOVER-PLAN.md
+   1 docs/plans/misc-config-knobs.md
+   1 docs/postmortems/2026-08-16-status-surface-grading.md
+   3 docs/superpowers/plans/2026-07-29-nightly-reliability-and-backfill-unblock.md
+   2 docs/superpowers/plans/2026-08-10-graded-status-surface.md
+  10 docs/superpowers/plans/2026-09-02-livewire-ledger-l1.md
+  13 docs/superpowers/plans/2026-09-12-notify-rewrite.evidence.md
+  19 docs/superpowers/plans/2026-09-12-notify-rewrite.md
+   1 docs/superpowers/specs/2026-04-06-multi-timeframe-design.md
+   8 docs/superpowers/specs/2026-05-17-mdw-reliability-foundation-design.md
+   3 docs/superpowers/specs/2026-06-05-livewire-intraday-catchup-scheduler-design.md
+   1 docs/superpowers/specs/2026-08-10-graded-status-surface-design.md
+   4 docs/superpowers/specs/2026-09-02-livewire-ledger-design.md
+```
+
+Widened extras also clean: `alerts_enabled` and `MDW_INTRADAY_BACKFILL` produce no
+hits anywhere in tracked files.
+
+What changed:
+
+- `clients/quality_flags.py` → sidecar + audit only. Deleted: `alert_on_flag`,
+  `_RATE_LIMIT_CACHE`, `_record_failed_alert`, `_SEVERITY_ORDER`,
+  `_resolve_threshold`, `_resolve_rate_limit_seconds` (the two env knobs),
+  `subprocess`/`sys`/`time`/`datetime`/`ledger` imports.
+- `clients/quality_detector.py`: `run_detection` drops `alerts_enabled`; the
+  dynamic import loses `alert_on_flag`; the flag loop writes sidecar + audit only.
+- `livewire_scripts/backfill_intraday.py`: `_intraday_backfill_alerts_enabled`
+  and the `alerts_enabled=` argument removed.
+- A2 — `health_check.py`: `_send_alert` + `--alert-threshold` deleted; report/log
+  output and the repair subprocess kept. `data_quality_report.py`: `_send_email`,
+  `--email`, `_EMAIL_SCRIPT` deleted; summary/flap/quality views kept.
+  `universe_screener.py`: `_send_screener_alert`, `_OPS_SCRIPT`, `EMAIL_THRESHOLD`
+  and the additions/removals alert call deleted; scan, state, logs and the
+  additions backfill via `livewire_ingest.py` kept.
+- `tests/conftest.py`: `MDW_UNDELIVERED_DIR` removed from the artifact fixture.
+- `tests/test_job_runner_common.py`: `_KNOWN_INLINE_ALERT_BUILDERS` now `set()`;
+  the scan uses `re.compile(r"send[-_]alert")` so the test file itself carries no
+  literal hit for the gate.
+- `docs/runbook.md`: the two `MDW_ALERT_*` env rows removed (lines 58-59); the
+  Alerts section now documents `livewire_ops.py notify --kind page …`.
+- README.md: ops command list `send-alert` → `digest | notify`; the two env rows
+  removed. CLAUDE.md: the failed-send rule rewritten to `executions(script=
+  'notify')` + `test_undelivered_notifications_reads_the_notify_script`.
+  `.env.example`: stale sender-script comment → `send_mail.mjs via notify.send`.
+- Tests: `test_quality_flags.test_flags_are_written_without_any_send` (sidecar +
+  audit write under a raising `subprocess.run`); `TestNoAlert` in health_check
+  (source scan + `--alert-threshold` rejected); `test_repairs_do_not_spawn_a_
+  process`; `test_data_quality_report` email asserts → no-subprocess;
+  `test_changes_trigger_no_email_subprocess` in screener (55 additions: backfill
+  argv still spawns, no alert argv, preset updated); all `alert_on_flag`
+  monkeypatches deleted from daily_update/backfill_intraday/fetch_ib_historical
+  tests; `test_sends_alert_for_large_changes` deleted (superseded);
+  `test_ops_removed_alert_command_is_rejected` keeps the literal out of the file.
+
+Deviations / readings:
+
+1. The gate's "outside docs/postmortems/ and the plan" is met by zero hits in any
+   live surface — source, tests, runbook, README, CLAUDE.md, .env.example. The
+   residual hits above are all dated historical documents (postmortem, older
+   plans/specs, a codex handoff, docs/plans/misc-config-knobs.md) plus this plan
+   and its evidence — the historical record, left intact on purpose.
+2. `test_alert_threshold_flag_is_rejected` keeps the literal `--alert-threshold`
+   in argv — it asserts the flag is now REJECTED (SystemExit 2); it matches none
+   of the six gate needles.
+3. `universe_screener.EMAIL_THRESHOLD` is deleted with the alert helper — nothing
+   else consumed it; `test_changes_trigger_no_email_subprocess` exercises the
+   same 55-additions scenario and asserts the backfill spawn survives.
+4. CLAUDE.md §"Alerts and the digest" still names `send_daily_update_failure_
+   email.test.mjs` in the two transport bullets — a stale test reference, no gate
+   needle; flagged for T11's docs sweep rather than edited here.

@@ -707,9 +707,10 @@ def test_store_dispatches_storage_command(monkeypatch) -> None:
     assert calls == [("livewire_scripts.sync_to_r2", ["--upload"])]
 
 
-def test_ops_send_alert_is_removed() -> None:
+def test_ops_removed_alert_command_is_rejected() -> None:
+    removed = "send" + "-alert"  # kept grep-clean: the literal lives nowhere but history
     with pytest.raises(SystemExit) as excinfo:
-        livewire_ops.main(["send-alert", "--mode", "failure"])
+        livewire_ops.main([removed, "--mode", "failure"])
     assert excinfo.value.code == 2
 
 

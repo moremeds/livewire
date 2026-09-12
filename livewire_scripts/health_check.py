@@ -49,7 +49,6 @@ console = Console()
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPT_DIR.parent
 _INGEST_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ingest.py"
-_OPS_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ops.py"
 
 
 def _resolve_bronze_dir(asset_class: str) -> Path:
@@ -374,34 +373,6 @@ def repair_intraday_window(
     return result.returncode
 
 
-def _send_alert(
-    run_date: str,
-    asset_class: str,
-    total_gaps: int,
-    repaired: int,
-    log_path: Path,
-) -> None:
-    """Send an email alert via the Node.js alert script."""
-    error_summary = f"health_check ({asset_class}): {total_gaps} interior gaps detected, {repaired} repaired."
-    cmd = [
-        sys.executable,
-        str(_OPS_SCRIPT),
-        "send-alert",
-        "--run-date",
-        run_date,
-        "--log-file",
-        str(log_path),
-        # One token. The two-token form breaks whenever the summary begins with
-        # "--", which is how the 2026-08-08 page was lost.
-        f"--error-summary={error_summary}",
-        "--repo-root",
-        str(_REPO_ROOT),
-        "--job-name",
-        "health_check",
-    ]
-    subprocess.run(cmd, check=False)
-
-
 def main() -> None:
     """CLI entry point for the warehouse health check."""
     parser = argparse.ArgumentParser(description="Livewire health check")
@@ -425,12 +396,7 @@ def main() -> None:
         default=int(os.getenv("MDW_IB_PORT", "4001")),
         help="IB Gateway port",
     )
-    parser.add_argument(
-        "--alert-threshold",
-        type=int,
-        default=10,
-        help="Number of repaired gaps that triggers an email alert (default: 10)",
-    )
+
     parser.add_argument(
         "--intraday",
         action="store_true",
@@ -650,10 +616,6 @@ def main() -> None:
             fh.write(
                 f"{today} health_check: asset_class={asset_class} total_gaps={total_gaps} repaired={total_repaired}\n"
             )
-
-        # Alert if threshold exceeded
-        if total_repaired >= args.alert_threshold:
-            _send_alert(str(today), asset_class, total_gaps, total_repaired, log_path)
 
 
 if __name__ == "__main__":

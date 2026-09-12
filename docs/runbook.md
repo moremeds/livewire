@@ -55,8 +55,6 @@ warehouse paths.
 | ----------------------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `MDW_TELEMETRY_PATH`                | `~/market-warehouse/logs/telemetry.jsonl`             | Telemetry JSONL append path; set to `none` to disable telemetry                                    |
 | `MDW_QUALITY_AUDIT_PATH`            | `~/market-warehouse/logs/quality_audit.jsonl`         | Central quality-flag audit JSONL append path                                                       |
-| `MDW_ALERT_SEVERITY_THRESHOLD`      | `warning`                                             | Minimum quality-flag severity that triggers per-flag email                                         |
-| `MDW_ALERT_RATE_LIMIT_SECONDS`      | `300`                                                 | De-dup window for identical `(source, ticker, category)` alert emails                              |
 | `MDW_ORCHESTRATOR_TIMEOUT_SECONDS`  | `300`                                                 | Per-ticker hard timeout for `livewire_ingest.py robust`                                            |
 | `MDW_ORCHESTRATOR_MAX_ATTEMPTS`     | `3`                                                   | Per-ticker retry budget for `livewire_ingest.py robust`                                            |
 | `MDW_ORCHESTRATOR_COOLDOWN_SECONDS` | `60`                                                  | Sleep between orchestrator retry attempts                                                          |
@@ -777,14 +775,15 @@ python scripts/livewire_quality.py watchdog
 
 Runs at 10:30 UTC daily and pages only when a ledger-backed status check is BAD.
 
-### Alerts
+### Notices
 
 ```bash
-python scripts/livewire_ops.py send-alert
+python scripts/livewire_ops.py notify --kind page --subject "PAGE ..." --body-file /tmp/body.txt [--force]
 ```
 
-Nodemailer CLI behind every failure page. Failed sends are recorded as ledger
-execution rows. Alert values must use the single-token `--key=value` form.
+The only email surface. `notify.send` dedupes pages by fingerprint for 24h and
+records every outcome — success, failure, skip — as an `executions` row. The
+SMTP transport is `livewire_node/send_mail.mjs`.
 
 ### Daily-run outcome categories
 

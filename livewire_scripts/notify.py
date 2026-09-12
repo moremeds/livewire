@@ -29,10 +29,10 @@ _SEND_MAIL = Path(__file__).resolve().parent.parent / "livewire_node" / "send_ma
 
 @dataclass(frozen=True)
 class Notice:
-    kind: str            # "page" | "digest"
+    kind: str  # "page" | "digest"
     subject: str
     body: str
-    fingerprint: str     # sha256 of the semantic state (page) or of run_date (digest)
+    fingerprint: str  # sha256 of the semantic state (page) or of run_date (digest)
 
 
 def node_bin() -> str:

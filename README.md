@@ -186,7 +186,7 @@ livewire_ingest.py   daily | historical | robust | cboe-vol | fred-rates |
                      intraday-backfill | flatfile-ingest | universe |
                      universe-sync | backfill-all | daily-backfill
 livewire_quality.py  health | coverage | report | weekly | watchdog | warehouse
-livewire_ops.py      run-daily-job | run-intraday-catchup-job | send-alert
+livewire_ops.py      run-daily-job | run-intraday-catchup-job | digest | notify
 livewire_store.py    duckdb | rebuild-silver | sync-r2 | migrate-parquet
 ```
 
@@ -746,8 +746,6 @@ python scripts/livewire_store.py migrate-parquet
 | --- | --- | --- |
 | `MDW_TELEMETRY_PATH` | `~/market-warehouse/logs/telemetry.jsonl` | Telemetry JSONL append path |
 | `MDW_QUALITY_AUDIT_PATH` | `~/market-warehouse/logs/quality_audit.jsonl` | Quality-flag audit JSONL |
-| `MDW_ALERT_SEVERITY_THRESHOLD` | `warning` | Min severity that triggers per-flag email |
-| `MDW_ALERT_RATE_LIMIT_SECONDS` | `300` | De-dup window for identical alerts |
 | `MDW_LOG_LEVEL` | `INFO` | Logger root level |
 
 ### DuckDB
