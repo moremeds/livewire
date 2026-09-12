@@ -935,6 +935,9 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
 ### launchd install
 
 ```bash
+# launchd does not create missing parents for StandardOutPath/StandardErrorPath;
+# every job logs under <warehouse>/logs/launchd/, so make it first.
+mkdir -p ~/market-warehouse/logs/launchd
 # The five warehouse jobs run the immutable release, so they take the WAREHOUSE path.
 # The promoter is the one job that reads the repo — it is what builds the release.
 WAREHOUSE=~/market-warehouse
@@ -1031,11 +1034,15 @@ python scripts/livewire_ingest.py shepherd-universe verify --index <INDEX> --rev
 ## 10. Housekeeping
 
 `housekeeping` prunes logs (60d), releases (keep 3) and superseded evicted silver
-revisions (keep 2). **Dry run is the default**; `release.prune` previews in it too.
+revisions (keep 2). It also rotates `logs/launchd/<label>.<stream>.log`: the day
+after a job last wrote, the live file is renamed `…<YYYY-MM-DD>.log` by its mtime
+(appended to if the dated name already exists) and tagged files are kept 14 days.
+**Dry run is the default**; `release.prune` previews in it too.
 `raw/` and `repairs/` are protected **by name**, never by an age rule.
 
 ```bash
 python scripts/livewire_ops.py housekeeping                      # dry run (default)
+python scripts/livewire_ops.py housekeeping --dry-run            # same, explicit
 python scripts/livewire_ops.py housekeeping --apply              # actually delete
 python scripts/livewire_ops.py housekeeping --log-retention-days 60
 python scripts/livewire_ops.py housekeeping --keep-releases 3

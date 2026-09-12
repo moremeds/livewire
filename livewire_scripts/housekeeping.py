@@ -49,6 +49,7 @@ log = logging.getLogger(__name__)
 PROTECTED_LAKE_DIRS = frozenset({"raw", "repairs", "ledger"})
 
 LOG_RETENTION_DAYS = 60
+LAUNCHD_LOG_RETENTION_DAYS = 14
 KEEP_RELEASES = 3
 KEEP_EVICTED = 2
 
@@ -114,6 +115,49 @@ def plan_housekeeping(
     # sweep would be permanently ineffective while reporting only a warning.
     # They are a one-off artifact of the exFAT move, not recurring garbage, so
     # `--appledouble` runs it deliberately instead.
+    return planned
+
+
+def plan_launchd_logs(
+    log_dir: Path, *, today: date, retention_days: int = LAUNCHD_LOG_RETENTION_DAYS
+) -> list[tuple[str, Path, Path | None]]:
+    """launchd append logs under ``log_dir/launchd/``: rotate then prune.
+
+    For every ``<label>.<stream>.log`` with mtime date < today:
+    ``('rotate', src, <label>.<stream>.<mtime YYYY-MM-DD>.log)``.
+    For every already-tagged ``<label>.<stream>.<YYYY-MM-DD>.log`` older than
+    retention_days: ``('delete', path, None)``. A file whose target name exists
+    is appended to it, never overwritten. Today's untagged file is the one
+    launchd is appending to — never rotated, never deleted.
+    """
+    launchd_dir = log_dir / "launchd"
+    planned: list[tuple[str, Path, Path | None]] = []
+    if not launchd_dir.is_dir():
+        return planned
+    for path in sorted(launchd_dir.glob("*.log")):
+        if not path.is_file():
+            continue
+        stem = path.name[: -len(".log")]
+        head, _, last = stem.rpartition(".")
+        try:
+            tag = date.fromisoformat(last)
+        except ValueError:
+            tag = None
+        if tag is not None:
+            label, _, stream = head.rpartition(".")
+            if not label or stream not in ("stdout", "stderr"):
+                continue  # date-suffixed, but not our <label>.<stream>.<date> shape
+            if (today - tag).days > retention_days:
+                planned.append(("delete", path, None))
+            continue
+        if not head or last not in ("stdout", "stderr"):
+            continue  # not a <label>.<stream>.log we own
+        try:
+            modified = date.fromtimestamp(path.stat().st_mtime)
+        except OSError:
+            continue
+        if modified < today:
+            planned.append(("rotate", path, path.with_name(f"{stem}.{modified.isoformat()}.log")))
     return planned
 
 
@@ -237,6 +281,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Warehouse retention sweeps")
     parser.add_argument("--apply", action="store_true", help="Actually delete (default: dry run)")
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="No-op accepted for explicitness; dry run is already the default.",
+    )
+    parser.add_argument(
         "--appledouble",
         action="store_true",
         help="Also sweep exFAT ._* sidecars. Walks the whole lake — minutes. Not for the nightly job.",
@@ -270,6 +319,22 @@ def main(argv: list[str] | None = None) -> int:
     for reason, path in planned:
         log.info("%s %s (%s)", "DELETE" if args.apply else "would delete", path, reason)
 
+    # launchd append logs under <logs>/launchd/. Rotation is mv: a still-running
+    # job keeps writing to the moved inode and launchd reopens the fixed path on
+    # its next launch. A dated target that already exists is appended to, never
+    # overwritten.
+    launchd_ops = plan_launchd_logs(resolved_logs, today=datetime.now().date())
+    for action, src, dst in launchd_ops:
+        if action == "rotate":
+            log.info("%s %s -> %s", "rotated" if args.apply else "would rotate", src, dst)
+        else:
+            log.info(
+                "%s %s (launchd log tagged older than %dd)",
+                "DELETE" if args.apply else "would delete",
+                src,
+                LAUNCHD_LOG_RETENTION_DAYS,
+            )
+
     # release.prune never collects the release `current` points at. Previewed in
     # dry run too: the operator review this command exists for is worthless if
     # the one category that deletes 422 MB at a time is invisible until --apply.
@@ -277,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
         log.info("%s release %s", "pruned" if args.apply else "would prune", name)
 
     deleted = 0
+    rotated = 0
     failed = 0
     if args.apply:
         for _, path in planned:
@@ -292,10 +358,30 @@ def main(argv: list[str] | None = None) -> int:
                 # shape the rest of this branch exists to remove.
                 failed += 1
                 log.warning("could not delete %s: %s", path, exc)
-        log.info("%d item(s) deleted, %d failed", deleted, failed)
+        for action, src, dst in launchd_ops:
+            try:
+                if action == "rotate":
+                    if dst.exists():
+                        with src.open("rb") as fin, dst.open("ab") as fout:
+                            shutil.copyfileobj(fin, fout)
+                        src.unlink()
+                    else:
+                        src.rename(dst)
+                    rotated += 1
+                else:
+                    src.unlink(missing_ok=True)
+                    deleted += 1
+            except OSError as exc:
+                failed += 1
+                log.warning("could not %s %s: %s", action, src, exc)
+        log.info("%d item(s) deleted, %d launchd log(s) rotated, %d failed", deleted, rotated, failed)
         return 1 if failed else 0
 
-    log.info("%d item(s) would be deleted", len(planned))
+    log.info(
+        "%d item(s) would be deleted, %d launchd log(s) would rotate",
+        len(planned) + sum(1 for a, _, _ in launchd_ops if a == "delete"),
+        sum(1 for a, _, _ in launchd_ops if a == "rotate"),
+    )
     return 0
 
 

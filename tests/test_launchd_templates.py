@@ -82,6 +82,17 @@ def test_no_other_template_reads_the_repo():
             assert "/path/to/repo" not in command(label)
 
 
+@pytest.mark.parametrize("label", ALL_TEMPLATES)
+def test_every_template_logs_under_the_warehouse_not_tmp(label):
+    """launchd append files must not live in /tmp — macOS purges it on its own
+    schedule, and the unrotated file hid a three-day-old traceback (T14)."""
+    payload = plistlib.loads((LAUNCHD_DIR / f"{label}.plist.example").read_bytes())
+    base = f"/path/to/warehouse/logs/launchd/{label}"
+    assert payload["StandardOutPath"] == f"{base}.stdout.log"
+    assert payload["StandardErrorPath"] == f"{base}.stderr.log"
+    assert "/tmp" not in (LAUNCHD_DIR / f"{label}.plist.example").read_text()
+
+
 def test_the_two_lake_writers_start_five_hours_apart():
     """The order is a property of the code (the lake-io lock); the plists agree with it."""
 

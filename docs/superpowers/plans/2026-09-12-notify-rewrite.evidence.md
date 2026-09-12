@@ -1122,3 +1122,63 @@ $ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
 - `emit_coverage_skipped` reads `LW_RUN_ID` after main's `setdefault` — a
   manual `--no-wait`-less run still gets a run id; emit failure logs and does
   not abort (matches `emit_coverage_scan_measurement`).
+
+## T14 — launchd stdout/stderr out of /tmp; date-tagged rotation, 14-day retention
+
+### FAIL first
+
+```text
+$ uv run pytest tests/test_housekeeping.py::TestLaunchdLogs \
+    tests/test_launchd_templates.py::test_every_template_logs_under_the_warehouse_not_tmp -q
+ImportError: plan_launchd_logs does not exist; 7/7 plist params fail the no-/tmp assertion.
+```
+
+### What landed
+
+- All 7 `launchd/*.plist.example`: `StandardOutPath`/`StandardErrorPath` →
+  `/path/to/warehouse/logs/launchd/<label>.stdout.log|stderr.log`.
+  `grep -rn '/tmp' launchd/` → 0 hits.
+- `livewire_scripts/housekeeping.py`: `LAUNCHD_LOG_RETENTION_DAYS = 14` and
+  `plan_launchd_logs(log_dir, *, today, retention_days=14)` — scans
+  `<log_dir>/launchd/*.log`; an untagged `<label>.<stdout|stderr>.log` with
+  mtime date < today → `('rotate', src, <label>.<stream>.<mtime>.log)`; an
+  already-tagged `<label>.<stream>.<YYYY-MM-DD>.log` whose tag is more than
+  14 days before today → `('delete', path, None)`; today's untagged live file
+  and every non-matching name are untouched. Wired into `main` after the
+  existing log-retention block: dry-run prints `would rotate`/`would delete`
+  lines; `--apply` renames (or appends-then-unlinks when the dated target
+  already exists — never overwrites) and deletes expired tagged files.
+  The apply comment states the mv semantics: a still-running job keeps
+  writing to the moved inode; launchd reopens the fixed path next launch.
+- `--dry-run` added as an explicit no-op flag (the plan's M7 command passes
+  it; dry run was already the default).
+- `docs/runbook.md`: launchd install block gains `mkdir -p
+  ~/market-warehouse/logs/launchd` first (launchd does not create missing
+  parents for the log paths); Housekeeping section documents the rotation.
+- The nightly tail already invokes `housekeeping --apply`
+  (`run_daily_update_job.py:616`), so rotation runs nightly with no plist or
+  schedule change.
+
+### PASS
+
+```text
+$ uv run pytest tests/test_housekeeping.py tests/test_launchd_templates.py \
+    tests/test_launchd_plists.py -q
+75 passed
+$ uv run ruff check + format on touched files — clean (test file reformatted)
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+2710 passed, 95.04%, exit 0
+```
+
+### Readings taken
+
+- Tagged-vs-untagged is decided by whether the suffix after the last `.`
+  parses as an ISO date; a date-suffixed name that is not
+  `<label>.<stdout|stderr>.<date>` is skipped — the sweep only touches its
+  own naming convention.
+- Deletion keys off the embedded date tag, not mtime: the tag is the durable
+  date contract; a `touch`ed old file is still old.
+- Tests that drive `main()` anchor file dates to real `date.today()`, not
+  `_NOW` — main computes today itself and a `_NOW`-anchored tag (2026-08-06)
+  is legitimately >14d old on the real clock and got deleted before the
+  rotate could append (caught by the append test, fixed).

@@ -33,10 +33,10 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/tmp/com.livewire.digest.stdout.log</string>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.digest.stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/com.livewire.digest.stderr.log</string>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.digest.stderr.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

@@ -43,10 +43,10 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/tmp/com.livewire.coverage.stdout.log</string>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.coverage.stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/com.livewire.coverage.stderr.log</string>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.coverage.stderr.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>
