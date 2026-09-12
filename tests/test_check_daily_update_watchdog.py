@@ -29,8 +29,14 @@ def _section(verdict: Verdict, name: str = "X") -> Section:
     return Section(name=name, verdict=verdict, lines=[name])
 
 
-def _ok() -> subprocess.CompletedProcess:
-    return subprocess.CompletedProcess([], 0, stdout="sent")
+def _send_runner(sent: list, returncode: int = 0):
+    """The notify send-runner signature: (command, timeout=...) -> CompletedProcess."""
+
+    def runner(command, timeout=None):
+        sent.append(list(command))
+        return subprocess.CompletedProcess(command, returncode, stdout="sent")
+
+    return runner
 
 
 class TestTheWatchdogIsAStatusCaller:
@@ -42,16 +48,16 @@ class TestTheWatchdogIsAStatusCaller:
     def test_an_all_green_status_pages_nobody(self, tmp_path, monkeypatch):
         monkeypatch.setattr(watchdog, "collect", lambda *a, **k: [_section(Verdict.OK)])
         sent = []
-        monkeypatch.setattr(watchdog, "send_failure_alert", lambda *a, **k: sent.append(a) or _ok())
-        assert watchdog.run_watchdog(_config(tmp_path), "2026-09-02") == 0
+        assert watchdog.run_watchdog(_config(tmp_path), "2026-09-02", runner=_send_runner(sent)) == 0
         assert sent == []
 
     def test_one_bad_section_pages_once(self, tmp_path, monkeypatch):
         monkeypatch.setattr(watchdog, "collect", lambda *a, **k: [_section(Verdict.BAD, "Lanes terminal")])
         sent = []
-        monkeypatch.setattr(watchdog, "send_failure_alert", lambda *a, **k: sent.append(a) or _ok())
-        assert watchdog.run_watchdog(_config(tmp_path), "2026-09-02") == 0
+        assert watchdog.run_watchdog(_config(tmp_path), "2026-09-02", runner=_send_runner(sent)) == 0
         assert len(sent) == 1
+        assert sent[0][1].endswith("send_mail.mjs")
+        assert any(t.startswith("--subject=PAGE 2026-09-02") for t in sent[0])
 
     def test_a_daily_run_that_never_started_pages(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
@@ -63,8 +69,7 @@ class TestTheWatchdogIsAStatusCaller:
             ],
         )
         sent = []
-        monkeypatch.setattr(watchdog, "send_failure_alert", lambda *a, **k: sent.append(a) or _ok())
-        assert watchdog.run_watchdog(_config(tmp_path), "2026-09-02") == 0
+        assert watchdog.run_watchdog(_config(tmp_path), "2026-09-02", runner=_send_runner(sent)) == 0
         assert len(sent) == 1
 
     def test_intraday_catchup_that_never_started_pages(self, tmp_path, monkeypatch):
@@ -77,37 +82,31 @@ class TestTheWatchdogIsAStatusCaller:
             ],
         )
         sent = []
-        monkeypatch.setattr(watchdog, "send_failure_alert", lambda *a, **k: sent.append(a) or _ok())
-        assert watchdog.run_watchdog(_config(tmp_path), "2026-09-02") == 0
+        assert watchdog.run_watchdog(_config(tmp_path), "2026-09-02", runner=_send_runner(sent)) == 0
         assert len(sent) == 1
 
     def test_a_second_run_the_same_day_does_not_page_again(self, tmp_path, monkeypatch):
         monkeypatch.setattr(watchdog, "collect", lambda *a, **k: [_section(Verdict.BAD)])
         sent = []
-        monkeypatch.setattr(watchdog, "send_failure_alert", lambda *a, **k: sent.append(a) or _ok())
-        watchdog.run_watchdog(_config(tmp_path), "2026-09-02")
-        watchdog.run_watchdog(_config(tmp_path), "2026-09-02")
+        runner = _send_runner(sent)
+        watchdog.run_watchdog(_config(tmp_path), "2026-09-02", runner=runner)
+        watchdog.run_watchdog(_config(tmp_path), "2026-09-02", runner=runner)
         assert len(sent) == 1
 
     @pytest.mark.parametrize("verdict", [Verdict.UNKNOWN, Verdict.WARN])
     def test_only_bad_pages(self, tmp_path, monkeypatch, verdict):
         monkeypatch.setattr(watchdog, "collect", lambda *a, **k: [_section(verdict)])
         sent = []
-        monkeypatch.setattr(watchdog, "send_failure_alert", lambda *a, **k: sent.append(a) or _ok())
-        assert watchdog.run_watchdog(_config(tmp_path), "2026-09-02") == 0
+        assert watchdog.run_watchdog(_config(tmp_path), "2026-09-02", runner=_send_runner(sent)) == 0
         assert sent == []
 
     def test_a_failed_send_is_recorded_as_an_execution_row(self, tmp_path, monkeypatch):
         from clients import ledger
 
         monkeypatch.setattr(watchdog, "collect", lambda *a, **k: [_section(Verdict.BAD)])
-        monkeypatch.setattr(
-            watchdog,
-            "send_failure_alert",
-            lambda *a, **k: subprocess.CompletedProcess([], 7, stdout="smtp down"),
-        )
-        assert watchdog.run_watchdog(_config(tmp_path), "2026-09-02") == watchdog.ALERT_FAILED_EXIT_CODE
-        assert ledger.query("select exit_code from executions where script = 'send_alert'") == [{"exit_code": 7}]
+        runner = _send_runner([], returncode=7)
+        assert watchdog.run_watchdog(_config(tmp_path), "2026-09-02", runner=runner) == watchdog.ALERT_FAILED_EXIT_CODE
+        assert ledger.query("select exit_code from executions where script = 'notify'") == [{"exit_code": 7}]
 
 
 def test_parse_args_and_path_builders(tmp_path):

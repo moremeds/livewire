@@ -8,13 +8,11 @@ from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
+from livewire_scripts import notify
 from livewire_scripts.run_intraday_catchup_job import (
-    AlertRequest,
     IntradayCatchupConfig,
     _extract_error_summary,
-    _node_binary_exists,
     _utc_now,
-    build_alert_command,
     build_config,
     build_intraday_catchup_command,
     build_log_file,
@@ -104,26 +102,77 @@ class TestBuildIntradayCatchupCommand:
         ]
 
 
-class TestBuildAlertCommand:
-    def test_includes_job_name_intraday_catchup(self, tmp_path):
+class TestFailurePages:
+    """The failure path pages through notify — a ledger receipt, not an argv.
+
+    The page must never go through the lane runner: the runner here runs
+    `daily-backfill` only, and `notify._run_child` owns the send.
+    """
+
+    def test_failure_pages_via_notify_not_the_lane_runner(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LW_RUN_ID", "intraday-catchup-test")
         config = _config(tmp_path)
-        request = AlertRequest(
-            run_date="2026-06-05",
-            log_file=tmp_path / "log.log",
-            attempts=1,
-            exit_code=42,
-            error_summary="something broke",
-            repo_root=tmp_path / "repo",
+        config.log_dir.mkdir(parents=True)
+        runner_calls: list[list[str]] = []
+        send_calls: list[list[str]] = []
+
+        def lane_runner(cmd, **kwargs):
+            runner_calls.append(list(cmd))
+            handle = kwargs.get("stdout")
+            if handle is not None and hasattr(handle, "write"):
+                handle.write("boom: ConnectionError: Socket disconnect\n")
+            return CompletedProcess(args=cmd, returncode=2)
+
+        def send_runner(command, timeout=None):
+            send_calls.append(list(command))
+            return CompletedProcess(command, 0, stdout="sent")
+
+        monkeypatch.setattr(notify, "_run_child", send_runner)
+        rc = run_intraday_catchup(
+            config,
+            env=None,
+            runner=lane_runner,
+            now_fn=lambda: datetime(2026, 6, 5, 23, 0, tzinfo=UTC),
         )
-        cmd = build_alert_command(config, request)
-        assert "--job-name" in cmd
-        assert cmd[cmd.index("--job-name") + 1] == "intraday_catchup"
-        assert "--attempts" in cmd
-        assert cmd[cmd.index("--attempts") + 1] == "1"
-        assert "--exit-code" in cmd
-        assert cmd[cmd.index("--exit-code") + 1] == "42"
-        assert "--run-date" in cmd
-        assert cmd[cmd.index("--run-date") + 1] == "2026-06-05"
+
+        assert rc == 2
+        assert runner_calls == [build_intraday_catchup_command(config)]
+        assert len(send_calls) == 1, "the page goes through notify's own runner, never the lane runner"
+        assert send_calls[0][1].endswith("send_mail.mjs")
+        assert any(
+            token.startswith("--subject=PAGE 2026-06-05: lane intraday_catchup failed") for token in send_calls[0]
+        )
+
+        from clients import ledger
+
+        rows = ledger.query(
+            "select exit_code, json_extract_string(receipt_json,'$.skipped') as skipped "
+            "from executions where script = 'notify'"
+        )
+        assert rows == [{"exit_code": 0, "skipped": "false"}]
+
+    def test_a_failed_send_is_still_the_lane_exit_code(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LW_RUN_ID", "intraday-catchup-test")
+        config = _config(tmp_path)
+        config.log_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            notify, "_run_child", lambda command, timeout=None: CompletedProcess(command, 1, stdout="smtp down")
+        )
+        rc = run_intraday_catchup(
+            config,
+            runner=lambda cmd, **kw: CompletedProcess(args=cmd, returncode=4),
+            now_fn=lambda: datetime(2026, 6, 5, 23, 0, tzinfo=UTC),
+        )
+
+        assert rc == 4
+        contents = (config.log_dir / "intraday_catchup_2026-06-05.log").read_text(encoding="utf-8")
+        assert "failure page returned exit_code=1" in contents
+
+        from clients import ledger
+
+        rows = ledger.query("select exit_code from executions where script = 'notify'")
+        assert rows == [{"exit_code": 1}]
 
 
 class TestRunIntradayCatchup:
@@ -156,30 +205,19 @@ class TestRunIntradayCatchup:
         assert "=== Intraday Catchup" in contents
         assert "=== Done" in contents
 
-    def test_failure_triggers_alert(self, tmp_path, monkeypatch):
-        node_bin = str(tmp_path / "bin" / "node")
-        config = _config(tmp_path, node_bin=node_bin)
+    def test_failure_pages(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LW_RUN_ID", "intraday-catchup-test")
+        config = _config(tmp_path)
         config.log_dir.mkdir(parents=True)
-        # Create alert script and node binary so the alert path runs.
-        config.alert_script.parent.mkdir(parents=True, exist_ok=True)
-        config.alert_script.write_text("# stub\n", encoding="utf-8")
-        Path(config.node_bin).parent.mkdir(parents=True, exist_ok=True)
-        Path(config.node_bin).write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
-
-        runner_calls: list[list[str]] = []
+        sent: list[notify.Notice] = []
 
         def fake_runner(cmd, **kwargs):
-            runner_calls.append(list(cmd))
             handle = kwargs.get("stdout")
             if handle is not None and hasattr(handle, "write"):
                 handle.write("boom: ConnectionError: Socket disconnect\n")
-            # Daily-backfill fails; alert subprocess succeeds.
-            return CompletedProcess(
-                args=cmd,
-                returncode=2 if cmd[1] == str(config.ingest_script) else 0,
-                stdout="alert sent",
-            )
+            return CompletedProcess(args=cmd, returncode=2)
 
+        monkeypatch.setattr(notify, "send", lambda notice, **kw: sent.append(notice) or 0)
         rc = run_intraday_catchup(
             config,
             env=None,
@@ -188,35 +226,11 @@ class TestRunIntradayCatchup:
         )
 
         assert rc == 2
-        assert len(runner_calls) == 2
-        assert runner_calls[0] == build_intraday_catchup_command(config)
-        # Alert invocation includes --job-name intraday_catchup and exit-code 2.
-        alert_cmd = runner_calls[1]
-        assert "--job-name" in alert_cmd and alert_cmd[alert_cmd.index("--job-name") + 1] == "intraday_catchup"
-        assert "--exit-code" in alert_cmd and alert_cmd[alert_cmd.index("--exit-code") + 1] == "2"
-
-    def test_failure_with_missing_node_skips_alert_and_returns_exit_code(self, tmp_path, monkeypatch):
-        config = _config(tmp_path, node_bin="/does/not/exist/node")
-        config.log_dir.mkdir(parents=True)
-
-        runner_calls: list[list[str]] = []
-
-        def fake_runner(cmd, **kwargs):
-            runner_calls.append(list(cmd))
-            return CompletedProcess(args=cmd, returncode=3)
-
-        rc = run_intraday_catchup(
-            config,
-            runner=fake_runner,
-            now_fn=lambda: datetime(2026, 6, 5, 23, 0, tzinfo=UTC),
-        )
-
-        assert rc == 3
-        assert len(runner_calls) == 1  # alert was skipped
-
-        log_file = config.log_dir / "intraday_catchup_2026-06-05.log"
-        contents = log_file.read_text(encoding="utf-8")
-        assert "node binary not found" in contents
+        assert len(sent) == 1
+        assert sent[0].kind == "page"
+        assert "intraday_catchup" in sent[0].subject
+        assert "exit 2" in sent[0].subject
+        assert "Socket disconnect" in sent[0].body
 
 
 class TestMain:
@@ -254,24 +268,6 @@ class TestMain:
         assert captured["cmd"][2] == "daily-backfill"
 
 
-class TestNodeBinaryExists:
-    def test_absolute_path_that_exists(self, tmp_path):
-        node = tmp_path / "node"
-        node.write_text("#!/bin/bash\n", encoding="utf-8")
-        assert _node_binary_exists(str(node)) is True
-
-    def test_absolute_path_that_does_not_exist(self, tmp_path):
-        assert _node_binary_exists(str(tmp_path / "does_not_exist")) is False
-
-    def test_relative_name_found_on_path(self):
-        with patch("livewire_scripts.run_intraday_catchup_job.shutil.which", return_value="/usr/bin/node"):
-            assert _node_binary_exists("node") is True
-
-    def test_relative_name_not_found_on_path(self):
-        with patch("livewire_scripts.run_intraday_catchup_job.shutil.which", return_value=None):
-            assert _node_binary_exists("node") is False
-
-
 class TestExtractErrorSummary:
     def test_returns_last_non_header_line(self, tmp_path):
         log = tmp_path / "test.log"
@@ -300,64 +296,6 @@ class TestExtractErrorSummary:
         log.write_text("some noise\n" + summary + "\n", encoding="utf-8")
         result = _extract_error_summary(log)
         assert result == "Intraday catchup failed — phases failed: daily_backfill_fred_rates"
-
-
-class TestRunIntradayCatchupAdditional:
-    def test_failure_with_alert_script_missing_skips_alert(self, tmp_path):
-        node_bin = str(tmp_path / "bin" / "node")
-        Path(node_bin).parent.mkdir(parents=True)
-        Path(node_bin).write_text("#!/bin/bash\n", encoding="utf-8")
-        config = _config(tmp_path, node_bin=node_bin)
-        config.log_dir.mkdir(parents=True)
-        # alert_script does NOT exist
-
-        runner_calls: list[list[str]] = []
-
-        def fake_runner(cmd, **kwargs):
-            runner_calls.append(list(cmd))
-            return CompletedProcess(args=cmd, returncode=5)
-
-        rc = run_intraday_catchup(
-            config,
-            runner=fake_runner,
-            now_fn=lambda: datetime(2026, 6, 5, 23, 0, tzinfo=UTC),
-        )
-
-        assert rc == 5
-        assert len(runner_calls) == 1  # no alert dispatched
-        log_file = config.log_dir / "intraday_catchup_2026-06-05.log"
-        assert "alert script not found" in log_file.read_text(encoding="utf-8")
-
-    def test_failure_with_alert_subprocess_non_zero(self, tmp_path):
-        node_bin = str(tmp_path / "bin" / "node")
-        Path(node_bin).parent.mkdir(parents=True)
-        Path(node_bin).write_text("#!/bin/bash\n", encoding="utf-8")
-        config = _config(tmp_path, node_bin=node_bin)
-        config.log_dir.mkdir(parents=True)
-        config.alert_script.parent.mkdir(parents=True, exist_ok=True)
-        config.alert_script.write_text("# stub\n", encoding="utf-8")
-
-        runner_calls: list[list[str]] = []
-
-        def fake_runner(cmd, **kwargs):
-            runner_calls.append(list(cmd))
-            handle = kwargs.get("stdout")
-            if handle is not None and hasattr(handle, "write"):
-                handle.write("some failure output\n")
-            rc = 4 if cmd[1] == str(config.ingest_script) else 1
-            return CompletedProcess(args=cmd, returncode=rc, stdout="alert failed")
-
-        rc = run_intraday_catchup(
-            config,
-            runner=fake_runner,
-            now_fn=lambda: datetime(2026, 6, 5, 23, 0, tzinfo=UTC),
-        )
-
-        assert rc == 4
-        assert len(runner_calls) == 2
-        log_file = config.log_dir / "intraday_catchup_2026-06-05.log"
-        contents = log_file.read_text(encoding="utf-8")
-        assert "failure alert returned non-zero exit code" in contents
 
 
 class TestLaunchdTemplate:

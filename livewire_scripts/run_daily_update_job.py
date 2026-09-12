@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import shutil
 import socket
@@ -19,8 +18,8 @@ from pathlib import Path
 from clients import constants, ledger
 from clients.constants import LANE_ORDER
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
-from livewire_scripts.job_runner_common import AlertRequest, append_log, process_group_guard
-from livewire_scripts.job_runner_common import build_alert_command as _build_alert_command
+from livewire_scripts import notify
+from livewire_scripts.job_runner_common import append_log, process_group_guard, tail_of
 from livewire_scripts.job_runner_common import build_log_file as _build_log_file
 from livewire_scripts.job_runner_common import utc_now as _utc_now
 from livewire_scripts.paths import warehouse_dir as resolve_warehouse_dir
@@ -260,16 +259,6 @@ def build_duckdb_catalog_command(config: RunnerConfig) -> list[str]:
     return [config.python_bin, str(STORE_SCRIPT), "duckdb", "build"]
 
 
-def build_alert_command(config: RunnerConfig, request: AlertRequest) -> list[str]:
-    return _build_alert_command(config.python_bin, config.alert_script, request, job_name="daily_update")
-
-
-def node_binary_exists(node_bin: str) -> bool:
-    if Path(node_bin).is_absolute():
-        return Path(node_bin).exists()
-    return shutil.which(node_bin) is not None
-
-
 def _run_in_own_process_group(command, *, stdout, env, timeout):
     """Run `command` in its own session and kill the whole group on timeout.
 
@@ -316,45 +305,6 @@ def run_daily_update_attempt(
             spent = "no budget" if timeout is None else f"{timeout:.0f}s"
             append_log(log_file, f"=== Timed out after {spent} (process group killed) ===")
             return subprocess.CompletedProcess(list(command), TIMEOUT_EXIT_CODE)
-
-
-def send_failure_alert(
-    config: RunnerConfig,
-    request: AlertRequest,
-    log_file: Path,
-    env: dict[str, str] | None = None,
-    runner: callable | None = None,
-) -> subprocess.CompletedProcess | None:
-    """Send the failure email.
-
-    `runner` defaults to `subprocess.run` **late**, not as a default argument —
-    a default captured at import time cannot be patched, and the alert is the
-    one path production has no other way to observe.
-    """
-    if not node_binary_exists(config.node_bin):
-        append_log(
-            log_file,
-            f"WARNING: node binary not found at {config.node_bin}; skipping failure email",
-        )
-        return None
-
-    if not config.alert_script.exists():
-        append_log(
-            log_file,
-            f"WARNING: alert script not found at {config.alert_script}; skipping failure email",
-        )
-        return None
-
-    alert_command = build_alert_command(config, request)
-    append_log(log_file, f"Triggering failure alert via: {' '.join(alert_command)}")
-    return (runner or subprocess.run)(
-        alert_command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env=env,
-        check=False,
-    )
 
 
 def extract_error_summary(log_file: Path) -> str:
@@ -462,10 +412,11 @@ def _page_failure(
     log_file: Path,
     exit_code: int,
     *,
+    lane: str,
     attempts: int | None,
     env: dict[str, str] | None = None,
 ) -> None:
-    """Send the failure alert and persist it if the send itself fails.
+    """Page through notify — one executions(script='notify') row is the receipt.
 
     Factored out of `run_with_retries` so `_run_scheduled_lane` can page too —
     it had no alert path at all, which is why the 2026-07-28 corporate-action
@@ -478,59 +429,23 @@ def _page_failure(
     remaining lanes, Silver included, never ran). The two runners are not
     interchangeable: the lane runner is keyword-only on `stdout/env/timeout`
     and returns a `CompletedProcess` with **no stdout**, because a lane streams
-    into the log file. The alert needs its output captured, both to log the
-    send and to hand `record_undelivered_alert` something to persist.
+    into the log file. The page goes through `notify.send`, whose own runner
+    owns the subprocess and writes the receipt row itself — send, failure and
+    dedup-skip alike.
     """
-    alert_request = AlertRequest(
-        run_date=log_file.stem.removeprefix("daily_update_"),
-        log_file=log_file,
-        attempts=attempts,
-        exit_code=exit_code,
-        error_summary=extract_error_summary(log_file),
-        repo_root=REPO_ROOT,
+    run_date = log_file.stem.removeprefix("daily_update_")
+    notice = notify.page_for_lane(
+        run_date,
+        lane,
+        exit_code,
+        extract_error_summary(log_file),
+        tail_of(log_file, 60),
     )
-    alert_result = send_failure_alert(config, alert_request, log_file, env=env)
-    if alert_result is None:
-        record_failed_send(alert_request.run_date, None)
-        return
-
-    alert_output = (alert_result.stdout or "").strip()
-    if alert_result.returncode == 0:
-        append_log(log_file, f"Failure alert sent successfully. {alert_output}".strip())
+    code = notify.send(notice)
+    if code == 0:
+        append_log(log_file, f"Page for lane {lane} sent via notify (exit_code={exit_code}).")
     else:
-        append_log(
-            log_file,
-            (f"WARNING: failure alert returned non-zero exit code {alert_result.returncode}. {alert_output}").strip(),
-        )
-        record_failed_send(alert_request.run_date, alert_result)
-
-
-def record_failed_send(run_date: str, result: subprocess.CompletedProcess | None) -> None:
-    """Record a failed alert send as an execution fact."""
-    try:
-        output = "" if result is None else (result.stdout or "")
-        if isinstance(output, bytes):
-            output = output.decode("utf-8", "replace")
-        ledger.emit(
-            "executions",
-            [
-                {
-                    "evidence_hash": None,
-                    "script": "send_alert",
-                    "attempt": 1,
-                    "args_json": json.dumps({"run_date": run_date}),
-                    "release_sha": _release_sha(),
-                    "started": _utc_now(),
-                    "ended": _utc_now(),
-                    "exit_code": 1 if result is None else result.returncode,
-                    "receipt_json": json.dumps({"output": output}),
-                    "run_id": run_id(),
-                }
-            ],
-            run_id=run_id(),
-        )
-    except Exception as exc:  # pragma: no cover - a failed reporter cannot fail the job
-        print(f"WARNING: could not record failed alert send: {exc}", file=sys.stderr)
+        append_log(log_file, f"WARNING: notify page for lane {lane} returned exit_code={code}")
 
 
 def run_with_retries(
@@ -600,7 +515,7 @@ def run_with_retries(
             )
 
         if result.returncode == TIMEOUT_EXIT_CODE:
-            # `break`, NOT `return`: the only send_failure_alert call sits after
+            # `break`, NOT `return`: the only _page_failure call sits after
             # this loop, so an early return would make the timeout the one
             # failure mode that never pages — in the mechanism whose whole
             # purpose is to page. A wedge is also not transient; retrying just
@@ -642,7 +557,7 @@ def run_with_retries(
         (f"=== Failed {ended_at:%Y-%m-%dT%H:%M:%SZ} after {config.max_attempts} attempt(s) ==="),
     )
 
-    _page_failure(config, log_file, final_exit_code, attempts=config.max_attempts, env=env)
+    _page_failure(config, log_file, final_exit_code, lane=done_scope, attempts=config.max_attempts, env=env)
     return _finish_lane(done_scope, log_file, started_at, clock, final_exit_code, ended_at, lane_log_offset)
 
 
@@ -666,11 +581,12 @@ def run_post_success_quality(
     log_file: Path,
     runner: callable = subprocess.run,
 ) -> None:
-    """Run weekly and the nightly digest exactly once, last.
+    """Run weekly and housekeeping exactly once, last.
 
     These used to fire inside each asset class's success branch — up to four
-    digest emails a night, all of them before the Silver rebuild. Running the
-    tail last ensures Silver's measurements exist before the digest reads them.
+    copies a night, all of them before the Silver rebuild. The digest is no
+    longer here either: it is com.livewire.digest, its own scheduled job that
+    runs after coverage. This tail is recorded as lane 'tail'.
     """
     tail_started = _utc_now()
     tail_clock = time.monotonic()
@@ -680,7 +596,6 @@ def run_post_success_quality(
     # external volume — so it now has its own job and no budget at all.
     # weekly self-skips on non-Sunday.
     results = [_spawn_post_success_quality(runner, log_file, ["weekly"], "weekly quality report")]
-    run_date = log_file.stem.removeprefix("daily_update_")
 
     # The interior gap scan runs as com.livewire.interior-gap-scan, not here.
     # It was given 3600s; measured 2026-08-16 against the real lake it needs
@@ -691,19 +606,9 @@ def run_post_success_quality(
     # coverage: a guessed timeout around work whose runtime is dominated by
     # cold I/O on an external volume. Its own job, and no budget at all.
 
-    digest_result = _spawn_post_success_quality(
-        runner,
-        log_file,
-        ["digest", "--run-date", run_date, "--email"],
-        "nightly digest",
-    )
-    results.append(digest_result)
-    if digest_result.returncode != 0:
-        record_failed_send(run_date, digest_result)
-
-    # Retention sweep, last — the digest must already have been sent. It can
-    # only warn: a sweep that deleted nothing is never worth failing a
-    # successful ingest run for; the terminal tail row carries the failure.
+    # Retention sweep, last. It can only warn: a sweep that deleted nothing is
+    # never worth failing a successful ingest run for; the terminal tail row
+    # carries the failure.
     results.append(
         _spawn_post_success_quality(
             runner,
@@ -718,7 +623,7 @@ def run_post_success_quality(
     tail_code = next((result.returncode for result in results if result.returncode != 0), 0)
 
     _emit_lane(
-        "digest",
+        "tail",
         started=tail_started,
         ended=_utc_now(),
         exit_code=tail_code,
@@ -803,7 +708,7 @@ def _run_scheduled_lane(
     # exactly what happened to the 2026-07-28 corporate-action wedge. A down
     # Gateway stays silent: degraded is not failed.
     if result.returncode != GATEWAY_DOWN_EXIT_CODE:
-        _page_failure(config, log_file, result.returncode, attempts=None, env=env)
+        _page_failure(config, log_file, result.returncode, lane=done_scope, attempts=None, env=env)
     return result.returncode
 
 
@@ -1108,7 +1013,7 @@ def _run_main(argv: Sequence[str] | None = None) -> int:
             f"DEGRADED: IB Gateway unreachable; lanes skipped: {', '.join(degraded)}",
         )
 
-    # Last, so the digest sees the catalog result and Silver's SUMMARY_JSON.
+    # Last, so the tail sees the catalog result and Silver's SUMMARY_JSON.
     run_post_success_quality(config, build_log_file(config.log_dir, _utc_now()))
 
     return close_run(final_code, verdict="DEGRADED" if not final_code and degraded else None)

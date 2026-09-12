@@ -265,7 +265,7 @@ def test_recovery_state_sends_a_new_digest_notification(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
-def test_the_digest_lane_is_recorded_in_the_ledger(tmp_path, monkeypatch):
+def test_the_tail_lane_is_recorded_in_the_ledger(tmp_path, monkeypatch):
     from clients import ledger
 
     monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
@@ -285,8 +285,8 @@ def test_the_digest_lane_is_recorded_in_the_ledger(tmp_path, monkeypatch):
         tmp_path / "daily_update_2026-09-02.log",
         runner=lambda *args, **kwargs: CompletedProcess([], 0),
     )
-    assert ledger.query("select lane, outcome from lane_results where lane = 'digest'") == [
-        {"lane": "digest", "outcome": "done"}
+    assert ledger.query("select lane, outcome from lane_results where lane = 'tail'") == [
+        {"lane": "tail", "outcome": "done"}
     ]
 
 

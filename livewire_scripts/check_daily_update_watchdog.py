@@ -16,14 +16,10 @@ if str(REPO_ROOT) not in sys.path:  # pragma: no cover - direct script bootstrap
     sys.path.insert(0, str(REPO_ROOT))
 
 from clients import ledger
+from livewire_scripts import notify
+from livewire_scripts.job_runner_common import tail_of
 from livewire_scripts.paths import data_lake_dir
-from livewire_scripts.run_daily_update_job import (
-    AlertRequest,
-    RunnerConfig,
-    build_config,
-    record_failed_send,
-    send_failure_alert,
-)
+from livewire_scripts.run_daily_update_job import RunnerConfig, build_config
 from livewire_scripts.status import Verdict, collect
 
 ALERT_FAILED_EXIT_CODE = 3
@@ -74,21 +70,8 @@ def run_watchdog(config: RunnerConfig, run_date: str, runner=None) -> int:
     reasons.extend(f"{job} did not start on {run_date}" for job in missing_jobs)
     reason = "; ".join(reasons)
     log_file = build_daily_log_file(config.log_dir, run_date)
-    result = send_failure_alert(
-        config,
-        AlertRequest(
-            run_date=run_date,
-            log_file=log_file,
-            attempts=None,
-            exit_code=1,
-            error_summary=reason,
-            repo_root=REPO_ROOT,
-        ),
-        log_file,
-        runner=runner,
-    )
-    if result is None or result.returncode != 0:
-        record_failed_send(run_date, result)
+    notice = notify.page_for_lane(run_date, "watchdog", 1, reason, tail_of(log_file, 60))
+    if notify.send(notice, runner=runner) != 0:
         return ALERT_FAILED_EXIT_CODE
     record_alert_marker(marker_file, reason)
     return 0

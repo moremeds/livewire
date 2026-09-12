@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from livewire_scripts.job_runner_common import AlertRequest, build_alert_command, build_log_file
+from livewire_scripts.job_runner_common import build_log_file, tail_of
 
 
 @pytest.mark.parametrize("termination", ["interrupt", "sigterm", "leader-exited"])
@@ -91,51 +91,26 @@ time.sleep(60)
         proc.wait(timeout=10)
 
 
-def _request(**overrides) -> AlertRequest:
-    base = dict(
-        run_date="2026-09-05",
-        log_file=Path("/w/logs/daily_update_2026-09-05.log"),
-        error_summary="equity lane timed out",
-        repo_root=Path("/repo"),
-    )
-    base.update(overrides)
-    return AlertRequest(**base)
-
-
-def test_the_error_summary_stays_one_token():
-    """A summary beginning with -- was unsendable (pm:2026-08-08)."""
-    command = build_alert_command(
-        "/py", Path("/repo/scripts/livewire_ops.py"), _request(error_summary="--weird"), job_name="daily_update"
-    )
-
-    assert "--error-summary=--weird" in command
-    assert "--weird" not in [token for token in command if not token.startswith("--error-summary")]
-
-
-def test_attempts_and_exit_code_are_omitted_when_unknown():
-    command = build_alert_command("/py", Path("/a.py"), _request(), job_name="daily_update")
-
-    assert "--attempts" not in command
-    assert "--exit-code" not in command
-
-
-def test_the_intraday_job_gets_the_command_it_always_got():
-    command = build_alert_command(
-        "/py", Path("/a.py"), _request(attempts=1, exit_code=124), job_name="intraday_catchup"
-    )
-
-    assert command[-6:] == ["--job-name", "intraday_catchup", "--attempts", "1", "--exit-code", "124"]
-
-
 def test_build_log_file_takes_its_clock_from_the_shared_seam():
     path = build_log_file(Path("/w/logs"), "daily_update", now=datetime(2026, 9, 5, 6, tzinfo=UTC))
 
     assert path == Path("/w/logs/daily_update_2026-09-05.log")
 
 
-#: Modules that still build the alert argv inline. They are one-shot reporters,
-#: not the scheduled-job runners this module consolidated; folding them in is a
-#: separate change. Frozen here so a NEW encoding of the contract fails the run.
+def test_tail_of_returns_the_last_n_lines(tmp_path):
+    log_file = tmp_path / "lane.log"
+    log_file.write_text("".join(f"line {i}\n" for i in range(100)), encoding="utf-8")
+
+    assert tail_of(log_file, 3) == "line 97\nline 98\nline 99\n"
+
+
+def test_tail_of_a_missing_log_is_empty(tmp_path):
+    assert tail_of(tmp_path / "missing.log", 60) == ""
+
+
+#: Modules that still build an alert argv inline. They are one-shot reporters,
+#: not the scheduled-job runners (which page through notify.py now); folding
+#: them in is Task 9 / Amendment A2. Frozen here so a NEW argv fails the run.
 _KNOWN_INLINE_ALERT_BUILDERS = {
     "data_quality_report.py",
     "health_check.py",
@@ -143,7 +118,7 @@ _KNOWN_INLINE_ALERT_BUILDERS = {
 }
 
 
-def test_only_one_module_encodes_the_alert_contract():
+def test_no_scheduled_runner_encodes_the_alert_contract():
     """Neither scheduled-job runner may carry its own copy of the argv."""
     import pathlib
 

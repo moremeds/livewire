@@ -1,8 +1,9 @@
 """What the two scheduled-job runners share.
 
-`run_daily_update_job` and `run_intraday_catchup_job` page through the same
-alert contract. Two encodings of that contract is the shape
-pm:2026-07-28-lane-alert-paths-missing describes.
+`run_daily_update_job` and `run_intraday_catchup_job` share the process-group
+guard, the log-file seams, and the log tail that feeds a page body. Paging
+itself is notify.page_for_lane + notify.send — a subprocess argv here is the
+shape pm:2026-07-28-lane-alert-paths-missing describes.
 """
 
 from __future__ import annotations
@@ -11,9 +12,9 @@ import os
 import signal
 import sys
 import threading
+from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -50,16 +51,6 @@ def process_group_guard(proc) -> Iterator[None]:
             signal.signal(signal.SIGTERM, previous)
 
 
-@dataclass(frozen=True)
-class AlertRequest:
-    run_date: str
-    log_file: Path
-    error_summary: str
-    repo_root: Path
-    attempts: int | None = None
-    exit_code: int | None = None
-
-
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -78,34 +69,13 @@ def build_log_file(log_dir: Path, prefix: str, now: datetime | None = None) -> P
     return log_dir / f"{prefix}_{current:%Y-%m-%d}.log"
 
 
-def build_alert_command(
-    python_bin: str,
-    alert_script: Path,
-    request: AlertRequest,
-    *,
-    job_name: str,
-) -> list[str]:
-    command = [
-        python_bin,
-        str(alert_script),
-        "send-alert",
-        "--run-date",
-        request.run_date,
-        "--log-file",
-        str(request.log_file),
-        # One token. The two-token form breaks whenever the summary begins with
-        # "--", which is how the 2026-08-08 page was lost.
-        f"--error-summary={request.error_summary}",
-        "--repo-root",
-        str(request.repo_root),
-        "--job-name",
-        job_name,
-    ]
-    if request.attempts is not None:
-        command.extend(["--attempts", str(request.attempts)])
-    if request.exit_code is not None:
-        command.extend(["--exit-code", str(request.exit_code)])
-    return command
+def tail_of(log_file: Path, lines: int = 60) -> str:
+    """The last `lines` of a lane log — the context block in a page body."""
+    try:
+        with log_file.open(encoding="utf-8") as handle:
+            return "".join(deque(handle, maxlen=lines))
+    except FileNotFoundError:
+        return ""
 
 
 def emit_progress(*, scope: str, completed: int, total: int, run_id: str) -> None:

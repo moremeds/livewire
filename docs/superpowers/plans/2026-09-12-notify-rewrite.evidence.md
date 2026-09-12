@@ -412,3 +412,38 @@ exit 1   FAILED test_only_one_module_encodes_the_alert_contract
          → removed it from _KNOWN_INLINE_ALERT_BUILDERS, re-ran:
 exit 0   2706 passed, 2 warnings   TOTAL coverage 95.05% (>=95)
 ```
+
+## T6 — daily-update + intraday pages through notify; digest leaves the tail (incl. Amendment A1)
+
+Focused FAIL first: `tail_of`/`notify` imports absent → ImportError/NameError as expected; PASS after implementation.
+
+```
+uv run pytest tests/test_run_daily_update_job.py tests/test_run_intraday_catchup_job.py tests/test_job_runner_common.py tests/test_check_daily_update_watchdog.py -x -q
+→ 130 passed in 2.44s  (exit 0)
+```
+
+Full gate:
+
+```
+uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+→ 2694 passed, 2 warnings in 44.50s  (exit 0)   TOTAL coverage 95.04%
+```
+
+Interim full-gate run failed once on `test_nightly_digest.py::test_the_digest_lane_is_recorded_in_the_ledger` — it asserted `lane='digest'`; renamed to `test_the_tail_lane_is_recorded_in_the_ledger` asserting `lane='tail'` (that rename IS the T6 deliverable).
+
+What changed:
+
+- `run_daily_update_job.py`: `AlertRequest`/`send_failure_alert`/`record_failed_send`/`build_alert_command`/`node_binary_exists` deleted; `import json` dropped (only record_failed_send used it). `_page_failure(config, log_file, exit_code, *, lane, attempts, env=None)` builds `notify.page_for_lane(run_date, lane, exit_code, extract_error_summary(log_file), tail_of(log_file, 60))` and calls `notify.send(notice)` — no runner parameter, page goes through notify's own `_run_child`. Both call sites pass `lane=done_scope`. `run_post_success_quality` no longer spawns `digest --email`; `_emit_lane("tail", …)`.
+- `run_intraday_catchup_job.py` (A1): `_send_failure_alert` → `_page_failure(log_file, exit_code, now_fn)`; `notify.page_for_lane(run_date, "intraday_catchup", exit_code, _extract_error_summary(log_file), tail_of(log_file, 60))` + `notify.send`. Local `build_alert_command` wrapper, `_node_binary_exists`, node/alert-script prechecks deleted — notify.send records a missing node as a failed send row instead of skipping silently.
+- `job_runner_common.py`: `AlertRequest` + `build_alert_command` deleted; `tail_of(log_file, lines)` added (deque tail, "" on missing file); docstring reworded.
+- `check_daily_update_watchdog.py` (import update per plan): drops the deleted names; `run_watchdog` send block now `notify.page_for_lane(run_date, "watchdog", 1, reason, tail_of(log_file, 60))` + `notify.send(notice, runner=runner)`. Marker-file dedup and `missing_jobs` kept — T7 rewrites the file fully.
+- `clients/constants.py` NOT touched: `tail` is outside `LANE_ORDER`, `test_declared_lane_budgets_cover_exactly_the_lane_set` unchanged — the plan's conditional resolved to "no budget needed".
+- Tests: `test_a_lane_failure_pages_once_per_run_and_lane` (two same-lane failures → one notify row exit 0 skipped=false + one skipped=true, `_run_child` called once), `test_the_tail_runs_weekly_and_housekeeping_only` (no digest argv; lane row `tail`), `TestTheLaneRunnerNeverRunsTheAlert` adapted (strict lane runner sees only lane commands; `notify._run_child` spy sees exactly one send), send_failure_alert/record_failed_send/AlertRequest tests deleted, `test_job_runner_common.py` `_KNOWN_INLINE_ALERT_BUILDERS` unchanged (the three A2/T9 modules) + `tail_of` tests added.
+
+Deliberate readings beyond the letter:
+
+1. `_page_failure` keeps `config`/`attempts`/`env` params per the plan's signature though the notify path doesn't consume them — call-site stability through the transition; T7's watchdog rewrite is where signatures get re-shaped.
+2. `RunnerConfig.alert_script`/`node_bin` (and the intraday twins) remain as parsed config fields — env contract (`MDW_DAILY_UPDATE_ALERT_SCRIPT`, `MDW_NODE_BIN`) is unchanged surface the plists/.env may still set; the now-unused fields are data, not logic. `node_binary_exists`/`_node_binary_exists` were pure email-gating logic and were deleted.
+3. Watchdog `run_watchdog` signature kept `(config, run_date, runner=None)`; `runner` now means the notify send-runner `(command, timeout=...)` — T7 rewrites the function fully anyway.
+4. Between T6 and T8 the nightly digest has no sender — the tail no longer spawns it and T8 installs the dedicated job. Flagged mid-plan state, per the plan's own ordering.
+5. Meta-test renamed `test_no_scheduled_runner_encodes_the_alert_contract` — the module no longer encodes the contract at all.
