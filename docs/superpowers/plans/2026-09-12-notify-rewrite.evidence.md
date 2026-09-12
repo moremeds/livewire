@@ -447,3 +447,28 @@ Deliberate readings beyond the letter:
 3. Watchdog `run_watchdog` signature kept `(config, run_date, runner=None)`; `runner` now means the notify send-runner `(command, timeout=...)` — T7 rewrites the function fully anyway.
 4. Between T6 and T8 the nightly digest has no sender — the tail no longer spawns it and T8 installs the dedicated job. Flagged mid-plan state, per the plan's own ordering.
 5. Meta-test renamed `test_no_scheduled_runner_encodes_the_alert_contract` — the module no longer encodes the contract at all.
+
+## T7 — watchdog = collect() → page_from_sections → send; no marker file
+
+Focused FAIL first: `run_watchdog() got an unexpected keyword argument 'now'` (old signature) → PASS after rewrite.
+
+```
+uv run pytest tests/test_check_daily_update_watchdog.py -x -q
+→ 8 passed in 0.27s  (exit 0)
+```
+
+Full gate:
+
+```
+uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+→ 2693 passed, 2 warnings in 44.92s  (exit 0)   TOTAL coverage 95.06%
+```
+
+What changed:
+
+- `check_daily_update_watchdog.py` rewritten (53 lines): `run_watchdog(run_date: date, *, now=None, runner=None)` → `collect(run_date, log_dir(), data_lake_dir(), now=now)` → `notify.page_from_sections(sections, run_date)` → `notify.send(notice, runner=runner)`; exit 3 on send failure. Deleted: `build_watchdog_marker_file`, `record_alert_marker`, `build_daily_log_file`, the `missing_jobs` loop (T4's deadline checks replaced it), `RunnerConfig`/`build_config`/`tail_of`/`Verdict` imports — the watchdog no longer depends on `run_daily_update_job` at all.
+- `main()` parses `--run-date` to `date.fromisoformat` (was str pass-through).
+- Tests rewritten to the plan's five: `test_bad_pages_once_per_state_across_runs` (same BAD twice → one send + one skipped=true row), `test_a_new_bad_pages_again` (BAD set grows → second send, different fingerprint), `test_nothing_bad_sends_nothing_and_writes_nothing`, `test_a_failed_send_is_exit_3_and_a_row`, `test_no_marker_file_is_written` — plus `test_unknown_and_warn_do_not_page`, `test_parse_args`, `test_main_runs_the_watchdog_for_the_parsed_date`.
+- External callers verified unaffected: `livewire_quality.py` command table and `test_livewire_entrypoints.py:648` only reference the module + `--run-date` argv.
+
+Deviations: none beyond the test file adding two extra tests (UNKNOWN/WARN no-page and the main() dispatch) — both within the task's own files.
