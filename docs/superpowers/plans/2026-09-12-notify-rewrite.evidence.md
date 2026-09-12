@@ -179,3 +179,46 @@ Content-Transfer-Encoding: 7bit      (pure-ASCII body — nodemailer sends verba
 revision=28 rebuilt=10
 ```
 
+
+## T1 fix — entry guard runs main through symlinks/relative paths; ≤150 lines
+
+Reviewer rejection of b61786e, fixed as a new commit (no amend).
+
+### Failing test first (guard as committed in b61786e)
+
+```
+$ npm run test:alerts
+exit 1
+✖ the CLI runs when invoked through a symlinked dir and a relative path
+  AssertionError: argv[1]=…/mdw-symlink-XXX/current/livewire_node/send_mail.mjs
+  actual: ''          (empty stdout — guard false, main() never ran)
+  expected: /^Subject: \[Livewire\] t$/m
+```
+
+### Fix
+
+`import.meta.url === \`file://${process.argv[1]}\`` replaced by a realpath
+compare on BOTH sides (`realpathSync(process.argv[1]) ===
+realpathSync(fileURLToPath(import.meta.url))`) — import.meta.url is itself the
+unresolved path, so only one side realpathed still misses the symlink case.
+New spawn test exercises `…/current/livewire_node/send_mail.mjs` through a
+symlinked dir and `livewire_node/send_mail.mjs` relative from the repo root.
+base64 comment trimmed to the one-line rule + pm reference per reviewer.
+
+Note: the first draft of the relative-path case used a `..`-relative argv[1]
+computed from `os.tmpdir()`; it failed with MODULE_NOT_FOUND because cwd
+resolves through `/private/var` while tmpdir is `/var/…` (one `..` short). The
+test now uses the realistic `livewire_node/send_mail.mjs` from repo root.
+
+### Passing
+
+```
+$ wc -l livewire_node/send_mail.mjs
+     150 livewire_node/send_mail.mjs
+$ npm run test:alerts
+exit 0
+ℹ tests 12
+ℹ pass 12
+ℹ fail 0
+✔ the CLI runs when invoked through a symlinked dir and a relative path
+```

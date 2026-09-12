@@ -1,4 +1,5 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -279,4 +280,47 @@ test("MDW_ALERT_TRANSPORT=stream prints the RFC822 message with no SMTP config",
   assert.match(raw, /^Subject: \[Livewire\] digest 2026-09-12$/m);
   assert.match(raw, /^From: from@example\.com$/m);
   assert.match(raw, /revision=28 rebuilt=10/);
+});
+
+// On the mini every scheduled job runs through the ~/market-warehouse/current
+// symlink, so argv[1] never literal-matches the module's own path. An entry
+// guard comparing unresolved paths is silently false there — main() never
+// runs, exit 0, nothing sent: exactly the silent-no-send class this rewrite
+// exists to kill.
+test("the CLI runs when invoked through a symlinked dir and a relative path", async () => {
+  const repoRoot = path.resolve(import.meta.dirname, "../..");
+  const tmpdir = await mkdtemp(path.join(os.tmpdir(), "mdw-symlink-"));
+  const bodyFile = path.join(tmpdir, "body.txt");
+  await writeFile(bodyFile, "revision=28 rebuilt=10\n", "utf8");
+  await symlink(repoRoot, path.join(tmpdir, "current"), "dir");
+
+  const env = {
+    ...process.env,
+    MDW_ALERT_TRANSPORT: "stream",
+    MDW_ALERT_EMAIL_FROM: "a@b",
+    MDW_ALERT_EMAIL_TO: "c@d",
+  };
+  const invocations = [
+    // Via a symlinked directory, like current/livewire_node/send_mail.mjs.
+    {
+      script: path.join(tmpdir, "current", "livewire_node", "send_mail.mjs"),
+      cwd: repoRoot,
+    },
+    // Via a relative argv[1], e.g. `node livewire_node/send_mail.mjs` from the
+    // repo/release root — the form a shell cd'd into the checkout produces.
+    {
+      script: "livewire_node/send_mail.mjs",
+      cwd: repoRoot,
+    },
+  ];
+  for (const { script, cwd } of invocations) {
+    const result = spawnSync(
+      process.execPath,
+      [script, "--subject=t", `--body-file=${bodyFile}`],
+      { env, cwd, encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, `argv[1]=${script} stderr=${result.stderr}`);
+    assert.match(result.stdout, /^Subject: \[Livewire\] t$/m, `argv[1]=${script}`);
+    assert.match(result.stdout, /revision=28 rebuilt=10/, `argv[1]=${script}`);
+  }
 });
