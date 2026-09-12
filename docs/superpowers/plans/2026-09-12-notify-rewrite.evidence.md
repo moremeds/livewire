@@ -290,3 +290,45 @@ Test-authoring note: the first draft restored the patched `ledger.query` via
 `monkeypatch.undo()`, which also reverted conftest's shared-instance
 `LW_LEDGER_ROOT`/`MDW_LOG_DIR` env — the read-back then queried the real lake
 (0 rows). Fixed by re-setting the attribute to the saved original instead.
+
+## T3 — livewire_ops.py notify replaces send-alert
+
+- `scripts/livewire_ops.py`: `send-alert`/`_dispatch_send_alert` deleted; `notify`
+  subcommand added (`--kind {page,digest} --subject --body-file --force`); body is
+  read from the file into `Notice(kind, subject, body, fingerprint(kind,[subject]))`
+  and handed to `notify.send(notice, force=…)`. `subprocess` import dropped;
+  `import os` kept — `livewire_ops.os.environ` is a test seam
+  (`_load_env_file` re-export precedent, line 16).
+- `tests/test_livewire_entrypoints.py`: `test_ops_send_alert_delegates_to_node`
+  replaced by `test_ops_send_alert_is_removed` (argparse SystemExit 2) and
+  `test_ops_notify_sends_a_notice_and_records_it` (fake `_run_child`; asserts
+  node argv and one `executions(script='notify')` row, exit_code=0, kind=page).
+
+```
+$ uv run pytest tests/test_livewire_entrypoints.py -q -k "send_alert or notify"   # pre-impl
+exit 1   FAILED test_ops_send_alert_is_removed, FAILED test_ops_notify_sends_a_notice_and_records_it
+         (send-alert still a valid choice; notify not a valid choice)
+
+$ uv run pytest tests/test_livewire_entrypoints.py tests/test_notify.py tests/test_no_dead_modules.py -q
+exit 0   62 passed   (test_no_dead_modules now green — notify reachable)
+
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+exit 0   2700 passed, 2 warnings   TOTAL coverage 95.02% (>=95)
+```
+
+### Step-4 grep deviation
+
+Expected "only status.py and coverage_report.py". Actual `send-alert`/`send_alert`
+hits also in `job_runner_common.py` (build_alert_command helper), callers
+`run_daily_update_job.py` (T6), `run_intraday_catchup_job.py`,
+`data_quality_report.py`, `health_check.py`, `universe_screener.py`,
+`clients/quality_flags.py` (T9), `status.py` (T4), `coverage_report.py` (T5),
+and tests (`test_job_runner_common._KNOWN_INLINE_ALERT_BUILDERS`,
+`test_coverage_report`, `test_health_check`, `test_run_daily_update_job`,
+`test_quality_flags`, `test_check_daily_update_watchdog`, `test_status`,
+`test_run_intraday_catchup_job`). `run_daily_update_job`/`coverage_report`/
+`status`/`quality_flags` are assigned to T4/T5/T6/T9. `health_check`,
+`data_quality_report`, `universe_screener`, `run_intraday_catchup_job`,
+`job_runner_common` appear in NO task's file map — flagging for reviewer: their
+send-alert argv now exits 2 at the argparse boundary (loud, not silent) if
+invoked, and V4's zero-hit grep cannot pass until they are handled.
