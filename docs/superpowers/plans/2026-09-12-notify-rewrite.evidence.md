@@ -88,3 +88,94 @@ watchdog plist sets `PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin` (so
 and a bare ssh PATH has no node at all ("node not found"). Task 2's resolver
 (`MDW_NODE_BIN` → `which` → `/opt/homebrew/bin/node`) reaches the right binary
 in all three environments.
+
+## T1 — send_mail.mjs: SMTP and nothing else
+
+All commands in `.worktrees/notify-rewrite`.
+
+### Step 1/2 — failing tests, then FAIL
+
+`tests/node/send_mail.test.mjs` written; `package.json` `test:alerts` repointed
+at it (required before the FAIL run, otherwise the old test still passes).
+
+```
+$ ls node_modules | head -5; npm run test:alerts
+exit 0  (ls printed nothing — worktree has no node_modules; npm run itself exited 1)
+✖ tests/node/send_mail.test.mjs (35.655125ms)
+ℹ tests 1
+ℹ pass 0
+ℹ fail 1
+✖ failing tests:
+test at tests/node/send_mail.test.mjs:1:1   (import of ../../livewire_node/send_mail.mjs fails — module missing)
+```
+
+```
+$ ls package-lock.json && npm ci --omit=dev
+exit 0  (nodemailer installed for the PASS run)
+```
+
+### Step 3/4 — implement, PASS
+
+`livewire_node/send_mail.mjs`: `resolveAlertConfig` and `sendMail` copied
+verbatim from `send_daily_update_failure_email.mjs:155-204` and `:565-583`
+(renamed; base64 comment block kept). New single-token `parseArgs`
+(`--subject=`/`--body-file=` only), `main` reads the body file, applies
+`subjectPrefix`, prints `{"accepted":[...],"messageId":...}`, exits 0 iff
+accepted. `MDW_ALERT_TRANSPORT=stream` uses `{streamTransport:true,buffer:true}`
+and prints the RFC822 message instead of the JSON line; it satisfies
+`resolveAlertConfig`'s SMTP check with a placeholder URL because stream never
+contacts a transport (FROM/TO validation still applies — they are headers).
+streamTransport returns no `accepted` list, so stream mode returns 0 once the
+message prints.
+
+```
+$ wc -l livewire_node/send_mail.mjs && npm run test:alerts
+149 livewire_node/send_mail.mjs
+exit 0
+ℹ tests 11
+ℹ pass 11
+ℹ fail 0
+```
+
+### Step 5 — delete old mailer, grep
+
+```
+$ rm livewire_node/send_daily_update_failure_email.mjs tests/node/send_daily_update_failure_email.test.mjs
+exit 0
+```
+
+```
+$ grep -rn send_daily_update_failure_email . | grep -v "^./docs/postmortems/"
+exit 0 — non-postmortem hits remain, all in files the plan's own file map
+assigns to later tasks (T3: scripts/livewire_ops.py:47,
+tests/test_livewire_entrypoints.py:719; T8: livewire_scripts/nightly_digest.py:36;
+T11: CLAUDE.md:132, .env.example:40) plus historical docs (docs/superpowers/
+plans/*, specs/*, this plan and evidence file) and a docstring narrative at
+livewire_scripts/release.py:139. Plan step 5 says "only docs/postmortems/ hits
+remain" — not literally achievable in T1; the residual live-code references are
+deleted by T3/T8 and V4 requires zero at the end. Flagged as a plan-text
+deviation, not missed work.
+```
+
+Post-deletion re-run and real-CLI smoke (stream transport, no mocks):
+
+```
+$ npm run test:alerts
+exit 0
+ℹ tests 11
+ℹ pass 11
+ℹ fail 0
+```
+
+```
+$ printf 'revision=28 rebuilt=10\n' > /tmp/lw-body.txt && MDW_ALERT_TRANSPORT=stream \
+    MDW_ALERT_EMAIL_FROM=a@b MDW_ALERT_EMAIL_TO=c@d \
+    node livewire_node/send_mail.mjs --subject="digest 2026-09-12" --body-file=/tmp/lw-body.txt
+exit 0
+From: a@b
+To: c@d
+Subject: [Livewire] digest 2026-09-12
+Content-Transfer-Encoding: 7bit      (pure-ASCII body — nodemailer sends verbatim, no `=` reinterpretation)
+revision=28 rebuilt=10
+```
+
