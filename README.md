@@ -163,7 +163,7 @@ ever called it.
 | --- | --- | --- |
 | `scripts/livewire_ingest.py` | Data ingestion | Historical seeds, daily updates, robust IB runs, CBOE volatility, intraday backfill, S3 flat files |
 | `scripts/livewire_quality.py` | Quality and health reporting | Bronze health checks, HTML warehouse report, coverage reports, daily rollup, weekly summary, watchdog alerts |
-| `scripts/livewire_ops.py` | Operations | Scheduled daily job, alert sending |
+| `scripts/livewire_ops.py` | Operations | Scheduled daily job, notices (page/digest) |
 | `scripts/livewire_store.py` | Storage maintenance | DuckDB catalog, Silver rebuild, R2 sync, parquet filename migration |
 | `scripts/setup_market_warehouse.sh` | One-time bootstrap | Create `~/market-warehouse/`, venv, directories, optional ClickHouse helpers |
 
@@ -186,7 +186,7 @@ livewire_ingest.py   daily | historical | robust | cboe-vol | fred-rates |
                      intraday-backfill | flatfile-ingest | universe |
                      universe-sync | backfill-all | daily-backfill
 livewire_quality.py  health | coverage | report | weekly | watchdog | warehouse
-livewire_ops.py      run-daily-job | run-intraday-catchup-job | send-alert
+livewire_ops.py      run-daily-job | run-intraday-catchup-job | digest | notify
 livewire_store.py    duckdb | rebuild-silver | sync-r2 | migrate-parquet
 ```
 
@@ -659,9 +659,6 @@ python scripts/livewire_quality.py coverage
 # Quality rollup
 python scripts/livewire_quality.py report --view summary --since 24h
 
-# Send quality rollup by email
-python scripts/livewire_quality.py report --view summary --since 24h --email
-
 # Weekly summary (self-skips on non-Sunday)
 python scripts/livewire_quality.py weekly
 
@@ -698,7 +695,7 @@ Two things to know before using it:
   fails whenever a reader is connected. Concurrent read-only readers are fine.
   An unreadable source fails the build and preserves the previous database;
   it cannot publish a catalog with the corrupt source silently omitted.
-  Daily-update runs this step after Silver, before the digest, and propagates
+  Daily-update runs this step after Silver, before the `tail` lane, and propagates
   a failed build. Status marks missing production views as BAD.
 
 Coverage is daily-only; intraday stays view-only because equity `1m` alone is
@@ -740,14 +737,12 @@ python scripts/livewire_store.py migrate-parquet
 | `MDW_IB_HOST` | `127.0.0.1` | IB Gateway host |
 | `MDW_IB_PORT` | `4001` | IB Gateway port |
 
-### Reliability / alerting
+### Reliability / notices
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `MDW_TELEMETRY_PATH` | `~/market-warehouse/logs/telemetry.jsonl` | Telemetry JSONL append path |
 | `MDW_QUALITY_AUDIT_PATH` | `~/market-warehouse/logs/quality_audit.jsonl` | Quality-flag audit JSONL |
-| `MDW_ALERT_SEVERITY_THRESHOLD` | `warning` | Min severity that triggers per-flag email |
-| `MDW_ALERT_RATE_LIMIT_SECONDS` | `300` | De-dup window for identical alerts |
 | `MDW_LOG_LEVEL` | `INFO` | Logger root level |
 
 ### DuckDB

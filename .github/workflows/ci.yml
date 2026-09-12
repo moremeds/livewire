@@ -52,9 +52,6 @@ jobs:
       - name: Pyright
         run: uv run pyright
 
-      - name: Pytest
-        run: uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning
-
       # The alert path is Node, and every scheduled failure page goes through it.
       # Pytest cannot reach it, so an untested alert regression ships silently —
       # the exact shape of the quoted-printable digest corruption.
@@ -63,8 +60,13 @@ jobs:
         with:
           node-version: '22'
 
+      # pytest's real-node seam test (tests/test_notify.py::test_real_node_seam)
+      # needs node_modules, so npm ci must land before the Pytest step.
       - name: Install Node dependencies
         run: npm ci
+
+      - name: Pytest
+        run: uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning
 
       - name: Node alert tests
         run: npm run test:alerts

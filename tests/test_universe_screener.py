@@ -13,7 +13,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from livewire_scripts.universe_screener import (
-    _send_screener_alert,
     compare_universes,
     get_removals_after_grace,
     load_core_etfs,
@@ -268,33 +267,47 @@ class TestRunScannerSweeps:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# _send_screener_alert
+# no alert path
 # ══════════════════════════════════════════════════════════════════════
 
 
-class TestSendAlert:
-    def test_calls_subprocess(self):
-        run_date = date(2026, 4, 5)
-        additions = {"NVDA"}
-        removals = {"GOOG"}
+class TestNoAlert:
+    def test_changes_trigger_no_email_subprocess(self, tmp_path, monkeypatch):
+        """≥threshold additions still backfill, but no alert argv exists."""
+        data_lake = tmp_path / "data-lake"
+        (data_lake / "bronze" / "asset_class=equity").mkdir(parents=True)
+        monkeypatch.setenv("MDW_DATA_LAKE", str(data_lake))
 
-        with patch("subprocess.run") as mock_run:
-            _send_screener_alert(run_date, additions, removals)
-            assert mock_run.called
+        preset_path = tmp_path / "preset.json"
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps({"run_date": "2026-04-04", "universe": ["AAPL"], "absent_counts": {}}))
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
 
-    def test_passes_run_date(self):
-        run_date = date(2026, 4, 5)
-        with patch("subprocess.run") as mock_run:
-            _send_screener_alert(run_date, set(), set())
-            cmd = mock_run.call_args[0][0]
-            assert "2026-04-05" in cmd
+        new_tickers = [f"NEW{i:02d}" for i in range(12)]
+        mock_ib_client = _make_mock_ib_client(["AAPL", *new_tickers])
+        spawned = []
 
-    def test_includes_error_summary(self):
-        run_date = date(2026, 4, 5)
-        with patch("subprocess.run") as mock_run:
-            _send_screener_alert(run_date, {"NVDA"}, {"GOOG"})
-            cmd = mock_run.call_args[0][0]
-            assert any(a.startswith("--error-summary=") for a in cmd)
+        def record(*a, **kw):
+            spawned.append(a[0])
+
+        with (
+            patch("livewire_scripts.universe_screener.is_trading_day", return_value=True),
+            patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client),
+            patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
+            patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
+            patch.dict(os.environ, {"MDW_LOG_DIR": str(log_dir)}),
+            patch("subprocess.run", record),
+        ):
+            main(["--force"])
+
+        import re
+
+        needle = re.compile(r"send[-_]alert")  # regex, so this file carries no literal hit
+        assert spawned, "the additions backfill still runs"
+        assert all(not needle.search(" ".join(map(str, cmd))) for cmd in spawned)
+        written = json.loads(preset_path.read_text())
+        assert set(new_tickers) <= set(written["tickers"])
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -692,38 +705,6 @@ class TestMain:
         # At least one subprocess call should include livewire_ingest.py for backfill
         backfill_calls = [c for c in subprocess_calls if "livewire_ingest.py" in " ".join(c)]
         assert len(backfill_calls) > 0
-
-    def test_sends_alert_for_large_changes(self, tmp_path, monkeypatch):
-        """Email alert sent when additions + removals exceed EMAIL_THRESHOLD."""
-        from livewire_scripts.universe_screener import EMAIL_THRESHOLD
-
-        data_lake = tmp_path / "data-lake"
-        bronze_dir = data_lake / "bronze" / "asset_class=equity"
-        bronze_dir.mkdir(parents=True)
-        monkeypatch.setenv("MDW_DATA_LAKE", str(data_lake))
-
-        preset_path = tmp_path / "preset.json"
-        state_path = tmp_path / "state.json"
-        log_dir = tmp_path / "logs"
-        log_dir.mkdir()
-
-        # Create enough new tickers to exceed EMAIL_THRESHOLD
-        n = EMAIL_THRESHOLD + 5
-        new_tickers = [f"NEW{i:03d}" for i in range(n)]
-        mock_ib_client = _make_mock_ib_client(new_tickers)
-
-        with (
-            patch("livewire_scripts.universe_screener.is_trading_day", return_value=True),
-            patch("livewire_scripts.universe_screener.IBClient", return_value=mock_ib_client),
-            patch("livewire_scripts.universe_screener._PRESET_PATH", preset_path),
-            patch("livewire_scripts.universe_screener._STATE_PATH", state_path),
-            patch.dict(os.environ, {"MDW_LOG_DIR": str(log_dir)}),
-            patch("livewire_scripts.universe_screener._send_screener_alert") as mock_alert,
-            patch("subprocess.run"),
-        ):
-            main(["--force"])
-
-        mock_alert.assert_called_once()
 
 
 # ══════════════════════════════════════════════════════════════════════

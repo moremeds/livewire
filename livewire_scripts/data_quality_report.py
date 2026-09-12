@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import subprocess
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Iterable
@@ -20,7 +19,6 @@ from pathlib import Path
 from livewire_scripts.paths import log_dir
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-_EMAIL_SCRIPT = REPO_ROOT / "scripts" / "livewire_ops.py"
 
 _SINCE_RE = re.compile(r"^(\d+)\s*([smhd])$")
 
@@ -46,11 +44,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--severity", default=None, choices=[None, "info", "warning", "critical"])
     p.add_argument("--telemetry-path", type=Path, default=log_dir() / "telemetry.jsonl")
     p.add_argument("--audit-path", type=Path, default=log_dir() / "quality_audit.jsonl")
-    p.add_argument(
-        "--email",
-        action="store_true",
-        help="Render HTML and spawn Nodemailer daily-summary",
-    )
     return p.parse_args(argv)
 
 
@@ -248,32 +241,6 @@ def _resolve_log_dir() -> Path:
     return log_dir()
 
 
-def _send_email(summary: dict) -> bool:
-    payload = json.dumps(summary, default=str)
-    cmd = [
-        sys.executable,
-        str(_EMAIL_SCRIPT),
-        "send-alert",
-        "--mode",
-        "daily-summary",
-        "--payload",
-        payload,
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, timeout=60)
-    except (subprocess.SubprocessError, OSError) as exc:
-        print(f"daily-summary email spawn failed: {exc}", file=sys.stderr)
-        return False
-    if result.returncode != 0:
-        print(
-            f"daily-summary email returned {result.returncode}: {result.stderr!r}",
-            file=sys.stderr,
-        )
-        return False
-
-    return True
-
-
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     now = datetime.now(UTC)
@@ -293,8 +260,6 @@ def main(argv: list[str] | None = None) -> int:
             window_end=now,
         )
         print(render_summary_text(summary))
-        if args.email:
-            _send_email(summary)
     elif args.view == "flap":
         print(render_flap_view(telemetry))
     elif args.view == "quality":

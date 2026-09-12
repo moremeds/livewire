@@ -75,10 +75,10 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/tmp/com.livewire.universe-refresh.stdout.log</string>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.universe-refresh.stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/com.livewire.universe-refresh.stderr.log</string>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.universe-refresh.stderr.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

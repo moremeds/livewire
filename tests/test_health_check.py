@@ -18,7 +18,6 @@ from clients.bronze_client import BronzeClient
 from livewire_scripts.health_check import (
     INTERIOR_GAPS_JSON_PREFIX,
     _resolve_bronze_dir,
-    _send_alert,
     compute_range_duration,
     find_interior_gaps,
     find_intraday_gaps,
@@ -30,17 +29,6 @@ from livewire_scripts.health_check import (
     repair_intraday_window,
     report_intraday_health,
 )
-
-
-def _error_summary(cmd) -> str:
-    """The summary is one `--error-summary=<text>` token.
-
-    The two-token form could not carry a value beginning with "--", which is
-    exactly what the log-derived summary is (see the 2026-08-08 lost page).
-    """
-    token = next(a for a in cmd if a.startswith("--error-summary="))
-    return token.removeprefix("--error-summary=")
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -314,41 +302,27 @@ class TestResolvedBronzeDir:
         assert str(result).endswith("asset_class=volatility")
 
 
-# ── _send_alert ────────────────────────────────────────────────────────────────
+# ── no alert path ──────────────────────────────────────────────────────────────
 
 
-class TestSendAlert:
-    def test_calls_subprocess_run_with_correct_args(self, tmp_path):
-        log_path = tmp_path / "health_check_2026-04-05.log"
-        log_path.touch()
+class TestNoAlert:
+    def test_no_alert_subprocess_remains(self):
+        """The interior-gap alert email is gone: no send helper, no alert argv."""
+        import inspect
+        import re
 
-        with patch("livewire_scripts.health_check.subprocess.run") as mock_run:
-            _send_alert("2026-04-05", "equity", 20, 15, log_path)
+        import livewire_scripts.health_check as hc
 
-        assert mock_run.called
-        cmd = mock_run.call_args[0][0]
-        assert "livewire_ops.py" in cmd[1]
-        assert cmd[2] == "send-alert"
-        assert "--run-date" in cmd
-        assert "2026-04-05" in cmd
-        assert "--log-file" in cmd
-        assert str(log_path) in cmd
-        assert any(a.startswith("--error-summary=") for a in cmd)
-        assert "--job-name" in cmd
-        assert "health_check" in cmd
+        needle = re.compile(r"send[-_]alert")  # regex, so this file carries no literal hit
+        assert not [n for n in vars(hc) if needle.search(n)]
+        assert not needle.search(inspect.getsource(hc))
 
-    def test_error_summary_contains_asset_class_and_counts(self, tmp_path):
-        log_path = tmp_path / "health_check.log"
-        log_path.touch()
-
-        with patch("livewire_scripts.health_check.subprocess.run") as mock_run:
-            _send_alert("2026-04-05", "futures", 5, 3, log_path)
-
-        cmd = mock_run.call_args[0][0]
-        summary = _error_summary(cmd)
-        assert "futures" in summary
-        assert "5" in summary
-        assert "3" in summary
+    def test_alert_threshold_flag_is_rejected(self, monkeypatch):
+        """--alert-threshold gated only the deleted email; the flag goes with it."""
+        monkeypatch.setattr("sys.argv", ["health_check", "--alert-threshold", "5"])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 2
 
 
 # ── main() ────────────────────────────────────────────────────────────────────
@@ -482,8 +456,6 @@ class TestMain:
                     [
                         "health_check.py",
                         "--force",
-                        "--alert-threshold",
-                        "100",
                     ],
                 ):
                     with patch("livewire_scripts.health_check.subprocess.run") as mock_subprocess:
@@ -492,14 +464,14 @@ class TestMain:
                                 main()
                                 # IB connection should have been attempted
                                 mock_ib_cls.assert_called_once()
-                                # No alert since threshold is 100 and we repaired < 100
+                                # Repairs never spawn a process
                                 mock_subprocess.assert_not_called()
 
         repaired = BronzeClient(bronze_dir, "equity").read_symbol_rows("AAPL")
         assert next(row for row in repaired if row["trade_date"] == "2026-01-07")["price_basis"] == "raw"
 
-    def test_alert_sent_when_threshold_exceeded(self, tmp_path):
-        """Alert email should be sent when repaired gaps meet or exceed threshold."""
+    def test_repairs_do_not_spawn_a_process(self, tmp_path):
+        """Repaired gaps produce log output only — no alert subprocess."""
         bronze_dir = tmp_path / "bronze" / "asset_class=equity"
         bronze_dir.mkdir(parents=True)
 
@@ -540,18 +512,13 @@ class TestMain:
                     [
                         "health_check.py",
                         "--force",
-                        "--alert-threshold",
-                        "1",
                     ],
                 ):
                     with patch("livewire_scripts.health_check.subprocess.run") as mock_subprocess:
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm):
                             with patch("livewire_scripts.daily_update.fetch_fallback_bars", return_value=([], [])):
                                 main()
-                                # Alert should be sent since threshold=1 and we repaired >=1
-                                mock_subprocess.assert_called_once()
-                                cmd = mock_subprocess.call_args[0][0]
-                                assert "health_check" in cmd
+                                mock_subprocess.assert_not_called()
 
     def test_backfill_ib_exception_handled(self, tmp_path):
         """IB exceptions during historical data fetch should be caught and bars treated as empty."""
@@ -583,7 +550,7 @@ class TestMain:
 
         with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
             with patch.dict(os.environ, {"MDW_WAREHOUSE_DIR": str(warehouse_dir)}):
-                with patch("sys.argv", ["health_check.py", "--force", "--alert-threshold", "100"]):
+                with patch("sys.argv", ["health_check.py", "--force"]):
                     with patch("livewire_scripts.health_check.subprocess.run"):
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm):
                             with patch("livewire_scripts.daily_update.fetch_fallback_bars", return_value=([], [])):
@@ -618,7 +585,7 @@ class TestMain:
 
         with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
             with patch.dict(os.environ, {"MDW_WAREHOUSE_DIR": str(warehouse_dir)}):
-                with patch("sys.argv", ["health_check.py", "--force", "--alert-threshold", "100"]):
+                with patch("sys.argv", ["health_check.py", "--force"]):
                     with patch("livewire_scripts.health_check.subprocess.run"):
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm):
                             with patch("livewire_scripts.daily_update.fetch_fallback_bars", return_value=([], [])):
@@ -661,7 +628,7 @@ class TestMain:
 
         with patch("livewire_scripts.health_check._resolve_bronze_dir", return_value=bronze_dir):
             with patch.dict(os.environ, {"MDW_WAREHOUSE_DIR": str(warehouse_dir)}):
-                with patch("sys.argv", ["health_check.py", "--force", "--alert-threshold", "100"]):
+                with patch("sys.argv", ["health_check.py", "--force"]):
                     with patch("livewire_scripts.health_check.subprocess.run"):
                         with patch("clients.ib_client.IBClient", return_value=mock_ib_cm):
                             with patch("livewire_scripts.health_check.log") as mock_log:
@@ -752,8 +719,6 @@ class TestMain:
                         "--force",
                         "--asset-class",
                         "futures",
-                        "--alert-threshold",
-                        "100",
                     ],
                 ):
                     with patch("livewire_scripts.health_check.subprocess.run"):
@@ -803,8 +768,6 @@ class TestMain:
                     [
                         "health_check.py",
                         "--force",
-                        "--alert-threshold",
-                        "100",
                     ],
                 ):
                     with patch("livewire_scripts.health_check.subprocess.run"):
