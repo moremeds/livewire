@@ -22,8 +22,8 @@ livewire/                       # git repo
 ├── scripts/                    # 4 entrypoints: livewire_ingest.py / livewire_quality.py / livewire_ops.py / livewire_store.py
 ├── presets/                    # universe definitions (sp500, ndx100-*, r2k-*, futures-*, fx-pairs, …)
 ├── registry/gaps.json          # the coverage denominator rows (see "The one contract")
-├── livewire_node/              # nodemailer alert + digest senders (tests: npm run test:alerts)
-├── launchd/                    # *.plist.example templates for the 6 scheduled jobs
+├── livewire_node/              # nodemailer SMTP transport for notify (tests: npm run test:alerts)
+├── launchd/                    # *.plist.example templates for the 7 scheduled jobs
 ├── tests/                      # pytest; 95% coverage gate (clients/ib_client.py exempt)
 └── docs/
     ├── postmortems/            # one file per incident: rule + what it cost + date (55 as of 2026-09-06)
@@ -55,7 +55,7 @@ verified on the mini or it is not verified.
 - Silver = fully back-adjusted daily bars + factor intervals, derived from bronze equity and the corporate-action store — both Massive-backed. Bronze is read-only to it; IB is never an input.
 - DuckDB reads parquet in place; its only durable artifact is a small coverage table. It is never a second store.
 - Providers: equity daily IB → Massive fallback; equity intraday Massive flat files only; futures/cmdty daily and volatility intraday IB; CBOE vol indices CBOE API; rates FRED; fx/DXY Yahoo (+ Massive intraday).
-- Six launchd jobs on the mini: daily-update 05:00Z → intraday-catchup 10:00Z → watchdog 10:30Z → coverage 11:00Z (no timeout) → release-promote; universe-refresh weekly, from the repo.
+- Seven launchd jobs on the mini: daily-update 05:00Z → intraday-catchup 10:00Z → watchdog 10:30Z and 12:00Z → coverage 11:00Z (no timeout) → digest 12:15Z → release-promote; universe-refresh weekly, from the repo.
 - Apex is the consumer. Its adapter must pin one committed Silver manifest and resolve only its immutable artifact references; it must fail closed for a missing or corrupt reference. The producer-to-adapter boundary is in `docs/plans/2026-09-08-silver-atomic-publication.md`.
 
 ## The one contract
@@ -103,7 +103,7 @@ gap      = expected − actual
 
 ### Scheduled jobs
 
-- The warehouse plists point at `<warehouse>/current`, never a checkout or worktree — no `.env` there, so every credential resolves to nothing, including the alert that would report it. `universe-refresh` is the one exception (it writes `presets/`, and the release is `chmod -R a-w`); launchd starts it cold, so `livewire_ingest.py` loads the scheduled env for `universe-sync`/`shepherd-universe` itself — without it the dead-ticker check skipped silently and the denominator only ever grew. → test: `tests/test_launchd_templates.py::test_the_scheduled_jobs_run_the_release_not_a_checkout`, `::test_no_other_template_reads_the_repo` (all six templates; a new template with no entry fails), `tests/test_livewire_entrypoints.py::test_ingest_universe_refresh_commands_load_scheduled_env` · pm:2026-07-27-launchd-pointed-at-worktree-no-env, pm:2026-09-01-universe-refresh-runs-from-repo
+- The warehouse plists point at `<warehouse>/current`, never a checkout or worktree — no `.env` there, so every credential resolves to nothing, including the alert that would report it. `universe-refresh` is the one exception (it writes `presets/`, and the release is `chmod -R a-w`); launchd starts it cold, so `livewire_ingest.py` loads the scheduled env for `universe-sync`/`shepherd-universe` itself — without it the dead-ticker check skipped silently and the denominator only ever grew. → test: `tests/test_launchd_templates.py::test_the_scheduled_jobs_run_the_release_not_a_checkout`, `::test_no_other_template_reads_the_repo` (all seven templates; a new template with no entry fails), `tests/test_livewire_entrypoints.py::test_ingest_universe_refresh_commands_load_scheduled_env` · pm:2026-07-27-launchd-pointed-at-worktree-no-env, pm:2026-09-01-universe-refresh-runs-from-repo
 - `promote` exports `origin/main` but runs the checkout's own builder: `git checkout main && git pull` before promoting anything that touches the promoter. Never `rm -rf` the release `current` points at; recover with `release rollback` then `promote`. → pm:2026-07-29-promote-runs-checkout-builder, pm:2026-07-29-rm-rf-release-current-dangling
 - Releases are `git archive` exports (a `git worktree` export keeps a `.git` tether to the checkout) with their own frozen venv. `promote` gates on a completed CI run for that exact SHA — `ci.yml` runs on push to main because a squash merge is a commit no PR run covered; `--allow-unverified` was for bootstrap only. Flipping `current` mid-run is safe (`os.getcwd()` is physical). The lake is deliberately **not** isolated per release: dev and prod share one `fcntl.flock` domain, and containerizing would split it.
 - A release carries no `.env` and no `node_modules`; `promote` runs `npm ci --omit=dev` before `freeze`. → test: `tests/test_release.py` · pm:2026-07-29-release-missing-node-modules
@@ -129,9 +129,13 @@ gap      = expected − actual
 
 ### Alerts and the digest
 
-- Never quoted-printable: every body is `key=value` telemetry and QP reads `=NN` as a byte. `textEncoding: "base64"`. → test: `tests/node/send_daily_update_failure_email.test.mjs` (`npm run test:alerts`, run by `ci.yml` since PR #98) · pm:2026-08-16-quoted-printable-corrupted-digest
-- Alert values are passed single-token (`--key=value`); a value beginning with `--` used to be unsendable. → test: same file, `"a value beginning with -- survives"` · pm:2026-08-08-alert-value-starting-with-dashes
-- Every email is an `executions(script='notify')` row — success, failure and dedup skip alike; a failed send (`exit_code<>0`) is graded WARN by `status`. → test: `tests/test_status.py::test_undelivered_notifications_reads_the_notify_script`
+- Never quoted-printable: every body is `key=value` telemetry and QP reads `=NN` as a byte. `textEncoding: "base64"`. → test: `tests/node/send_mail.test.mjs` (`npm run test:alerts`, run by `ci.yml` since PR #98) · pm:2026-08-16-quoted-printable-corrupted-digest
+- Alert values are passed single-token (`--key=value`); a value beginning with `--` used to be unsendable. → test: `tests/node/send_mail.test.mjs` (`"a value beginning with -- survives"`) · pm:2026-08-08-alert-value-starting-with-dashes
+- Every email is an `executions(script='notify')` row, success or failure; the only dedup is a successful row with the same fingerprint in 24h. → test: `tests/test_notify.py` · pm:2026-09-12-email-was-a-side-effect-not-a-record
+- The digest is unconditional, daily, 12:15Z after coverage, and reports today's scan; "Digest sent today" is BAD after 12:45Z. → test: `tests/test_nightly_digest.py`, `tests/test_status.py::test_digest_sent_today_is_bad_after_its_deadline`
+- A zero denominator is UNKNOWN per scope, never 100%. → test: `tests/test_status.py::test_coverage_a_zero_denominator_scope_is_unknown_not_one_hundred`
+- Recovery deferred on two consecutive scans is BAD. → test: `tests/test_status.py::test_coverage_recovery_deferred_twice_is_bad`
+- The coverage 1d gate calls a session due at next-day 15:00Z; the 11:00Z scan therefore reads `0/0` on weekdays — a schedule-vs-rule gap, disposition open. → pm:2026-09-12-coverage-1d-due-gate-vs-schedule
 - One missing interior day on an illiquid warrant is `info`, not `warning` (150 emails in 20 minutes, 4,408 undelivered, 2026-07-19). → test: `tests/test_quality_detector.py::test_interior_gaps_single_missing_trading_day_is_info_not_warning` · pm:2026-07-19-interior-day-warning-email-storm
 - The interior-gap scan measures liquidity, not loss (96.6% flagged; SPY/AAPL/NVDA/MSFT/QQQ/TSLA absent). Not scheduled; `status` does not grade it. → pm:2026-08-17-interior-gap-scan-measures-liquidity
 - `status`: `UNKNOWN` is not `OK` (`Verdict` is an `IntEnum`, OK < UNKNOWN < WARN < BAD); every check is one `(name, sql)` row in `CHECKS` over the ledger; zero rows is UNKNOWN unless the name is in `_EMPTY_IS_OK`; `launchctl` exits cap at WARN; every log line goes through `rich.markup.escape`; exit code is always 0; it never scans bar parquet. → test: `tests/test_status.py` · pm:2026-08-16-status-surface-grading

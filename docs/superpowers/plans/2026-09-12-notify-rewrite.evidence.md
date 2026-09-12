@@ -718,3 +718,69 @@ is an operator/spec call, either of which is bigger than one file + one test:
 the due instant) — a production plist change. Task 5's UNKNOWN rendering is
 already the honest surface: post-merge the line reads `1d=0/0 (UNKNOWN)`, not
 100%. Recorded for T11's postmortem.
+
+## T11 — docs: two postmortems, rules, runbook, corrected coverage template
+
+Gates:
+
+```
+uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+→ 2686 passed, 2 warnings in 83.07s  (exit 0)   TOTAL coverage 95.06%
+npm run test:alerts → pass 12, fail 0  (exit 0)
+uv run pytest tests/test_launchd_templates.py -q → 24 passed
+```
+
+What changed:
+
+- New postmortem `docs/postmortems/2026-09-12-email-was-a-side-effect-not-a-record.md`:
+  rule (every email = one `executions(script='notify')` row; page deduped 24h,
+  digest unconditional), cost (the week's evidence table condensed), date.
+- New postmortem `docs/postmortems/2026-09-12-coverage-1d-due-gate-vs-schedule.md`:
+  the T10 finding — due gate (S+1 15:00Z) vs the 11:00Z schedule, masked since
+  09-09 (first weekday-pair run after Labor Day), _symbols.parquet hypothesis
+  rejected, both dispositions recorded, decision left to the operator.
+- `CLAUDE.md`: tree lines updated (`livewire_node/` = notify's SMTP transport;
+  7 templates); "Seven launchd jobs" line adds watchdog 12:00Z + digest 12:15Z;
+  "all seven templates" in the plist rule. Alerts section: the two transport
+  bullets now name `tests/node/send_mail.test.mjs`; the plan's four rules added
+  verbatim (notify-row/dedup, unconditional digest + 12:45 deadline, zero
+  denominator UNKNOWN, recovery-deferred-x2 BAD) plus one line for the due-gate
+  postmortem.
+- `launchd/com.livewire.coverage.plist.example`: 23:30 HKT → **19:00** with the
+  conversion table corrected (11:00 UTC / 07:00 EDT / 12:00 BST) and a comment
+  that production was verified at 19:00 on 2026-09-12 (T0 launchctl print);
+  header retimed to "after the daily job's 4h DEADLINE (10:00 UTC) + watchdog".
+- `tests/test_launchd_templates.py`: the ordering test now reads the coverage
+  template's Hour instead of a hardcoded 19 (docstring updated — the template
+  is no longer stale).
+- `docs/runbook.md`: scheduled-env note covers `livewire_ops.py digest`;
+  coverage bullets lose both email sentences (abort → `coverage_recovery_
+  deferred` measurement, residual → `coverage_still_missing`, watchdog pages);
+  `report --email` example deleted; Nightly digest section rewritten
+  (`livewire_ops.py digest`, own 12:15Z job, unconditional, block list,
+  `--body-out`; the `livewire_quality.py` alias flagged as not loading the
+  scheduled env); watchdog "10:30 and 12:00 UTC"; Notices gains the full
+  `MDW_ALERT_*` + `MDW_NODE_BIN` env table; schedule table gains
+  `com.livewire.digest` 12:15 and watchdog's second interval; install loops
+  include `digest`; run-daily-job paragraph corrected (tail = weekly +
+  housekeeping; digest is a separate job); intraday-catchup failure now "pages
+  through notify".
+- `README.md`: `report --email` example removed; "before the digest" → "before
+  the tail lane"; ops row → "notices (page/digest)"; "alerting" → "notices".
+- `AGENTS.md`: rollup command loses `--email`; quality flags emit to two paths
+  (sidecar + audit — "findings, not email").
+- `.codex/project-memory.md`: terminal-failure paging, watchdog/digest rows,
+  Cerebras incident-report line and `--mode flag-alert`/marker claims all
+  corrected to the notify architecture.
+
+Deviations / readings:
+
+1. The env table documents the live `MDW_ALERT_*` surface verbatim from
+   `send_mail.mjs` (FROM/TO required; CC/BCC/REPLY_TO/SUBJECT_PREFIX optional;
+   SMTP_URL or HOST/PORT/SECURE/USER/PASS; TRANSPORT=stream for tests) — the
+   plan's "MDW_ALERT_* table from Task 0" — plus `MDW_NODE_BIN` (notify's
+   single resolver).
+2. AGENTS.md and `.codex/project-memory.md` were edited though not in T11's
+   file map: both asserted deleted behavior (`--email`, flag-alert mail,
+   completion-marker watchdog) and AGENTS.md itself requires project-memory
+   updates when stable facts change.

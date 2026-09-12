@@ -30,8 +30,9 @@ so credentials must live in `~/market-warehouse/.env`, which
 is absent.
 
 `livewire_quality.py` loads the scheduled env for `health`, `watchdog` and
-`coverage`, so a manual full scan from a bare shell still resolves the right
-warehouse paths.
+`coverage`; `livewire_ops.py` loads it for `run-daily-job`,
+`run-intraday-catchup-job` and `digest`, so a manual run from a bare shell
+still resolves the right warehouse paths and SMTP credentials.
 
 ### Path resolution (`livewire_scripts/paths.py`)
 
@@ -678,8 +679,10 @@ python scripts/livewire_quality.py coverage --target-date 2026-08-28
   recovery republishes the whole target-day flat file with
   `flatfile-ingest repair --dates <date>`.
 - **Safety cap (default 100):** if more than N symbols are missing for any single
-  timeframe, auto-recovery aborts and it emails immediately.
-- Email goes out only when post-recovery gaps remain.
+  timeframe, auto-recovery aborts and records `coverage_recovery_deferred`;
+  deferred on two consecutive scans grades BAD in `status`.
+- Coverage never sends email. Residual gaps are `coverage_still_missing`
+  measurements, which the digest renders and the watchdog pages when BAD.
 
 Gap classes actually emitted: `G3` (nothing on disk for the series), `G1` (missing
 the newest sessions), `G14` (the instrument left the tape). `G2` (interior) and
@@ -751,7 +754,6 @@ python scripts/livewire_quality.py health --intraday --timeframe 5m --symbol AAP
 python scripts/livewire_quality.py report --view summary --since 24h
 python scripts/livewire_quality.py report --view flap --since 24h --source ib
 python scripts/livewire_quality.py report --view quality --since 24h --severity critical
-python scripts/livewire_quality.py report --view summary --since 24h --email
 ```
 
 Views are `summary`, `flap`, `quality`; `--source` accepts `all`, `ib`, `uw`, or
@@ -762,10 +764,17 @@ sidecar and audit JSONL schemas are in
 ### Nightly digest
 
 ```bash
-python scripts/livewire_quality.py digest --run-date YYYY-MM-DD --email
+python scripts/livewire_ops.py digest --email                          # unconditional send (the scheduled 12:15Z job)
+python scripts/livewire_ops.py digest --run-date YYYY-MM-DD --email    # a specific day
+python scripts/livewire_ops.py digest --body-out /tmp/digest.txt       # render only; no send, no ledger row
 ```
 
-Renders the same ledger-backed checks as `status`; it does not parse job logs.
+Runs from its own launchd job at 12:15 UTC, after coverage. It is
+unconditional — no dedup — and renders today's ledger state: coverage as of the
+latest scan, what changed since yesterday's digest, every `notify` row sent in
+the last 24h, and the full `status` surface. `livewire_quality.py digest` is a
+compatibility alias and does **not** load the scheduled env — use the
+`livewire_ops.py` form for sends.
 
 ### Watchdog
 
@@ -773,7 +782,8 @@ Renders the same ledger-backed checks as `status`; it does not parse job logs.
 python scripts/livewire_quality.py watchdog
 ```
 
-Runs at 10:30 UTC daily and pages only when a ledger-backed status check is BAD.
+Runs at 10:30 and 12:00 UTC daily and pages only when a ledger-backed status
+check is BAD. The 12:00 pass grades coverage before the 12:15 digest.
 
 ### Notices
 
@@ -784,6 +794,23 @@ python scripts/livewire_ops.py notify --kind page --subject "PAGE ..." --body-fi
 The only email surface. `notify.send` dedupes pages by fingerprint for 24h and
 records every outcome — success, failure, skip — as an `executions` row. The
 SMTP transport is `livewire_node/send_mail.mjs`.
+
+| Variable                          | Default          | Meaning                                                        |
+| --------------------------------- | ---------------- | -------------------------------------------------------------- |
+| `MDW_ALERT_EMAIL_FROM`            | — (required)     | Sender address                                                 |
+| `MDW_ALERT_EMAIL_TO`              | — (required)     | Recipient address                                              |
+| `MDW_ALERT_EMAIL_CC`              | unset            | Cc address                                                     |
+| `MDW_ALERT_EMAIL_BCC`             | unset            | Bcc address                                                    |
+| `MDW_ALERT_EMAIL_REPLY_TO`        | unset            | Reply-To address                                               |
+| `MDW_ALERT_EMAIL_SUBJECT_PREFIX`  | `[Livewire]`     | Subject prefix                                                 |
+| `MDW_ALERT_SMTP_URL`              | unset            | Full `smtp://user:pass@host:port` transport URL                |
+| `MDW_ALERT_SMTP_HOST`             | unset            | SMTP host (required without `SMTP_URL`)                        |
+| `MDW_ALERT_SMTP_PORT`             | unset            | SMTP port (required without `SMTP_URL`)                        |
+| `MDW_ALERT_SMTP_SECURE`           | `false`          | TLS from connect (true) vs STARTTLS                            |
+| `MDW_ALERT_SMTP_USER`             | unset            | SMTP auth user                                                 |
+| `MDW_ALERT_SMTP_PASS`             | unset            | SMTP auth password                                             |
+| `MDW_ALERT_TRANSPORT`             | unset            | `stream` prints the mail to stdout instead of sending (tests)  |
+| `MDW_NODE_BIN`                    | resolved         | node binary; falls back to `which node` then `/opt/homebrew/bin/node` |
 
 ### Daily-run outcome categories
 
@@ -894,10 +921,10 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
 ### launchd install
 
 ```bash
-# The six warehouse jobs run the immutable release, so they take the WAREHOUSE path.
+# The five warehouse jobs run the immutable release, so they take the WAREHOUSE path.
 # The promoter is the one job that reads the repo — it is what builds the release.
 WAREHOUSE=~/market-warehouse
-for L in daily-update daily-update-watchdog intraday-catchup coverage; do
+for L in daily-update daily-update-watchdog intraday-catchup coverage digest; do
   sed "s|/path/to/warehouse|$WAREHOUSE|g" "launchd/com.livewire.$L.plist.example" \
     > ~/Library/LaunchAgents/com.livewire.$L.plist
 done
@@ -907,7 +934,7 @@ for L in release-promote universe-refresh; do
   sed -e "s|/path/to/repo|$(pwd)|g" -e "s|/path/to/warehouse|$WAREHOUSE|g" \
     "launchd/com.livewire.$L.plist.example" > ~/Library/LaunchAgents/com.livewire.$L.plist
 done
-for L in daily-update daily-update-watchdog intraday-catchup coverage universe-refresh release-promote; do
+for L in daily-update daily-update-watchdog intraday-catchup coverage digest universe-refresh release-promote; do
   launchctl load ~/Library/LaunchAgents/com.livewire.$L.plist
 done
 ```
@@ -932,8 +959,9 @@ conversion table to other Mac timezones.
 | `com.livewire.release-promote`       | 04:30 daily         | `livewire_ops.py release promote` (reads the repo)                                          |
 | `com.livewire.daily-update`          | 05:00 daily         | `livewire_ops.py run-daily-job`                                                             |
 | `com.livewire.intraday-catchup`      | 10:00 daily         | `livewire_ops.py run-intraday-catchup-job`                                                  |
-| `com.livewire.daily-update-watchdog` | 10:30 daily         | `livewire_quality.py watchdog`                                                              |
+| `com.livewire.daily-update-watchdog` | 10:30 + 12:00 daily | `livewire_quality.py watchdog`                                                              |
 | `com.livewire.coverage`              | 11:00 daily         | `livewire_quality.py coverage` (also runs the windowed gap classifier)                      |
+| `com.livewire.digest`                | 12:15 daily         | `livewire_ops.py digest --email`                                                            |
 | `com.livewire.universe-refresh`      | Sunday 13:00 weekly | `livewire_ingest.py universe-sync && livewire_ingest.py shepherd-universe` (reads the repo) |
 
 > The two lake writers are ordered by the code, not by these times: every lane
@@ -947,16 +975,17 @@ conversion table to other Mac timezones.
 indices via CBOE and DXY/FX via Yahoo+Massive, in a single invocation; pass
 `--asset-class <name>` to run only one IB asset class (this skips both the CBOE
 volatility and fx syncs). After a successful run it spawns the weekly quality
-report, sends the nightly digest email, and runs the housekeeping retention sweep
-last. Coverage is **not** here.
+report and runs the housekeeping retention sweep last (the `tail` lane). The
+nightly digest is no longer here — it has its own 12:15 UTC job after coverage.
+Coverage is **not** here.
 
 `run-intraday-catchup-job` calls the `daily-backfill` orchestrator (equity daily +
 intraday 1m/5m/30m/1h, FRED rates, CBOE volatility daily, IB volatility intraday
 30m/5m with 1h derived locally from 30m). Equity intraday requires
 `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY`; missing credentials fail the
 orchestrator before any phases run, and there is no REST or IB equity-intraday
-fallback. The wrapper is single-attempt; on terminal failure it sends one alert
-tagged `--job-name intraday_catchup`.
+fallback. The wrapper is single-attempt; on terminal failure it pages through
+`notify` (lane `intraday_catchup`), deduplicated by fingerprint for 24h.
 
 `com.livewire.universe-refresh` runs from the **repo**, not the release:
 `release.freeze()` does `chmod -R a-w` and `universe_sync` writes `presets/*.json`.

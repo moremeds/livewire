@@ -96,11 +96,14 @@ def test_the_two_lake_writers_start_five_hours_apart():
 
 
 def test_the_digest_runs_after_coverage_and_the_watchdog_runs_twice():
-    """Coverage is verified on the mini at 19:00 HKT (T0 launchctl print); the
-    digest's 20:15 must clear it by an hour. The repo's coverage template still
-    shows a stale 23:30 — the comparison is against the verified 19, not it."""
+    """Coverage fires at 19:00 HKT (verified on the mini, T0 launchctl print —
+    the template now carries that hour); the digest's 20:15 must clear it by an
+    hour."""
     payload = plistlib.loads((LAUNCHD_DIR / "com.livewire.digest.plist.example").read_bytes())
-    assert payload["StartCalendarInterval"]["Hour"] >= 19 + 1
+    coverage_hour = plistlib.loads((LAUNCHD_DIR / "com.livewire.coverage.plist.example").read_bytes())[
+        "StartCalendarInterval"
+    ]["Hour"]
+    assert payload["StartCalendarInterval"]["Hour"] >= coverage_hour + 1
 
     watchdog = plistlib.loads((LAUNCHD_DIR / "com.livewire.daily-update-watchdog.plist.example").read_bytes())
     assert watchdog["StartCalendarInterval"] == [
