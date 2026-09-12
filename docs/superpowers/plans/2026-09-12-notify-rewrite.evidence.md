@@ -635,3 +635,86 @@ Deviations / readings:
 4. CLAUDE.md §"Alerts and the digest" still names `send_daily_update_failure_
    email.test.mjs` in the two transport bullets — a stale test reference, no gate
    needle; flagged for T11's docs sweep rather than edited here.
+
+## T10 — bounded diagnosis: why 1d reads 0/0 → 100% since 2026-09-09
+
+**Cause (one sentence):** the `session_due_at` pre-deadline gate in
+`compute_coverage` (shipped in #95, 8926de1, in release `4cffb2c` now on the
+mini) treats the previous trading session as not due until next-day 15:00Z
+(`session + 1d` at `JOB_START_UTC` 06:00 + `DELIVERY_ALLOWANCE_SECONDS` 9h), but
+production coverage fires at 19:00 HKT = 11:00Z — four hours early — so every
+weekday run takes the `CoverageResult(0,0)` branch and the old `0/0 → 1.0`
+rendering prints 100%. The plan's `_symbols.parquet` hypothesis is REJECTED:
+raw partitions exist for 09-09/10/11, and intraday denominators — which do use
+the traded set — were nonzero on the same runs; 1d's denominator is
+`on_disk ∪ registry` and never touches `_symbols.parquet`.
+
+The 09-06/07/08 ledger rows show real totals because each of those runs targeted
+Fri 09-04 (Labor Day weekend), whose due instant had long passed; the first
+weekday-pair run (09-09 targeting 09-08) is exactly when the zeros began —
+matching "since 2026-09-09" precisely.
+
+Commands (mini, read-only; exit codes as reported by the wrapper):
+
+```
+1. ssh macmini 'grep -n "1d" logs/coverage_2026-09-0{8,9,10}.log | head -20'  → 0
+   09-08: 1d=0/0 (100.00%)  1m=0/14837 (0.00%) …        (all scopes 0 — the 09-08/09 outage)
+   09-09: 1d=0/0 (100.00%)  1m=4079/11869 (34.37%) …    (intraday real, 1d zero)
+   09-10: 1d=0/0 (100.00%)  1m=4256/11956 (35.60%) …
+
+2. ssh macmini 'ls raw/massive/*/date=2026-09-1*/_symbols.parquet | tail -5'  → 0
+   zsh: no matches (path is two levels deep — glob shape wrong, not absent)
+
+3. ssh macmini 'ls raw/massive/*/*/date=2026-09-1*/_symbols.parquet | tail -5'  → 0
+   day_aggs_v1/date=2026-09-10, day_aggs_v1/date=2026-09-11,
+   minute_aggs_v1/date=2026-09-10, minute_aggs_v1/date=2026-09-11  — PRESENT
+   (09-02…09-09 minute partitions also present)
+
+4. ssh macmini 'grep -h "coverage: 1d" logs/coverage_2026-09-0*.log'  → 0
+   09-01: 1d=0/0 (100.00%)            then 1d=2355/13521 (17.42%)  (gate day 1, mid-ingest)
+   09-03: 1d=0/0 (100.00%)                                      (target 09-03, due 09-04 15:00Z)
+   09-04: 1d=13537/13547 … 13539/13548 (99.93%)                 (written 09-08 — due passed)
+   09-08: 1d=0/0 · 09-09: 1d=0/0 · 09-10: 1d=0/0               (all weekday targets)
+
+5. ssh macmini 'stat -f "%Sm %N" logs/coverage_2026-09-0*.log …'  → 0
+   mtimes 19:03–19:55 HKT ≈ 11:0xZ — scheduled ~19:0x HKT every run;
+   coverage_2026-09-04.log last written 09-08 19:11 (target dated Fri)
+
+6. ssh macmini '… StartCalendarInterval + plist mtime'  → 0
+   plist mtime 2026-08-10 (unchanged); comment: Hour=19 Minute=0 Asia/Hong_Kong
+   = 11:00 UTC, "after the daily job's 4h DEADLINE (10:00 UTC)"
+
+7. ssh macmini 'readlink ~/market-warehouse/current'  → 0
+   releases/4cffb2c21443dd63689889d94bd77d93026b7c5b  (includes #95 due-gate)
+
+8. ledger query: select date(started)…  → exit 1 (column is measured_at, retried)
+
+9. ledger query: "select date(measured_at) d, scope, value from measurements
+    where name='coverage_total' and scope='1d' order by measured_at desc limit 10"  → 0
+   09-11 → 0.0   09-10 → 0.0   09-09 → 0.0     ← run-day rows, zeros begin 09-09
+   09-08 → 13548.0   09-07 → 13548.0   09-06 → 13547.0   (target 09-04, already due)
+
+10. ssh macmini 'stat -f "%Sm" bronze AAPL/SPY 1d.parquet + 09-10 _symbols.parquet'  → 0
+    AAPL 1d 09-12 15:02 HKT, SPY 1d 09-12 18:15 HKT — daily job publishes 1d
+    through ~10:15Z, done before coverage's 11:0xZ scan: the data IS on disk
+    when the gate hides it. _symbols 09-10 partition landed 09-11 18:17 HKT
+    (10:17Z) — present ~1h before the scan.
+```
+
+Code anchors (local): `coverage_report.py:382-391`
+`if session_due_at(target_date) > as_of: results["1d"] = CoverageResult(0,0)`;
+`clients/coverage_denominator.py:25-38` (`JOB_START_UTC` 06:00 + 9h allowance
+= 15:00Z due); `_resolve_target_date` → `_et_today()` returns the *previous*
+trading day pre-16:00 ET — so the scanned session is always due 4h after the
+scan on weekdays.
+
+Disposition: **no code change.** The gate is doing its designed job; the
+failure is that the schedule (11:00Z, fixed by the daily job's 10:00Z deadline +
+the no-mixed-snapshot rule) sits 4h before the due rule's instant. Resolution
+is an operator/spec call, either of which is bigger than one file + one test:
+(a) shrink `DELIVERY_ALLOWANCE_SECONDS` toward the 4h job deadline — shared by
+`build_denominator`/gap engine, needs a spec decision; (b) reschedule coverage
+≥15:30Z (23:30 HKT — the stale example's value worked *because* it postdates
+the due instant) — a production plist change. Task 5's UNKNOWN rendering is
+already the honest surface: post-merge the line reads `1d=0/0 (UNKNOWN)`, not
+100%. Recorded for T11's postmortem.
