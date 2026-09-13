@@ -7,7 +7,7 @@ from decimal import Decimal
 import pyarrow.parquet as pq
 import pytest
 
-from clients.corporate_action_store import CorporateActionStore, SplitAddition
+from clients.corporate_action_store import CorporateAction, CorporateActionStore, DividendConversion, SplitAddition
 from clients.massive_client import MassiveDividend, MassivePageEvidence, MassiveSplit
 
 FETCHED_AT = datetime(2026, 7, 13, 1, 2, 3, tzinfo=UTC)
@@ -337,3 +337,143 @@ def test_full_reconcile_leaves_another_provider_alone(tmp_path):
     survivors = store.latest_active("NVDA")
     assert [row.provider for row in survivors] == ["yahoo"]
     assert survivors[0].ex_date == date(2007, 9, 11)
+
+
+# --- convert_dividends (eod_fx currency repair) -------------------------------------
+
+# Real fixture values from grok_index/gaps/dividend_fx_conversion_applied.json[0]:
+# ACR paid 0.41 CAD on 2008-06-26; USDCAD EOD close 1.0118999481201172 that day,
+# method=divide -> 0.40517839808341516 USD.
+_ACR_DIV = dict(
+    provider_event_id="acr-div-1",
+    ticker="ACR",
+    ex_dividend_date=date(2008, 6, 26),
+    cash_amount=Decimal("0.41"),
+    currency="CAD",
+    declaration_date=None,
+    record_date=None,
+    pay_date=None,
+    payload_hash="acr-cad-v1",
+)
+_ACR_CONVERTED = 0.40517839808341516
+_ACR_SOURCE_REF = "eod_fx:USDCAD@2008-06-26 rate=1.01189995 method=divide orig=0.41 CAD -> 0.40517840 USD"
+_ACR_SOURCE_HASH = "f" * 64
+
+
+def _acr_conversion(action_id: str, cash_amount: float = _ACR_CONVERTED) -> DividendConversion:
+    return DividendConversion(
+        action_id=action_id,
+        cash_amount=cash_amount,
+        currency="USD",
+        source_ref=_ACR_SOURCE_REF,
+        source_hash=_ACR_SOURCE_HASH,
+    )
+
+
+def _reconciled_acr(tmp_path) -> tuple[CorporateActionStore, CorporateAction]:
+    store = CorporateActionStore(tmp_path)
+    store.reconcile("ACR", [_dividend(**_ACR_DIV)], FETCHED_AT)
+    return store, store.latest_active("ACR")[0]
+
+
+def test_foreign_currency_dividends_lists_only_active_rows_in_another_currency(tmp_path):
+    store = CorporateActionStore(tmp_path)
+    store.reconcile(
+        "ACR",
+        [
+            _dividend(**_ACR_DIV),
+            _dividend(
+                provider_event_id="acr-div-usd",
+                ticker="ACR",
+                ex_dividend_date=date(2008, 9, 25),
+                cash_amount=Decimal("0.40"),
+                currency="USD",
+                payload_hash="acr-usd-v1",
+            ),
+            _split(provider_event_id="acr-split", ticker="ACR", payload_hash="acr-split-v1"),
+        ],
+        FETCHED_AT,
+    )
+
+    foreign = store.foreign_currency_dividends("ACR", "USD")
+    assert [row.provider_event_id for row in foreign] == ["acr-div-1"]
+    assert foreign[0].currency == "CAD" and foreign[0].cash_amount == 0.41
+
+    # Once converted the row reads USD and is no longer foreign-currency.
+    store.apply_repairs(
+        "ACR",
+        add_splits=[],
+        cancel_ex_dates=[],
+        convert_dividends=[_acr_conversion(foreign[0].action_id)],
+        fetched_at=_FIXED_AT,
+    )
+    assert store.foreign_currency_dividends("ACR", "USD") == []
+
+
+def test_convert_dividend_supersedes_with_provider_eod_fx(tmp_path):
+    store, old = _reconciled_acr(tmp_path)
+
+    result = store.apply_repairs(
+        "ACR",
+        add_splits=[],
+        cancel_ex_dates=[],
+        convert_dividends=[_acr_conversion(old.action_id)],
+        fetched_at=_FIXED_AT,
+    )
+
+    assert result.converted == 1 and result.changed is True
+    active = store.latest_active("ACR")
+    assert len(active) == 1
+    row = active[0]
+    assert row.provider == "eod_fx"
+    assert row.provider_event_id == old.provider_event_id
+    assert row.event_revision == old.event_revision + 1
+    assert row.supersedes_action_id == old.action_id
+    assert row.cash_amount == _ACR_CONVERTED
+    assert row.currency == "USD"
+    assert row.source_ref == _ACR_SOURCE_REF
+    assert row.source_hash == _ACR_SOURCE_HASH
+    assert row.ex_date == date(2008, 6, 26)
+    history = {r.action_id: r for r in store.history("ACR")}
+    assert history[old.action_id].status == "corrected"
+    assert history[row.action_id].status == "active"
+
+
+def test_convert_is_idempotent(tmp_path):
+    store, old = _reconciled_acr(tmp_path)
+    conv = _acr_conversion(old.action_id)
+    store.apply_repairs("ACR", add_splits=[], cancel_ex_dates=[], convert_dividends=[conv], fetched_at=_FIXED_AT)
+    rows_after_first = store.path_for("ACR").read_bytes()
+
+    second = store.apply_repairs(
+        "ACR",
+        add_splits=[],
+        cancel_ex_dates=[],
+        convert_dividends=[conv, _acr_conversion("no-such-action")],
+        fetched_at=_FIXED_AT,
+    )
+    assert second.converted == 0 and second.changed is False
+    assert store.path_for("ACR").read_bytes() == rows_after_first
+    assert len(store.latest_active("ACR")) == 1
+
+
+def test_full_reconcile_after_conversion_leaves_the_eod_fx_row_active(tmp_path):
+    """pm:2026-09-13-corporate-actions-mutated-outside-the-ledger — a Sunday
+    --full-reconcile fed the original CAD event must not revert the conversion."""
+    store, old = _reconciled_acr(tmp_path)
+    store.apply_repairs(
+        "ACR",
+        add_splits=[],
+        cancel_ex_dates=[],
+        convert_dividends=[_acr_conversion(old.action_id)],
+        fetched_at=_FIXED_AT,
+    )
+    rows_before = store.path_for("ACR").read_bytes()
+
+    result = store.reconcile("ACR", [_dividend(**_ACR_DIV)], FETCHED_AT, full_reconcile=True)
+
+    assert result.changed is False
+    active = store.latest_active("ACR")
+    assert len(active) == 1
+    assert active[0].provider == "eod_fx" and active[0].cash_amount == _ACR_CONVERTED
+    assert store.path_for("ACR").read_bytes() == rows_before  # nothing appended
