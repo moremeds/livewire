@@ -87,6 +87,27 @@ def _all_lanes(**overrides):
         _lane(lane, **overrides.get(lane, {}))
 
 
+def _execution(script, exit_code, *, receipt=None, started=NOW):
+    ledger.emit(
+        "executions",
+        [
+            {
+                "evidence_hash": None,
+                "script": script,
+                "attempt": 1,
+                "args_json": "{}",
+                "release_sha": "deadbeef",
+                "started": started,
+                "ended": started,
+                "exit_code": exit_code,
+                "receipt_json": json.dumps(receipt or {}),
+                "run_id": RUN,
+            }
+        ],
+        run_id=RUN,
+    )
+
+
 def _last_session(scope, session: date):
     ledger.emit(
         "measurements",
@@ -359,7 +380,12 @@ def test_the_latest_declared_value_is_the_one_graded():
 
 
 def test_no_run_row_at_all_is_unknown_not_ok():
-    assert _section("Daily update ran").verdict is Verdict.UNKNOWN
+    assert _section("Daily update ran", now=NOW.replace(hour=5, minute=30)).verdict is Verdict.UNKNOWN
+
+
+def test_daily_update_absent_after_deadline_is_bad():
+    assert _section("Daily update ran", now=NOW.replace(hour=7, minute=0, second=30)).verdict is Verdict.BAD
+    assert _section("Daily update ran", now=NOW.replace(hour=5, minute=30)).verdict is Verdict.UNKNOWN
 
 
 def test_a_run_today_is_ok():
@@ -421,40 +447,43 @@ def test_silver_blocked_is_bad():
     assert _section("Silver lane completed").verdict is Verdict.BAD
 
 
-def test_a_failed_digest_is_bad():
+def test_a_failed_tail_is_bad():
     _run()
-    _lane("digest", outcome="failed", exit_code=2)
+    _lane("tail", outcome="failed", exit_code=2)
     assert _section("Post-success tail").verdict is Verdict.BAD
 
 
-def test_any_undelivered_alert_is_a_warning():
+def test_post_success_tail_reads_lane_tail():
     _run()
-    ledger.emit(
-        "executions",
-        [
-            {
-                "evidence_hash": None,
-                "script": "send_alert",
-                "attempt": 1,
-                "args_json": "{}",
-                "release_sha": "deadbeef",
-                "started": NOW,
-                "ended": NOW,
-                "exit_code": 3,
-                "receipt_json": "{}",
-                "run_id": RUN,
-            }
-        ],
-        run_id=RUN,
-    )
-    section = _section("Undelivered alerts")
+    _lane("digest")  # the retired lane name no longer counts
+    assert _section("Post-success tail").verdict is Verdict.UNKNOWN
+    _lane("tail")
+    assert _section("Post-success tail").verdict is Verdict.OK
+
+
+def test_undelivered_notifications_reads_the_notify_script():
+    _run()
+    _execution("retired_mailer", 3)  # a retired script — ignored by design
+    assert _section("Undelivered notifications").verdict is Verdict.OK
+    _execution("notify", 1, receipt={"subject": "PAGE 2026-09-12: equity"})
+    section = _section("Undelivered notifications")
     assert section.verdict is Verdict.WARN
-    assert "send_alert" in "\n".join(section.lines)
+    assert "PAGE 2026-09-12: equity" in "\n".join(section.lines)
 
 
-def test_a_delivered_alert_is_ok():
-    _run()
-    assert _section("Undelivered alerts").verdict is Verdict.OK
+def test_digest_sent_today_is_bad_after_its_deadline():
+    # The digest waits up to 4h for today's coverage fact from its 15:45Z start,
+    # so "sent" can legitimately land as late as ~19:45Z.
+    before = NOW.replace(hour=19, minute=50)
+    after = NOW.replace(hour=20, minute=5)
+    assert _section("Digest sent today", now=before).verdict is Verdict.UNKNOWN
+    assert _section("Digest sent today", now=after).verdict is Verdict.BAD
+    _execution("notify", 1, receipt={"kind": "digest", "subject": "digest x"})
+    assert _section("Digest sent today", now=after).verdict is Verdict.BAD
+    _execution("notify", 0, receipt={"kind": "digest", "subject": "digest x"}, started=NOW + timedelta(seconds=2))
+    section = _section("Digest sent today", now=after)
+    assert section.verdict is Verdict.OK
+    assert "digest x" in "\n".join(section.lines)
 
 
 def test_an_ib_phase_at_86_reads_degraded_not_failed():
@@ -552,9 +581,62 @@ def test_zero_total_coverage_is_unknown_not_green():
     assert _section("Coverage").verdict is Verdict.UNKNOWN
 
 
-def test_failed_coverage_scan_warns():
+def test_coverage_a_zero_denominator_scope_is_unknown_not_one_hundred():
+    for timeframe in ("1d", "1m", "1h", "5m", "30m"):
+        _measurement("coverage_pct", timeframe, 1.0 if timeframe == "1d" else 0.99)
+        _measurement("coverage_total", timeframe, 0 if timeframe == "1d" else 100)
+    section = _section("Coverage")
+    assert section.verdict is Verdict.UNKNOWN
+    assert "1d=UNKNOWN(expected=0)" in "\n".join(section.lines)
+    _measurement("coverage_pct", "1m", 0.36, measured_at=NOW + timedelta(seconds=1))
+    section = _section("Coverage")
+    assert section.verdict is Verdict.BAD
+    assert "1d=UNKNOWN(expected=0)" in "\n".join(section.lines)
+
+
+def test_coverage_ran_today_is_bad_after_the_deadline():
+    # Coverage fires 15:05Z and may legitimately wait on upstream runs, so the
+    # BAD deadline is 17:30Z, not the old clock-time noon.
+    before = NOW.replace(hour=17, minute=0)
+    after = NOW.replace(hour=17, minute=40)
+    assert _section("Coverage ran today", now=before).verdict is Verdict.UNKNOWN
+    assert _section("Coverage ran today", now=after).verdict is Verdict.BAD
     _measurement("coverage_scan_ok", "all", 0)
-    assert _section("Coverage scan").verdict is Verdict.WARN
+    assert _section("Coverage ran today", now=after).verdict is Verdict.WARN
+    _measurement("coverage_scan_ok", "all", 1, measured_at=NOW + timedelta(seconds=1))
+    assert _section("Coverage ran today", now=after).verdict is Verdict.OK
+
+
+def test_coverage_skipped_reads_unknown_with_the_reason():
+    # A skip is a recorded decision, not a missed deadline: UNKNOWN, with the
+    # gate's reason string visible, even after the 17:30Z deadline.
+    _measurement("coverage_skipped", "jobs_still_running:intraday-catchup", 1)
+    section = _section("Coverage ran today", now=NOW.replace(hour=18, minute=0))
+    assert section.verdict is Verdict.UNKNOWN
+    assert "jobs_still_running:intraday-catchup" in "\n".join(section.lines)
+
+
+def test_a_scan_row_after_a_skip_supersedes_it():
+    _measurement("coverage_skipped", "session_not_due", 1)
+    _measurement("coverage_scan_ok", "all", 1, measured_at=NOW + timedelta(seconds=1))
+    assert _section("Coverage ran today", now=NOW.replace(hour=18, minute=0)).verdict is Verdict.OK
+
+
+def test_coverage_recovery_deferred_twice_is_bad():
+    assert _section("Coverage recovery").verdict is Verdict.UNKNOWN
+    _measurement("coverage_recovery_deferred", "1m", 1)
+    assert _section("Coverage recovery").verdict is Verdict.WARN
+    _measurement("coverage_recovery_deferred", "1m", 1, measured_at=NOW + timedelta(seconds=1))
+    assert _section("Coverage recovery").verdict is Verdict.BAD
+    _measurement("coverage_recovery_deferred", "1m", 0, measured_at=NOW + timedelta(seconds=2))
+    assert _section("Coverage recovery").verdict is Verdict.OK
+
+
+def test_stale_non_equity_is_warn_never_bad():
+    _measurement("stale_non_equity", "volatility", 1)
+    section = _section("Stale non-equity")
+    assert section.verdict is Verdict.WARN
+    assert "volatility" in "\n".join(section.lines)
 
 
 def test_silver_window_regressions_warn():

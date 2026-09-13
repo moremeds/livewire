@@ -24,6 +24,7 @@ JOB_TEMPLATES = (
     "com.livewire.daily-update-watchdog",
     "com.livewire.intraday-catchup",
     "com.livewire.coverage",
+    "com.livewire.digest",
 )
 REPO_TEMPLATES = ("com.livewire.release-promote", "com.livewire.universe-refresh")
 ALL_TEMPLATES = (*JOB_TEMPLATES, *REPO_TEMPLATES)
@@ -81,6 +82,17 @@ def test_no_other_template_reads_the_repo():
             assert "/path/to/repo" not in command(label)
 
 
+@pytest.mark.parametrize("label", ALL_TEMPLATES)
+def test_every_template_logs_under_the_warehouse_not_tmp(label):
+    """launchd append files must not live in /tmp — macOS purges it on its own
+    schedule, and the unrotated file hid a three-day-old traceback (T14)."""
+    payload = plistlib.loads((LAUNCHD_DIR / f"{label}.plist.example").read_bytes())
+    base = f"/path/to/warehouse/logs/launchd/{label}"
+    assert payload["StandardOutPath"] == f"{base}.stdout.log"
+    assert payload["StandardErrorPath"] == f"{base}.stderr.log"
+    assert "/tmp" not in (LAUNCHD_DIR / f"{label}.plist.example").read_text()
+
+
 def test_the_two_lake_writers_start_five_hours_apart():
     """The order is a property of the code (the lake-io lock); the plists agree with it."""
 
@@ -92,3 +104,28 @@ def test_the_two_lake_writers_start_five_hours_apart():
     assert _hour("com.livewire.daily-update") == 13
     assert _hour("com.livewire.intraday-catchup") == 18
     assert _hour("com.livewire.intraday-catchup") - _hour("com.livewire.daily-update") == 5
+
+
+def test_the_digest_runs_after_coverage_and_the_watchdog_runs_twice():
+    """Coverage fires at 23:05 HKT — five minutes past the 15:00Z session-due
+    instant — and waits on upstream runs itself; the digest's 23:45 is a start
+    hint since it waits up to 4h for today's coverage fact. Both gates are in
+    the jobs now, so the ordering only needs to be strict, not an hour."""
+    digest_interval = plistlib.loads((LAUNCHD_DIR / "com.livewire.digest.plist.example").read_bytes())[
+        "StartCalendarInterval"
+    ]
+    coverage_interval = plistlib.loads((LAUNCHD_DIR / "com.livewire.coverage.plist.example").read_bytes())[
+        "StartCalendarInterval"
+    ]
+    assert (coverage_interval["Hour"], coverage_interval["Minute"]) == (23, 5)
+    assert (digest_interval["Hour"], digest_interval["Minute"]) == (23, 45)
+    assert (digest_interval["Hour"], digest_interval["Minute"]) > (
+        coverage_interval["Hour"],
+        coverage_interval["Minute"],
+    )
+
+    watchdog = plistlib.loads((LAUNCHD_DIR / "com.livewire.daily-update-watchdog.plist.example").read_bytes())
+    assert watchdog["StartCalendarInterval"] == [
+        {"Hour": 18, "Minute": 30},
+        {"Hour": 20, "Minute": 0},
+    ]

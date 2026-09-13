@@ -80,7 +80,12 @@ CHECKS: list[tuple[str, str]] = [
         "select case verdict when 'FAILED' then 'BAD' when 'DEGRADED' then 'WARN' "
         "when 'OK' then 'OK' else 'UNKNOWN' end as verdict, run_id, started "
         "from runs where job = 'daily-update' and date(started) = date '$today' "
-        "and ended is not null order by started desc limit 1",
+        "and ended is not null "
+        "union all select case when timestamp '$now' > timestamp '$today 07:00:00' "
+        "then 'BAD' else 'UNKNOWN' end, 'no run today', null "
+        "where not exists (select 1 from runs where job = 'daily-update' "
+        "and date(started) = date '$today') "
+        "order by started desc nulls last limit 1",
     ),
     (
         "Daily update finished",
@@ -166,14 +171,28 @@ CHECKS: list[tuple[str, str]] = [
     (
         "Post-success tail",
         "select case when outcome = 'done' then 'OK' else 'BAD' end as verdict, outcome, exit_code "
-        "from lane_results where run_id = '$run' and lane = 'digest' and outcome is not null "
+        "from lane_results where run_id = '$run' and lane = 'tail' and outcome is not null "
         "order by ended desc limit 1",
     ),
     (
-        "Undelivered alerts",
-        "select 'WARN' as verdict, script, count(*) as failed_sends from executions "
-        "where script = 'send_alert' and exit_code <> 0 and date(started) = date '$today' "
-        "group by script",
+        "Undelivered notifications",
+        "select 'WARN' as verdict, count(*) as failed_sends, "
+        "string_agg(json_extract_string(receipt_json,'$.subject'), '; ') as subjects "
+        "from executions where script = 'notify' and exit_code <> 0 "
+        "and date(started) = date '$today' having count(*) > 0",
+    ),
+    (
+        "Digest sent today",
+        "select 'OK' as verdict, started, json_extract_string(receipt_json,'$.subject') as subject "
+        "from executions where script = 'notify' and exit_code = 0 "
+        "and json_extract_string(receipt_json,'$.kind') = 'digest' "
+        "and date(started) = date '$today' "
+        "union all select case when timestamp '$now' > timestamp '$today 20:00:00' "
+        "then 'BAD' else 'UNKNOWN' end, null, 'not sent yet' "
+        "where not exists (select 1 from executions where script = 'notify' and exit_code = 0 "
+        "and json_extract_string(receipt_json,'$.kind') = 'digest' "
+        "and date(started) = date '$today') "
+        "order by started desc nulls last limit 1",
     ),
     (
         "Release matches main",
@@ -207,24 +226,60 @@ CHECKS: list[tuple[str, str]] = [
     ),
     (
         "Coverage",
-        "select case when count(*) filter (where name = 'coverage_pct') < 5 "
-        "or count(*) filter (where name = 'coverage_total') < 5 "
-        "or sum(value) filter (where name = 'coverage_total') = 0 then 'UNKNOWN' "
-        "when min(value) filter (where name = 'coverage_pct') < $coverage_threshold then 'BAD' "
+        "select case when count(*) < 5 then 'UNKNOWN' "
+        "when min(pct) filter (where total > 0) < $coverage_threshold then 'BAD' "
         "when date_diff('day', date(max(measured_at)), date '$today') > $coverage_stale_days then 'BAD' "
-        "else 'OK' end as verdict, count(*) filter (where name = 'coverage_pct') as timeframes, "
-        "min(value) filter (where name = 'coverage_pct') as worst_ratio, "
-        "max(measured_at) as measured_at from ("
-        "  select name, scope, value, measured_at from measurements "
-        "  where name in ('coverage_pct', 'coverage_total') "
-        "  and scope in ('1d', '1m', '1h', '5m', '30m') "
-        "  qualify row_number() over (partition by name, scope order by measured_at desc) = 1"
-        ")",
+        "when count(*) filter (where total = 0) > 0 then 'UNKNOWN' else 'OK' end as verdict, "
+        "string_agg(scope || '=' || case when total = 0 then 'UNKNOWN(expected=0)' "
+        "else format('{:.1f}%', 100*pct) end, ' ' order by scope) as scopes, "
+        "min(pct) filter (where total > 0) as worst_ratio, max(measured_at) as measured_at from ("
+        "  select p.scope, p.value as pct, t.value as total, p.measured_at from "
+        "  (select scope, value, measured_at from measurements where name = 'coverage_pct' "
+        "   and scope in ('1d','1m','1h','5m','30m') "
+        "   qualify row_number() over (partition by scope order by measured_at desc) = 1) p "
+        "  join (select scope, value from measurements where name = 'coverage_total' "
+        "   and scope in ('1d','1m','1h','5m','30m') "
+        "   qualify row_number() over (partition by scope order by measured_at desc) = 1) t "
+        "  using (scope))",
     ),
     (
-        "Coverage scan",
-        "select case when value = 1 then 'OK' else 'WARN' end as verdict, value as succeeded "
-        "from measurements where name = 'coverage_scan_ok' order by measured_at desc limit 1",
+        "Coverage ran today",
+        # A deliberate stand-down is a fact too: coverage_skipped reads UNKNOWN
+        # with its reason, and a later real scan supersedes it. With no fact at
+        # all, BAD only after 17:30Z — coverage starts 15:05Z and may wait on
+        # upstreams, so a no-row afternoon is pending, not absent.
+        "select case when value = 1 then 'OK' else 'WARN' end as verdict, measured_at, null as reason "
+        "from measurements where name = 'coverage_scan_ok' and date(measured_at) = date '$today' "
+        "union all select 'UNKNOWN', measured_at, scope as reason "
+        "from measurements where name = 'coverage_skipped' and date(measured_at) = date '$today' "
+        "and not exists (select 1 from measurements where name = 'coverage_scan_ok' "
+        "and date(measured_at) = date '$today') "
+        "union all select case when timestamp '$now' > timestamp '$today 17:30:00' "
+        "then 'BAD' else 'UNKNOWN' end, null, null "
+        "where not exists (select 1 from measurements where name = 'coverage_scan_ok' "
+        "and date(measured_at) = date '$today') "
+        "and not exists (select 1 from measurements where name = 'coverage_skipped' "
+        "and date(measured_at) = date '$today') "
+        "order by measured_at desc nulls last limit 1",
+    ),
+    (
+        "Coverage recovery",
+        "select case when count(*) = 0 then 'UNKNOWN' when max(twice) = 1 then 'BAD' "
+        "when max(latest) = 1 then 'WARN' else 'OK' end as verdict, "
+        "string_agg(scope || case when twice = 1 then '=deferred x2' when latest = 1 then '=deferred' "
+        "else '=ok' end, ' ' order by scope) as scopes from ("
+        "  select scope, max(case when rn = 1 then value end) as latest, "
+        "  case when max(case when rn = 1 then value end) = 1 "
+        "  and max(case when rn = 2 then value end) = 1 then 1 else 0 end as twice from ("
+        "    select scope, value, row_number() over (partition by scope order by measured_at desc) as rn "
+        "    from measurements where name = 'coverage_recovery_deferred') where rn <= 2 group by scope)",
+    ),
+    (
+        "Stale non-equity",
+        "select 'WARN' as verdict, string_agg(scope || '=' || cast(value as int), ' ') as classes from ("
+        "  select scope, value from measurements where name = 'stale_non_equity' "
+        "  qualify row_number() over (partition by scope order by measured_at desc) = 1) "
+        "where value > 0 having count(*) > 0",
     ),
     (
         "IB-only lanes behind",
@@ -267,7 +322,8 @@ CHECKS: list[tuple[str, str]] = [
 ]
 
 _EMPTY_IS_OK = {
-    "Undelivered alerts",
+    "Undelivered notifications",
+    "Stale non-equity",
     "Lanes within budget",
     "Daily update finished",
     "Intraday catch-up finished",
@@ -283,7 +339,16 @@ _FIXES = {
     "Silver failures": _SILVER_FIX,
     "Silver window regressions": _SILVER_FIX,
     "Coverage": "launchctl start com.livewire.coverage",
-    "Coverage scan": "python scripts/livewire_quality.py coverage --no-recover",
+    "Coverage ran today": "python scripts/livewire_quality.py coverage --no-recover",
+    "Coverage recovery": (
+        "launchctl start com.livewire.coverage   # recovery defers only while its precondition holds; "
+        "the coverage log names which"
+    ),
+    "Stale non-equity": (
+        'python scripts/livewire_ops.py ledger query "select scope, value from measurements '
+        "where name = 'stale_non_equity'\"   # then query that symbol's last observation upstream"
+    ),
+    "Digest sent today": "launchctl start com.livewire.digest",
     "Lanes terminal": (
         "python scripts/livewire_ops.py ledger query \"select lane, outcome from lane_results where run_id = '$run'\""
     ),
@@ -292,10 +357,13 @@ _FIXES = {
         "where name = 'lake_lock_wait_s' order by value desc\"   # who held the lake, and for how long"
     ),
     "Silver lane completed": _SILVER_FIX,
-    "Post-success tail": "python scripts/livewire_quality.py digest --email",
-    "Undelivered alerts": (
+    "Post-success tail": (
+        'python scripts/livewire_ops.py ledger query "select * from lane_results '
+        "where run_id = '$run' and lane = 'tail'\""
+    ),
+    "Undelivered notifications": (
         'python scripts/livewire_ops.py ledger query "select receipt_json from executions '
-        "where script = 'send_alert' and exit_code <> 0\""
+        "where script = 'notify' and exit_code <> 0\""
     ),
     "Release matches main": "python scripts/livewire_ops.py release promote",
     "Lanes within budget": (
@@ -864,6 +932,7 @@ def collect(
     runner=subprocess.run,
     database: Path | None = None,
     main_sha: str | None = None,
+    now: datetime | None = None,
 ) -> list[Section]:
     """Assess every cheap signal without scanning bar parquet."""
     today = run_date.isoformat()
@@ -881,6 +950,7 @@ def collect(
         "open_run": open_run,
         "intraday_run": intraday_run,
         "main_sha": main_sha or "__missing__",
+        "now": (now or datetime.now(UTC)).strftime("%Y-%m-%d %H:%M:%S"),
         "ib_slack_days": str(IB_LANE_SLACK_DAYS),
         "coverage_threshold": str(constants.declared("coverage_alert_threshold")),
         "coverage_stale_days": str(_COVERAGE_STALE_DAYS),

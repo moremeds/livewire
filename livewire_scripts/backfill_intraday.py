@@ -138,16 +138,6 @@ def ib_bar_to_row(bar: Any, symbol_id: int) -> dict[str, Any]:
     }
 
 
-def _intraday_backfill_alerts_enabled() -> bool:
-    """Return True when bulk intraday backfills should send per-flag emails."""
-    return os.getenv("MDW_INTRADAY_BACKFILL_ALERTS", "").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
 def should_skip_existing(bronze: IntradayBronzeClient, ticker: str, years: int) -> bool:
     """Return True if the bronze parquet already covers ``today - years``."""
     rows = bronze.read_symbol_rows(ticker)
@@ -224,7 +214,6 @@ def backfill_ticker(
             bars=all_rows,
             parquet_path=parquet_path,
             errors_during_fetch=[{"code": 0, "count": 1, "message": e} for e in (outcome.errors or [])],
-            alerts_enabled=_intraday_backfill_alerts_enabled(),
         )
         outcome.bars_inserted = bronze.merge_ticker_rows(
             ticker,

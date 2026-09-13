@@ -98,7 +98,7 @@ def test_interior_gaps_no_gap():
 def test_interior_gaps_single_missing_trading_day_is_info_not_warning():
     """One absent interior day is detected, recorded, and NOT paged.
 
-    `MDW_ALERT_SEVERITY_THRESHOLD` defaults to `warning`, so grading a single
+    The old per-flag email threshold defaulted to `warning`, so grading a single
     missing day `warning` emailed every symbol that had one. On 2026-07-19
     that sent ~150 emails in 20 minutes (SAAQW, SBCWW, SLND.WS, WENC.U,
     TDACU, XRPNU …) and left 4,408 undelivered. The per-key rate limiter

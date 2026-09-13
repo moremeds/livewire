@@ -34,11 +34,11 @@ Use this file for:
 - Delisted symbols that should no longer participate in future syncs or backfills are archived outside the canonical sync path under `~/market-warehouse/data-lake/bronze-delisted/asset_class=equity/symbol=<ticker>/1d.parquet`.
 - `scripts/livewire_ingest.py daily` is parquet-first and does not write to analytical databases.
 - `scripts/livewire_ingest.py daily` supports `--target-date YYYY-MM-DD` for fixed-date catch-up runs and only publishes bars with `latest < trade_date <= target`.
-- `scripts/livewire_store.py duckdb build` rebuilds and publishes the coverage table (staging file + `os.replace()`, because DuckDB is single-writer). An unreadable source aborts publication and preserves the previous catalog; only genuinely absent optional sources are skipped. Status grades missing production views BAD. `duckdb freshness|lag|stale|bars|sql|views` read it. Both nightly orchestrators run `duckdb build` after their writers; daily-update runs it after Silver and before the digest.
+- `scripts/livewire_store.py duckdb build` rebuilds and publishes the coverage table (staging file + `os.replace()`, because DuckDB is single-writer). An unreadable source aborts publication and preserves the previous catalog; only genuinely absent optional sources are skipped. Status grades missing production views BAD. `duckdb freshness|lag|stale|bars|sql|views` read it. Both nightly orchestrators run `duckdb build` after their writers; daily-update runs it after Silver, before the `tail` lane.
 - Glob enumeration dominates every cost in the lake: `CREATE VIEW` binds the schema and binding enumerates the glob (221s for equity `1h`). So views are registered on demand, never eagerly, and symbol-scoped reads construct `symbol=<TICKER>/<tf>.parquet` paths directly instead of going through a view.
-- Scheduled daily syncs now run through `scripts/livewire_ops.py run-daily-job`, which retries failures before sending Nodemailer-based terminal alerts.
-- A separate `scripts/livewire_quality.py watchdog` watchdog is available to alert when the scheduled daily sync never starts or never writes a completion marker.
-- Failure alerts can now generate a human-readable Markdown incident report and include a Cerebras-generated summary plus proposed remediation in the email body when the AI config is available.
+- Scheduled daily syncs now run through `scripts/livewire_ops.py run-daily-job`, which retries failures before paging a terminal failure through `notify` (24h fingerprint dedup, ledger receipt per send).
+- `scripts/livewire_quality.py watchdog` (10:30 + 12:00 UTC) pages any BAD ledger-graded status check via `notify`; `scripts/livewire_ops.py digest` (12:15 UTC) sends the unconditional daily digest after coverage.
+- Every email is an `executions(script='notify')` row — success, failure, and dedup skip. `livewire_node/send_mail.mjs` is SMTP-only; `notify.py` is the sole email surface.
 - Daily syncs use IB as the primary source for equities and futures; CBOE's public API is the authoritative source for all volatility indices.
 - `scripts/livewire_ingest.py cboe-vol` fetches all volatility indices from `presets/volatility.json` directly from CBOE's chart API (`cdn.cboe.com/api/global/delayed_quotes/charts/historical/`), and uses CBOE official daily-price CSV backup rows for `VIX` and `SPX` when the chart JSON lags.
 - `scripts/livewire_ingest.py fred-rates` fetches U.S. Treasury constant-maturity yield series from FRED using `FRED_API_KEY`. Defaults are `DGS3`, `DGS5`, `DGS10`, and `DGS30`, persisted under `~/market-warehouse/data-lake/bronze/asset_class=rates/symbol=<series>/1d.parquet` with a rates-specific schema.
@@ -60,8 +60,8 @@ Use this file for:
 - Equity `1m` surfaces in daily/weekly coverage alongside `1d`, `1h`, and `5m`. The DuckDB coverage table is **daily-only** on purpose: a pass over the intraday tier would enumerate and scan 23.57 GB, and equity `1m` alone exceeds the free disk.
 - Intraday for non-equity asset classes remains IB-backed; `--source massive` is equity-only.
 - Telemetry events (IB farm states, connection lifecycle) land in `~/market-warehouse/logs/telemetry.jsonl`. Schema is source-tagged JSONL with `{ts, source, event, ...}`.
-- Quality flags (range_shortfall, interior_gaps, fetch_tainted, row_count_anomaly) are emitted to three independent paths: sidecar `<parquet>.meta.json`, central `quality_audit.jsonl`, and Nodemailer email via `--mode flag-alert`.
-- `scripts/livewire_quality.py report --view summary --since 24h --email` is the daily rollup; it runs end-of-day from `scripts/livewire_ops.py run-daily-job` and writes a `quality_summary_YYYY-MM-DD.marker`.
+- Quality flags (range_shortfall, interior_gaps, fetch_tainted, row_count_anomaly) are emitted to two independent paths: sidecar `<parquet>.meta.json` and central `quality_audit.jsonl` — findings, not email.
+- `scripts/livewire_quality.py report --view summary --since 24h` is the daily rollup; it runs in the end-of-day `tail` lane of `scripts/livewire_ops.py run-daily-job`.
 - Source enum is closed-set `{"ib", "uw", "massive"}` validated at every JSONL emit boundary.
 - Equities fallback scope is the repo's U.S. equity and ETF universe on the NYSE trading calendar.
 - Equities fallback provider order is:

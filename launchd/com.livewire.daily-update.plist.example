@@ -41,10 +41,10 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/tmp/com.livewire.daily-update.stdout.log</string>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.daily-update.stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/com.livewire.daily-update.stderr.log</string>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.daily-update.stderr.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

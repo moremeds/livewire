@@ -140,7 +140,7 @@ def detect_interior_gaps(
     else:
         # `_INTERIOR_GAPS_WARNING_DAYS` was declared here from the start and
         # never read, so a SINGLE missing interior day scored `warning` — and
-        # `MDW_ALERT_SEVERITY_THRESHOLD` defaults to `warning`, so every such
+        # the old per-flag email threshold defaulted to warning, so every such
         # symbol emailed. On 2026-07-19 that sent ~150 emails in 20 minutes
         # (SAAQW, SBCWW, SLND.WS, WENC.U, TDACU, XRPNU …), all with
         # missing_days_count 1 or 2, and left 4,408 more undelivered. The
@@ -308,7 +308,6 @@ def run_detection(
     ib_head_timestamp: date | None = None,
     reference_source: dict | None = None,
     errors_during_fetch: list[dict] | None = None,
-    alerts_enabled: bool = True,
     on_error: Callable[[Exception], None] | None = None,
 ) -> None:
     """Run detection and emit flags without ever blocking a publish."""
@@ -317,7 +316,7 @@ def run_detection(
 
     # Imported inside the function: clients.quality_flags imports QualityFlag
     # from this module, so a module-level import would be a cycle.
-    from clients.quality_flags import alert_on_flag, append_audit, write_sidecar
+    from clients.quality_flags import append_audit, write_sidecar
 
     metadata: dict = {
         "asset_class": asset_class,
@@ -346,5 +345,3 @@ def run_detection(
     write_sidecar(parquet_path, flags, metadata)
     for flag in flags:
         append_audit(flag, source=source, ticker=ticker, timeframe=timeframe, parquet_path=parquet_path)
-        if alerts_enabled:
-            alert_on_flag(flag, source=source, ticker=ticker)

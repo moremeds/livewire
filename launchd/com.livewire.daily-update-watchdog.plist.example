@@ -15,26 +15,37 @@
     </array>
 
     <key>StartCalendarInterval</key>
-    <dict>
-        <!-- Target: 10:30 UTC daily (= 06:30 ET), ~5.5h after the daily-update window -->
-        <!-- starts at 05:05 UTC. Detects missed or stalled sync runs. launchd interprets -->
-        <!-- Hour/Minute in the Mac's local TZ; choose values that map to 10:30 UTC. Examples: -->
-        <!--   America/Los_Angeles: Hour=3  Minute=30 -->
-        <!--   America/New_York:    Hour=6  Minute=30 -->
-        <!--   UTC:                 Hour=10 Minute=30 -->
-        <!--   Asia/Hong_Kong:      Hour=18 Minute=30 -->
+    <array>
+        <!-- First: 10:30 UTC daily (= 06:30 ET), ~5.5h after the daily-update window -->
+        <!-- starts at 05:05 UTC. Detects missed or stalled sync runs. -->
+        <!-- Second: 12:00 UTC, after coverage (verified 11:00Z on the mini), so a -->
+        <!-- coverage-degraded status pages before the 12:15Z digest reports it. -->
+        <!-- launchd interprets Hour/Minute in the Mac's local TZ; choose values that -->
+        <!-- map to 10:30 and 12:00 UTC. Examples for 10:30 / 12:00: -->
+        <!--   America/Los_Angeles: Hour=3  Minute=30 / Hour=5  Minute=0 -->
+        <!--   America/New_York:    Hour=6  Minute=30 / Hour=8  Minute=0 -->
+        <!--   UTC:                 Hour=10 Minute=30 / Hour=12 Minute=0 -->
+        <!--   Asia/Hong_Kong:      Hour=18 Minute=30 / Hour=20 Minute=0 -->
         <!-- Defaults below assume Asia/Hong_Kong. -->
-        <key>Hour</key>
-        <integer>18</integer>
-        <key>Minute</key>
-        <integer>30</integer>
-    </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>18</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
 
     <key>StandardOutPath</key>
-    <string>/tmp/com.livewire.daily-update-watchdog.stdout.log</string>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.daily-update-watchdog.stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/com.livewire.daily-update-watchdog.stderr.log</string>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.daily-update-watchdog.stderr.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

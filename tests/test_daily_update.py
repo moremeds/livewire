@@ -806,7 +806,6 @@ class TestQualityHookIntegration:
             patch("clients.quality_detector.detect_all", return_value=[fake_flag]) as m_detect,
             patch("clients.quality_flags.write_sidecar", return_value=True) as m_sidecar,
             patch("clients.quality_flags.append_audit", return_value=True) as m_audit,
-            patch("clients.quality_flags.alert_on_flag", return_value=True) as m_alert,
         ):
             run_detection(
                 ticker="AAPL",
@@ -820,7 +819,6 @@ class TestQualityHookIntegration:
         assert m_detect.called
         assert m_sidecar.call_count == 1
         assert m_audit.call_count == 1
-        assert m_alert.call_count == 1
 
     def test_quality_hook_skips_when_no_bars(self, tmp_path):
         from clients.quality_detector import run_detection

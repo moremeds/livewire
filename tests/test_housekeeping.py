@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from livewire_scripts import housekeeping
-from livewire_scripts.housekeeping import plan_appledouble, plan_housekeeping
+from livewire_scripts.housekeeping import plan_appledouble, plan_housekeeping, plan_launchd_logs
 
 _NOW = datetime(2026, 8, 9, 12, 0, 0)  # the fixed "today" every test below passes as `now`
 
@@ -318,6 +318,97 @@ class TestEvidenceLockSweep:
 
     def test_a_lake_without_the_directory_plans_nothing(self, tmp_path):
         assert housekeeping.plan_evidence_locks(tmp_path / "data-lake") == []
+
+
+class TestLaunchdLogs:
+    """launchd append files live in <logs>/launchd/: the untagged file is the
+    live one the running job holds open; yesterday's gets an mtime date tag;
+    tagged files older than retention are the only deletes."""
+
+    def _launchd(self, tmp_path: Path) -> Path:
+        return tmp_path / "logs" / "launchd"
+
+    def test_rotate_tags_by_mtime_date_and_leaves_todays_file_alone(self, tmp_path):
+        launchd = self._launchd(tmp_path)
+        stale = _touch(launchd / "com.livewire.coverage.stdout.log", days_old=3)
+        live = _touch(launchd / "com.livewire.coverage.stderr.log", days_old=0)
+
+        plan = plan_launchd_logs(tmp_path / "logs", today=_NOW.date())
+
+        assert plan == [
+            (
+                "rotate",
+                stale,
+                launchd / "com.livewire.coverage.stdout.2026-08-06.log",
+            )
+        ]
+        assert live.exists() and live.name == "com.livewire.coverage.stderr.log"
+
+    def test_rotate_appends_when_the_dated_target_exists(self, tmp_path, monkeypatch):
+        # main() computes today itself, so files are anchored to real dates —
+        # a _NOW-anchored tag would be months old and legitimately deleted.
+        launchd = self._launchd(tmp_path)
+        stale = date.today() - timedelta(days=3)
+        target = launchd / f"com.livewire.coverage.stdout.{stale.isoformat()}.log"
+        target.parent.mkdir(parents=True)
+        target.write_text("already rotated\n", encoding="utf-8")
+        src = _touch(launchd / "com.livewire.coverage.stdout.log")
+        src.write_text("from today\n", encoding="utf-8")
+        stamp = datetime.combine(stale, datetime.min.time()).timestamp()
+        os.utime(src, (stamp, stamp))
+        monkeypatch.setattr(housekeeping, "prune_releases", lambda keep, dry_run: [])
+
+        plan = plan_launchd_logs(tmp_path / "logs", today=date.today())
+        assert plan == [("rotate", src, target)]
+
+        assert (
+            housekeeping.main(["--apply", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path / "lake")])
+            == 0
+        )
+        assert not src.exists()
+        assert target.read_text() == "already rotated\nfrom today\n", "append, never overwrite"
+
+    def test_delete_only_tagged_files_older_than_retention(self, tmp_path):
+        launchd = self._launchd(tmp_path)
+        thirteen = _touch(launchd / "com.livewire.digest.stdout.2026-07-27.log")  # 13 days before today
+        fifteen = _touch(launchd / "com.livewire.digest.stderr.2026-07-25.log")  # 15 days before today
+        live = _touch(launchd / "com.livewire.digest.stdout.log")  # untagged: launchd's live file
+
+        plan = plan_launchd_logs(tmp_path / "logs", today=_NOW.date())
+
+        assert ("delete", fifteen, None) in plan
+        assert all(p is not thirteen and p is not live for _, p, _ in plan), (
+            "13 days is inside retention; an untagged live file is never deleted"
+        )
+
+    def test_dry_run_moves_nothing(self, tmp_path, monkeypatch):
+        launchd = self._launchd(tmp_path)
+        stale = _touch(launchd / "com.livewire.coverage.stdout.log", days_old=3)
+        old_tagged = _touch(launchd / "com.livewire.coverage.stderr.2026-07-20.log")
+        monkeypatch.setattr(housekeeping, "prune_releases", lambda keep, dry_run: [])
+
+        assert (
+            housekeeping.main(["--dry-run", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path / "lake")])
+            == 0
+        )
+        assert stale.exists() and old_tagged.exists()
+
+    def test_apply_rotates_then_deletes(self, tmp_path, monkeypatch):
+        launchd = self._launchd(tmp_path)
+        stale = _touch(launchd / "com.livewire.coverage.stdout.log", days_old=3)
+        old_tagged = _touch(launchd / "com.livewire.coverage.stderr.2026-07-20.log")
+        monkeypatch.setattr(housekeeping, "prune_releases", lambda keep, dry_run: [])
+
+        assert (
+            housekeeping.main(["--apply", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path / "lake")])
+            == 0
+        )
+        assert not stale.exists()
+        assert (launchd / "com.livewire.coverage.stdout.2026-08-06.log").exists()
+        assert not old_tagged.exists()
+
+    def test_a_log_dir_without_launchd_plans_nothing(self, tmp_path):
+        assert plan_launchd_logs(tmp_path / "logs", today=_NOW.date()) == []
 
 
 class TestTheSweepCrossesTheSymlinkedSubtrees:

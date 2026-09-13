@@ -3,8 +3,8 @@
 For each tracked timeframe (1d, 1m, 1h, 5m), counts how many symbols have
 bars current as-of the target trading day. If coverage drops below the
 threshold (default 95%), triggers a targeted backfill via fetch_ib_historical
-and re-checks. Sends an email alert when post-recovery coverage is still
-incomplete; logs INFO only when recovery is fully successful.
+and re-checks. Recovery and staleness land as ledger measurements — status
+grades them; nothing here sends email.
 
 Spec: docs/superpowers/specs/2026-04-06-multi-timeframe-design.md § 17 Layer 2.
 """
@@ -66,7 +66,6 @@ console = Console()
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPT_DIR.parent
 _INGEST_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ingest.py"
-_OPS_SCRIPT = _REPO_ROOT / "scripts" / "livewire_ops.py"
 
 TIMEFRAMES: tuple[str, ...] = ("1d", "1m", "1h", "5m", "30m")
 DEFAULT_THRESHOLD = constants.declared("coverage_alert_threshold")
@@ -109,7 +108,9 @@ class CoverageResult:
 
     @property
     def ratio(self) -> float:
-        return 1.0 if self.total == 0 else self.present / self.total
+        # A zero denominator is UNKNOWN, not a vacuous 1.0: 0.0 keeps the
+        # emitted coverage_pct honest and the printed word is UNKNOWN.
+        return 0.0 if self.total == 0 else self.present / self.total
 
 
 @dataclass
@@ -486,7 +487,8 @@ def format_one_liner(target_date: date, results: dict[str, CoverageResult]) -> s
     parts = []
     for tf in TIMEFRAMES:
         r = results[tf]
-        parts.append(f"{tf}={r.present}/{r.total} ({r.ratio:.2%})")
+        share = "UNKNOWN" if r.total == 0 else f"{r.ratio:.2%}"
+        parts.append(f"{tf}={r.present}/{r.total} ({share})")
     return f"{target_date} coverage: " + " ".join(parts)
 
 
@@ -535,6 +537,73 @@ def emit_coverage_measurements(results: dict[str, CoverageResult], *, elapsed_s:
         log.error("could not write coverage measurements: %s", exc)
 
 
+# Coverage measures a finished world. A run while daily-update or
+# intraday-catchup is still ingesting reads a half-written lake (2026-09-12:
+# coverage fired at 11:00Z into an in-flight catch-up and measured 1m 26.5% of
+# a denominator still changing), and a session whose delivery allowance has
+# not elapsed has no honest denominator (T10's 1d 0/0). Both legs are ledger
+# facts, not clock guesses.
+UPSTREAM_JOBS = ("daily-update", "intraday-catchup")
+DEFAULT_MAX_WAIT_S = 6 * 3600
+
+
+def wait_for_upstream(
+    target_date: date,
+    *,
+    now_fn=None,
+    sleep_fn=time.sleep,
+    poll_s: int = 300,
+    max_wait_s: int = DEFAULT_MAX_WAIT_S,
+) -> str | None:
+    """Block until no UPSTREAM_JOBS run is open and session_due_at(target) passed.
+
+    Returns None when the gate opened, else the reason string
+    (``jobs_still_running:<names>`` or ``session_not_due``) after max_wait_s.
+    One console line per poll.
+    """
+    now_fn = now_fn or (lambda: datetime.now(UTC))
+    started = now_fn()
+    while True:
+        now = now_fn()
+        open_jobs = ledger.open_runs(UPSTREAM_JOBS, now.date())
+        reason = (
+            f"jobs_still_running:{','.join(open_jobs)}"
+            if open_jobs
+            else ("session_not_due" if session_due_at(target_date) > now else None)
+        )
+        if reason is None:
+            return None
+        elapsed = (now - started).total_seconds()
+        if elapsed >= max_wait_s:
+            return reason
+        console.print(f"coverage waiting on {reason} (elapsed {elapsed:.0f}s, cap {max_wait_s}s)")
+        sleep_fn(poll_s)
+
+
+def emit_coverage_skipped(reason: str) -> None:
+    """Publish that coverage deliberately stood down — status reads it UNKNOWN."""
+    now = datetime.now(UTC)
+    run = os.environ["LW_RUN_ID"]
+    try:
+        ledger.emit(
+            "measurements",
+            [
+                {
+                    "name": "coverage_skipped",
+                    "scope": reason,
+                    "measured_at": now,
+                    "value": 1.0,
+                    "unit": "boolean",
+                    "source": "measured",
+                    "run_id": run,
+                }
+            ],
+            run_id=run,
+        )
+    except Exception as exc:  # pragma: no cover - reporting must not abort coverage
+        log.error("could not write coverage_skipped measurement: %s", exc)
+
+
 def emit_coverage_scan_measurement(success: bool) -> None:
     """Publish whether the classifier half of coverage completed."""
     now = datetime.now(UTC)
@@ -557,6 +626,68 @@ def emit_coverage_scan_measurement(success: bool) -> None:
         )
     except Exception as exc:  # pragma: no cover - reporting must not abort coverage
         log.error("could not write coverage scan measurement: %s", exc)
+
+
+def emit_recovery_measurements(results: dict[str, CoverageResult], outcomes: list[RecoveryOutcome]) -> None:
+    """Publish per-timeframe recovery facts; `status`, not an email, grades them.
+
+    Every run writes every timeframe — clean ones emit 0 — so a deferred flag
+    from an earlier run cannot outlive the condition it names.
+    """
+    by_timeframe = {o.timeframe: o for o in outcomes}
+    now = datetime.now(UTC)
+    run = os.environ["LW_RUN_ID"]
+    rows = []
+    for timeframe, result in sorted(results.items()):
+        outcome = by_timeframe.get(timeframe)
+        rows.append(
+            {
+                "name": "coverage_recovery_deferred",
+                "scope": timeframe,
+                "measured_at": now,
+                "value": float(bool(outcome and outcome.aborted)),
+                "unit": "boolean",
+                "source": "measured",
+                "run_id": run,
+            }
+        )
+        rows.append(
+            {
+                "name": "coverage_still_missing",
+                "scope": timeframe,
+                "measured_at": now,
+                "value": float(len(outcome.still_missing) if outcome else len(result.missing_symbols)),
+                "unit": "symbols",
+                "source": "measured",
+                "run_id": run,
+            }
+        )
+    try:
+        ledger.emit("measurements", rows, run_id=run)
+    except Exception as exc:  # pragma: no cover - reporting must not abort coverage
+        log.error("could not write recovery measurements: %s", exc)
+
+
+def emit_stale_non_equity(results: dict[str, CoverageResult]) -> None:
+    """Publish each asset class's stale-symbol count; a clean class emits 0 and clears."""
+    now = datetime.now(UTC)
+    run = os.environ["LW_RUN_ID"]
+    rows = [
+        {
+            "name": "stale_non_equity",
+            "scope": asset_class,
+            "measured_at": now,
+            "value": float(len(result.missing_symbols)),
+            "unit": "symbols",
+            "source": "measured",
+            "run_id": run,
+        }
+        for asset_class, result in sorted(results.items())
+    ]
+    try:
+        ledger.emit("measurements", rows, run_id=run)
+    except Exception as exc:  # pragma: no cover - reporting must not abort coverage
+        log.error("could not write stale non-equity measurements: %s", exc)
 
 
 # The classifier window. gap_scan used 30 days; keeping it means the artifacts
@@ -1035,43 +1166,6 @@ def auto_recover(
     )
 
 
-def _send_alert(
-    target_date: date,
-    outcomes: list[RecoveryOutcome],
-    log_path: Path,
-) -> None:
-    """Send the coverage email via the existing failure-email script."""
-    summary_lines = []
-    for o in outcomes:
-        if o.aborted:
-            summary_lines.append(f"{o.timeframe}: ABORTED — {o.reason}; {len(o.still_missing)} missing")
-        else:
-            summary_lines.append(
-                f"{o.timeframe}: recovered {o.recovered}/{len(o.attempted)}, {len(o.still_missing)} still missing"
-            )
-    error_summary = "coverage_report: " + "; ".join(summary_lines)
-    cmd = [
-        sys.executable,
-        str(_OPS_SCRIPT),
-        "send-alert",
-        "--run-date",
-        target_date.isoformat(),
-        "--log-file",
-        str(log_path),
-        # One token. The two-token form breaks whenever the summary begins with
-        # "--", which is how the 2026-08-08 page was lost.
-        f"--error-summary={error_summary}",
-        "--repo-root",
-        str(_REPO_ROOT),
-        "--job-name",
-        "coverage_report",
-    ]
-    try:
-        _run_child(cmd, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        log.warning("Coverage alert failed after durable report: %s", exc)
-
-
 def _resolve_target_date(force: bool, override: date | None) -> date | None:
     """Resolve the session to measure: the most recently *completed* one.
 
@@ -1150,12 +1244,28 @@ def main() -> None:
         action="store_true",
         help="Run on a non-trading day (uses the previous trading day).",
     )
+    parser.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="Skip the upstream/session gate — manual runs only; the scheduled job waits.",
+    )
     args = parser.parse_args()
 
     target = _resolve_target_date(args.force, args.target_date)
     if target is None:
         console.print(f"[yellow]{date.today()} is not a trading day. Use --force or --target-date.[/yellow]")
         return
+
+    if not args.no_wait:
+        reason = wait_for_upstream(
+            target, max_wait_s=int(os.environ.get("LW_COVERAGE_MAX_WAIT_S") or DEFAULT_MAX_WAIT_S)
+        )
+        if reason is not None:
+            emit_coverage_skipped(reason)
+            console.print(f"coverage skipped: {reason}")
+            log.info("coverage skipped: %s", reason)
+            return
+        console.print("coverage gate open")
 
     console.print(f"\n[bold]Coverage Report[/bold]  target_date={target}")
     # One clock for the whole run. Established here and passed to every consumer
@@ -1185,6 +1295,7 @@ def main() -> None:
     stale_non_equity = {ac: r.missing_symbols for ac, r in non_equity.items() if r.missing_symbols}
     for asset_class, symbols in stale_non_equity.items():
         console.print(f"  [yellow]{asset_class} stale:[/yellow] {', '.join(symbols)}")
+    emit_stale_non_equity(non_equity)
 
     # The windowed classifier, on the same clock and the same registry rows.
     # coverage answers "is this symbol current as of one session"; this answers
@@ -1217,7 +1328,9 @@ def main() -> None:
     intraday_rechecked = None
     for tf in TIMEFRAMES:
         r = results[tf]
-        if r.ratio >= args.threshold:
+        # total=0 now reads ratio 0.0 (UNKNOWN), not the old vacuous 1.0 — the
+        # missing-symbols guard keeps an empty denominator out of recovery.
+        if r.ratio >= args.threshold or not r.missing_symbols:
             continue
         if tf != "1d" and intraday_outcome is not None:
             # One minute-file repair republishes every derived timeframe. Never
@@ -1257,26 +1370,9 @@ def main() -> None:
         if tf != "1d":
             intraday_outcome = outcome
 
+    emit_recovery_measurements(results, outcomes)
+
     if not outcomes:
-        if stale_non_equity:
-            # No recovery path exists for these — CBOE/FRED/IB own them — so
-            # reporting is all we can honestly do, but silence was worse.
-            _send_alert(
-                target,
-                [
-                    RecoveryOutcome(
-                        timeframe=asset_class,
-                        attempted=symbols,
-                        recovered=0,
-                        still_missing=symbols,
-                        aborted=True,
-                        reason="no recovery path for this asset class",
-                    )
-                    for asset_class, symbols in stale_non_equity.items()
-                ],
-                log_path,
-            )
-            return
         log.info("Coverage above threshold for all timeframes — no recovery needed")
         return
 
@@ -1291,11 +1387,10 @@ def main() -> None:
                     f"{len(o.attempted)}, still_missing={len(o.still_missing)}\n"
                 )
 
-    needs_email = any(o.aborted or o.still_missing for o in outcomes)
-    if needs_email:
-        _send_alert(target, outcomes, log_path)
+    if any(o.aborted or o.still_missing for o in outcomes):
+        console.print("[yellow]Recovery incomplete — status grades the emitted measurements[/yellow]")
     else:
-        console.print("[green]All timeframes recovered — INFO log only, no email[/green]")
+        console.print("[green]All timeframes recovered[/green]")
 
 
 if __name__ == "__main__":

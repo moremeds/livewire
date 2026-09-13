@@ -17,15 +17,14 @@ from unittest.mock import patch
 import pytest
 
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
+from livewire_scripts import notify
 from livewire_scripts import run_daily_update_job as daily_runner
 from livewire_scripts.run_daily_update_job import (
     ASSET_CLASSES,
     FX_CATCHUP_DAYS,
-    AlertRequest,
     RunnerConfig,
     _utc_now,
     append_log,
-    build_alert_command,
     build_cboe_volatility_command,
     build_config,
     build_corporate_action_command,
@@ -36,14 +35,12 @@ from livewire_scripts.run_daily_update_job import (
     build_silver_rebuild_command,
     extract_error_summary,
     main,
-    node_binary_exists,
     run_cboe_volatility_sync,
     run_daily_update_attempt,
     run_duckdb_catalog_build,
     run_fx_sync,
     run_post_success_quality,
     run_with_retries,
-    send_failure_alert,
 )
 
 
@@ -326,7 +323,7 @@ class TestPerLaneBudgets:
 def no_real_quality_spawn(tmp_path, monkeypatch):
     """Keep main() from shelling out to the real quality CLI.
 
-    main() ends by spawning weekly/digest/housekeeping. Unpatched, a unit test
+    main() ends by spawning weekly/housekeeping. Unpatched, a unit test
     launches `livewire_quality.py coverage` against the operator's live
     warehouse — and coverage runs auto-recovery subprocesses that write
     bronze. Autouse so a new main() test cannot forget it.
@@ -459,7 +456,7 @@ class TestHelpers:
 
         assert log_file.read_text(encoding="utf-8") == "line one\nline two\n"
 
-    def test_build_commands_with_and_without_optional_alert_fields(self, tmp_path):
+    def test_build_commands(self, tmp_path):
         config = _config(tmp_path)
 
         assert build_daily_update_command(config, ["--force"]) == [
@@ -468,23 +465,6 @@ class TestHelpers:
             "daily",
             "--force",
         ]
-
-        full_request = AlertRequest(
-            run_date="2026-03-11",
-            log_file=tmp_path / "daily.log",
-            attempts=3,
-            exit_code=9,
-            error_summary="boom",
-            repo_root=tmp_path / "repo",
-        )
-        full_command = build_alert_command(config, full_request)
-        assert full_command[:3] == [
-            "/usr/bin/python3",
-            str(config.alert_script),
-            "send-alert",
-        ]
-        assert "--attempts" in full_command
-        assert "--exit-code" in full_command
 
         assert build_corporate_action_command(config, full_reconcile=False, dry_run=False) == [
             "/usr/bin/python3",
@@ -498,18 +478,6 @@ class TestHelpers:
         ]
         assert "--resume" in build_corporate_action_command(config, full_reconcile=True, dry_run=True)
         assert build_silver_rebuild_command(config, dry_run=True)[-2:] == ["--full", "--dry-run"]
-
-        watchdog_request = AlertRequest(
-            run_date="2026-03-11",
-            log_file=tmp_path / "daily.log",
-            attempts=None,
-            exit_code=None,
-            error_summary="missing log",
-            repo_root=tmp_path / "repo",
-        )
-        watchdog_command = build_alert_command(config, watchdog_request)
-        assert "--attempts" not in watchdog_command
-        assert "--exit-code" not in watchdog_command
 
     def test_extract_error_summary_handles_missing_and_empty_logs(self, tmp_path):
         missing_log = tmp_path / "missing.log"
@@ -568,22 +536,6 @@ class TestHelpers:
         log_file.write_text("  AAPL: 1 bar published from Massive\nsome tail line\n", encoding="utf-8")
         assert extract_error_summary(log_file) == "some tail line"
 
-    def test_node_binary_exists(self):
-        with patch("livewire_scripts.run_daily_update_job.Path.exists", return_value=True):
-            assert node_binary_exists("/opt/homebrew/bin/node") is True
-
-        with patch("livewire_scripts.run_daily_update_job.Path.exists", return_value=False):
-            assert node_binary_exists("/opt/homebrew/bin/node") is False
-
-        with patch(
-            "livewire_scripts.run_daily_update_job.shutil.which",
-            return_value="/usr/local/bin/node",
-        ):
-            assert node_binary_exists("node") is True
-
-        with patch("livewire_scripts.run_daily_update_job.shutil.which", return_value=None):
-            assert node_binary_exists("node") is False
-
 
 class TestSubprocessPaths:
     def test_run_daily_update_attempt(self, tmp_path):
@@ -606,10 +558,11 @@ class TestSubprocessPaths:
 
 
 class TestEndOfDayQualityReport:
-    """These jobs run once, after Silver — not inside each lane's success branch.
+    """The tail runs once, after Silver — not inside each lane's success branch.
 
-    They used to fire from run_with_retries, so four asset classes produced
-    four coverage runs and four digest emails, all before the Silver rebuild.
+    Weekly and housekeeping used to fire from run_with_retries, so four asset
+    classes produced four copies of each. The digest no longer runs here at
+    all — it is its own scheduled job after coverage.
     """
 
     _LOG_TS = datetime(2026, 5, 18, 20, 0, tzinfo=UTC)
@@ -638,7 +591,10 @@ class TestEndOfDayQualityReport:
         assert rc == 0
         assert not [c for c in calls if any("livewire_quality.py" in str(x) for x in c)]
 
-    def test_digest_invoked_with_email_and_run_date(self, tmp_path):
+    def test_the_tail_runs_weekly_and_housekeeping_only(self, tmp_path):
+        """The runner receives no digest argv, and the lane row is named tail."""
+        from clients import ledger
+
         config = _config(tmp_path)
         calls = []
 
@@ -647,12 +603,15 @@ class TestEndOfDayQualityReport:
             return CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
 
         self._run(config, fake_runner)
-        quality_calls = [c for c in calls if any("livewire_quality.py" in str(x) for x in c)]
-        # The emailed nightly digest replaces the old report --view summary email.
-        digest_cmd = next(c for c in quality_calls if "digest" in c)
-        assert "--email" in digest_cmd
-        assert "--run-date" in digest_cmd
-        assert not any("report" in c and "summary" in c for c in quality_calls)
+        subcommands = [c[2:] for c in calls]
+        assert not any("digest" in c for c in calls), "the digest is its own job now — the tail never sends it"
+        assert ["weekly"] in subcommands
+        assert any(sub[:1] == ["housekeeping"] for sub in subcommands)
+        assert not any("report" in c and "summary" in c for c in calls)
+        assert ledger.query("select lane, outcome from lane_results where lane = 'tail'")[-1] == {
+            "lane": "tail",
+            "outcome": "done",
+        }
 
     def test_weekly_spawned(self, tmp_path):
         config = _config(tmp_path)
@@ -681,89 +640,22 @@ class TestEndOfDayQualityReport:
         log_file = self._run(config, fake_runner)
         assert "WARNING: weekly quality report failed" in log_file.read_text(encoding="utf-8")
 
-    def test_digest_failure_is_logged_not_raised(self, tmp_path):
+    def test_a_failing_tail_job_is_logged_and_the_lane_row_says_tail(self, tmp_path):
         from clients import ledger
 
         config = _config(tmp_path)
 
         def fake_runner(cmd, **kwargs):
-            return CompletedProcess(args=cmd, returncode=2, stdout=b"", stderr=b"digest failed")
+            return CompletedProcess(args=cmd, returncode=2, stdout=b"", stderr=b"weekly failed")
 
         log_file = self._run(config, fake_runner)
-        assert "WARNING: nightly digest failed" in log_file.read_text(encoding="utf-8")
-        assert ledger.query("select outcome, exit_code from lane_results where lane = 'digest'")[-1] == {
+        assert "WARNING: weekly quality report failed" in log_file.read_text(encoding="utf-8")
+        assert ledger.query("select outcome, exit_code from lane_results where lane = 'tail'")[-1] == {
             "outcome": "failed",
             "exit_code": 2,
         }
-        assert ledger.query("select exit_code from executions where script = 'send_alert'") == [{"exit_code": 2}]
-
-    def test_send_failure_alert_skips_when_node_missing(self, tmp_path):
-        config = _config(tmp_path, node_bin="/missing/node")
-        request = AlertRequest(
-            run_date="2026-03-11",
-            log_file=tmp_path / "daily.log",
-            attempts=3,
-            exit_code=5,
-            error_summary="sync failed",
-            repo_root=tmp_path / "repo",
-        )
-        config.alert_script.parent.mkdir(parents=True, exist_ok=True)
-        config.alert_script.write_text("console.log('x')\n", encoding="utf-8")
-
-        with patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=False):
-            result = send_failure_alert(config, request, request.log_file, env={})
-
-        assert result is None
-        assert "node binary not found" in request.log_file.read_text(encoding="utf-8")
-
-    def test_send_failure_alert_skips_when_script_missing(self, tmp_path):
-        config = _config(tmp_path)
-        request = AlertRequest(
-            run_date="2026-03-11",
-            log_file=tmp_path / "daily.log",
-            attempts=3,
-            exit_code=5,
-            error_summary="sync failed",
-            repo_root=tmp_path / "repo",
-        )
-
-        with patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=True):
-            result = send_failure_alert(config, request, request.log_file, env={})
-
-        assert result is None
-        assert "alert script not found" in request.log_file.read_text(encoding="utf-8")
-
-    def test_send_failure_alert_invokes_runner(self, tmp_path):
-        config = _config(tmp_path)
-        request = AlertRequest(
-            run_date="2026-03-11",
-            log_file=tmp_path / "daily.log",
-            attempts=None,
-            exit_code=None,
-            error_summary="sync failed",
-            repo_root=tmp_path / "repo",
-        )
-        config.alert_script.parent.mkdir(parents=True, exist_ok=True)
-        config.alert_script.write_text("print('x')\n", encoding="utf-8")
-
-        def _runner(command, stdout=None, env=None, timeout=None, **_):
-            assert command[0] == "/usr/bin/python3"
-            assert command[2] == "send-alert"
-            assert any(a.startswith("--error-summary=") for a in command)
-            assert "--attempts" not in command
-            return SimpleNamespace(returncode=0, stdout="sent")
-
-        with patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=True):
-            result = send_failure_alert(
-                config,
-                request,
-                request.log_file,
-                env={"A": "1"},
-                runner=_runner,
-            )
-
-        assert result.returncode == 0
-        assert "Triggering failure alert via:" in request.log_file.read_text(encoding="utf-8")
+        # The tail sends nothing: a failed tail job is a lane fact, not an email.
+        assert ledger.query("select exit_code from executions") == []
 
 
 class TestRunWithRetries:
@@ -835,7 +727,7 @@ class TestRunWithRetries:
         assert "Retrying in 7 seconds..." in log_text
         assert "attempt 2/2" in log_text
 
-    def test_terminal_failure_sends_alert(self, tmp_path):
+    def test_terminal_failure_pages(self, tmp_path):
         config = RunnerConfig(**(_config(tmp_path).__dict__ | {"max_attempts": 2, "retry_delay_seconds": 5}))
         timestamps = iter(
             [
@@ -859,17 +751,15 @@ class TestRunWithRetries:
                 stdout.write("sync failed\n")
             return next(results)
 
-        config.alert_script.parent.mkdir(parents=True, exist_ok=True)
-        config.alert_script.write_text("console.log('send');\n", encoding="utf-8")
         sleep_calls: list[int] = []
+        send_calls: list[list[str]] = []
 
-        # The alert has its own runner — see TestTheLaneRunnerNeverRunsTheAlert.
-        with (
-            patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=True),
-            patch.object(
-                daily_runner.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="alert sent")
-            ),
-        ):
+        # The page has its own runner — see TestTheLaneRunnerNeverRunsTheAlert.
+        def send_runner(command, timeout=None):
+            send_calls.append(list(command))
+            return CompletedProcess(command, 0, stdout="page sent")
+
+        with patch.object(notify, "_run_child", send_runner):
             rc = run_with_retries(
                 config,
                 [],
@@ -881,39 +771,20 @@ class TestRunWithRetries:
 
         assert rc == 4
         assert sleep_calls == [5]
+        assert len(send_calls) == 1
+        assert "--subject=PAGE 2026-03-11: lane daily failed (exit 4)" in send_calls[0]
         log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(encoding="utf-8")
-        assert "Failure alert sent successfully. alert sent" in log_text
+        assert "Page for lane daily sent via notify" in log_text
         assert "=== Failed 2026-03-11T20:05:12Z after 2 attempt(s) ===" in log_text
 
-    def test_terminal_failure_without_alert_result(self, tmp_path):
-        config = RunnerConfig(**(_config(tmp_path, node_bin="/missing/node").__dict__ | {"max_attempts": 1}))
-        timestamps = iter(
-            [
-                datetime(2026, 3, 11, 20, 5, 7, tzinfo=UTC),
-                datetime(2026, 3, 11, 20, 5, 8, tzinfo=UTC),
-                datetime(2026, 3, 11, 20, 5, 9, tzinfo=UTC),
-                datetime(2026, 3, 11, 20, 5, 10, tzinfo=UTC),
-            ]
-        )
+        from clients import ledger
 
-        def _runner(command, stdout=None, env=None, timeout=None, **_):
-            stdout.write("sync failed\n")
-            return SimpleNamespace(returncode=6, stdout="")
+        assert ledger.query(
+            "select exit_code, json_extract_string(receipt_json,'$.skipped') as skipped "
+            "from executions where script = 'notify'"
+        ) == [{"exit_code": 0, "skipped": "false"}]
 
-        with patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=False):
-            rc = run_with_retries(
-                config,
-                [],
-                env={},
-                runner=_runner,
-                now_fn=lambda: next(timestamps),
-            )
-
-        assert rc == 6
-        log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(encoding="utf-8")
-        assert "skipping failure email" in log_text
-
-    def test_terminal_failure_alert_non_zero(self, tmp_path):
+    def test_terminal_failure_page_send_failure_is_logged(self, tmp_path):
         config = RunnerConfig(**(_config(tmp_path).__dict__ | {"max_attempts": 1}))
         timestamps = iter(
             [
@@ -929,14 +800,8 @@ class TestRunWithRetries:
                 stdout.write("sync failed\n")
             return SimpleNamespace(returncode=3, stdout="")
 
-        config.alert_script.parent.mkdir(parents=True, exist_ok=True)
-        config.alert_script.write_text("console.log('send');\n", encoding="utf-8")
-
-        with (
-            patch("livewire_scripts.run_daily_update_job.node_binary_exists", return_value=True),
-            patch.object(
-                daily_runner.subprocess, "run", return_value=SimpleNamespace(returncode=2, stdout="smtp down")
-            ),
+        with patch.object(
+            notify, "_run_child", lambda command, timeout=None: CompletedProcess(command, 2, stdout="smtp down")
         ):
             rc = run_with_retries(
                 config,
@@ -948,11 +813,12 @@ class TestRunWithRetries:
 
         assert rc == 3
         log_text = (config.log_dir / "daily_update_2026-03-11.log").read_text(encoding="utf-8")
-        assert "WARNING: failure alert returned non-zero exit code 2. smtp down" in log_text
+        assert "WARNING: notify page for lane daily returned exit_code=2" in log_text
         from clients import ledger
 
-        assert ledger.query("select script, exit_code from executions where script = 'send_alert'") == [
-            {"script": "send_alert", "exit_code": 2}
+        # The failed send is itself an executions row — the receipt IS the ledger.
+        assert ledger.query("select script, exit_code from executions where script = 'notify'") == [
+            {"script": "notify", "exit_code": 2}
         ]
 
 
@@ -1148,7 +1014,7 @@ class TestMain:
 
         assert calls == ["futures", "cmdty", "cboe", "fx", "actions", "equity", "silver"]
 
-    def test_full_run_builds_catalog_after_silver_and_before_digest(self):
+    def test_full_run_builds_catalog_after_silver_and_before_the_tail(self):
         config = _config(Path("/tmp/test"))
         calls = []
 
@@ -1182,12 +1048,12 @@ class TestMain:
             ),
             patch(
                 "livewire_scripts.run_daily_update_job.run_post_success_quality",
-                side_effect=lambda *_args, **_kwargs: calls.append("digest"),
+                side_effect=lambda *_args, **_kwargs: calls.append("tail"),
             ),
         ):
             assert main([]) == 0
 
-        assert calls == ["futures", "cmdty", "cboe", "fx", "corporate-actions", "equity", "silver", "catalog", "digest"]
+        assert calls == ["futures", "cmdty", "cboe", "fx", "corporate-actions", "equity", "silver", "catalog", "tail"]
 
     def test_dry_run_skips_catalog_mutation(self):
         config = _config(Path("/tmp/test"))
@@ -1452,7 +1318,7 @@ class TestAttemptTimeout:
 
 
 class TestTimeoutPages:
-    """send_failure_alert sits at the END of run_with_retries and is reachable
+    """The page sits at the END of run_with_retries and is reachable
     only by falling out of the retry loop. An early `return` would make the
     timeout the one failure mode that never pages."""
 
@@ -1464,17 +1330,15 @@ class TestTimeoutPages:
             attempts.append(1)
             raise subprocess.TimeoutExpired(cmd="daily", timeout=kwargs.get("timeout") or 1)
 
-        sent = []
-        with patch.object(
-            daily_runner,
-            "send_failure_alert",
-            side_effect=lambda *a, **k: sent.append(1) or SimpleNamespace(returncode=0, stdout=""),
-        ):
+        sent: list[notify.Notice] = []
+        with patch.object(notify, "send", side_effect=lambda notice, **k: sent.append(notice) or 0):
             rc = run_with_retries(config, ["--asset-class", "equity"], runner=hang, sleep_fn=lambda _: None)
 
         assert rc == daily_runner.TIMEOUT_EXIT_CODE
         assert len(attempts) == 1, "a wedge is not transient; retrying spends the deadline for nothing"
-        assert sent == [1], "the timeout must page"
+        assert len(sent) == 1, "the timeout must page"
+        assert sent[0].kind == "page"
+        assert "equity" in sent[0].subject
 
 
 class TestScheduledLanePages:
@@ -1484,11 +1348,7 @@ class TestScheduledLanePages:
 
     def _lane(self, tmp_path, returncode, sent):
         config = _config(tmp_path)
-        with patch.object(
-            daily_runner,
-            "send_failure_alert",
-            side_effect=lambda *a, **k: sent.append(1) or SimpleNamespace(returncode=0, stdout=""),
-        ):
+        with patch.object(notify, "send", side_effect=lambda notice, **k: sent.append(notice) or 0):
             return daily_runner._run_scheduled_lane(
                 config,
                 ["x"],
@@ -1502,7 +1362,9 @@ class TestScheduledLanePages:
     def test_a_failing_lane_pages(self, tmp_path):
         sent = []
         assert self._lane(tmp_path, 1, sent) == 1
-        assert sent == [1]
+        assert len(sent) == 1
+        assert sent[0].kind == "page"
+        assert sent[0].subject.endswith("lane corporate-actions failed (exit 1)")
 
     def test_a_successful_lane_does_not_page(self, tmp_path):
         sent = []
@@ -1515,19 +1377,61 @@ class TestScheduledLanePages:
         assert self._lane(tmp_path, GATEWAY_DOWN_EXIT_CODE, sent) == GATEWAY_DOWN_EXIT_CODE
         assert sent == []
 
+    def test_a_lane_failure_pages_once_per_run_and_lane(self, tmp_path):
+        """Two failures of the same lane in one run → one send, one dedup skip.
+
+        Both rows land in executions(script='notify'): the send is a fact and
+        so is the skip.
+        """
+        from clients import ledger
+
+        send_calls: list[list[str]] = []
+
+        def send_runner(command, timeout=None):
+            send_calls.append(list(command))
+            return CompletedProcess(command, 0, stdout="sent")
+
+        with patch.object(notify, "_run_child", send_runner):
+            assert self._lane_once(tmp_path) == 1
+            assert self._lane_once(tmp_path) == 1
+
+        assert len(send_calls) == 1, "the second failure is deduplicated by fingerprint"
+        assert ledger.query(
+            "select exit_code, json_extract_string(receipt_json,'$.skipped') as skipped "
+            "from executions where script = 'notify' order by started"
+        ) == [
+            {"exit_code": 0, "skipped": "false"},
+            {"exit_code": 0, "skipped": "true"},
+        ]
+
+    @staticmethod
+    def _lane_once(tmp_path):
+        config = _config(tmp_path)
+        return daily_runner._run_scheduled_lane(
+            config,
+            ["x"],
+            "Corporate Action Sync",
+            "corporate-actions",
+            env=None,
+            runner=lambda cmd, **kw: SimpleNamespace(returncode=1, stdout=""),
+            now_fn=_utc_now,
+        )
+
 
 class TestTheLaneRunnerNeverRunsTheAlert:
-    """The lane runner and the alert runner are not interchangeable.
+    """The lane runner and the page runner are not interchangeable.
 
     2026-08-02: `_run_in_own_process_group` was threaded into the alert path.
-    It is keyword-only on `stdout/env/timeout`, so `send_failure_alert`'s
+    It is keyword-only on `stdout/env/timeout`, so the alert subprocess call's
     `stderr=`/`text=`/`check=` raised `TypeError` out of `main()`. One failed
     symbol out of 14,577 in corporate-actions took down the whole nightly job —
     equity, futures, cmdty, CBOE, FX and Silver never ran, and no alert was
     sent. Only the watchdog noticed, four hours later.
 
-    Every other test in this file passes a fake runner that swallows `**kwargs`,
-    which is exactly why nothing caught it. These two use the real signature.
+    `_page_failure` still takes no runner parameter; the page goes through
+    `notify.send`, whose own `_run_child` owns the subprocess. Every other test
+    in this file passes a fake runner that swallows `**kwargs`, which is
+    exactly why nothing caught it. These two use the real signature.
     """
 
     @staticmethod
@@ -1540,16 +1444,9 @@ class TestTheLaneRunnerNeverRunsTheAlert:
 
     def test_a_failing_lane_pages_without_touching_the_lane_runner(self, tmp_path):
         config = _config(tmp_path)
-        config.alert_script.parent.mkdir(parents=True, exist_ok=True)
-        config.alert_script.write_text("x\n", encoding="utf-8")
         lane_calls = []
 
-        with (
-            patch.object(daily_runner, "node_binary_exists", return_value=True),
-            patch.object(
-                daily_runner.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="sent")
-            ) as alert_run,
-        ):
+        with patch.object(notify, "_run_child", return_value=CompletedProcess([], 0, stdout="sent")) as page_run:
             rc = daily_runner._run_scheduled_lane(
                 config,
                 ["lane-cmd"],
@@ -1561,24 +1458,17 @@ class TestTheLaneRunnerNeverRunsTheAlert:
             )
 
         assert rc == 1
-        assert len(lane_calls) == 1, "the lane runner runs the lane, never the alert"
-        assert alert_run.call_count == 1, "the alert goes through subprocess.run"
-        assert "Failure alert sent successfully" in daily_runner.build_log_file(config.log_dir, _utc_now()).read_text(
-            encoding="utf-8"
-        )
+        assert len(lane_calls) == 1, "the lane runner runs the lane, never the page"
+        assert page_run.call_count == 1, "the page goes through notify's own runner"
+        assert "Page for lane corporate-actions sent via notify" in daily_runner.build_log_file(
+            config.log_dir, _utc_now()
+        ).read_text(encoding="utf-8")
 
     def test_the_retry_path_pages_without_touching_the_lane_runner(self, tmp_path):
         config = _config(tmp_path)
-        config.alert_script.parent.mkdir(parents=True, exist_ok=True)
-        config.alert_script.write_text("x\n", encoding="utf-8")
         lane_calls = []
 
-        with (
-            patch.object(daily_runner, "node_binary_exists", return_value=True),
-            patch.object(
-                daily_runner.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="sent")
-            ) as alert_run,
-        ):
+        with patch.object(notify, "_run_child", return_value=CompletedProcess([], 0, stdout="sent")) as page_run:
             rc = run_with_retries(
                 config,
                 ["--asset-class", "equity"],
@@ -1588,7 +1478,7 @@ class TestTheLaneRunnerNeverRunsTheAlert:
 
         assert rc == 1
         assert len(lane_calls) == config.max_attempts
-        assert alert_run.call_count == 1
+        assert page_run.call_count == 1
 
 
 class TestTheEquityLaneFallsBackToMassive:
@@ -1745,30 +1635,6 @@ class TestTheEquityLaneFallsBackToMassive:
         silver.assert_not_called()
 
 
-class TestTheAlertCommandCarriesTheSummaryAsOneToken:
-    """The Python side must emit the single-token form.
-
-    Fixing the parser alone leaves the callers still passing two tokens, which
-    still breaks the moment the summary begins with "--".
-    """
-
-    def test_error_summary_is_a_single_equals_token(self, tmp_path):
-        summary = "--- Runbook: /Users/moremeds/runbooks/trading-stack/ib-gateway-ibc.md ---"
-        request = AlertRequest(
-            run_date="2026-08-08",
-            log_file=tmp_path / "daily_update_2026-08-08.log",
-            attempts=1,
-            exit_code=86,
-            error_summary=summary,
-            repo_root=tmp_path / "repo",
-        )
-
-        command = build_alert_command(_config(tmp_path), request)
-
-        assert f"--error-summary={summary}" in command
-        assert "--error-summary" not in command, "the bare two-token form must be gone"
-
-
 class TestTheDailyJobNoLongerRunsCoverage:
     """Coverage does not belong on the nightly job's critical path.
 
@@ -1801,7 +1667,7 @@ class TestTheDailyJobNoLongerRunsCoverage:
 
         assert not any(sub[:1] == ["coverage"] for sub in subcommands), "coverage has its own launchd job now"
         assert ["weekly"] in subcommands, "weekly still runs here"
-        assert any(sub[:1] == ["digest"] for sub in subcommands), "the digest still runs here"
+        assert not any(sub[:1] == ["digest"] for sub in subcommands), "the digest has its own launchd job now"
 
     def test_no_interior_gap_scan_is_spawned_even_on_a_sunday(self, tmp_path):
         """2026-08-16 is a Sunday — the only day the scan used to fire.
@@ -1827,10 +1693,10 @@ class TestTheDailyJobNoLongerRunsCoverage:
         # And nothing else regressed on the day it used to fire.
         subcommands = [c[2:] for c in commands]
         assert ["weekly"] in subcommands
-        assert any(sub[:1] == ["digest"] for sub in subcommands)
+        assert any(sub[:1] == ["housekeeping"] for sub in subcommands)
 
 
-class TestHousekeepingRunsAfterTheDigest:
+class TestHousekeepingRunsLast:
     def test_the_nightly_job_runs_a_housekeeping_sweep(self, tmp_path):
         commands: list[list[str]] = []
 
@@ -1848,8 +1714,7 @@ class TestHousekeepingRunsAfterTheDigest:
         assert len(sweeps) == 1
         assert sweeps[0][1].endswith("livewire_ops.py"), "housekeeping is an ops command"
         assert "--apply" in sweeps[0]
-        # It runs last: the digest must already have been sent.
-        assert commands.index(sweeps[0]) == len(commands) - 1
+        assert commands.index(sweeps[0]) == len(commands) - 1, "the sweep runs last"
 
     def test_a_failed_sweep_only_warns(self, tmp_path):
         """A sweep that deleted nothing is never worth failing a good ingest run.

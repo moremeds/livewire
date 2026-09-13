@@ -2,7 +2,6 @@ import json
 
 import pytest
 
-from clients import quality_flags
 from clients.quality_detector import QualityFlag
 from clients.quality_flags import append_audit, write_sidecar
 
@@ -20,13 +19,6 @@ def _flag(category="range_shortfall", severity="critical"):
         detail={"k": "v"},
         ts="2026-05-17T00:00:00Z",
     )
-
-
-def test_first_alert_is_not_suppressed_during_first_five_minutes_of_boot(monkeypatch):
-    monkeypatch.setattr(quality_flags.time, "monotonic", lambda: 1.0)
-    monkeypatch.setattr(quality_flags.subprocess, "run", lambda *a, **kw: _ok())
-    quality_flags._RATE_LIMIT_CACHE.clear()
-    assert quality_flags.alert_on_flag(_flag(), source="ib", ticker="BOOT") is True
 
 
 def test_write_sidecar_atomic_temp_then_replace(tmp_path):
@@ -111,106 +103,37 @@ def test_append_audit_oserror_returns_false(tmp_path, monkeypatch):
     assert ok is False
 
 
-def test_alert_below_threshold_skipped(tmp_path, monkeypatch):
-    monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "critical")
-    called = []
-    monkeypatch.setattr(quality_flags.subprocess, "run", lambda *a, **kw: called.append(a) or _ok())
-    ok = quality_flags.alert_on_flag(_flag(severity="warning"), source="ib", ticker="SMH")
-    assert ok is False
-    assert called == []  # below threshold -> never spawned
+def test_flags_are_written_without_any_send(tmp_path, monkeypatch):
+    """A detector flag lands as a sidecar plus audit line — no process, no email.
 
+    Quality flags are findings, not pages: notify.py owns every send, and a
+    critical flag must still never spawn one.
+    """
+    import subprocess
+    from unittest.mock import patch
 
-def test_alert_above_threshold_spawns(tmp_path, monkeypatch):
-    monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
-    called = []
+    from clients.quality_detector import run_detection
 
-    def fake_run(*a, **kw):
-        called.append(a)
-        return _ok()
+    audit_path = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("MDW_QUALITY_AUDIT_PATH", str(audit_path))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("a flag must never spawn a process")),
+    )
+    parquet = tmp_path / "symbol=T" / "1d.parquet"
 
-    monkeypatch.setattr(quality_flags.subprocess, "run", fake_run)
-    ok = quality_flags.alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
-    assert ok is True
-    assert called, "subprocess.run should have been invoked"
-    cmd = called[0][0]
-    assert "livewire_ops.py" in " ".join(cmd)
-    assert "flag-alert" in cmd
+    with patch("clients.quality_detector.detect_all", return_value=[_flag()]):
+        run_detection(
+            ticker="T",
+            asset_class="equity",
+            timeframe="1d",
+            bars=[{"trade_date": "2026-05-17"}],
+            parquet_path=parquet,
+            source="ib",
+        )
 
-
-def test_alert_rate_limit_dedupes_within_window(tmp_path, monkeypatch):
-    monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
-    monkeypatch.setenv("MDW_ALERT_RATE_LIMIT_SECONDS", "300")
-    counts = [0]
-
-    def fake_run(*a, **kw):
-        counts[0] += 1
-        return _ok()
-
-    monkeypatch.setattr(quality_flags.subprocess, "run", fake_run)
-
-    quality_flags._RATE_LIMIT_CACHE.clear()
-    quality_flags.alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
-    quality_flags.alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
-    assert counts[0] == 1
-
-
-def test_alert_smtp_failure_records_execution(tmp_path, monkeypatch):
-    monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
-
-    def fake_run(*a, **kw):
-        return _fail("SMTP timeout")
-
-    monkeypatch.setattr(quality_flags.subprocess, "run", fake_run)
-
-    quality_flags._RATE_LIMIT_CACHE.clear()
-    ok = quality_flags.alert_on_flag(_flag(severity="critical"), source="ib", ticker="HOOD")
-    assert ok is False
-    from clients import ledger
-
-    assert ledger.query("select script, exit_code from executions") == [{"script": "send_alert", "exit_code": 1}]
-
-
-def test_alert_failure_without_an_orchestrator_run_id_is_still_recorded(monkeypatch):
-    monkeypatch.delenv("LW_RUN_ID", raising=False)
-    monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
-    monkeypatch.setattr(quality_flags.subprocess, "run", lambda *a, **kw: _fail("SMTP timeout"))
-    assert quality_flags.alert_on_flag(_flag(), source="ib", ticker="HOOD") is False
-    from clients import ledger
-
-    rows = ledger.query("select run_id from executions")
-    assert len(rows) == 1
-    assert rows[0]["run_id"].startswith("quality-flag-")
-
-
-def test_alert_invalid_rate_limit_env_uses_default(monkeypatch):
-    monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
-    monkeypatch.setenv("MDW_ALERT_RATE_LIMIT_SECONDS", "bad")
-    monkeypatch.setattr(quality_flags.subprocess, "run", lambda *a, **kw: _ok())
-    ok = quality_flags.alert_on_flag(_flag(severity="critical"), source="ib", ticker="SMH")
-    assert ok is True
-
-
-def test_alert_spawn_exception_records_execution(tmp_path, monkeypatch):
-    monkeypatch.setenv("MDW_ALERT_SEVERITY_THRESHOLD", "warning")
-
-    def boom(*a, **kw):
-        raise OSError("node missing")
-
-    monkeypatch.setattr(quality_flags.subprocess, "run", boom)
-    ok = quality_flags.alert_on_flag(_flag(severity="critical"), source="ib", ticker="TSLA")
-    assert ok is False
-    from clients import ledger
-
-    assert ledger.query("select script, exit_code from executions") == [{"script": "send_alert", "exit_code": 1}]
-
-
-def _ok():
-    from subprocess import CompletedProcess
-
-    return CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
-
-
-def _fail(msg):
-    from subprocess import CompletedProcess
-
-    return CompletedProcess(args=[], returncode=1, stdout=b"", stderr=msg.encode())
+    sidecar = json.loads((tmp_path / "symbol=T" / "1d.parquet.meta.json").read_text())
+    assert sidecar["flags"][0]["category"] == "range_shortfall"
+    audit = [json.loads(line) for line in audit_path.read_text().splitlines()]
+    assert [row["category"] for row in audit] == ["range_shortfall"]

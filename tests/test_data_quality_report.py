@@ -21,7 +21,6 @@ def test_parse_args_summary_defaults():
     assert args.view == "summary"
     assert args.since == timedelta(hours=2)
     assert args.source == "ib"
-    assert args.email is False
 
 
 def test_parse_args_rejects_invalid_since():
@@ -409,68 +408,29 @@ def test_main_dispatch_quality_with_filter(tmp_path, capsys):
     assert "SMH" in out
 
 
-def test_email_mode_spawns_nodemailer_and_writes_marker(tmp_path, monkeypatch):
+def test_report_spawns_no_subprocess(tmp_path, monkeypatch, capsys):
+    """The report is stdout-only: --email is gone and nothing spawns."""
+    import subprocess
+
     from livewire_scripts.data_quality_report import main
 
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("the report must never spawn a process")),
+    )
     t = tmp_path / "t.jsonl"
     t.write_text("")
     a = tmp_path / "a.jsonl"
     a.write_text("")
-    marker_dir = tmp_path / "markers"
-    monkeypatch.setenv("MDW_LOG_DIR", str(marker_dir))
 
-    spawned = []
-
-    def fake_run(*args, **kwargs):
-        spawned.append(args)
-        from subprocess import CompletedProcess
-
-        return CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
-
-    monkeypatch.setattr("subprocess.run", fake_run)
-
-    rc = main(
-        [
-            "--view",
-            "summary",
-            "--since",
-            "1h",
-            "--email",
-            "--telemetry-path",
-            str(t),
-            "--audit-path",
-            str(a),
-        ]
-    )
+    rc = main(["--view", "summary", "--since", "1h", "--telemetry-path", str(t), "--audit-path", str(a)])
     assert rc == 0
-    assert spawned, "Nodemailer should be invoked"
-    cmd = spawned[0][0]
-    assert "daily-summary" in cmd
-    assert list(marker_dir.glob("*.marker")) == []
+    assert capsys.readouterr().out
 
-
-def test_send_email_failure_returns_false(monkeypatch, capsys):
-    from livewire_scripts.data_quality_report import _send_email
-
-    def fake_run(*args, **kwargs):
-        raise OSError("node missing")
-
-    monkeypatch.setattr("subprocess.run", fake_run)
-    assert _send_email({"sources": []}) is False
-    assert "node missing" in capsys.readouterr().err
-
-
-def test_send_email_nonzero_returns_false(monkeypatch, capsys):
-    from subprocess import CompletedProcess
-
-    from livewire_scripts.data_quality_report import _send_email
-
-    monkeypatch.setattr(
-        "subprocess.run",
-        lambda *a, **kw: CompletedProcess(args=[], returncode=1, stdout=b"", stderr=b"bad"),
-    )
-    assert _send_email({"sources": []}) is False
-    assert "returned 1" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--email"])
+    assert exc_info.value.code == 2
 
 
 def test_resolve_log_dir_default(monkeypatch):

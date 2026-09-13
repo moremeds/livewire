@@ -1423,19 +1423,17 @@ class TestQualityHookIntegration:
             ) as m_detect,
             patch("clients.quality_flags.write_sidecar", return_value=True) as m_sidecar,
             patch("clients.quality_flags.append_audit", return_value=True) as m_audit,
-            patch("clients.quality_flags.alert_on_flag", return_value=True) as m_alert,
         ):
             inserted = fetch_ticker("AAPL", bars, bronze, asset_class="equity")
         assert inserted == bronze.replace_ticker_rows.return_value
         assert m_detect.call_count == 1
         assert m_sidecar.call_count == 1
         assert m_audit.call_count == 1
-        assert m_alert.call_count == 1
         _, kwargs = m_detect.call_args
         assert kwargs["metadata"]["expected_start"] is None
 
     def test_quality_hook_invoked_on_backfill_success(self):
-        """detect_all -> write_sidecar + append_audit + alert_on_flag all fire when flags exist."""
+        """detect_all -> write_sidecar + append_audit fire when flags exist."""
         from clients.quality_detector import QualityFlag
 
         fake_flag = QualityFlag(
@@ -1455,13 +1453,11 @@ class TestQualityHookIntegration:
             ) as m_detect,
             patch("clients.quality_flags.write_sidecar", return_value=True) as m_sidecar,
             patch("clients.quality_flags.append_audit", return_value=True) as m_audit,
-            patch("clients.quality_flags.alert_on_flag", return_value=True) as m_alert,
         ):
             inserted = backfill_ticker("AAPL", bars, bronze, asset_class="equity")
         assert m_detect.call_count == 1
         assert m_sidecar.call_count == 1
         assert m_audit.call_count == 1
-        assert m_alert.call_count == 1
         _, kwargs = m_detect.call_args
         assert kwargs["metadata"]["expected_start"] is None, "no caller-supplied inception means no expectation to test"
 
@@ -1486,7 +1482,6 @@ class TestQualityHookIntegration:
             patch("clients.quality_detector.detect_all", return_value=[]) as m_detect,
             patch("clients.quality_flags.write_sidecar", return_value=True),
             patch("clients.quality_flags.append_audit", return_value=True),
-            patch("clients.quality_flags.alert_on_flag", return_value=True),
         ):
             backfill_ticker("BIL", bars, bronze, asset_class="equity")
 
@@ -1504,7 +1499,6 @@ class TestQualityHookIntegration:
             patch("clients.quality_detector.detect_all", return_value=[]) as m_detect,
             patch("clients.quality_flags.write_sidecar", return_value=True),
             patch("clients.quality_flags.append_audit", return_value=True),
-            patch("clients.quality_flags.alert_on_flag", return_value=True),
         ):
             backfill_ticker("BIL", bars, bronze, asset_class="equity", expected_start=date(2007, 5, 30))
 
@@ -1521,13 +1515,11 @@ class TestQualityHookIntegration:
             patch("clients.quality_detector.detect_all", return_value=[]) as m_detect,
             patch("clients.quality_flags.write_sidecar") as m_sidecar,
             patch("clients.quality_flags.append_audit") as m_audit,
-            patch("clients.quality_flags.alert_on_flag") as m_alert,
         ):
             backfill_ticker("AAPL", bars, bronze, asset_class="equity")
         m_detect.assert_called_once()
         m_sidecar.assert_not_called()
         m_audit.assert_not_called()
-        m_alert.assert_not_called()
 
     def test_empty_bars_skip_detection_entirely_for_both_publish_paths(self):
         """Existing 'if not bars: return 0' path is unchanged - detector not called."""

@@ -250,11 +250,9 @@ class TestBackfillTicker:
 
 
 class TestQualityHookIntegration:
-    def test_quality_hook_suppresses_bulk_email_alerts_by_default(self, tmp_path, monkeypatch):
+    def test_quality_hook_writes_findings_without_any_send(self, tmp_path, monkeypatch):
         from clients.quality_detector import QualityFlag, run_detection
-        from livewire_scripts.backfill_intraday import _intraday_backfill_alerts_enabled
 
-        monkeypatch.delenv("MDW_INTRADAY_BACKFILL_ALERTS", raising=False)
         bars = [_make_ib_bar(datetime(2026, 4, 6, 9, 30))]
         outcome = TickerOutcome(ticker="AAPL", errors=["2026-04-06: provider error"])
         parquet_path = tmp_path / "5m.parquet"
@@ -273,7 +271,6 @@ class TestQualityHookIntegration:
             ),
             patch("clients.quality_flags.write_sidecar") as write_sidecar,
             patch("clients.quality_flags.append_audit") as append_audit,
-            patch("clients.quality_flags.alert_on_flag") as alert_on_flag,
         ):
             run_detection(
                 ticker="AAPL",
@@ -282,18 +279,14 @@ class TestQualityHookIntegration:
                 bars=bars,
                 parquet_path=parquet_path,
                 errors_during_fetch=[{"code": 0, "count": 1, "message": e} for e in (outcome.errors or [])],
-                alerts_enabled=_intraday_backfill_alerts_enabled(),
             )
 
         write_sidecar.assert_called_once()
         append_audit.assert_called_once()
-        alert_on_flag.assert_not_called()
 
-    def test_quality_hook_fires_with_outcome_errors_when_enabled(self, tmp_path, monkeypatch):
+    def test_quality_hook_fires_with_outcome_errors(self, tmp_path, monkeypatch):
         from clients.quality_detector import QualityFlag, run_detection
-        from livewire_scripts.backfill_intraday import _intraday_backfill_alerts_enabled
 
-        monkeypatch.setenv("MDW_INTRADAY_BACKFILL_ALERTS", "1")
         bars = [_make_ib_bar(datetime(2026, 4, 6, 9, 30))]
         outcome = TickerOutcome(ticker="AAPL", errors=["2026-04-06: error 162"])
         parquet_path = tmp_path / "5m.parquet"
@@ -312,7 +305,6 @@ class TestQualityHookIntegration:
             ) as m_detect,
             patch("clients.quality_flags.write_sidecar", return_value=True) as m_sidecar,
             patch("clients.quality_flags.append_audit", return_value=True) as m_audit,
-            patch("clients.quality_flags.alert_on_flag", return_value=True) as m_alert,
         ):
             run_detection(
                 ticker="AAPL",
@@ -321,7 +313,6 @@ class TestQualityHookIntegration:
                 bars=bars,
                 parquet_path=parquet_path,
                 errors_during_fetch=[{"code": 0, "count": 1, "message": e} for e in (outcome.errors or [])],
-                alerts_enabled=_intraday_backfill_alerts_enabled(),
             )
 
         kwargs = m_detect.call_args.kwargs
@@ -329,11 +320,9 @@ class TestQualityHookIntegration:
         assert kwargs["metadata"]["asset_class"] == "volatility"
         assert m_sidecar.call_count == 1
         assert m_audit.call_count == 1
-        assert m_alert.call_count == 1
 
     def test_quality_hook_skips_empty_bars(self, tmp_path):
         from clients.quality_detector import run_detection
-        from livewire_scripts.backfill_intraday import _intraday_backfill_alerts_enabled
 
         outcome = TickerOutcome(ticker="AAPL")
         with patch("clients.quality_detector.detect_all") as m_detect:
@@ -344,7 +333,6 @@ class TestQualityHookIntegration:
                 bars=[],
                 parquet_path=tmp_path / "x.parquet",
                 errors_during_fetch=[{"code": 0, "count": 1, "message": e} for e in (outcome.errors or [])],
-                alerts_enabled=_intraday_backfill_alerts_enabled(),
             )
 
         m_detect.assert_not_called()

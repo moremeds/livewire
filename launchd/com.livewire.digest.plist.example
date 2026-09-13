@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.livewire.digest</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <!-- Replace /path/to/warehouse with your actual warehouse path. Runs the
+             immutable release `current` points at, not the dev checkout. -->
+        <string>cd /path/to/warehouse/current &amp;&amp; .venv/bin/python scripts/livewire_ops.py digest --email</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <!-- Target: 15:45 UTC daily — 40 minutes after coverage's 15:05Z -->
+        <!-- start. The digest itself waits up to 4h for today's coverage fact -->
+        <!-- (coverage_scan_ok or coverage_skipped), so this gap is a start -->
+        <!-- hint, not a dependency on coverage's runtime. -->
+        <!-- launchd has no TimeZone key, so Hour/Minute are Mac-local: -->
+        <!--   America/Los_Angeles: Hour=8  Minute=45 (PDT) -->
+        <!--   America/New_York:    Hour=11 Minute=45 (EDT) -->
+        <!--   UTC:                 Hour=15 Minute=45 -->
+        <!--   Asia/Hong_Kong:      Hour=23 Minute=45 -->
+        <!-- Defaults below assume Asia/Hong_Kong. -->
+        <key>Hour</key>
+        <integer>23</integer>
+        <key>Minute</key>
+        <integer>45</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.digest.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.digest.stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- /opt/homebrew/bin is load-bearing: the digest sends through the
+             Nodemailer CLI. Without it launchd's minimal PATH cannot find
+             `node` and the send dies. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
