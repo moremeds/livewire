@@ -4,18 +4,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from clients import ledger
 from clients.index_membership_store import IndexMembershipStore
+from clients.mediawiki_client import MediaWikiSnapshot
 from clients.security_master import SecurityIdentityEvent, SecurityMaster
-from clients.source_evidence import SourceEvidenceStore
+from clients.shepherd_repair import HashedRef
+from clients.source_evidence import SourceEvidence, SourceEvidenceStore
+from clients.universe_client import UniverseFetchError
 from livewire_scripts import membership_sync
 
 NOW = datetime(2026, 9, 13, 1, 0, tzinfo=UTC)
+SYNC_NOW = datetime(2026, 9, 14, 1, 0, tzinfo=UTC)
 
 
 def dt(value: str) -> datetime:
@@ -203,3 +209,176 @@ def test_import_cli_dispatches(tmp_path, monkeypatch):
         == 0
     )
     assert len(_store(lake).events("sp500")) == 6
+
+
+def _fetched(lake: Path, tickers: set[str]) -> tuple[set[str], HashedRef]:
+    artifact = SourceEvidenceStore(lake).persist_raw(b'{"kind": "live snapshot"}')
+    return tickers, HashedRef(artifact.ref, artifact.sha256)
+
+
+def _runner(sent: list[list[str]]):
+    def run(command: list[str], *, timeout: int) -> subprocess.CompletedProcess:
+        sent.append(command)
+        return subprocess.CompletedProcess(command, 0, "")
+
+    return run
+
+
+def test_sync_appends_one_add_and_one_remove(tmp_path):
+    lake = _lake(tmp_path)
+    _import(tmp_path)  # members: AAPL, MSFT (AEOS was added then removed)
+
+    code = membership_sync.sync(
+        indexes=["sp500"],
+        data_lake_root=lake,
+        now=SYNC_NOW,
+        fetch_fn=lambda index_id: _fetched(lake, {"AAPL", "ORCL"}),
+    )
+
+    assert code == 0
+    events = [event for event in _store(lake).events("sp500") if event.known_at == SYNC_NOW]
+    by_action = {event.action: event for event in events}
+    msft_id = SecurityMaster(lake, evidence_verifier=None).resolve_symbol("massive", "MSFT", "XNAS", SYNC_NOW, SYNC_NOW)
+    assert by_action["add"].security_id == "unresolved:ORCL"
+    assert by_action["add"].status == "unresolved"
+    assert by_action["remove"].security_id == msft_id
+    assert by_action["remove"].status == "verified"
+    assert all(event.effective_at == SYNC_NOW and event.announced_at is None for event in events)
+
+
+def test_sync_unchanged_appends_nothing_but_still_reports_fetch_ok(tmp_path):
+    lake = _lake(tmp_path)
+    _import(tmp_path)
+
+    code = membership_sync.sync(
+        indexes=["sp500"],
+        data_lake_root=lake,
+        now=SYNC_NOW,
+        fetch_fn=lambda index_id: _fetched(lake, {"AAPL", "MSFT"}),
+    )
+
+    assert code == 0
+    assert len(_store(lake).events("sp500")) == 6
+    rows = ledger.query(
+        "select name, value from measurements where name like 'membership_%' "
+        "and scope='sp500' and measured_at >= '2026-09-14'"
+    )
+    by_name = {row["name"]: row["value"] for row in rows}
+    assert by_name["membership_source_fetch_ok"] == 1.0
+    assert by_name["membership_events_added"] == 0.0
+    assert by_name["membership_events_removed"] == 0.0
+
+
+def test_sync_fetch_failure_pages_fails_closed_and_exits_3(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
+    lake = _lake(tmp_path)
+    sent: list[list[str]] = []
+
+    def broken_fetch(index_id):
+        raise UniverseFetchError("simulated source outage")
+
+    code = membership_sync.sync(
+        indexes=["sp500"],
+        data_lake_root=lake,
+        now=SYNC_NOW,
+        fetch_fn=broken_fetch,
+        runner=_runner(sent),
+    )
+
+    assert code == 3
+    assert len(sent) == 1  # one page_for_lane notice went through notify.send
+    rows = ledger.query("select name, value from measurements where name like 'membership_%' and scope='sp500'")
+    by_name = {row["name"]: row["value"] for row in rows}
+    assert by_name["membership_source_fetch_ok"] == 0.0
+    terminal = ledger.query("select verdict, exit_code from runs where job='membership-sync' and ended is not null")
+    assert {row["verdict"] for row in terminal} == {"FAILED"}
+    assert {row["exit_code"] for row in terminal} == {3}
+    notices = ledger.query("select exit_code from executions where script='notify'")
+    assert {row["exit_code"] for row in notices} == {0}
+
+
+def test_djia_fetch_fails_closed_on_missing_wikipedia_table(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
+    lake = _lake(tmp_path)
+    raw = b"<html><body><p>annual returns only, no components table</p></body></html>"
+    artifact = SourceEvidenceStore(lake).persist_raw(raw)
+    snapshot = MediaWikiSnapshot(
+        title="Dow Jones Industrial Average",
+        canonical_url="https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average",
+        revision_id=1,
+        revision_time=NOW,
+        content=raw.decode(),
+        evidence=SourceEvidence(
+            ref=artifact.ref,
+            sha256=artifact.sha256,
+            source_url="https://en.wikipedia.org/w/rest.php/v1/page/Dow_Jones_Industrial_Average/html",
+            retrieved_at=NOW,
+            publication_time=NOW,
+            mediawiki_revision_id=1,
+            mediawiki_revision_time=NOW,
+            content_type="text/html",
+        ),
+    )
+    monkeypatch.setattr(
+        membership_sync, "MediaWikiClient", lambda *args, **kwargs: SimpleNamespace(snapshot=lambda title: snapshot)
+    )
+    sent: list[list[str]] = []
+
+    code = membership_sync.sync(indexes=["djia"], data_lake_root=lake, now=SYNC_NOW, runner=_runner(sent))
+
+    assert code == 3
+    assert len(sent) == 1
+    assert _store(lake).events("djia") == []
+    rows = ledger.query("select value from measurements where name='membership_source_fetch_ok' and scope='djia'")
+    assert {row["value"] for row in rows} == {0.0}
+
+
+def test_r2k_proxy_fetch_below_floor_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
+    lake = _lake(tmp_path)
+    monkeypatch.setattr(membership_sync, "fetch_r2k", lambda: {"A", "B", "C"})
+    sent: list[list[str]] = []
+
+    code = membership_sync.sync(indexes=["r2k-proxy"], data_lake_root=lake, now=SYNC_NOW, runner=_runner(sent))
+
+    assert code == 3
+    assert len(sent) == 1
+    rows = ledger.query("select value from measurements where name='membership_source_fetch_ok' and scope='r2k-proxy'")
+    assert {row["value"] for row in rows} == {0.0}
+
+
+def test_r2k_proxy_resolved_members_are_candidate(tmp_path, monkeypatch):
+    lake = _lake(tmp_path)
+    monkeypatch.setattr(membership_sync, "_R2K_PROXY_MIN_MEMBERS", 3)
+    monkeypatch.setattr(membership_sync, "fetch_r2k", lambda: {"AAPL", "ZZ1", "ZZ2"})
+
+    code = membership_sync.sync(indexes=["r2k-proxy"], data_lake_root=lake, now=SYNC_NOW)
+
+    assert code == 0
+    events = _store(lake).events("r2k-proxy")
+    assert len(events) == 3
+    by_status = {}
+    for event in events:
+        by_status.setdefault(event.status, []).append(event)
+    aapl_id = SecurityMaster(lake, evidence_verifier=None).resolve_symbol("massive", "AAPL", "XNAS", SYNC_NOW, SYNC_NOW)
+    assert [event.security_id for event in by_status["candidate"]] == [aapl_id]
+    assert sorted(event.security_id for event in by_status["unresolved"]) == ["unresolved:ZZ1", "unresolved:ZZ2"]
+
+
+def test_sync_cli_dispatches_and_dry_run_appends_nothing(tmp_path, monkeypatch):
+    lake = _lake(tmp_path)
+    _import(tmp_path)
+    monkeypatch.setenv("MDW_DATA_LAKE", str(lake))
+    monkeypatch.setattr(
+        membership_sync,
+        "_default_fetch",
+        lambda index_id, store, now: _fetched(lake, {"AAPL", "MSFT", "ORCL"}),
+    )
+
+    assert membership_sync.main(["--index", "sp500", "--dry-run"]) == 0
+    assert len(_store(lake).events("sp500")) == 6  # diff computed, nothing appended
+
+    assert membership_sync.main(["--index", "sp500"]) == 0
+    events = _store(lake).events("sp500")
+    assert len(events) == 7  # the ORCL add landed on the apply pass
+    assert any(event.security_id == "unresolved:ORCL" for event in events)

@@ -24,7 +24,8 @@ log = logging.getLogger(__name__)
 _TIMEOUT = 30
 _USER_AGENT = "livewire/1.0 (market-data-warehouse)"
 
-_R2K_URL = "https://www.slickcharts.com/russell2000"
+R2K_SLICKCHARTS_URL = "https://www.slickcharts.com/russell2000"
+_R2K_URL = R2K_SLICKCHARTS_URL
 
 _POLYGON_BASE = "https://api.polygon.io"
 
@@ -117,11 +118,24 @@ def fetch_sp500() -> set[str]:
 # is a 404; only the all-caps form resolves.
 NDX100_WIKIPEDIA_TITLE = "List of NASDAQ-100 companies"
 
+# The DJIA article's components table was dropped upstream (measured
+# 2026-09-13: the article's only wikitable is annual returns, plus a navbox),
+# so parse_constituent_table raises UniverseFetchError and membership-sync
+# fails closed — `membership_source_fetch_ok=0` and a page — rather than
+# silently switching source. Any replacement source is an explicit decision.
+DJIA_WIKIPEDIA_TITLE = "Dow Jones Industrial Average"
+
 
 def fetch_ndx100() -> set[str]:
     """Fetch current Nasdaq-100 members from one revision-bound snapshot."""
 
     return _fetch_wikipedia_universe(NDX100_WIKIPEDIA_TITLE, "Nasdaq-100")
+
+
+def fetch_djia() -> set[str]:
+    """Fetch current DJIA members from one revision-bound snapshot."""
+
+    return _fetch_wikipedia_universe(DJIA_WIKIPEDIA_TITLE, "DJIA")
 
 
 def fetch_r2k() -> set[str]:

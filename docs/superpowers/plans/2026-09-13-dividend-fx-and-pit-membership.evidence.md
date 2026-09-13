@@ -333,3 +333,84 @@ Deviations: `membership_unresolved` measures the standing store backlog rather
 than the run's new-unresolved delta (the plan does not pin the definition;
 backlog semantics is what the §2.4 status check needs to stay honest).
 Runbook text deferred to Task 7, which owns the `membership-sync` doc block.
+
+## Task 7 — `membership-sync` live update
+
+**Files:** `livewire_scripts/membership_sync.py` (`sync` + `_default_fetch` +
+`_current_members` + CLI sync parser), `clients/universe_client.py`
+(`fetch_djia` + `DJIA_WIKIPEDIA_TITLE`, `_R2K_URL` promoted to public
+`R2K_SLICKCHARTS_URL`), `tests/test_membership_sync.py` (+7 tests),
+`docs/runbook.md` (`membership-sync` block under §9 scheduling).
+
+**Design:** `sync(*, indexes, data_lake_root, now, fetch_fn=None,
+runner=None, dry_run=False) -> int`. Per index: fetch the live source with
+evidence, replay all non-superseded non-`rejected` events to the current
+member set (verified + candidate + `unresolved:` placeholders all count — a
+placeholder member that stayed unresolved must not be re-added every run),
+diff, append add/remove events (`effective_at=known_at=now`,
+`announced_at=None`, `event_id` = content hash incl. the day's source hash),
+emit per-index measurements, print one JSON summary line per index.
+
+**Sources.** `sp500`/`ndx100`/`djia` → `MediaWikiClient.snapshot(title)` +
+shared `parse_constituent_table` (the exact seam `universe_client` uses;
+`snapshot.evidence` is the event's `HashedRef`). `r2k-proxy` →
+`universe_client.fetch_r2k` (Slickcharts) with grok's own guardrail from
+`r2k_proxy_live/update_from_live.py`: a fetched set under 1500 members is a
+fetch failure, not a diff (a broken parse would otherwise emit ~1,500 false
+removes). Its evidence artifact is the canonical sorted fetched set committed
+to the CAS with `source_url` = the Slickcharts page. No preset fallback —
+grok's `update_from_live.py` silently substituted `presets/r2k.json` when the
+source died, which is the invisible-write pattern this plan removes; a dead
+source pages instead.
+
+**Fail closed.** Any per-index fetch error (network, missing table, below
+floor, unknown index) → `membership_source_fetch_ok=0` for that index,
+processing continues for the rest; after the loop one `page_for_lane` +
+`notify.send(runner=runner)`, terminal `runs` row `FAILED`/`exit_code=3`,
+return 3. Adds/removes are ledger events and digest lines, never pages.
+
+**djia fails closed today, by design:** the Wikipedia article no longer
+carries a components wikitable (verified Task 5; `parse_constituent_table`
+raises → `UniverseFetchError` → fetch_ok=0 + page). `fetch_djia` is
+implemented in `universe_client` pointing at the Wikipedia title — no
+alternative source was wired in.
+
+**Verification** — 7 new tests:
+
+- fake `fetch_fn` adds `unresolved:ORCL` + removes verified MSFT
+  (`has_verified_identity` satisfied by the seeded master);
+- unchanged set appends nothing, still emits `membership_source_fetch_ok=1`;
+- fetch raising → one page through a fake runner, exit 3, `fetch_ok=0`,
+  terminal run `FAILED`/`3`, `executions(script='notify')` receipt row;
+- djia fail-closed: fake `MediaWikiClient` returns a snapshot whose content
+  has no constituents table → exit 3, page sent, `events("djia")` stays
+  empty, `fetch_ok=0`;
+- r2k-proxy below-floor fetch → exit 3 + `fetch_ok=0`, nothing appended;
+- r2k-proxy success → resolved AAPL is `candidate`, unresolved are
+  `unresolved:ZZ*`;
+- CLI: `--index sp500 --dry-run` appends nothing; apply appends.
+
+```
+$ uv run pytest tests/test_membership_sync.py tests/test_universe_client.py -q
+32 passed in 0.56s
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+2743 passed, 2 warnings in 84.70s — Total coverage: 95.03%
+```
+
+**Deviations:**
+
+1. `clients/universe_client.py` is outside the plan's Task-7 file list — it is
+   the fetchers' home, so `fetch_djia`/`DJIA_WIKIPEDIA_TITLE` live there and
+   `_R2K_URL` was promoted to `R2K_SLICKCHARTS_URL` for the evidence
+   `source_url` (rather than importing a private name).
+2. **Proposed djia alternative source — decision needed:** Slickcharts
+   `https://www.slickcharts.com/dowjones` (verified identical to the grok DJIA
+   list in Task 5; same `table.table`/`td[2]` parser family as `fetch_r2k`).
+   Not implemented — `fetch_djia` stays on Wikipedia and fails closed until
+   decided.
+3. `sync()` gained `dry_run` kwarg (plan signature lists
+   `fetch_fn`/`runner` only) — spec §2.3 shows `--dry-run`; dry runs emit
+   `membership_source_fetch_ok` + `membership_unresolved` + appended counts
+   (zero) and print the planned diff.
+4. r2k-proxy drops grok's preset fallback: a dead Slickcharts fetch pages
+   instead of silently diffing against `presets/r2k.json`.

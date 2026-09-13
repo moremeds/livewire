@@ -1035,6 +1035,43 @@ python scripts/livewire_ingest.py shepherd-universe import-decision --manifest <
 python scripts/livewire_ingest.py shepherd-universe verify --index <INDEX> --revision <N> [--effective-at ...] [--as-of ...]
 ```
 
+### `membership-sync` — point-in-time index membership
+
+Maintains the `index_membership` store: evidence-backed add/remove events per
+`security_id`, replayable `as_of`. Two modes:
+
+```bash
+python scripts/livewire_ingest.py membership-sync [--index sp500]... [--dry-run]   # live diff
+python scripts/livewire_ingest.py membership-sync import --index sp500 \
+    --events grok_index/pit_membership/sp500/events.jsonl --source <file>...        # one-time panel import
+```
+
+- **Live sync** fetches each index's current source — Wikipedia
+  revision-bound snapshot for `sp500`/`ndx100`/`djia` (same MediaWikiClient +
+  `parse_constituent_table` seam `universe_client` uses, evidence committed to
+  the CAS) and Slickcharts for `r2k-proxy` (below the 1500-member floor counts
+  as a fetch failure — a broken parse must not emit ~1,500 false removes;
+  there is deliberately no preset fallback). Resolved tickers become `verified`
+  events (`candidate` for `r2k-proxy`); unresolvable ones stay `unresolved:<ticker>`
+  placeholders so history is kept without feeding `members_effective_at`.
+- **A fetch failure fails closed**: `membership_source_fetch_ok=0`, one
+  `page_for_lane` page through `notify`, exit 3. Adds/removes are ledger
+  events and digest lines, not pages. Today `djia` always fails closed — the
+  Wikipedia article no longer carries a components table; the source is an
+  open decision.
+- **`--dry-run`** prints the computed diff (`adds`/`removes` per index) and
+  appends nothing; measurements still report `membership_source_fetch_ok` and
+  the standing `membership_unresolved` backlog.
+- **`import`** maps a grok `events.jsonl` panel into the store once:
+  `known_at` = import time, `effective_at` = `effective_date` 00:00 UTC,
+  `announced_at` = none (the panels carry none), `--source` files committed to
+  the CAS as the events' `source_refs`/`source_hashes`. `event_id` is a content
+  hash, so re-running the same import appends nothing.
+- **Ledger:** `runs` rows `job='membership-sync'` (FAILED + exit 3 when any
+  fetch fails); per-index measurements `membership_events_added`,
+  `membership_events_removed`, `membership_unresolved` (standing backlog, not a
+  per-run delta), `membership_source_fetch_ok` (0/1).
+
 ### Log file names
 
 | Log                  | Path                                                                      |
