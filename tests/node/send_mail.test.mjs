@@ -67,6 +67,29 @@ test("resolveAlertConfig supports host port auth fields and requires FROM and TO
   );
 });
 
+test("Resend SMTP field mapping resolves to livewire@rsiarc.com over smtps 465", () => {
+  const config = resolveAlertConfig({
+    MDW_ALERT_EMAIL_FROM: "Livewire <livewire@rsiarc.com>",
+    MDW_ALERT_EMAIL_TO: "to@example.com",
+    MDW_ALERT_SMTP_HOST: "smtp.resend.com",
+    MDW_ALERT_SMTP_PORT: "465",
+    MDW_ALERT_SMTP_SECURE: "true",
+    MDW_ALERT_SMTP_USER: "resend",
+    MDW_ALERT_SMTP_PASS: "re_test_key",
+  });
+
+  assert.equal(config.from, "Livewire <livewire@rsiarc.com>");
+  assert.deepEqual(config.transportOptions, {
+    host: "smtp.resend.com",
+    port: 465,
+    secure: true,
+    auth: {
+      user: "resend",
+      pass: "re_test_key",
+    },
+  });
+});
+
 test("parseBoolean accepts common truthy and falsy forms", () => {
   assert.equal(parseBoolean("true"), true);
   assert.equal(parseBoolean("1"), true);
