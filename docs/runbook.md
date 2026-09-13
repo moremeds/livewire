@@ -445,6 +445,25 @@ python scripts/livewire_ingest.py corporate-actions --dry-run                   
 Targeted runs never infer disappearance by default; full reconciliations may
 append cancellation revisions.
 
+#### Convert foreign-currency dividends to the equity currency
+
+`corporate-actions convert-dividend-currency` finds active dividends whose
+currency differs from the equity's (security_master, else USD) and supersedes
+them with `provider="eod_fx"` rows converted at the FX bronze `1d` close on the
+ex-date (previous session on an FX holiday; no bar within 5 sessions → skipped
+with `no_fx_bar`, never estimated). Dry-run by default; `--apply` requires
+`--output-dir` and writes `dividend_fx_conversion_applied.json` — the audit
+trail the grok repair produced by hand. Every run emits `runs`
+(`job='dividend-fx'`), `dividend_currency_mismatch` (remaining), and
+`dividend_fx_converted`/`dividend_fx_skipped` measurements; apply also commits
+each FX bar to the evidence CAS and writes one `evidence` row per ref.
+
+```bash
+python scripts/livewire_ingest.py corporate-actions convert-dividend-currency                       # dry-run, all CA-store symbols
+python scripts/livewire_ingest.py corporate-actions convert-dividend-currency --tickers ACR         # dry-run, one symbol
+python scripts/livewire_ingest.py corporate-actions convert-dividend-currency --apply --output-dir ~/market-warehouse/grok_index/gaps/
+```
+
 `--resume` is what the nightly lane passes, every night. It continues the
 per-symbol cursor for this exact scope (lake root, ticker set, `--full-reconcile`,
 `--dry-run`); a cursor from a different scope, a finished pass, or an unreadable
@@ -1015,6 +1034,53 @@ python scripts/livewire_ingest.py shepherd-universe scan --index <INDEX> [--pres
 python scripts/livewire_ingest.py shepherd-universe import-decision --manifest <path>
 python scripts/livewire_ingest.py shepherd-universe verify --index <INDEX> --revision <N> [--effective-at ...] [--as-of ...]
 ```
+
+### `membership-sync` — point-in-time index membership
+
+Maintains the `index_membership` store: evidence-backed add/remove events per
+`security_id`, replayable `as_of`. Two modes:
+
+```bash
+python scripts/livewire_ingest.py membership-sync [--index sp500]... [--dry-run]   # live diff
+python scripts/livewire_ingest.py membership-sync import --index sp500 \
+    --events grok_index/pit_membership/sp500/events.jsonl --source <file>...        # one-time panel import
+```
+
+- **Live sync** fetches each index's current source — Wikipedia
+  revision-bound snapshot for `sp500`/`ndx100` (same MediaWikiClient +
+  `parse_constituent_table` seam `universe_client` uses, evidence committed to
+  the CAS) and Slickcharts for `djia`/`r2k-proxy` (floors are fail-closed:
+  `djia` under 30 parsed rows, `r2k-proxy` under 1,500 — a broken parse must
+  not emit mass removes; there is deliberately no preset fallback). Resolved
+  tickers become `verified` events (`candidate` for `r2k-proxy`);
+  unresolvable ones stay `unresolved:<ticker>` placeholders so history is kept
+  without feeding `members_effective_at`. `djia` reads
+  `slickcharts.com/dowjones` because the Wikipedia article dropped its
+  components table.
+- **A fetch failure fails closed**: `membership_source_fetch_ok=0`, one
+  `page_for_lane` page through `notify`, exit 3. Adds/removes are ledger
+  events and digest lines, not pages.
+- **`--dry-run`** prints the computed diff (`adds`/`removes` per index) and
+  appends nothing; measurements still report `membership_source_fetch_ok` and
+  the standing `membership_unresolved` backlog.
+- **`import`** maps a grok `events.jsonl` panel into the store once:
+  `known_at` = import time, `effective_at` = `effective_date` 00:00 UTC,
+  `announced_at` = none (the panels carry none), `--source` files committed to
+  the CAS as the events' `source_refs`/`source_hashes`. `event_id` is a content
+  hash, so re-running the same import appends nothing.
+- **Ledger:** `runs` rows `job='membership-sync'` (FAILED + exit 3 when any
+  fetch fails); per-index measurements `membership_events_added`,
+  `membership_events_removed`, `membership_unresolved` (standing backlog, not a
+  per-run delta), `membership_source_fetch_ok` (0/1).
+- **Schedule:** `com.livewire.membership-sync` — weekdays 01:00Z (09:00 HKT),
+  runs `current/`, logs `logs/launchd/com.livewire.membership-sync.{stdout,stderr}.log`.
+- **Status checks:** `Membership sync ran today` (weekday-gated: Sat/Sun read
+  OK; a missing weekday run is UNKNOWN, a FAILED run BAD) and
+  `Unresolved memberships` (latest per-index `membership_unresolved` backlog;
+  any >0 → WARN, never measured → UNKNOWN).
+- **Read:** `python scripts/livewire_ops.py membership --index sp500
+  --effective-at YYYY-MM-DD [--as-of YYYY-MM-DD]` — sorted members on stdout
+  (`?<security_id>` for unresolved), count on stderr, exit 0 always.
 
 ### Log file names
 

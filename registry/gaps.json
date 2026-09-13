@@ -19,6 +19,24 @@
     "test": "tests/test_gap_engine.py::test_a_missing_file_with_no_terminus_is_still_g3_tier_a"
   },
   {
+    "id": "g1-g2-g3-djia-daily",
+    "gap": [
+      "G1",
+      "G3",
+      "G14"
+    ],
+    "asset_class": "equity",
+    "timeframe": "1d",
+    "universe": [
+      "djia"
+    ],
+    "check": "denominator_diff",
+    "params": {},
+    "tier": "A",
+    "since": "2026-09-13",
+    "test": "tests/test_gap_registry.py::test_djia_row_resolves_the_thirty_constituents"
+  },
+  {
     "id": "g1-g2-g3-rates-daily",
     "gap": [
       "G1",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,7 +10,9 @@ import pytest
 
 from clients import ib_gateway_preflight, ledger
 from clients.ib_client import IBConnectionError
-from livewire_scripts import notify
+from clients.index_membership_store import IndexMembershipStore, MembershipEvent
+from clients.security_master import SecurityIdentityEvent, SecurityMaster
+from livewire_scripts import membership_sync, notify
 from scripts import livewire_ingest, livewire_ops, livewire_quality, livewire_store
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -432,16 +435,18 @@ def test_ingest_universe_sync_bypasses_ib_preflight(monkeypatch) -> None:
     [
         ("universe-sync", "livewire_scripts.universe_sync"),
         ("shepherd-universe", "livewire_scripts.shepherd_universe"),
+        ("membership-sync", "livewire_scripts.membership_sync"),
     ],
 )
 def test_ingest_universe_refresh_commands_load_scheduled_env(monkeypatch, tmp_path, command, module) -> None:
-    """`com.livewire.universe-refresh` chains these two and launchd starts it cold.
+    """`com.livewire.universe-refresh` and `com.livewire.membership-sync` invoke
+    this entrypoint directly and launchd starts them cold.
 
-    It is the only plist invoking this entrypoint directly; every other job goes
-    through `livewire_ops.py run-*-job`, which loads the same files first. Without
-    the loader `universe_sync` logged `MASSIVE_API_KEY not set — skipping
-    dead-ticker check` and exited 0, so the denominator gained new index members
-    and never lost delisted ones — in the one job that exists to keep it honest.
+    Every other job goes through `livewire_ops.py run-*-job`, which loads the
+    same files first. Without the loader `universe_sync` logged
+    `MASSIVE_API_KEY not set — skipping dead-ticker check` and exited 0, so
+    the denominator gained new index members and never lost delisted ones —
+    in the one job that exists to keep it honest.
     """
     calls: list[tuple[str, list[str]]] = []
     loader_calls: list[Path] = []
@@ -831,3 +836,150 @@ def test_ops_env_loader_ignores_missing_and_bad_quotes(tmp_path, monkeypatch) ->
 
     assert livewire_ops.os.environ["BAD"] == "'unterminated"
     assert livewire_ops.os.environ["EMPTY"] == ""
+
+
+_MEMBERSHIP_IMPORT_NOW = datetime(2026, 9, 13, 1, 0, tzinfo=UTC)
+
+
+def _verifies(ref: str, digest: str) -> bool:
+    return ref == f"artifact://sha256/{digest}"
+
+
+def _verified_identity(
+    master: SecurityMaster,
+    symbol: str,
+    *,
+    effective_from: datetime = datetime(2000, 1, 1, tzinfo=UTC),
+    effective_to: datetime | None = None,
+) -> str:
+    security_id = master.new_security_id()
+    master.append(
+        SecurityIdentityEvent(
+            event_id=f"identity-{symbol}-{security_id}",
+            security_id=security_id,
+            revision=1,
+            symbol=symbol,
+            provider="massive",
+            exchange_mic="XNAS",
+            currency="USD",
+            effective_from=effective_from,
+            effective_to=effective_to,
+            known_at=effective_from,
+            issuer_name=f"{symbol} issuer",
+            cik="0000000001",
+            composite_figi=None,
+            share_class_figi=None,
+            continuity_basis="provider_figi",
+            relationship_type=None,
+            related_security_id=None,
+            source_refs=("artifact://sha256/" + "a" * 64,),
+            source_hashes=("a" * 64,),
+            status="verified",
+            supersedes=None,
+        )
+    )
+    return security_id
+
+
+def _membership_lake(tmp_path: Path) -> Path:
+    """A two-identity master plus a six-line grok panel, imported at _MEMBERSHIP_IMPORT_NOW."""
+    lake = tmp_path / "lake"
+    master = SecurityMaster(lake, evidence_verifier=_verifies)
+    if not master.events():
+        _verified_identity(master, "AAPL")
+        _verified_identity(master, "MSFT")
+    rows = [
+        {"effective_date": "2004-01-01", "action": "add", "ticker": "AAPL", "kind": "bootstrap"},
+        {"effective_date": "2004-01-01", "action": "add", "ticker": "AEOS", "kind": "bootstrap"},
+        {"effective_date": "2004-01-01", "action": "add", "ticker": "MSFT", "kind": "bootstrap"},
+        {"effective_date": "2007-01-01", "action": "remove", "ticker": "AEOS", "kind": "diff"},
+        {"effective_date": "2010-01-01", "action": "remove", "ticker": "AAPL", "kind": "diff"},
+        {"effective_date": "2015-01-01", "action": "add", "ticker": "AAPL", "kind": "diff"},
+    ]
+    events = tmp_path / "events.jsonl"
+    events.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    source = tmp_path / "source.snapshot"
+    source.write_bytes(b'{"note": "evidence"}\n')
+    membership_sync.import_events(
+        index_id="sp500",
+        events_path=events,
+        sources=[source],
+        data_lake_root=lake,
+        now=_MEMBERSHIP_IMPORT_NOW,
+        confidence="B",
+    )
+    return lake
+
+
+def test_ops_membership_prints_sorted_symbols_and_marks_unresolved(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("MDW_DATA_LAKE", str(_membership_lake(tmp_path)))
+
+    assert livewire_ops.main(["membership", "--index", "sp500", "--effective-at", "2006-01-01"]) == 0
+    out, err = capsys.readouterr()
+    assert out.splitlines() == ["?unresolved:AEOS", "AAPL", "MSFT"]
+    assert err.strip() == "3"
+
+
+def test_ops_membership_effective_at_replays_adds_and_removes(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("MDW_DATA_LAKE", str(_membership_lake(tmp_path)))
+
+    assert livewire_ops.main(["membership", "--index", "sp500", "--effective-at", "2012-01-01"]) == 0
+    out, err = capsys.readouterr()
+    assert out.splitlines() == ["MSFT"]  # AAPL removed 2010, AEOS removed 2007
+    assert err.strip() == "1"
+
+    assert livewire_ops.main(["membership", "--index", "sp500", "--effective-at", "2016-01-01"]) == 0
+    out, err = capsys.readouterr()
+    assert out.splitlines() == ["AAPL", "MSFT"]  # the 2015 re-add landed
+    assert err.strip() == "2"
+
+
+def test_ops_membership_as_of_before_the_import_returns_nothing(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("MDW_DATA_LAKE", str(_membership_lake(tmp_path)))
+
+    rc = livewire_ops.main(["membership", "--index", "sp500", "--effective-at", "2016-01-01", "--as-of", "2026-09-12"])
+    out, err = capsys.readouterr()
+    assert rc == 0 and out == "" and err.strip() == "0"  # imported 2026-09-13; we did not know it on the 12th
+
+    rc = livewire_ops.main(["membership", "--index", "sp500", "--effective-at", "2016-01-01", "--as-of", "2026-09-13"])
+    out, err = capsys.readouterr()
+    assert rc == 0 and out.splitlines() == ["AAPL", "MSFT"] and err.strip() == "2"
+
+
+def test_ops_membership_reads_an_empty_index_and_exits_zero(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("MDW_DATA_LAKE", str(_membership_lake(tmp_path)))
+
+    assert livewire_ops.main(["membership", "--index", "ndx100", "--effective-at", "2016-01-01"]) == 0
+    out, err = capsys.readouterr()
+    assert out == "" and err.strip() == "0"
+
+
+def test_ops_membership_names_a_symbol_for_an_expired_identity(tmp_path, monkeypatch, capsys) -> None:
+    """A member whose verified identity ended before the query date still names a symbol."""
+    lake = tmp_path / "lake"
+    master = SecurityMaster(lake, evidence_verifier=_verifies)
+    csco_id = _verified_identity(master, "CSCO", effective_to=datetime(2010, 1, 1, tzinfo=UTC))
+    store = IndexMembershipStore(lake, security_master=master, evidence_verifier=_verifies)
+    store.append(
+        MembershipEvent(
+            event_id="m1",
+            index_id="sp500",
+            security_id=csco_id,
+            action="add",
+            announced_at=None,
+            effective_at=datetime(2004, 1, 1, tzinfo=UTC),
+            known_at=datetime(2004, 1, 1, tzinfo=UTC),
+            source_refs=("artifact://sha256/" + "b" * 64,),
+            source_hashes=("b" * 64,),
+            revision=1,
+            supersedes=None,
+            status="candidate",
+        )
+    )
+    monkeypatch.setenv("MDW_DATA_LAKE", str(lake))
+
+    # effective_at past the identity's end: no interval contains it, so the
+    # latest verified identity still names the symbol.
+    assert livewire_ops.main(["membership", "--index", "sp500", "--effective-at", "2015-01-01"]) == 0
+    out, err = capsys.readouterr()
+    assert out.splitlines() == ["CSCO"] and err.strip() == "1"

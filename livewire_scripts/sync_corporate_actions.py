@@ -6,20 +6,28 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import sys
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Lock
 
+import pyarrow.parquet as pq
+
 from clients import constants, ledger
-from clients.corporate_action_store import CorporateActionStore, ProviderEvent
+from clients.corporate_action_store import (
+    CorporateAction,
+    CorporateActionStore,
+    DividendConversion,
+    ProviderEvent,
+)
 from clients.ingestion_common import load_preset
 from clients.massive_client import MassiveAuthError, MassiveClient, MassivePageEvidence
-from clients.source_evidence import SourceEvidence, SourceEvidenceStore
+from clients.source_evidence import SourceEvidence, SourceEvidenceStore, canonical_bytes, digest_bytes
 from clients.symbol_paths import canonical_symbol, decode_symbol
 from clients.telemetry import MassiveTelemetry
 from livewire_scripts.corporate_action_cursor import build_identity, default_cursor_path, open_cursor
@@ -470,7 +478,304 @@ def _emit_provider_measurements(telemetry: MassiveTelemetry, run_id: str) -> Non
     )
 
 
+# --- convert-dividend-currency --------------------------------------------------
+
+# FX pairs trade Sun–Fri (~6 sessions a week), so "within 5 sessions" is a
+# 7-calendar-day window on the file's own date column.
+_FX_STALE_DAYS = 7
+
+
+def _fx_bar_path(root: Path, pair: str) -> Path:
+    return root / "bronze" / "asset_class=fx" / f"symbol={pair}" / "1d.parquet"
+
+
+def _fx_pair_for(orig_ccy: str, equity_ccy: str, root: Path) -> tuple[str, str]:
+    """``<eq><orig>`` exists → divide; ``<orig><eq>`` exists → multiply.
+
+    CAD→USD resolves to USDCAD/divide; GBP→USD to GBPUSD/multiply. When neither
+    file exists the ``<eq><orig>``/divide guess is returned only to name the
+    pair in the skip record — ``fx_close_fn`` then reports ``no_fx_bar``.
+    """
+    if _fx_bar_path(root, f"{equity_ccy}{orig_ccy}").exists():
+        return f"{equity_ccy}{orig_ccy}", "divide"
+    if _fx_bar_path(root, f"{orig_ccy}{equity_ccy}").exists():
+        return f"{orig_ccy}{equity_ccy}", "multiply"
+    return f"{equity_ccy}{orig_ccy}", "divide"
+
+
+def _fx_bar(root: Path, pair: str, on: date) -> dict | None:
+    """The FX 1d bar for ``pair`` on ``on`` — the previous session's on a holiday."""
+    path = _fx_bar_path(root, pair)
+    if not path.exists():
+        return None
+    rows = pq.read_table(path, columns=["trade_date", "close"]).to_pylist()
+    eligible = [row for row in rows if row["trade_date"] <= on]
+    if not eligible:
+        return None
+    bar = max(eligible, key=lambda row: row["trade_date"])
+    if (on - bar["trade_date"]).days > _FX_STALE_DAYS:
+        return None
+    return bar
+
+
+def _equity_currency(root: Path, symbol: str, now: datetime) -> tuple[str, str]:
+    """Equity bronze currency from security_master when it has a verified claim."""
+    if not (root / "security_master" / "events.parquet").exists():
+        return "USD", "default"
+    try:
+        from clients.security_master import SecurityMaster
+
+        master = SecurityMaster(root, evidence_verifier=None)
+        verified = [
+            event for event in master.events(as_of=now) if event.symbol == symbol and event.status == "verified"
+        ]
+    except Exception:
+        return "USD", "default"
+    if not verified:
+        return "USD", "default"
+    return max(verified, key=lambda event: event.known_at).currency, "security_master"
+
+
+def _convertible_symbols(root: Path) -> list[str]:
+    action_root = root / "bronze" / "asset_class=corporate_action"
+    return sorted(
+        decode_symbol(path.name.removeprefix("symbol="))
+        for path in action_root.glob("symbol=*")
+        if (path / "events.parquet").exists()
+    )
+
+
+def convert_dividend_currency(
+    *,
+    tickers: list[str] | None,
+    apply: bool,
+    output_dir: Path | None,
+    lake_root: Path,
+    now: datetime | None = None,
+    fx_close_fn: Callable[[str, date], tuple[date, float] | None] | None = None,
+) -> dict:
+    """Supersede foreign-currency dividends with `eod_fx` rows in the equity currency.
+
+    Dry-run by default: detects and measures, writes no store rows and no CAS
+    evidence. ``--apply`` writes the superseding rows and the manifest (the same
+    JSON shape grok produced by hand). ``runs``/``measurements`` are emitted
+    either way — the remaining count is a fact either way.
+    """
+    root = Path(lake_root)
+    now = now or datetime.now(UTC)
+    store = CorporateActionStore(root)
+    symbols = [canonical_symbol(t) for t in tickers] if tickers else _convertible_symbols(root)
+    if fx_close_fn is None:
+        fx_close_fn = lambda pair, on: (  # noqa: E731
+            (bar["trade_date"], float(bar["close"])) if (bar := _fx_bar(root, pair, on)) else None
+        )
+    evidence_store = SourceEvidenceStore(root) if apply else None
+
+    run_id = os.environ.get("LW_RUN_ID") or ledger.new_run_id("dividend-fx")
+    run_row = {
+        "run_id": run_id,
+        "job": "dividend-fx",
+        "host": socket.gethostname(),
+        "release_sha": os.environ.get("LW_RELEASE_SHA"),
+        "presets_sha": None,
+        "registry_sha": None,
+        "started": now,
+        "ended": None,
+        "exit_code": None,
+        "verdict": None,
+    }
+    ledger.emit("runs", [run_row], run_id=run_id)
+
+    applied: list[dict] = []
+    skipped: list[dict] = []
+    detected = 0
+    fx_evidence: list[tuple[str, str, dict]] = []  # (pair, sha256, row)
+    try:
+        for symbol in symbols:
+            equity_ccy, equity_source = _equity_currency(root, symbol, now)
+            conversions: list[DividendConversion] = []
+            pending: list[tuple[CorporateAction, dict]] = []
+            for row in store.foreign_currency_dividends(symbol, equity_ccy):
+                detected += 1
+                pair, method = _fx_pair_for(row.currency, equity_ccy, root)
+                quote = fx_close_fn(pair, row.ex_date)
+                if quote is None:
+                    skipped.append({"symbol": symbol, "ex_date": row.ex_date.isoformat(), "reason": "no_fx_bar"})
+                    continue
+                fx_date, rate = quote
+                converted = row.cash_amount / rate if method == "divide" else row.cash_amount * rate
+                source_ref = (
+                    f"eod_fx:{pair}@{fx_date.isoformat()} rate={rate:.8f} method={method} "
+                    f"orig={row.cash_amount} {row.currency} -> {converted:.8f} {equity_ccy}"
+                )
+                source_hash = None
+                bar = _fx_bar(root, pair, fx_date)
+                if bar is not None:
+                    source_hash = digest_bytes(canonical_bytes(bar, default=str))
+                    if evidence_store is not None:
+                        fx_evidence.append((pair, source_hash, bar))
+                conversions.append(
+                    DividendConversion(
+                        action_id=row.action_id,
+                        cash_amount=converted,
+                        currency=equity_ccy,
+                        source_ref=source_ref,
+                        source_hash=source_hash,
+                    )
+                )
+                pending.append((row, {"pair": pair, "method": method, "fx_date": fx_date, "rate": rate}))
+            if not conversions:
+                continue
+            store.apply_repairs(
+                symbol,
+                add_splits=[],
+                cancel_ex_dates=[],
+                convert_dividends=conversions,
+                fetched_at=now,
+                dry_run=not apply,
+            )
+            if not apply:
+                continue
+            active_by_supersedes = {row.supersedes_action_id: row.action_id for row in store.latest_active(symbol)}
+            for (old, aux), conversion in zip(pending, conversions, strict=True):
+                if old.action_id not in active_by_supersedes:
+                    continue  # idempotent no-op: eod_fx row already had this amount
+                applied.append(
+                    {
+                        "symbol": symbol,
+                        "ex_date": old.ex_date.isoformat(),
+                        "orig_cash": old.cash_amount,
+                        "orig_currency": old.currency,
+                        "converted_cash": conversion.cash_amount,
+                        "equity_currency": equity_ccy,
+                        "equity_currency_source": equity_source,
+                        "fx_pair": aux["pair"],
+                        "fx_date": aux["fx_date"].isoformat(),
+                        "fx_rate": aux["rate"],
+                        "fx_method": aux["method"],
+                        "source_ref": conversion.source_ref,
+                        "old_action_id": old.action_id,
+                        "new_action_id": active_by_supersedes[old.action_id],
+                    }
+                )
+    except BaseException:
+        ledger.emit(
+            "runs",
+            [run_row | {"ended": datetime.now(UTC), "exit_code": 1, "verdict": "FAILED"}],
+            run_id=run_id,
+        )
+        raise
+
+    # Commit each FX bar's exact bytes to the evidence CAS and mirror one
+    # `evidence` row per HashedRef into the ledger — apply runs only.
+    if evidence_store is not None and fx_evidence:
+        seen: set[str] = set()
+        for pair, sha, bar in fx_evidence:
+            if sha in seen:
+                continue
+            seen.add(sha)
+            artifact = evidence_store.persist_raw(canonical_bytes(bar, default=str), expected_sha256=sha)
+            evidence_store.record(
+                SourceEvidence(
+                    ref=artifact.ref,
+                    sha256=artifact.sha256,
+                    source_url=f"bronze://fx/{pair}/1d.parquet#{bar['trade_date'].isoformat()}",
+                    retrieved_at=now,
+                    publication_time=None,
+                    mediawiki_revision_id=None,
+                    mediawiki_revision_time=None,
+                    content_type="application/vnd.livewire.fx-bar+json",
+                )
+            )
+            ledger.emit(
+                "evidence",
+                [
+                    {
+                        "evidence_hash": artifact.sha256,
+                        "kind": "fx_bar",
+                        "subject": pair,
+                        "payload_json": json.dumps(bar, default=str),
+                        "source_url": f"bronze://fx/{pair}/1d.parquet#{bar['trade_date'].isoformat()}",
+                        "fetched_at": now,
+                        "proposer": "dividend-fx",
+                        "run_id": run_id,
+                    }
+                ],
+                run_id=run_id,
+            )
+
+    remaining = detected - len(applied)
+    _emit_measurements(
+        [
+            {
+                "name": name,
+                "scope": "all",
+                "measured_at": now,
+                "value": float(value),
+                "unit": "count",
+                "source": "measured",
+                "run_id": run_id,
+            }
+            for name, value in (
+                ("dividend_currency_mismatch", remaining),
+                ("dividend_fx_converted", len(applied)),
+                ("dividend_fx_skipped", len(skipped)),
+            )
+        ],
+        run_id,
+    )
+    ledger.emit(
+        "runs",
+        [run_row | {"ended": datetime.now(UTC), "exit_code": 0, "verdict": "OK"}],
+        run_id=run_id,
+    )
+
+    manifest_path = None
+    if apply and output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = output_dir / "dividend_fx_conversion_applied.json"
+        manifest_path.write_text(json.dumps({"applied": applied, "skipped": skipped}, indent=1, sort_keys=True) + "\n")
+    return {
+        "tickers": len(symbols),
+        "detected": detected,
+        "converted": len(applied),
+        "skipped": skipped,
+        "remaining": remaining,
+        "applied": applied,
+        "manifest": None if manifest_path is None else str(manifest_path),
+        "run_id": run_id,
+    }
+
+
+def _convert_dividend_currency_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="livewire_ingest.py corporate-actions convert-dividend-currency",
+        description="Supersede foreign-currency dividends with eod_fx-converted rows",
+    )
+    parser.add_argument("--tickers", nargs="+", help="Symbols to scan (default: every CA-store symbol)")
+    parser.add_argument("--apply", action="store_true", help="Write the superseding rows + manifest")
+    parser.add_argument("--output-dir", type=Path, help="Where the apply manifest is written")
+    return parser
+
+
+def convert_dividend_currency_main(argv: Sequence[str]) -> int:
+    args = _convert_dividend_currency_parser().parse_args(list(argv))
+    if args.apply and args.output_dir is None:
+        _convert_dividend_currency_parser().error("--apply requires --output-dir")
+    summary = convert_dividend_currency(
+        tickers=args.tickers,
+        apply=args.apply,
+        output_dir=args.output_dir,
+        lake_root=data_lake_dir(),
+    )
+    print(json.dumps(summary, sort_keys=True, default=str))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(argv) if argv is not None else sys.argv[1:]
+    if argv[:1] == ["convert-dividend-currency"]:
+        return convert_dividend_currency_main(argv[1:])
     return run(argv)
 
 

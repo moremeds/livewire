@@ -25,6 +25,7 @@ JOB_TEMPLATES = (
     "com.livewire.intraday-catchup",
     "com.livewire.coverage",
     "com.livewire.digest",
+    "com.livewire.membership-sync",
 )
 REPO_TEMPLATES = ("com.livewire.release-promote", "com.livewire.universe-refresh")
 ALL_TEMPLATES = (*JOB_TEMPLATES, *REPO_TEMPLATES)
@@ -129,3 +130,9 @@ def test_the_digest_runs_after_coverage_and_the_watchdog_runs_twice():
         {"Hour": 18, "Minute": 30},
         {"Hour": 20, "Minute": 0},
     ]
+
+
+def test_membership_sync_runs_weekday_mornings():
+    """Weekdays 01:00Z — 09:00 Asia/Hong_Kong lands the same local weekday."""
+    payload = plistlib.loads((LAUNCHD_DIR / "com.livewire.membership-sync.plist.example").read_bytes())
+    assert payload["StartCalendarInterval"] == [{"Weekday": weekday, "Hour": 9, "Minute": 0} for weekday in range(1, 6)]

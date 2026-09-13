@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 import responses
 
 from clients import ledger
 from clients.corporate_action_store import CorporateActionStore
-from clients.massive_client import MassiveAuthError, MassiveResponseCapture
+from clients.massive_client import MassiveAuthError, MassiveDividend, MassiveResponseCapture
 from clients.source_evidence import SourceEvidenceStore
 from clients.telemetry import MassiveTelemetry
 from livewire_scripts import sync_corporate_actions
@@ -669,3 +673,344 @@ def test_progress_heartbeats_to_the_ledger_at_every_flush(tmp_path, monkeypatch)
     assert {row["value"] for row in rows if row["name"] == "progress_total"} == {4.0}
     assert {row["unit"] for row in rows} == {"symbols"}
     assert {row["run_id"] for row in rows} == {"daily-update-20260905T060000Z-1"}
+
+
+# --- corporate-actions convert-dividend-currency -------------------------------------
+
+_ACR_EX = date(2008, 6, 26)
+_ACR_USDCAD = 1.0118999481201172
+_ACR_CONVERTED = 0.40517839808341516  # 0.41 CAD / USDCAD 1.0118999481201172
+
+
+def _fx_lake(root: Path, rows: list[dict]) -> None:
+    path = root / "bronze" / "asset_class=fx" / "symbol=USDCAD" / "1d.parquet"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    table = pa.Table.from_pylist(
+        [
+            {
+                "trade_date": row["trade_date"],
+                "symbol_id": 1,
+                "open": row["close"],
+                "high": row["close"],
+                "low": row["close"],
+                "close": row["close"],
+                "adj_close": row["close"],
+                "volume": 0,
+            }
+            for row in rows
+        ]
+    )
+    pq.write_table(table, path)
+
+
+def _cad_lake(tmp_path):
+    """One ACR dividend in CAD + one USDCAD bar on its ex-date."""
+    store = CorporateActionStore(tmp_path)
+    store.reconcile(
+        "ACR",
+        [
+            MassiveDividend(
+                provider_event_id="acr-div-1",
+                ticker="ACR",
+                ex_dividend_date=_ACR_EX,
+                cash_amount=Decimal("0.41"),
+                currency="CAD",
+                declaration_date=None,
+                record_date=None,
+                pay_date=None,
+                payload_hash="acr-cad-v1",
+            )
+        ],
+        datetime(2026, 9, 13, tzinfo=UTC),
+    )
+    _fx_lake(tmp_path, [{"trade_date": _ACR_EX, "close": _ACR_USDCAD}])
+    return store
+
+
+def test_convert_dividend_currency_dry_run_writes_nothing_to_the_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    store = _cad_lake(tmp_path)
+    before = store.path_for("ACR").read_bytes()
+
+    summary = sync_corporate_actions.convert_dividend_currency(
+        tickers=["ACR"], apply=False, output_dir=None, lake_root=tmp_path
+    )
+
+    assert summary["converted"] == 0 and summary["remaining"] == 1
+    assert summary["skipped"] == []
+    assert store.path_for("ACR").read_bytes() == before
+    # Ledger facts land in dry-run too.
+    names = {row["name"] for row in ledger.query("select name from measurements")}
+    assert {"dividend_currency_mismatch", "dividend_fx_converted", "dividend_fx_skipped"} <= names
+    assert ledger.query("select job, verdict from runs where job = 'dividend-fx'")
+
+
+def test_convert_dividend_currency_apply_converts_and_emits(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    store = _cad_lake(tmp_path)
+    out = tmp_path / "out"
+
+    summary = sync_corporate_actions.convert_dividend_currency(
+        tickers=["ACR"], apply=True, output_dir=out, lake_root=tmp_path
+    )
+
+    assert summary["converted"] == 1 and summary["remaining"] == 0
+    active = store.latest_active("ACR")
+    assert len(active) == 1 and active[0].provider == "eod_fx"
+    assert active[0].cash_amount == pytest.approx(_ACR_CONVERTED)
+    assert active[0].currency == "USD"
+    assert active[0].source_ref.startswith("eod_fx:USDCAD@2008-06-26 rate=1.01189995 method=divide")
+    assert active[0].source_hash is not None
+    manifest = json.loads((out / "dividend_fx_conversion_applied.json").read_text())
+    row = manifest["applied"][0]
+    assert row["symbol"] == "ACR" and row["orig_cash"] == 0.41 and row["orig_currency"] == "CAD"
+    assert row["converted_cash"] == pytest.approx(_ACR_CONVERTED)
+    assert row["fx_pair"] == "USDCAD" and row["fx_method"] == "divide"
+    assert row["old_action_id"] and row["new_action_id"] == active[0].action_id
+    assert manifest["skipped"] == []
+    measurements = {
+        row["name"]: row["value"]
+        for row in ledger.query("select name, value from measurements where source = 'measured'")
+    }
+    assert measurements["dividend_currency_mismatch"] == 0.0
+    assert measurements["dividend_fx_converted"] == 1.0
+    assert measurements["dividend_fx_skipped"] == 0.0
+    assert ledger.query("select evidence_hash from evidence where kind = 'fx_bar'")
+
+
+def test_convert_dividend_currency_missing_fx_bar_is_skipped(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    store = CorporateActionStore(tmp_path)
+    store.reconcile(
+        "ACR",
+        [
+            MassiveDividend(
+                provider_event_id="acr-div-1",
+                ticker="ACR",
+                ex_dividend_date=_ACR_EX,
+                cash_amount=Decimal("0.41"),
+                currency="CAD",
+                declaration_date=None,
+                record_date=None,
+                pay_date=None,
+                payload_hash="acr-cad-v1",
+            )
+        ],
+        datetime(2026, 9, 13, tzinfo=UTC),
+    )
+    # No fx file at all.
+    summary = sync_corporate_actions.convert_dividend_currency(
+        tickers=["ACR"], apply=True, output_dir=tmp_path / "out", lake_root=tmp_path
+    )
+
+    assert summary["converted"] == 0
+    assert summary["skipped"] == [{"symbol": "ACR", "ex_date": "2008-06-26", "reason": "no_fx_bar"}]
+    assert store.latest_active("ACR")[0].currency == "CAD"
+    skipped = ledger.query("select value from measurements where name = 'dividend_fx_skipped'")
+    assert skipped[-1]["value"] == 1.0
+
+
+def _sm_event(symbol: str, currency: str):
+    from clients.security_master import SecurityIdentityEvent
+
+    return SecurityIdentityEvent(
+        event_id=f"ev-{symbol}-1",
+        security_id="sec_" + "1" * 32,
+        revision=1,
+        symbol=symbol,
+        provider="massive",
+        exchange_mic="XNAS",
+        currency=currency,
+        effective_from=datetime(2020, 1, 1, tzinfo=UTC),
+        effective_to=None,
+        known_at=datetime(2020, 1, 1, tzinfo=UTC),
+        issuer_name="Example",
+        cik="0000000001",
+        composite_figi="BBG000000001",
+        share_class_figi=None,
+        continuity_basis="provider_figi",
+        relationship_type=None,
+        related_security_id=None,
+        source_refs=(f"artifact://sha256/{'a' * 64}",),
+        source_hashes=("a" * 64,),
+        status="verified",
+        supersedes=None,
+    )
+
+
+def test_convert_dividend_currency_uses_security_master_currency(tmp_path, monkeypatch):
+    """A GBP equity's USD dividend converts through GBPUSD (orig is quote → divide)."""
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    from clients.security_master import SecurityMaster
+
+    master = SecurityMaster(tmp_path, evidence_verifier=lambda ref, digest: True)
+    assert master.append(_sm_event("VOD", "GBP"))
+    CorporateActionStore(tmp_path).reconcile(
+        "VOD",
+        [
+            MassiveDividend(
+                provider_event_id="vod-div-1",
+                ticker="VOD",
+                ex_dividend_date=_ACR_EX,
+                cash_amount=Decimal("2.00"),
+                currency="USD",
+                declaration_date=None,
+                record_date=None,
+                pay_date=None,
+                payload_hash="vod-usd-v1",
+            )
+        ],
+        datetime(2026, 9, 13, tzinfo=UTC),
+    )
+    path = tmp_path / "bronze" / "asset_class=fx" / "symbol=GBPUSD" / "1d.parquet"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "trade_date": _ACR_EX,
+                    "symbol_id": 1,
+                    "open": 2.0,
+                    "high": 2.0,
+                    "low": 2.0,
+                    "close": 2.0,
+                    "adj_close": 2.0,
+                    "volume": 0,
+                }
+            ]
+        ),
+        path,
+    )
+
+    summary = sync_corporate_actions.convert_dividend_currency(
+        tickers=["VOD"], apply=True, output_dir=tmp_path / "out", lake_root=tmp_path
+    )
+
+    assert summary["converted"] == 1
+    row = CorporateActionStore(tmp_path).latest_active("VOD")[0]
+    assert row.provider == "eod_fx" and row.currency == "GBP"
+    assert row.cash_amount == pytest.approx(1.0)  # 2.00 USD / GBPUSD 2.0
+    assert row.source_ref.startswith("eod_fx:GBPUSD@2008-06-26 rate=2.00000000 method=divide")
+    manifest = json.loads((tmp_path / "out" / "dividend_fx_conversion_applied.json").read_text())
+    assert manifest["applied"][0]["equity_currency_source"] == "security_master"
+
+
+def test_convert_dividend_currency_multiply_direction(tmp_path, monkeypatch):
+    """GBP dividend on a USD equity: GBPUSD exists → multiply."""
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    store = CorporateActionStore(tmp_path)
+    store.reconcile(
+        "AZN",
+        [
+            MassiveDividend(
+                provider_event_id="azn-div-1",
+                ticker="AZN",
+                ex_dividend_date=_ACR_EX,
+                cash_amount=Decimal("1.00"),
+                currency="GBP",
+                declaration_date=None,
+                record_date=None,
+                pay_date=None,
+                payload_hash="azn-gbp-v1",
+            )
+        ],
+        datetime(2026, 9, 13, tzinfo=UTC),
+    )
+    path = tmp_path / "bronze" / "asset_class=fx" / "symbol=GBPUSD" / "1d.parquet"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "trade_date": _ACR_EX,
+                    "symbol_id": 1,
+                    "open": 1.27,
+                    "high": 1.27,
+                    "low": 1.27,
+                    "close": 1.27,
+                    "adj_close": 1.27,
+                    "volume": 0,
+                }
+            ]
+        ),
+        path,
+    )
+
+    summary = sync_corporate_actions.convert_dividend_currency(
+        tickers=["AZN"], apply=True, output_dir=tmp_path / "out", lake_root=tmp_path
+    )
+
+    assert summary["converted"] == 1
+    row = store.latest_active("AZN")[0]
+    assert row.cash_amount == pytest.approx(1.27) and row.currency == "USD"
+    assert "method=multiply" in row.source_ref
+
+
+def test_convert_dividend_currency_stale_bar_is_skipped(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    store = _cad_lake(tmp_path)
+    # The only bar is >5 sessions before the ex-date → no usable rate.
+    _fx_lake(tmp_path, [{"trade_date": date(2008, 6, 10), "close": _ACR_USDCAD}])
+
+    summary = sync_corporate_actions.convert_dividend_currency(
+        tickers=["ACR"], apply=True, output_dir=tmp_path / "out", lake_root=tmp_path
+    )
+
+    assert summary["converted"] == 0
+    assert summary["skipped"][0]["reason"] == "no_fx_bar"
+    assert store.latest_active("ACR")[0].currency == "CAD"
+
+
+def test_convert_dividend_currency_discovers_ca_store_symbols(tmp_path, monkeypatch):
+    """tickers=None scans every symbol with a corporate_action events file."""
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    _cad_lake(tmp_path)
+
+    summary = sync_corporate_actions.convert_dividend_currency(
+        tickers=None, apply=False, output_dir=None, lake_root=tmp_path
+    )
+
+    assert summary["tickers"] == 1 and summary["detected"] == 1
+
+
+def test_convert_dividend_currency_second_apply_is_a_noop(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    _cad_lake(tmp_path)
+    out = tmp_path / "out"
+    sync_corporate_actions.convert_dividend_currency(tickers=["ACR"], apply=True, output_dir=out, lake_root=tmp_path)
+
+    again = sync_corporate_actions.convert_dividend_currency(
+        tickers=["ACR"], apply=True, output_dir=out, lake_root=tmp_path
+    )
+    assert again["detected"] == 0 and again["converted"] == 0 and again["remaining"] == 0
+    assert len(CorporateActionStore(tmp_path).latest_active("ACR")) == 1
+
+
+def test_convert_dividend_currency_cli_dispatch(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    monkeypatch.setattr(sync_corporate_actions, "data_lake_dir", lambda: tmp_path)
+    _cad_lake(tmp_path)
+
+    # --apply without --output-dir is a usage error.
+    with pytest.raises(SystemExit):
+        sync_corporate_actions.main(["convert-dividend-currency", "--apply"])
+
+    assert sync_corporate_actions.main(["convert-dividend-currency", "--tickers", "ACR"]) == 0
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["detected"] == 1 and summary["converted"] == 0
+
+
+def test_convert_dividend_currency_failure_closes_run_failed(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    _cad_lake(tmp_path)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("store exploded")
+
+    monkeypatch.setattr(CorporateActionStore, "apply_repairs", boom)
+    with pytest.raises(RuntimeError, match="store exploded"):
+        sync_corporate_actions.convert_dividend_currency(
+            tickers=["ACR"], apply=True, output_dir=tmp_path / "out", lake_root=tmp_path
+        )
+    verdicts = ledger.query("select verdict from runs where job = 'dividend-fx'")
+    assert any(row["verdict"] == "FAILED" for row in verdicts)

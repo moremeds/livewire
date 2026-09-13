@@ -2,7 +2,7 @@
 
 Sources:
 - S&P 500, Nasdaq-100: Wikipedia constituent tables
-- Russell 2000: Slickcharts
+- Russell 2000, DJIA: Slickcharts
 - Ticker status (active/delisted): Polygon /v3/reference/tickers/{ticker}
 """
 
@@ -24,7 +24,8 @@ log = logging.getLogger(__name__)
 _TIMEOUT = 30
 _USER_AGENT = "livewire/1.0 (market-data-warehouse)"
 
-_R2K_URL = "https://www.slickcharts.com/russell2000"
+R2K_SLICKCHARTS_URL = "https://www.slickcharts.com/russell2000"
+DJIA_SLICKCHARTS_URL = "https://www.slickcharts.com/dowjones"
 
 _POLYGON_BASE = "https://api.polygon.io"
 
@@ -124,20 +125,39 @@ def fetch_ndx100() -> set[str]:
     return _fetch_wikipedia_universe(NDX100_WIKIPEDIA_TITLE, "Nasdaq-100")
 
 
-def fetch_r2k() -> set[str]:
-    tree = _get_html(_R2K_URL, "Russell 2000", browser_ua=True)
+def _slickcharts_constituents(tree: html.HtmlElement, label: str) -> set[str]:
+    """The shared Slickcharts constituents table: `table.table`, symbol in td[2]."""
     tables = tree.cssselect("table.table")
     if not tables:
-        raise UniverseFetchError("Russell 2000: no constituent table found")
-    rows = tables[0].cssselect("tbody tr")
-    symbols: set[str] = set()
-    for row in rows:
-        cells = row.cssselect("td")
-        if len(cells) >= 3:
-            text = cells[2].text_content().strip()
-            if text:
-                symbols.add(text)
-    return symbols
+        raise UniverseFetchError(f"{label}: no constituent table found")
+    return {
+        cells[2].text_content().strip()
+        for row in tables[0].cssselect("tbody tr")
+        if len(cells := row.cssselect("td")) >= 3 and cells[2].text_content().strip()
+    }
+
+
+_DJIA_MIN_CONSTITUENTS = 30
+
+
+def fetch_djia() -> set[str]:
+    """Fetch current DJIA members from Slickcharts.
+
+    The Wikipedia DJIA article dropped its components table (measured
+    2026-09-13: only annual returns + a navbox remain), so the source is
+    Slickcharts — approved deviation in
+    docs/superpowers/plans/2026-09-13-dividend-fx-and-pit-membership.evidence.md.
+    The index has exactly 30 constituents; a partial parse (<30 rows) means the
+    table markup broke, so it raises rather than return a truncated set.
+    """
+    members = _slickcharts_constituents(_get_html(DJIA_SLICKCHARTS_URL, "DJIA", browser_ua=True), "DJIA")
+    if len(members) < _DJIA_MIN_CONSTITUENTS:
+        raise UniverseFetchError(f"DJIA: {len(members)} constituents parsed, below {_DJIA_MIN_CONSTITUENTS}")
+    return members
+
+
+def fetch_r2k() -> set[str]:
+    return _slickcharts_constituents(_get_html(R2K_SLICKCHARTS_URL, "Russell 2000", browser_ua=True), "Russell 2000")
 
 
 def check_ticker_status(

@@ -61,12 +61,49 @@ def _dispatch_notify(argv: Sequence[str]) -> int:
     return notify.send(notice, force=args.force)
 
 
+def _dispatch_membership(argv: Sequence[str]) -> int:
+    """Read-only PIT membership query: sorted symbols on stdout, count on stderr."""
+    from datetime import UTC, date, datetime, time
+
+    from livewire_scripts import membership_sync
+    from livewire_scripts.paths import data_lake_dir
+
+    parser = argparse.ArgumentParser(prog="livewire_ops.py membership")
+    parser.add_argument("--index", required=True, help="Index id (sp500, ndx100, djia, r2k-proxy)")
+    parser.add_argument("--effective-at", type=date.fromisoformat, required=True, metavar="YYYY-MM-DD")
+    parser.add_argument(
+        "--as-of",
+        type=date.fromisoformat,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Knowledge cutoff, inclusive of that day (default: now)",
+    )
+    args = parser.parse_args(list(argv))
+    effective_at = datetime.combine(args.effective_at, time.min, tzinfo=UTC)
+    as_of = datetime.combine(args.as_of, time.max, tzinfo=UTC) if args.as_of is not None else datetime.now(UTC)
+    try:
+        symbols = membership_sync.members_at(
+            index_id=args.index,
+            effective_at=effective_at,
+            as_of=as_of,
+            data_lake_root=data_lake_dir(),
+        )
+    except Exception as exc:  # a read never fails the operator: report and exit 0
+        print(f"membership: {exc}", file=sys.stderr)
+        print(0, file=sys.stderr)
+        return 0
+    for symbol in symbols:
+        print(symbol)
+    print(len(symbols), file=sys.stderr)
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(description="Livewire operational commands")
     parser.add_argument(
         "command",
-        choices=[*COMMANDS.keys(), "notify"],
+        choices=[*COMMANDS.keys(), "notify", "membership"],
         help="Operational command to run",
     )
     if not argv or argv[0] in {"-h", "--help"}:
@@ -77,6 +114,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "notify":
         return _dispatch_notify(rest)
+    if args.command == "membership":
+        return _dispatch_membership(rest)
     if args.command in {"run-daily-job", "run-intraday-catchup-job", "digest"}:
         load_scheduled_env(REPO_ROOT)
     return _dispatch_module(COMMANDS[args.command], rest, f"livewire_ops.py {args.command}")

@@ -1038,3 +1038,95 @@ def test_silver_progress_reports_the_heartbeat_and_is_unknown_without_one():
     assert section.verdict is status.Verdict.OK
     assert "symbols=500.0" in section.lines[1]
     assert "universe=13311.0" in section.lines[1]
+
+
+def test_foreign_currency_dividends_warns_with_the_remaining_count():
+    _measurement("dividend_currency_mismatch", "all", 2)
+    section = _section("Foreign-currency dividends")
+    assert section.verdict is status.Verdict.WARN
+    assert "mismatched=2.0" in " ".join(section.lines)
+
+
+def test_foreign_currency_dividends_zero_is_ok():
+    _measurement("dividend_currency_mismatch", "all", 0)
+    assert _section("Foreign-currency dividends").verdict is status.Verdict.OK
+
+
+def test_foreign_currency_dividends_never_measured_is_unknown():
+    assert _section("Foreign-currency dividends").verdict is status.Verdict.UNKNOWN
+
+
+def test_foreign_currency_dividends_grades_the_latest_value():
+    """A repaired lake must read OK even while older WARN rows still exist."""
+    _measurement("dividend_currency_mismatch", "all", 5, measured_at=NOW - timedelta(hours=1))
+    _measurement("dividend_currency_mismatch", "all", 0, measured_at=NOW)
+    assert _section("Foreign-currency dividends").verdict is status.Verdict.OK
+
+
+def _membership_run(verdict: str, *, started: datetime):
+    run_id = f"membership-sync-{started:%Y%m%dT%H%M%S}Z"
+    ledger.emit(
+        "runs",
+        [
+            {
+                "run_id": run_id,
+                "job": "membership-sync",
+                "host": "macmini",
+                "release_sha": "deadbeef",
+                "presets_sha": None,
+                "registry_sha": None,
+                "started": started,
+                "ended": started,
+                "exit_code": 0 if verdict == "OK" else 3,
+                "verdict": verdict,
+            }
+        ],
+        run_id=run_id,
+    )
+
+
+def _membership_section(name: str, run_date: date):
+    sections = status.collect(
+        run_date,
+        Path("/nonexistent"),
+        Path("/nonexistent"),
+        runner=_fake_launchctl,
+        database=None,
+        now=datetime.combine(run_date, datetime.max.time(), tzinfo=UTC),
+    )
+    return next(section for section in sections if section.name == name)
+
+
+def test_membership_sync_ran_today_is_weekday_gated():
+    monday = date(2026, 9, 14)
+    assert monday.isoweekday() == 1
+
+    assert _membership_section("Membership sync ran today", monday).verdict is status.Verdict.UNKNOWN
+    _membership_run("OK", started=datetime(2026, 9, 14, 1, 0, tzinfo=UTC))
+    assert _membership_section("Membership sync ran today", monday).verdict is status.Verdict.OK
+    _membership_run("FAILED", started=datetime(2026, 9, 14, 2, 0, tzinfo=UTC))
+    assert _membership_section("Membership sync ran today", monday).verdict is status.Verdict.BAD
+
+
+def test_membership_sync_ran_today_reads_ok_on_weekends():
+    """The job is weekday-only: Saturday stays green, failed run or none."""
+    saturday = date(2026, 9, 12)
+    assert saturday.isoweekday() == 6
+
+    assert _membership_section("Membership sync ran today", saturday).verdict is status.Verdict.OK
+    _membership_run("FAILED", started=datetime(2026, 9, 12, 9, 0, tzinfo=UTC))
+    assert _membership_section("Membership sync ran today", saturday).verdict is status.Verdict.OK
+
+
+def test_unresolved_memberships_warns_with_per_index_counts():
+    assert _section("Unresolved memberships").verdict is status.Verdict.UNKNOWN
+
+    _measurement("membership_unresolved", "sp500", 3)
+    _measurement("membership_unresolved", "djia", 0)
+    section = _section("Unresolved memberships")
+    assert section.verdict is status.Verdict.WARN
+    detail = " ".join(section.lines)
+    assert "unresolved=3" in detail and "sp500=3" in detail and "djia=0" in detail
+
+    _measurement("membership_unresolved", "sp500", 0, measured_at=NOW + timedelta(seconds=1))
+    assert _section("Unresolved memberships").verdict is status.Verdict.OK

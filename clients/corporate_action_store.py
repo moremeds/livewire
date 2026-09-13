@@ -24,6 +24,10 @@ ProviderEvent = MassiveSplit | MassiveDividend
 # can say anything about, so a full reconcile must not cancel them.
 RECONCILE_PROVIDER = "massive"
 
+# Provider tag for rows written by `convert_dividends` — deliberately NOT
+# "massive", so provider-scoped reconcile can never re-supersede them.
+EOD_FX_PROVIDER = "eod_fx"
+
 
 @dataclass(frozen=True)
 class CorporateAction:
@@ -87,13 +91,30 @@ class SplitAddition:
 
 
 @dataclass(frozen=True)
+class DividendConversion:
+    """A foreign-currency cash dividend rewritten into the equity's currency.
+
+    ``action_id`` identifies the currently-active row to supersede; the FX
+    provenance rides on ``source_ref``/``source_hash`` (``source_hash`` is the
+    sha256 of the FX bronze bar bytes, committed to the evidence CAS).
+    """
+
+    action_id: str
+    cash_amount: float
+    currency: str
+    source_ref: str
+    source_hash: str | None
+
+
+@dataclass(frozen=True)
 class RepairResult:
     added: int = 0
     cancelled: int = 0
+    converted: int = 0
 
     @property
     def changed(self) -> bool:
-        return self.added + self.cancelled > 0
+        return self.added + self.cancelled + self.converted > 0
 
 
 class CorporateActionStore:
@@ -233,6 +254,15 @@ class CorporateActionStore:
                     inserted += 1
                 elif previous.payload_hash == event.payload_hash and previous.status == "active":
                     unchanged += 1
+                elif previous.status == "active" and previous.provider != RECONCILE_PROVIDER:
+                    # The latest row for this provider_event_id is a non-Massive
+                    # active row — it could only have gotten there by superseding
+                    # the Massive row (e.g. an eod_fx dividend conversion), so it
+                    # IS the current answer. Without this branch a full reconcile
+                    # re-fed the original Massive event would mark it corrected
+                    # and re-insert the foreign-currency row, silently reverting
+                    # the repair every Sunday.
+                    unchanged += 1
                 else:
                     rows[rows.index(previous)] = replace(previous, status="corrected")
                     current = self._from_provider(
@@ -287,14 +317,18 @@ class CorporateActionStore:
         add_splits: list[SplitAddition],
         cancel_ex_dates: list[date],
         fetched_at: datetime,
+        convert_dividends: list[DividendConversion] = (),
         provider: str = "yahoo",
         dry_run: bool = False,
     ) -> RepairResult:
-        """Add reference splits and cancel spurious active splits in one atomic mutation.
+        """Add reference splits, cancel spurious splits, and convert dividends atomically.
 
         Adds insert fresh active ``provider`` rows (revision 1). Cancels target the active
         split matching each ex-date and append a superseding ``cancelled`` revision — the
         lineage is retained, never deleted, mirroring ``reconcile``'s cancellation path.
+        Conversions supersede the active foreign-currency dividend with an
+        ``eod_fx``-provider row carrying the converted amount; the ``eod_fx``
+        provider keeps a later ``reconcile`` from re-superseding it back.
         """
         symbol = canonical_symbol(symbol)
         path = self.path_for(symbol)
@@ -307,7 +341,8 @@ class CorporateActionStore:
             active_split_by_exdate = {
                 row.ex_date: row for row in latest.values() if row.action_type == "split" and row.status == "active"
             }
-            added = cancelled = 0
+            added = cancelled = converted = 0
+            by_action_id = {row.action_id: row for row in rows}
 
             for addition in add_splits:
                 event_id = f"{provider}|{symbol}|{addition.ex_date.isoformat()}|split"
@@ -361,12 +396,68 @@ class CorporateActionStore:
                 latest[previous.provider_event_id] = cancelled_row
                 cancelled += 1
 
-            result = RepairResult(added, cancelled)
+            for conversion in convert_dividends:
+                old = by_action_id.get(conversion.action_id)
+                if old is None:
+                    continue
+                head = latest.get(old.provider_event_id, old)
+                if (
+                    head.status == "active"
+                    and head.provider == EOD_FX_PROVIDER
+                    and head.cash_amount is not None
+                    and abs(head.cash_amount - conversion.cash_amount) < 1e-9
+                ):
+                    continue  # idempotent: this conversion already landed
+                if head.status != "active":
+                    continue  # nothing live to supersede
+                rows[rows.index(head)] = replace(head, status="corrected")
+                payload = (
+                    f"{EOD_FX_PROVIDER}|{head.provider_event_id}"
+                    f"|{conversion.cash_amount!r}|{conversion.currency}|{conversion.source_hash}"
+                )
+                payload_hash = hashlib.blake2b(payload.encode(), digest_size=16).hexdigest()
+                row = CorporateAction(
+                    action_id=self._action_id(
+                        EOD_FX_PROVIDER, head.provider_event_id, head.event_revision + 1, payload_hash
+                    ),
+                    provider=EOD_FX_PROVIDER,
+                    provider_event_id=head.provider_event_id,
+                    event_revision=head.event_revision + 1,
+                    supersedes_action_id=head.action_id,
+                    symbol=symbol,
+                    action_type="cash_dividend",
+                    ex_date=head.ex_date,
+                    split_from=None,
+                    split_to=None,
+                    cash_amount=conversion.cash_amount,
+                    currency=conversion.currency,
+                    declaration_date=head.declaration_date,
+                    record_date=head.record_date,
+                    pay_date=head.pay_date,
+                    status="active",
+                    fetched_at=fetched_at,
+                    payload_hash=payload_hash,
+                    source_ref=conversion.source_ref,
+                    source_hash=conversion.source_hash,
+                )
+                rows.append(row)
+                latest[head.provider_event_id] = row
+                converted += 1
+
+            result = RepairResult(added, cancelled, converted)
             if result.changed and not dry_run:
                 ordered = sorted(rows, key=lambda row: row.action_id)
                 table = pa.Table.from_pylist([asdict(row) for row in ordered], schema=self.schema)
                 publish_parquet(path, table, sort_column="action_id")
             return result
+
+    def foreign_currency_dividends(self, symbol: str, equity_currency: str) -> list[CorporateAction]:
+        """Active cash dividends whose recorded currency differs from the equity's."""
+        return [
+            row
+            for row in self.latest_active(symbol)
+            if row.action_type == "cash_dividend" and row.currency is not None and row.currency != equity_currency
+        ]
 
     def latest_active(self, symbol: str) -> list[CorporateAction]:
         latest = self._latest_by_provider_id(self._read(self.path_for(canonical_symbol(symbol))))
