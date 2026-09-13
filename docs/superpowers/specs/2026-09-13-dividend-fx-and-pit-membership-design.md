@@ -137,8 +137,9 @@ python scripts/livewire_ingest.py membership-sync import --index <id> --events <
 python scripts/livewire_ops.py membership --index sp500 --effective-at D [--as-of D]                      # read
 ```
 
-`membership-sync` fetches each index's live source (Wikipedia current table;
-R2K proxy from its live seed), diffs against `events(as_of=now)`, appends
+`membership-sync` fetches each index's live source (Wikipedia current table
+for `sp500`/`ndx100`; Slickcharts for `djia` and the R2K proxy's live seed),
+diffs against `events(as_of=now)`, appends
 add/remove events, and pages through `notify.page_for_lane(run_date,
 "membership-sync", …)` only on **fetch failure**. Adds/removes are digest
 lines, not pages.

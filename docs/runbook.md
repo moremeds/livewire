@@ -1047,18 +1047,19 @@ python scripts/livewire_ingest.py membership-sync import --index sp500 \
 ```
 
 - **Live sync** fetches each index's current source — Wikipedia
-  revision-bound snapshot for `sp500`/`ndx100`/`djia` (same MediaWikiClient +
+  revision-bound snapshot for `sp500`/`ndx100` (same MediaWikiClient +
   `parse_constituent_table` seam `universe_client` uses, evidence committed to
-  the CAS) and Slickcharts for `r2k-proxy` (below the 1500-member floor counts
-  as a fetch failure — a broken parse must not emit ~1,500 false removes;
-  there is deliberately no preset fallback). Resolved tickers become `verified`
-  events (`candidate` for `r2k-proxy`); unresolvable ones stay `unresolved:<ticker>`
-  placeholders so history is kept without feeding `members_effective_at`.
+  the CAS) and Slickcharts for `djia`/`r2k-proxy` (floors are fail-closed:
+  `djia` under 30 parsed rows, `r2k-proxy` under 1,500 — a broken parse must
+  not emit mass removes; there is deliberately no preset fallback). Resolved
+  tickers become `verified` events (`candidate` for `r2k-proxy`);
+  unresolvable ones stay `unresolved:<ticker>` placeholders so history is kept
+  without feeding `members_effective_at`. `djia` reads
+  `slickcharts.com/dowjones` because the Wikipedia article dropped its
+  components table.
 - **A fetch failure fails closed**: `membership_source_fetch_ok=0`, one
   `page_for_lane` page through `notify`, exit 3. Adds/removes are ledger
-  events and digest lines, not pages. Today `djia` always fails closed — the
-  Wikipedia article no longer carries a components table; the source is an
-  open decision.
+  events and digest lines, not pages.
 - **`--dry-run`** prints the computed diff (`adds`/`removes` per index) and
   appends nothing; measurements still report `membership_source_fetch_ok` and
   the standing `membership_unresolved` backlog.

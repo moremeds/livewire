@@ -16,7 +16,7 @@ from clients.index_membership_store import IndexMembershipStore
 from clients.mediawiki_client import MediaWikiSnapshot
 from clients.security_master import SecurityIdentityEvent, SecurityMaster
 from clients.shepherd_repair import HashedRef
-from clients.source_evidence import SourceEvidence, SourceEvidenceStore
+from clients.source_evidence import SourceEvidence, SourceEvidenceStore, canonical_bytes
 from clients.universe_client import UniverseFetchError
 from livewire_scripts import membership_sync
 
@@ -297,31 +297,14 @@ def test_sync_fetch_failure_pages_fails_closed_and_exits_3(tmp_path, monkeypatch
     assert {row["exit_code"] for row in notices} == {0}
 
 
-def test_djia_fetch_fails_closed_on_missing_wikipedia_table(tmp_path, monkeypatch):
+def test_djia_fetch_failure_fails_closed_and_pages(tmp_path, monkeypatch):
     monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
     lake = _lake(tmp_path)
-    raw = b"<html><body><p>annual returns only, no components table</p></body></html>"
-    artifact = SourceEvidenceStore(lake).persist_raw(raw)
-    snapshot = MediaWikiSnapshot(
-        title="Dow Jones Industrial Average",
-        canonical_url="https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average",
-        revision_id=1,
-        revision_time=NOW,
-        content=raw.decode(),
-        evidence=SourceEvidence(
-            ref=artifact.ref,
-            sha256=artifact.sha256,
-            source_url="https://en.wikipedia.org/w/rest.php/v1/page/Dow_Jones_Industrial_Average/html",
-            retrieved_at=NOW,
-            publication_time=NOW,
-            mediawiki_revision_id=1,
-            mediawiki_revision_time=NOW,
-            content_type="text/html",
-        ),
-    )
-    monkeypatch.setattr(
-        membership_sync, "MediaWikiClient", lambda *args, **kwargs: SimpleNamespace(snapshot=lambda title: snapshot)
-    )
+
+    def broken():
+        raise UniverseFetchError("DJIA: 12 constituents parsed, below 30")
+
+    monkeypatch.setattr(membership_sync, "fetch_djia", broken)
     sent: list[list[str]] = []
 
     code = membership_sync.sync(indexes=["djia"], data_lake_root=lake, now=SYNC_NOW, runner=_runner(sent))
@@ -331,6 +314,25 @@ def test_djia_fetch_fails_closed_on_missing_wikipedia_table(tmp_path, monkeypatc
     assert _store(lake).events("djia") == []
     rows = ledger.query("select value from measurements where name='membership_source_fetch_ok' and scope='djia'")
     assert {row["value"] for row in rows} == {0.0}
+
+
+def test_djia_sync_commits_the_fetched_set_as_slickcharts_evidence(tmp_path, monkeypatch):
+    lake = _lake(tmp_path)
+    tickers = {"AAPL"} | {f"ZZ{i:02d}" for i in range(29)}
+    monkeypatch.setattr(membership_sync, "fetch_djia", lambda: tickers)
+
+    code = membership_sync.sync(indexes=["djia"], data_lake_root=lake, now=SYNC_NOW)
+
+    assert code == 0
+    events = _store(lake).events("djia")
+    assert len(events) == 30  # AAPL verified, the rest unresolved placeholders
+    aapl_id = SecurityMaster(lake, evidence_verifier=None).resolve_symbol("massive", "AAPL", "XNAS", SYNC_NOW, SYNC_NOW)
+    assert [event.status for event in events if event.security_id == aapl_id] == ["verified"]
+    assert sum(event.status == "unresolved" for event in events) == 29
+    artifact = events[0].source_refs[0]
+    assert SourceEvidenceStore(lake).read(artifact) == canonical_bytes(sorted(tickers))
+    recorded = {item.ref: item for item in SourceEvidenceStore(lake).list_verified()}
+    assert recorded[artifact].source_url == "https://www.slickcharts.com/dowjones"
 
 
 def test_r2k_proxy_fetch_below_floor_fails_closed(tmp_path, monkeypatch):
@@ -382,3 +384,92 @@ def test_sync_cli_dispatches_and_dry_run_appends_nothing(tmp_path, monkeypatch):
     events = _store(lake).events("sp500")
     assert len(events) == 7  # the ORCL add landed on the apply pass
     assert any(event.security_id == "unresolved:ORCL" for event in events)
+
+
+def test_import_skips_blank_lines_and_emits_failed_run_on_error(tmp_path):
+    lake = _lake(tmp_path)
+    events = tmp_path / "events.jsonl"
+    events.write_text("\n" + json.dumps(EVENTS[0]) + "\n\n")
+
+    result = membership_sync.import_events(
+        index_id="sp500",
+        events_path=events,
+        sources=[_source_file(tmp_path)],
+        data_lake_root=lake,
+        now=NOW,
+        confidence="B",
+    )
+    assert result["added"] == 1
+
+    with pytest.raises(FileNotFoundError):
+        membership_sync.import_events(
+            index_id="sp500",
+            events_path=tmp_path / "missing.jsonl",
+            sources=[_source_file(tmp_path)],
+            data_lake_root=lake,
+            now=NOW,
+            confidence="B",
+        )
+    terminal = ledger.query("select verdict from runs where job='membership-sync' and ended is not null")
+    assert "FAILED" in {row["verdict"] for row in terminal}
+
+
+def test_evidence_verifier_rejects_an_absent_artifact(tmp_path):
+    lake = _lake(tmp_path)
+    verifier = membership_sync._evidence_verifier(SourceEvidenceStore(lake))
+    assert verifier("artifact://sha256/" + "0" * 64, "0" * 64) is False
+
+
+def test_wikipedia_fetch_returns_members_and_snapshot_evidence(tmp_path, monkeypatch):
+    lake = _lake(tmp_path)
+    raw = (
+        b"<html><body><table class='wikitable' id='constituents'>"
+        b"<thead><tr><th>Symbol</th><th>Security</th></tr></thead>"
+        b"<tbody><tr><td>AAPL</td><td>Apple</td></tr><tr><td>MSFT</td><td>Microsoft</td></tr>"
+        b"</tbody></table></body></html>"
+    )
+    artifact = SourceEvidenceStore(lake).persist_raw(raw)
+    snapshot = MediaWikiSnapshot(
+        title="List of S&P 500 companies",
+        canonical_url="https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+        revision_id=7,
+        revision_time=NOW,
+        content=raw.decode(),
+        evidence=SourceEvidence(
+            ref=artifact.ref,
+            sha256=artifact.sha256,
+            source_url="https://en.wikipedia.org/w/rest.php/v1/page/List_of_S%26P_500_companies/html",
+            retrieved_at=NOW,
+            publication_time=NOW,
+            mediawiki_revision_id=7,
+            mediawiki_revision_time=NOW,
+            content_type="text/html",
+        ),
+    )
+    monkeypatch.setattr(
+        membership_sync, "MediaWikiClient", lambda *args, **kwargs: SimpleNamespace(snapshot=lambda title: snapshot)
+    )
+
+    members, ref = membership_sync._default_fetch("sp500", SourceEvidenceStore(lake), NOW)
+
+    assert members == {"AAPL", "MSFT"}
+    assert ref == HashedRef(artifact.ref, artifact.sha256)
+
+
+def test_sync_failed_run_row_when_processing_raises(tmp_path, monkeypatch):
+    lake = _lake(tmp_path)
+    monkeypatch.setattr(
+        membership_sync,
+        "_resolve",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("master corrupt")),
+    )
+
+    with pytest.raises(RuntimeError, match="master corrupt"):
+        membership_sync.sync(
+            indexes=["sp500"],
+            data_lake_root=lake,
+            now=SYNC_NOW,
+            fetch_fn=lambda index_id: _fetched(lake, {"AAPL"}),
+        )
+    terminal = ledger.query("select verdict, exit_code from runs where job='membership-sync' and ended is not null")
+    assert {(row["verdict"], row["exit_code"]) for row in terminal} == {("FAILED", 1)}

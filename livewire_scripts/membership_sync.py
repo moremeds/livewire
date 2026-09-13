@@ -28,10 +28,11 @@ from clients.security_master import SecurityMaster
 from clients.shepherd_repair import HashedRef
 from clients.source_evidence import SourceEvidence, SourceEvidenceStore, canonical_bytes, digest_bytes
 from clients.universe_client import (
-    DJIA_WIKIPEDIA_TITLE,
+    DJIA_SLICKCHARTS_URL,
     NDX100_WIKIPEDIA_TITLE,
     R2K_SLICKCHARTS_URL,
     UniverseFetchError,
+    fetch_djia,
     fetch_r2k,
     parse_constituent_table,
 )
@@ -53,7 +54,6 @@ DEFAULT_INDEXES = ("sp500", "ndx100", "djia", "r2k-proxy")
 _WIKIPEDIA_SOURCES = {
     "sp500": ("List of S&P 500 companies", "S&P 500"),
     "ndx100": (NDX100_WIKIPEDIA_TITLE, "Nasdaq-100"),
-    "djia": (DJIA_WIKIPEDIA_TITLE, "DJIA"),
 }
 
 # grok's own guardrail in r2k_proxy_live/update_from_live.py: a fetched R2K
@@ -256,6 +256,24 @@ def _current_members(items: list[MembershipEvent]) -> set[str]:
     return members
 
 
+def _slickcharts_ref(store: SourceEvidenceStore, members: set[str], source_url: str, now: datetime) -> HashedRef:
+    """Commit the fetched set as the evidence artifact for a Slickcharts source."""
+    artifact = store.persist_raw(canonical_bytes(sorted(members)))
+    store.record(
+        SourceEvidence(
+            ref=artifact.ref,
+            sha256=artifact.sha256,
+            source_url=source_url,
+            retrieved_at=now,
+            publication_time=None,
+            mediawiki_revision_id=None,
+            mediawiki_revision_time=None,
+            content_type="application/json",
+        )
+    )
+    return HashedRef(artifact.ref, artifact.sha256)
+
+
 def _default_fetch(index_id: str, store: SourceEvidenceStore, now: datetime) -> tuple[set[str], HashedRef]:
     """Fetch one index's live constituent set with content-addressed evidence."""
     if index_id in _WIKIPEDIA_SOURCES:
@@ -266,26 +284,16 @@ def _default_fetch(index_id: str, store: SourceEvidenceStore, now: datetime) -> 
         except MediaWikiFetchError as exc:
             raise UniverseFetchError(f"{label}: {exc}") from exc
         return members, HashedRef(snapshot.evidence.ref, snapshot.evidence.sha256)
+    if index_id == "djia":
+        members = fetch_djia()  # floors at 30 constituents inside the fetcher
+        return members, _slickcharts_ref(store, members, DJIA_SLICKCHARTS_URL, now)
     if index_id == "r2k-proxy":
         members = fetch_r2k()
         if len(members) < _R2K_PROXY_MIN_MEMBERS:
             raise UniverseFetchError(
                 f"r2k-proxy: fetched {len(members)} members, below the {_R2K_PROXY_MIN_MEMBERS} floor"
             )
-        artifact = store.persist_raw(canonical_bytes(sorted(members)))
-        store.record(
-            SourceEvidence(
-                ref=artifact.ref,
-                sha256=artifact.sha256,
-                source_url=R2K_SLICKCHARTS_URL,
-                retrieved_at=now,
-                publication_time=None,
-                mediawiki_revision_id=None,
-                mediawiki_revision_time=None,
-                content_type="application/json",
-            )
-        )
-        return members, HashedRef(artifact.ref, artifact.sha256)
+        return members, _slickcharts_ref(store, members, R2K_SLICKCHARTS_URL, now)
     raise UniverseFetchError(f"membership-sync: no live source for index {index_id!r}")
 
 

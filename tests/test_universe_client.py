@@ -12,6 +12,7 @@ from clients.universe_client import (
     UniverseFetchError,
     check_ticker_status,
     check_tickers_bulk,
+    fetch_djia,
     fetch_ndx100,
     fetch_r2k,
     fetch_sp500,
@@ -247,6 +248,60 @@ class TestFetchR2K:
         )
         with pytest.raises(UniverseFetchError, match="no constituent table"):
             fetch_r2k()
+
+
+DJIA_HTML = (
+    "<html><body><table class='table table-hover table-borderless table-sm'>"
+    "<thead><tr><th>No.</th><th>Company</th><th>Symbol</th></tr></thead><tbody>"
+    + "".join(f"<tr><td>{i}</td><td>Co {i}</td><td>DJ{i:02d}</td></tr>" for i in range(1, 31))
+    + "</tbody></table></body></html>"
+)
+
+
+class TestFetchDJIA:
+    @responses.activate
+    def test_parses_slickcharts_table(self):
+        responses.add(
+            responses.GET,
+            "https://www.slickcharts.com/dowjones",
+            body=DJIA_HTML,
+            status=200,
+        )
+        assert fetch_djia() == {f"DJ{i:02d}" for i in range(1, 31)}
+
+    @responses.activate
+    def test_http_error_raises(self):
+        responses.add(
+            responses.GET,
+            "https://www.slickcharts.com/dowjones",
+            status=403,
+        )
+        with pytest.raises(UniverseFetchError, match="DJIA"):
+            fetch_djia()
+
+    @responses.activate
+    def test_no_table_raises(self):
+        responses.add(
+            responses.GET,
+            "https://www.slickcharts.com/dowjones",
+            body="<html><body></body></html>",
+            status=200,
+        )
+        with pytest.raises(UniverseFetchError, match="no constituent table"):
+            fetch_djia()
+
+    @responses.activate
+    def test_below_thirty_rows_fails_closed(self):
+        # A partial parse means the table markup broke — a truncated set must
+        # never diff against the membership store.
+        responses.add(
+            responses.GET,
+            "https://www.slickcharts.com/dowjones",
+            body=R2K_HTML,  # same table shape, only 2 rows
+            status=200,
+        )
+        with pytest.raises(UniverseFetchError, match="below 30"):
+            fetch_djia()
 
 
 class TestFetchNDX100Fallback:

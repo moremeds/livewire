@@ -414,3 +414,48 @@ $ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
    (zero) and print the planned diff.
 4. r2k-proxy drops grok's preset fallback: a dead Slickcharts fetch pages
    instead of silently diffing against `presets/r2k.json`.
+
+## Task 7 fix — djia source switched to Slickcharts (approved)
+
+Deviation (2) from the Task 7 report was approved: `fetch_djia` now reads
+`https://www.slickcharts.com/dowjones` — the source verified identical to the
+grok DJIA list in Task 5 — through the same parser family as `fetch_r2k`.
+Deviations (1), (3), (4) accepted.
+
+**Files:** `clients/universe_client.py` (`DJIA_SLICKCHARTS_URL` beside
+`R2K_SLICKCHARTS_URL`; `DJIA_WIKIPEDIA_TITLE` and the `_R2K_URL` back-compat
+alias removed; shared `_slickcharts_constituents(tree, label)` —
+`table.table` / `tbody tr` / symbol in `td[2]` — now used by `fetch_r2k` and
+`fetch_djia`; `fetch_djia` fails closed below 30 constituents),
+`livewire_scripts/membership_sync.py` (`djia` moved to the Slickcharts
+branch sharing `_slickcharts_ref` with `r2k-proxy`; evidence `source_url` =
+the Slickcharts page), `docs/runbook.md`, spec §2.3 sentence, both test
+files.
+
+**Fail-closed kept:** no `table.table` → `UniverseFetchError`; fewer than 30
+parsed constituents → `UniverseFetchError` (partial markup must not emit
+~30 removes); HTTP error propagates as fetch failure — all three land on the
+existing `fetch_ok=0` + page + exit-3 path.
+
+**Verification** — 9 new/changed tests:
+
+- `TestFetchDJIA` in `test_universe_client.py`: valid 30-row table →
+  30-ticker set; HTTP 403 → `UniverseFetchError`; missing table →
+  `UniverseFetchError`; 2-row table → "below 30" `UniverseFetchError`;
+- `test_membership_sync.py`: djia fetch failure → exit 3 + page + no events
+  + `fetch_ok=0`; djia success at exactly 30 → 30 events appended (seeded
+  AAPL resolved `verified`, 29 `unresolved:ZZ*`), canonical sorted-set
+  evidence with `source_url="https://www.slickcharts.com/dowjones"`;
+- plus margin tests added when the first full run sat at exactly 95.00%:
+  import blank-line skip + FAILED run on error, evidence verifier rejecting
+  an absent artifact, Wikipedia `_default_fetch` happy path via a fake
+  `MediaWikiClient`, sync's FAILED-run re-raise on a processing error.
+
+```
+$ uv run pytest tests/test_membership_sync.py tests/test_universe_client.py -q
+41 passed in 0.65s
+$ uv run ruff format ... && uv run ruff check ...
+4 files left unchanged; All checks passed!
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+2752 passed, 2 warnings in 84.74s — Total coverage: 95.09%
+```
