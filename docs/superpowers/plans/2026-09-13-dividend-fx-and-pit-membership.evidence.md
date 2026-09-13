@@ -181,3 +181,27 @@ $ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
 ```
 
 Deviations: none.
+
+## Task 4
+
+`docs/postmortems/2026-09-13-corporate-actions-mutated-outside-the-ledger.md`
+— house format (Rule / Observed / narrative / Cost / Now); the rule is spec
+§3 verbatim ("entrypoint subcommand that emits `runs` + `measurements`, or it
+did not happen; the ledger is what tells us when Sunday's reconcile reverts
+it"), cost = invisible to status/digest and revertable by a provider-scoped
+full reconcile.
+
+`CLAUDE.md` — one line under "The one contract" after the Phase-1 read-only
+bullet, pointing at
+`tests/test_corporate_action_store.py::test_full_reconcile_after_conversion_leaves_the_eod_fx_row_active`
+and the pm. `docs/postmortems/README.md` untouched: its index stops before
+the 2026-09-12 entries (not maintained per-file).
+
+Gate (docs-only change, still run):
+
+```
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+2729 passed, 2 warnings in 88.71s — Total coverage: 95.05%
+```
+
+Deviations: none.
