@@ -445,6 +445,25 @@ python scripts/livewire_ingest.py corporate-actions --dry-run                   
 Targeted runs never infer disappearance by default; full reconciliations may
 append cancellation revisions.
 
+#### Convert foreign-currency dividends to the equity currency
+
+`corporate-actions convert-dividend-currency` finds active dividends whose
+currency differs from the equity's (security_master, else USD) and supersedes
+them with `provider="eod_fx"` rows converted at the FX bronze `1d` close on the
+ex-date (previous session on an FX holiday; no bar within 5 sessions → skipped
+with `no_fx_bar`, never estimated). Dry-run by default; `--apply` requires
+`--output-dir` and writes `dividend_fx_conversion_applied.json` — the audit
+trail the grok repair produced by hand. Every run emits `runs`
+(`job='dividend-fx'`), `dividend_currency_mismatch` (remaining), and
+`dividend_fx_converted`/`dividend_fx_skipped` measurements; apply also commits
+each FX bar to the evidence CAS and writes one `evidence` row per ref.
+
+```bash
+python scripts/livewire_ingest.py corporate-actions convert-dividend-currency                       # dry-run, all CA-store symbols
+python scripts/livewire_ingest.py corporate-actions convert-dividend-currency --tickers ACR         # dry-run, one symbol
+python scripts/livewire_ingest.py corporate-actions convert-dividend-currency --apply --output-dir ~/market-warehouse/grok_index/gaps/
+```
+
 `--resume` is what the nightly lane passes, every night. It continues the
 per-symbol cursor for this exact scope (lake root, ticker set, `--full-reconcile`,
 `--dry-run`); a cursor from a different scope, a finished pass, or an unreadable
