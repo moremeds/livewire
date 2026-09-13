@@ -205,3 +205,59 @@ $ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
 ```
 
 Deviations: none.
+
+## Task 5
+
+`presets/djia.json` — 30 current DJIA constituents, name/description/source/
+tickers (no `pairs`/`groups` — the registry path needs only `tickers`).
+
+Constituents taken from the plan's probe (read-only, absolute path since `~`
+resolves to `/Users/chenxi` on the mini):
+
+```
+$ ssh macmini 'python3 /Users/moremeds/market-warehouse/grok_index/pit_membership/djia/query_djia_pit.py --as-of 2026-09-12'
+{"as_of": "2026-09-12", "n": 30, "tickers": ["AAPL", "AMGN", "AMZN", "AXP",
+"BA", "CAT", "CRM", "CSCO", "CVX", "DIS", "GOOGL", "GS", "HD", "HON", "IBM",
+"JNJ", "JPM", "KO", "MCD", "MMM", "MRK", "MSFT", "NKE", "NVDA", "PG", "SHW",
+"TRV", "UNH", "V", "WMT"]}
+```
+
+Verified against a second source — Slickcharts DJIA page parsed with the same
+`table.table` / `td[2]` convention `universe_client.fetch_r2k` uses (read-only
+GET on the mini, livewire venv; writes nothing):
+
+```
+SLICKCHARTS 30 ['AAPL', 'AMGN', 'AMZN', 'AXP', 'BA', 'CAT', 'CRM', 'CSCO',
+'CVX', 'DIS', 'GOOGL', 'GS', 'HD', 'HON', 'IBM', 'JNJ', 'JPM', 'KO', 'MCD',
+'MMM', 'MRK', 'MSFT', 'NKE', 'NVDA', 'PG', 'SHW', 'TRV', 'UNH', 'V', 'WMT']
+```
+
+Sets identical. (en.wikipedia.org's DJIA article no longer carries a
+components wikitable — checked, only the annual-returns table remains — so
+Slickcharts is the independent citation; noted for Task 7's `fetch_djia`.)
+
+`registry/gaps.json` — new row `g1-g2-g3-djia-daily` mirroring the
+equity-daily row (`G1/G3/G14`, `equity`/`1d`, `denominator_diff`, tier A),
+`universe: ["djia"]`, `since: 2026-09-13`. Its `test` points at the new
+registry test below rather than the shared engine test: the row's claim is
+"the djia universe exists and resolves", which is what the test proves.
+
+`tests/test_gap_registry.py::test_djia_row_resolves_the_thirty_constituents`
+— asserts the row exists, `universe == ["djia"]`, `equity`/`1d`, and the
+preset resolves to 30 unique tickers.
+
+```
+$ uv run pytest tests/test_gap_registry.py -k djia -q
+FAILED (registry must carry a djia equity-daily row)   # pre-implementation
+$ uv run pytest tests/test_gap_registry.py tests/test_gap_registry_contract.py tests/test_coverage_denominator.py -q
+24 passed in 0.09s
+```
+
+Full gate:
+
+```
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+2730 passed, 2 warnings in 84.90s — Total coverage: 95.05%
+```
+
+Deviations: none.

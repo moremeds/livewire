@@ -78,3 +78,16 @@ def test_g13_is_a_valid_gap_id(tmp_path):
     path = tmp_path / "gaps.json"
     path.write_text(json.dumps([row]))
     assert load_registry(path)[0].gap == ("G13",)
+
+
+def test_djia_row_resolves_the_thirty_constituents():
+    """The djia registry row must name a preset that exists and resolves."""
+    from clients.ingestion_common import load_preset
+
+    rows = load_registry(REPO / "registry" / "gaps.json")
+    row = next((r for r in rows if r.id == "g1-g2-g3-djia-daily"), None)
+    assert row is not None, "registry must carry a djia equity-daily row"
+    assert list(row.universe) == ["djia"]
+    assert row.asset_class == "equity" and row.timeframe == "1d"
+    _, tickers, _ = load_preset(REPO / "presets" / "djia.json")
+    assert len(tickers) == 30 and len(set(tickers)) == 30
