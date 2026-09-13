@@ -518,3 +518,58 @@ $ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
 2. `--as-of` is day-inclusive (`time.max`); a `known_at` anywhere on that date
    counts as known. Matches operator intuition for a date flag and keeps the
    §2.5 acceptance comparison honest.
+
+## Task 9 — status checks + `com.livewire.membership-sync` plist
+
+**Files:** `livewire_scripts/status.py` (two CHECKS + two `_FIXES` + `unresolved`
+in the `_notification_key` fields), `launchd/com.livewire.membership-sync.plist.example`
+(new), `tests/test_status.py` (+3), `tests/test_launchd_templates.py`
+(JOB_TEMPLATES entry + weekday pin), `docs/runbook.md` (schedule/checks/read
+lines on the existing block).
+
+**Checks** (spec §2.4):
+
+- `Membership sync ran today` — weekday-gated in SQL via `isodow`: Sat/Sun read
+  OK unconditionally (the job never fires; the spec's literal "on Sat/Sun the
+  SQL returns OK"). Weekday: latest ended `runs` row `job='membership-sync'`
+  decides — `FAILED` → BAD, anything else → OK; no row → UNKNOWN (not in
+  `_EMPTY_IS_OK`; no time-deadline BAD — the job pages on its own fetch
+  failure, so this check only answers "did it run").
+- `Unresolved memberships` — latest `membership_unresolved` per index: any >0
+  → WARN with `indexes` (`sp500=3 djia=0`) + `unresolved` sum in the detail;
+  all-zero → OK; never measured → single aggregate row `max(value) is null` →
+  UNKNOWN (same never-green contract as "Foreign-currency dividends").
+  `unresolved` added to `_notification_key` fields so a count change is a new
+  fault identity.
+- Fixes: `launchctl start com.livewire.membership-sync`; `livewire_ops.py
+  membership … | grep '^?'` — an `unresolved:` member needs a
+  security_master identity.
+
+**Plist** — `StartCalendarInterval` is a five-dict array (Weekday 1–5, Hour 9,
+Minute 0 HKT = 01:00Z same weekday; other-TZ comments inline), runs
+`current/` via `livewire_ingest.py membership-sync` (which self-loads the
+scheduled env — it is already in the cold-start set), logs under
+`logs/launchd/`, PATH carries `/opt/homebrew/bin` for the node mailer.
+
+**Template test** — the JOB_TEMPLATES entry alone picks up every parametrized
+invariant (release `current/`, own `.venv`, `logs/launchd` paths, no `/Users/`,
+no repo path); `test_membership_sync_runs_weekday_mornings` pins the five-dict
+weekday interval.
+
+```
+$ uv run pytest tests/test_status.py tests/test_launchd_templates.py \
+    tests/test_livewire_entrypoints.py tests/test_membership_sync.py -q
+221 passed in 12.81s
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+2766 passed, 2 warnings in 86.65s — Total coverage: 95.10%
+```
+
+**Deviations:**
+
+1. `isodow`, not `isoweekday` — DuckDB's ISO weekday function is `isodow`
+   (verified: `isoweekday` is a catalog error; `isodow(date '2026-09-12')`
+   returns 6). First test run caught the wrong name.
+2. `test_status.py` asserts against `status.Verdict.*` (module attribute) in
+   the new tests — the file's own documented trap: `test_…reload(status)`
+   makes the top-level `Verdict` import a different class object, and `is`
+   fails on equal verdicts.

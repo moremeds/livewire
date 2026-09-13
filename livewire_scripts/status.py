@@ -291,6 +291,32 @@ CHECKS: list[tuple[str, str]] = [
         "order by measured_at desc limit 1",
     ),
     (
+        "Membership sync ran today",
+        # Weekday-only job (01:00Z): on Sat/Sun the check reads OK regardless.
+        # A missing run on a weekday is UNKNOWN, not BAD — the job pages on its
+        # own fetch failure, so this check is only "did it run at all".
+        "select case when isodow(date '$today') > 5 then 'OK' "
+        "when verdict = 'FAILED' then 'BAD' else 'OK' end as verdict, run_id, started "
+        "from runs where job = 'membership-sync' and date(started) = date '$today' "
+        "and ended is not null "
+        "union all select case when isodow(date '$today') > 5 then 'OK' else 'UNKNOWN' end, "
+        "'no run today', null "
+        "where not exists (select 1 from runs where job = 'membership-sync' "
+        "and date(started) = date '$today') "
+        "order by started desc nulls last limit 1",
+    ),
+    (
+        "Unresolved memberships",
+        # Latest membership_unresolved per index; never measured is UNKNOWN,
+        # never green (same contract as "Foreign-currency dividends").
+        "select case when max(value) is null then 'UNKNOWN' "
+        "when max(value) > 0 then 'WARN' else 'OK' end as verdict, "
+        "coalesce(sum(value), 0) as unresolved, "
+        "string_agg(scope || '=' || cast(value as int), ' ' order by scope) as indexes "
+        "from (select scope, value from measurements where name = 'membership_unresolved' "
+        "  qualify row_number() over (partition by scope order by measured_at desc) = 1)",
+    ),
+    (
         "IB-only lanes behind",
         f"select case when count(last_session) < {len(constants.IB_ONLY_LANES)} then 'UNKNOWN' "
         "when max(behind) > $ib_slack_days then 'WARN' else 'OK' end as verdict, "
@@ -361,6 +387,11 @@ _FIXES = {
         "python scripts/livewire_ingest.py corporate-actions convert-dividend-currency   "
         "# dry-run first; add --apply --output-dir <dir> to repair"
     ),
+    "Membership sync ran today": "launchctl start com.livewire.membership-sync   # then read logs/launchd/com.livewire.membership-sync.stderr.log",
+    "Unresolved memberships": (
+        'python scripts/livewire_ops.py membership --index <id> --effective-at $(date +%F) | grep "^?"   '
+        "# an unresolved:<ticker> member needs a security_master identity"
+    ),
     "Digest sent today": "launchctl start com.livewire.digest",
     "Lanes terminal": (
         "python scripts/livewire_ops.py ledger query \"select lane, outcome from lane_results where run_id = '$run'\""
@@ -426,6 +457,7 @@ def _notification_key(name: str, verdict: Verdict, rows: list[dict]) -> str:
         "missing",
         "missing_count",
         "unterminated",
+        "unresolved",
         "blocked",
         "silver_failed",
         "silver_window_regressions",

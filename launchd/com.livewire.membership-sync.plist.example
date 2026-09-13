@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  PIT index membership live sync — sp500/ndx100 (Wikipedia), djia/r2k-proxy
+  (Slickcharts). This is the scheduled job the grok pit_membership README
+  claimed to have and never did: the four per-panel update_*.py timers
+  collapse into this one entry. Weekday-only — the sources move on trading
+  days — and it fails closed: a dead or truncated source emits
+  membership_source_fetch_ok=0 and pages rather than diff a partial set.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.livewire.membership-sync</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <!-- Replace /path/to/warehouse with your actual warehouse path. Runs the
+             immutable release `current` points at, like the other lake jobs. -->
+        <string>cd /path/to/warehouse/current &amp;&amp; .venv/bin/python scripts/livewire_ingest.py membership-sync</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <!-- Target: 01:00 UTC on weekdays — after the US close settles, before
+             the daily-update lane. launchd has no TimeZone key, so Hour/Minute
+             are Mac-local; Weekday shifts with the timezone too. At +8 the
+             01:00Z weekday lands the same local weekday:
+               Asia/Hong_Kong:      Weekday=1..5 Hour=9
+               America/New_York:    Weekday=1..5 Hour=20 previous day (EDT)
+               Europe/London:       Weekday=1..5 Hour=2  (BST)
+               UTC:                 Weekday=1..5 Hour=1
+             Defaults below assume Asia/Hong_Kong. -->
+        <dict>
+            <key>Weekday</key>
+            <integer>1</integer>
+            <key>Hour</key>
+            <integer>9</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>2</integer>
+            <key>Hour</key>
+            <integer>9</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>3</integer>
+            <key>Hour</key>
+            <integer>9</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>4</integer>
+            <key>Hour</key>
+            <integer>9</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>5</integer>
+            <key>Hour</key>
+            <integer>9</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.membership-sync.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.membership-sync.stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- /opt/homebrew/bin is load-bearing: a fetch failure pages through
+             the Nodemailer CLI. Without it launchd's minimal PATH cannot find
+             `node` and the alert dies. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

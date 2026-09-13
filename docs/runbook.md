@@ -1072,6 +1072,15 @@ python scripts/livewire_ingest.py membership-sync import --index sp500 \
   fetch fails); per-index measurements `membership_events_added`,
   `membership_events_removed`, `membership_unresolved` (standing backlog, not a
   per-run delta), `membership_source_fetch_ok` (0/1).
+- **Schedule:** `com.livewire.membership-sync` — weekdays 01:00Z (09:00 HKT),
+  runs `current/`, logs `logs/launchd/com.livewire.membership-sync.{stdout,stderr}.log`.
+- **Status checks:** `Membership sync ran today` (weekday-gated: Sat/Sun read
+  OK; a missing weekday run is UNKNOWN, a FAILED run BAD) and
+  `Unresolved memberships` (latest per-index `membership_unresolved` backlog;
+  any >0 → WARN, never measured → UNKNOWN).
+- **Read:** `python scripts/livewire_ops.py membership --index sp500
+  --effective-at YYYY-MM-DD [--as-of YYYY-MM-DD]` — sorted members on stdout
+  (`?<security_id>` for unresolved), count on stderr, exit 0 always.
 
 ### Log file names
 
