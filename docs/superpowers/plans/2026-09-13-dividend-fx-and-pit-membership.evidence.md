@@ -459,3 +459,62 @@ $ uv run ruff format ... && uv run ruff check ...
 $ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
 2752 passed, 2 warnings in 84.74s — Total coverage: 95.09%
 ```
+
+## Task 8 — `livewire_ops.py membership` read command
+
+**Files:** `scripts/livewire_ops.py` (`membership` choice + `_dispatch_membership`,
+mirroring `_dispatch_notify` — own parser, no scheduled env, read-only),
+`livewire_scripts/membership_sync.py` (`members_at`), `tests/test_livewire_entrypoints.py`
+(+5 tests, self-contained lake fixture replicating the `_lake`/`EVENTS` seeding
+pattern from `test_membership_sync.py`).
+
+**Semantics.** `members_at(index_id, effective_at, as_of, data_lake_root)`
+filters `store.events(index_id, as_of=as_of)` to `effective_at <= effective_at`
+and replays through `_current_members` — the identical replay `sync` diffs, so
+`candidate` and `unresolved:` members count (`rejected` never does). Each
+`security_id` then maps back to a symbol through the master's non-superseded
+verified identities: the identity whose interval contains `effective_at` wins;
+if none contains it (e.g. the identity ended earlier) the latest verified
+identity still names the symbol; no identity at all → `?<security_id>`.
+
+**CLI.** `--effective-at D` is `D 00:00 UTC` (same convention as imported
+events); `--as-of D` is a knowledge cutoff *inclusive* of that day
+(`D 23:59:59.999999 UTC`, default `now`) — a date-granular flag means "what we
+knew on D". Sorted symbols one per line on stdout, bare count on stderr, exit 0
+always — any store-side error prints `membership: <err>` + `0` on stderr and
+still exits 0 (a read never fails the operator).
+
+**PIT honesty verified:** `--as-of 2026-09-12` against a lake imported
+2026-09-13T01:00Z prints nothing — we did not know the events then.
+
+```
+$ uv run pytest tests/test_livewire_entrypoints.py -q -k membership
+6 passed, 51 deselected in 0.22s
+
+$ MDW_DATA_LAKE=/tmp/lw-membership-smoke uv run python scripts/livewire_ops.py \
+    membership --index sp500 --effective-at 2016-01-01
+AAPL
+MSFT            # stdout; stderr: 2
+$ ... --effective-at 2006-01-01
+?unresolved:AEOS
+AAPL
+MSFT            # stderr: 3
+
+$ uv run ruff format ... && uv run ruff check ...
+3 files reformatted; All checks passed!
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+2757 passed, 2 warnings in 85.57s — Total coverage: 95.10%
+```
+
+**Deviations:**
+
+1. `members_at` lives in `membership_sync.py` (the plan's file list) rather
+   than `IndexMembershipStore`: the store's `members_effective_at` is the
+   *verified denominator* — it filters to `status=="verified"` AND requires a
+   verified identity containing `effective_at`, so it can never print an
+   `unresolved:` placeholder. The read command deliberately replays the wider
+   member set (what the sync diffs) so acceptance output can be compared
+   against the grok `query_*_pit.py` panels.
+2. `--as-of` is day-inclusive (`time.max`); a `known_at` anywhere on that date
+   counts as known. Matches operator intuition for a date flag and keeps the
+   §2.5 acceptance comparison honest.

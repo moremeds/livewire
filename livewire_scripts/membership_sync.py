@@ -256,6 +256,47 @@ def _current_members(items: list[MembershipEvent]) -> set[str]:
     return members
 
 
+def members_at(
+    *,
+    index_id: str,
+    effective_at: datetime,
+    as_of: datetime,
+    data_lake_root: Path,
+) -> list[str]:
+    """Return the index's member symbols at `effective_at` as known at `as_of`.
+
+    Read-only: replays non-superseded, non-`rejected` events effective by the
+    cutoff — the same replay `sync` diffs, so an `unresolved:` placeholder or a
+    `candidate` still counts as a member — then maps each `security_id` back to
+    a symbol through `SecurityMaster`. A security_id with no verified identity
+    renders as `?<security_id>` so unresolved members stay visible next to the
+    resolved ones.
+    """
+    root = Path(data_lake_root)
+    master = SecurityMaster(root, evidence_verifier=None)
+    store = IndexMembershipStore(root, security_master=master, evidence_verifier=None)
+    events = [event for event in store.events(index_id, as_of=as_of) if event.effective_at <= effective_at]
+    members = _current_members(events)
+
+    identities = master.events(as_of=as_of)
+    superseded = {item.supersedes for item in identities if item.supersedes is not None}
+    verified = [item for item in identities if item.event_id not in superseded and item.status == "verified"]
+
+    def symbol_for(security_id: str) -> str:
+        candidates = [item for item in verified if item.security_id == security_id]
+        containing = [
+            item
+            for item in candidates
+            if item.effective_from <= effective_at and (item.effective_to is None or effective_at < item.effective_to)
+        ]
+        pick = containing or candidates
+        if not pick:
+            return f"?{security_id}"
+        return max(pick, key=lambda item: (item.effective_from, item.known_at, item.event_id)).symbol
+
+    return sorted({symbol_for(security_id) for security_id in members})
+
+
 def _slickcharts_ref(store: SourceEvidenceStore, members: set[str], source_url: str, now: datetime) -> HashedRef:
     """Commit the fetched set as the evidence artifact for a Slickcharts source."""
     artifact = store.persist_raw(canonical_bytes(sorted(members)))
