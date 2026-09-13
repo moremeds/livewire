@@ -1014,3 +1014,109 @@ def test_convert_dividend_currency_failure_closes_run_failed(tmp_path, monkeypat
         )
     verdicts = ledger.query("select verdict from runs where job = 'dividend-fx'")
     assert any(row["verdict"] == "FAILED" for row in verdicts)
+
+
+def test_convert_dividend_currency_usd_peg_needs_no_fx_bar(tmp_path, monkeypatch):
+    """NTB BMD 0.32 ex 2017-11-10: grok converted at 1:1 with fx_pair USD_PEG."""
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    store = CorporateActionStore(tmp_path)
+    store.reconcile(
+        "NTB",
+        [
+            MassiveDividend(
+                provider_event_id="ntb-div-1",
+                ticker="NTB",
+                ex_dividend_date=date(2017, 11, 10),
+                cash_amount=Decimal("0.32"),
+                currency="BMD",
+                declaration_date=None,
+                record_date=None,
+                pay_date=None,
+                payload_hash="ntb-bmd-v1",
+            )
+        ],
+        datetime(2026, 9, 13, tzinfo=UTC),
+    )
+    calls = []
+
+    def spy(pair, on):
+        calls.append((pair, on))
+        return (on, 1.0)
+
+    summary = sync_corporate_actions.convert_dividend_currency(
+        tickers=["NTB"], apply=True, output_dir=tmp_path / "out", lake_root=tmp_path, fx_close_fn=spy
+    )
+
+    assert calls == []  # the peg never consults the FX tape
+    assert summary["converted"] == 1 and summary["remaining"] == 0
+    row = store.latest_active("NTB")[0]
+    assert row.provider == "eod_fx" and row.cash_amount == 0.32 and row.currency == "USD"
+    assert row.source_ref == "eod_fx:USD_PEG@2017-11-10 rate=1.00000000 method=peg orig=0.32 BMD -> 0.32000000 USD"
+    assert row.source_hash is None
+    assert not ledger.query("select * from evidence")
+    manifest = json.loads((tmp_path / "out" / "dividend_fx_conversion_applied.json").read_text())
+    applied = manifest["applied"][0]
+    assert applied["fx_pair"] == "USD_PEG" and applied["fx_method"] == "peg"
+    assert applied["fx_rate"] == 1.0 and applied["fx_date"] == "2017-11-10"
+
+
+def test_convert_dividend_currency_non_pegged_still_uses_fx_close_fn(tmp_path, monkeypatch):
+    """A non-pegged currency goes through the FX tape exactly as before."""
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    _cad_lake(tmp_path)
+    calls = []
+
+    def spy(pair, on):
+        calls.append((pair, on))
+        return (on, 2.0)
+
+    summary = sync_corporate_actions.convert_dividend_currency(
+        tickers=["ACR"], apply=True, output_dir=tmp_path / "out", lake_root=tmp_path, fx_close_fn=spy
+    )
+
+    assert calls == [("USDCAD", _ACR_EX)]
+    assert summary["converted"] == 1
+    row = CorporateActionStore(tmp_path).latest_active("ACR")[0]
+    assert row.cash_amount == pytest.approx(0.41 / 2.0) and row.currency == "USD"
+    assert "method=divide" in row.source_ref
+
+
+def test_convert_dividend_currency_usd_dividend_on_pegged_equity(tmp_path, monkeypatch):
+    """USD dividend on a BMD equity converts at the inverse peg, still no FX tape."""
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    from clients.security_master import SecurityMaster
+
+    master = SecurityMaster(tmp_path, evidence_verifier=lambda ref, digest: True)
+    assert master.append(_sm_event("NTB", "BMD"))
+    CorporateActionStore(tmp_path).reconcile(
+        "NTB",
+        [
+            MassiveDividend(
+                provider_event_id="ntb-div-2",
+                ticker="NTB",
+                ex_dividend_date=date(2017, 11, 10),
+                cash_amount=Decimal("0.32"),
+                currency="USD",
+                declaration_date=None,
+                record_date=None,
+                pay_date=None,
+                payload_hash="ntb-usd-v1",
+            )
+        ],
+        datetime(2026, 9, 13, tzinfo=UTC),
+    )
+    calls = []
+
+    summary = sync_corporate_actions.convert_dividend_currency(
+        tickers=["NTB"],
+        apply=True,
+        output_dir=tmp_path / "out",
+        lake_root=tmp_path,
+        fx_close_fn=lambda pair, on: calls.append((pair, on)) or (on, 1.0),
+    )
+
+    assert calls == []
+    assert summary["converted"] == 1
+    row = CorporateActionStore(tmp_path).latest_active("NTB")[0]
+    assert row.cash_amount == pytest.approx(0.32) and row.currency == "BMD"
+    assert "method=peg" in row.source_ref and row.source_hash is None

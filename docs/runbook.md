@@ -451,7 +451,9 @@ append cancellation revisions.
 currency differs from the equity's (security_master, else USD) and supersedes
 them with `provider="eod_fx"` rows converted at the FX bronze `1d` close on the
 ex-date (previous session on an FX holiday; no bar within 5 sessions → skipped
-with `no_fx_bar`, never estimated). Dry-run by default; `--apply` requires
+with `no_fx_bar`, never estimated). Currencies in `USD_PEGGED` (currently BMD
+at 1.0) convert at the peg with no FX lookup — `method=peg`, `fx_date=ex_date`,
+`source_hash=None`. Dry-run by default; `--apply` requires
 `--output-dir` and writes `dividend_fx_conversion_applied.json` — the audit
 trail the grok repair produced by hand. Every run emits `runs`
 (`job='dividend-fx'`), `dividend_currency_mismatch` (remaining), and
