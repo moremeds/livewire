@@ -261,3 +261,75 @@ $ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
 ```
 
 Deviations: none.
+
+## Task 6 — `membership-sync import`
+
+**Files:** `livewire_scripts/membership_sync.py` (new — no existing module owns
+membership fetch/diff), `scripts/livewire_ingest.py` (COMMANDS row +
+scheduled-env set), `tests/test_membership_sync.py` (new),
+`tests/test_livewire_entrypoints.py` (env-load parametrization).
+
+**Mapping, per spec §2.2:** each `events.jsonl` line → one `MembershipEvent`;
+`security_id` via `SecurityMaster.resolve_symbol("massive", ticker, mic,
+effective_at, now)` tried across `(XNAS, XNYS, ARCX)` — the real master keys
+equities under `massive` and US constituents list on three venues, so a single
+hardcoded MIC would resolve almost nothing (the mini's master today holds one
+verified identity, on ARCX); two distinct identities for one ticker ⇒
+ambiguity ⇒ unresolved, never a guess. Unresolved keeps the event under a
+deterministic `unresolved:<ticker>` security_id with `status="unresolved"`;
+`members_effective_at` never counts it. `effective_at` = `effective_date`
+00:00 UTC; `announced_at=None` (the panels carry no announce date);
+`known_at=now` — an `as_of` before the import returns nothing, because we did
+not know it then. `source_refs`/`source_hashes` = each `--source` file's bytes
+committed to `SourceEvidenceStore` CAS + one `SourceEvidence` row per artifact.
+`status`: B → verified, C/D → candidate, `r2k-proxy` → candidate always.
+`event_id` = sha256 of `(index_id, security_id or ticker, action,
+effective_date, source_hashes)` — content-addressed, so a repeat import hits
+`seen_ids` and appends nothing (the store's `AtomicParquetLog` dedup is the
+backstop). `revision` continues monotonically per security from the store's
+existing events.
+
+**Ledger:** `runs` row pair job `membership-sync` (entry + terminal; FAILED on
+exception, then re-raised). Measurements scoped to the index:
+`membership_events_added`, `membership_events_removed`,
+`membership_unresolved` — the last is the store's *current* unresolved
+backlog, not the run's delta, so a no-op re-import still reports it and the
+Task 9 status WARN cannot clear while the hole exists.
+
+**Verification**
+
+`tests/test_membership_sync.py` — 6-line fixture per the plan (AAPL + MSFT
+verified in a `SecurityMaster` on tmp_path; AEOS unresolvable):
+
+- resolution + provenance: AAPL revisions 1-3 verified; AEOS add+remove stay
+  `unresolved` under `unresolved:AEOS`; every event carries the committed
+  `artifact://sha256/<source sha>`; `SourceEvidenceStore.read` returns the
+  exact source bytes;
+- run + measurements rows land in the ledger;
+- second import of the same file appends nothing (`skipped=6`) and still
+  reports `unresolved=1`;
+- `--confidence C` marks resolved events `candidate`;
+- `main(["import", ...])` dispatches end-to-end via `MDW_DATA_LAKE`.
+
+```
+$ uv run pytest tests/test_membership_sync.py -q
+ImportError: cannot import name 'membership_sync'      # pre-implementation
+$ uv run pytest tests/test_membership_sync.py tests/test_livewire_entrypoints.py -q
+57 passed in 0.37s
+```
+
+`livewire_ingest.py`: `membership-sync` joins the scheduled-env set — its
+Task 9 plist invokes this entrypoint directly like `universe-refresh`, and the
+parametrized env-load test now covers it.
+
+Full gate:
+
+```
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+2736 passed, 2 warnings in 84.21s — Total coverage: 95.04%
+```
+
+Deviations: `membership_unresolved` measures the standing store backlog rather
+than the run's new-unresolved delta (the plan does not pin the definition;
+backlog semantics is what the §2.4 status check needs to stay honest).
+Runbook text deferred to Task 7, which owns the `membership-sync` doc block.

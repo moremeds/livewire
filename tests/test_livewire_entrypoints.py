@@ -432,16 +432,18 @@ def test_ingest_universe_sync_bypasses_ib_preflight(monkeypatch) -> None:
     [
         ("universe-sync", "livewire_scripts.universe_sync"),
         ("shepherd-universe", "livewire_scripts.shepherd_universe"),
+        ("membership-sync", "livewire_scripts.membership_sync"),
     ],
 )
 def test_ingest_universe_refresh_commands_load_scheduled_env(monkeypatch, tmp_path, command, module) -> None:
-    """`com.livewire.universe-refresh` chains these two and launchd starts it cold.
+    """`com.livewire.universe-refresh` and `com.livewire.membership-sync` invoke
+    this entrypoint directly and launchd starts them cold.
 
-    It is the only plist invoking this entrypoint directly; every other job goes
-    through `livewire_ops.py run-*-job`, which loads the same files first. Without
-    the loader `universe_sync` logged `MASSIVE_API_KEY not set — skipping
-    dead-ticker check` and exited 0, so the denominator gained new index members
-    and never lost delisted ones — in the one job that exists to keep it honest.
+    Every other job goes through `livewire_ops.py run-*-job`, which loads the
+    same files first. Without the loader `universe_sync` logged
+    `MASSIVE_API_KEY not set — skipping dead-ticker check` and exited 0, so
+    the denominator gained new index members and never lost delisted ones —
+    in the one job that exists to keep it honest.
     """
     calls: list[tuple[str, list[str]]] = []
     loader_calls: list[Path] = []
