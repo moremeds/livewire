@@ -51,7 +51,9 @@ one store method and one test.
 For each row: FX pair from `(currency, equity_currency)`, rate = FX bronze
 `1d` close on `ex_date` (previous session if the ex-date is an FX holiday;
 the date actually used is recorded). Missing FX bar → row is **skipped with
-reason**, never estimated.
+reason**, never estimated. Currencies hard-pegged to the USD (`USD_PEGGED`,
+currently BMD at 1.0) convert at the peg with no bar lookup — pair `USD_PEG`,
+`method=peg`, `fx_date=ex_date`, `source_hash=None`.
 
 ### 1.4 Write path
 

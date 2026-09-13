@@ -484,6 +484,10 @@ def _emit_provider_measurements(telemetry: MassiveTelemetry, run_id: str) -> Non
 # 7-calendar-day window on the file's own date column.
 _FX_STALE_DAYS = 7
 
+# Currencies hard-pegged to the USD convert at the peg — there is no FX bar to
+# look up because there is no market. Bermudian dollar, 1:1 since 1970.
+USD_PEGGED = {"BMD": 1.0}
+
 
 def _fx_bar_path(root: Path, pair: str) -> Path:
     return root / "bronze" / "asset_class=fx" / f"symbol={pair}" / "1d.parquet"
@@ -597,19 +601,28 @@ def convert_dividend_currency(
             pending: list[tuple[CorporateAction, dict]] = []
             for row in store.foreign_currency_dividends(symbol, equity_ccy):
                 detected += 1
-                pair, method = _fx_pair_for(row.currency, equity_ccy, root)
-                quote = fx_close_fn(pair, row.ex_date)
-                if quote is None:
-                    skipped.append({"symbol": symbol, "ex_date": row.ex_date.isoformat(), "reason": "no_fx_bar"})
-                    continue
-                fx_date, rate = quote
+                peg_rate: float | None = None
+                if equity_ccy == "USD" and row.currency in USD_PEGGED:
+                    peg_rate = USD_PEGGED[row.currency]
+                elif row.currency == "USD" and equity_ccy in USD_PEGGED:
+                    peg_rate = 1.0 / USD_PEGGED[equity_ccy]
+                if peg_rate is not None:
+                    pair, method = "USD_PEG", "peg"
+                    fx_date, rate = row.ex_date, peg_rate
+                else:
+                    pair, method = _fx_pair_for(row.currency, equity_ccy, root)
+                    quote = fx_close_fn(pair, row.ex_date)
+                    if quote is None:
+                        skipped.append({"symbol": symbol, "ex_date": row.ex_date.isoformat(), "reason": "no_fx_bar"})
+                        continue
+                    fx_date, rate = quote
                 converted = row.cash_amount / rate if method == "divide" else row.cash_amount * rate
                 source_ref = (
                     f"eod_fx:{pair}@{fx_date.isoformat()} rate={rate:.8f} method={method} "
                     f"orig={row.cash_amount} {row.currency} -> {converted:.8f} {equity_ccy}"
                 )
                 source_hash = None
-                bar = _fx_bar(root, pair, fx_date)
+                bar = None if method == "peg" else _fx_bar(root, pair, fx_date)
                 if bar is not None:
                     source_hash = digest_bytes(canonical_bytes(bar, default=str))
                     if evidence_store is not None:
