@@ -573,3 +573,164 @@ $ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
    the new tests — the file's own documented trap: `test_…reload(status)`
    makes the top-level `Verdict` import a different class object, and `is`
    fails on equal verdicts.
+
+## Task 10 — final verification (2026-09-13)
+
+### Local — full gate
+
+```
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+2766 passed, 2 warnings in 86.80s — Total coverage: 95.10%
+exit 0
+```
+
+### Local — end-to-end dry-run through the real entrypoint
+
+Temp lake + temp ledger (`/tmp/dfx-lake.KfgT`, `/tmp/dfx-ledger.NXp8`).
+Seed script (schema-correct via the store's own `reconcile` + `MassiveDividend`,
+same recipe as `tests/test_sync_corporate_actions.py::_cad_lake`):
+
+```python
+store = CorporateActionStore(lake)
+store.reconcile("ACR", [MassiveDividend(
+    provider_event_id="acr-div-1", ticker="ACR",
+    ex_dividend_date=date(2008, 6, 26), cash_amount=Decimal("0.41"),
+    currency="CAD", declaration_date=None, record_date=None,
+    pay_date=None, payload_hash="acr-cad-v1")],
+    datetime(2026, 9, 13, tzinfo=timezone.utc))
+# + one USDCAD 1d bar: trade_date=2008-06-26, close=1.0118999481201172
+```
+
+```
+$ PYTHONPATH=$PWD uv run python /tmp/dfx_seed.py $TMP_LAKE
+seeded /tmp/dfx-lake.KfgT
+exit 0
+
+$ MDW_DATA_LAKE=$TMP_LAKE LW_LEDGER_ROOT=$TMP_LEDGER \
+    uv run python scripts/livewire_ingest.py corporate-actions \
+    convert-dividend-currency --tickers ACR
+{"applied": [], "converted": 0, "detected": 1, "manifest": null,
+ "remaining": 1, "run_id": "dividend-fx-20260913T112019Z-29668",
+ "skipped": [], "tickers": 1}
+exit 0
+
+$ MDW_DATA_LAKE=$TMP_LAKE LW_LEDGER_ROOT=$TMP_LEDGER uv run python -c \
+    'from clients import ledger; import json;
+     print(json.dumps(ledger.query("select name, scope, value from measurements order by name")));
+     print(json.dumps(ledger.query("select job, verdict, exit_code from runs order by started")))'
+[{"name": "dividend_currency_mismatch", "scope": "all", "value": 1.0},
+ {"name": "dividend_fx_converted",      "scope": "all", "value": 0.0},
+ {"name": "dividend_fx_skipped",        "scope": "all", "value": 0.0}]
+[{"job": "dividend-fx", "verdict": "OK", "exit_code": 0},
+ {"job": "dividend-fx", "verdict": null, "exit_code": null}]
+exit 0
+
+$ MDW_DATA_LAKE=$TMP_LAKE LW_LEDGER_ROOT=$TMP_LEDGER \
+    uv run python scripts/livewire_ops.py status | grep -E 'Foreign-currency|Membership|Unresolved'
+[WARN] Foreign-currency dividends:
+[OK ] Membership sync ran today:          (Sunday — weekend OK)
+[?? ] Unresolved memberships:             (never measured → UNKNOWN)
+exit 0
+
+$ MDW_DATA_LAKE=$TMP_LAKE uv run python -c \
+    'from clients.corporate_action_store import CorporateActionStore;
+     print(CorporateActionStore(lake).latest_active("ACR"))'
+active: [('active', 'CAD', 'massive', 0.41)]   ← dry-run mutated nothing
+exit 0
+```
+
+### Mini — read-only probes (`ssh macmini`, absolute paths only, no writes)
+
+```
+$ wc -l /Users/moremeds/market-warehouse/grok_index/pit_membership/{djia,ndx100,r2k_proxy_live,sp500}/events.jsonl
+     100 .../djia/events.jsonl
+     592 .../ndx100/events.jsonl
+    1886 .../r2k_proxy_live/events.jsonl
+    2021 .../sp500/events.jsonl
+    4599 total
+exit 0
+
+$ ls /Users/moremeds/market-warehouse/grok_index
+dividend_fx_conversion_applied.json  dividend_fx_conversion_dry_run.json
+dividend_label_fixes.json  full87  inventory.json
+NOTE_dividend_currency_fx.md  silver_after_div_fx.{json,log}
+silver_cbrl_good_fer.{json,log}
+exit 0
+
+$ …/venv/bin/python -c 'import pyarrow.parquet as pq; print(pq.read_table(
+    "/Users/moremeds/market-warehouse/data-lake/security_master/events.parquet").num_rows)'
+security_master rows: 1
+exit 0          ← one identity ⇒ real import resolves ~nothing; backlog WARN expected
+
+$ …/venv/bin/python -c 'import json; d=json.load(open(
+    "/Users/moremeds/market-warehouse/grok_index/gaps/dividend_fx_conversion_applied.json"));
+    print(len(d["applied"]), len(d.get("skipped", [])))'
+manifest applied: 39 skipped: 2
+exit 0
+
+$ …/venv/bin/python -c 'import duckdb; print(duckdb.__version__)'
+1.5.5
+exit 0
+
+$ duckdb query: active cash_dividend rows by currency over the CA store glob
+[('AUD',2),('BMD',24),('CAD',1713),('CHF',24),('EUR',79),('GBP',10),('ILS',43),
+ ('JPY',5),('LBP',2),('MYR',1),('NOK',7),('PEN',1),('SEK',1),('USD',356320),(None,3)]
+exit 0          ← ~1,912 non-USD active rows remain — the real backlog the
+                  post-promote `convert-dividend-currency` operator step owns
+
+$ duckdb read_parquet glob over ledger/runs/date=*/*.parquet
+_duckdb.InvalidInputException: No magic bytes …/date=2026-09-05/._daily-update-…parquet
+exit 1          ← AppleDouble sidecars on the exFAT volume; probe-method failure
+                  only — `_ledger_files` (clients/duckdb_catalog.py:179) already
+                  strips `._*`, so livewire's own reader is unaffected
+
+$ launchctl list | grep livewire
+com.livewire.{coverage,daily-update-watchdog,daily-update,digest,
+              intraday-catchup,universe-refresh,release-promote}
+exit 0          ← 7 jobs loaded; membership-sync not installed yet (expected)
+
+$ pyarrow glob (._ skipped) over ledger/runs — job × verdict counts
+daily-update:  None×16, OK×6, FAILED×7, DEGRADED×2
+intraday-catchup: None×12, OK×6, FAILED×5
+exit 0          ← baseline: zero `membership-sync` / `dividend-fx` rows (neither
+                  job has run on the mini — correct pre-promotion state)
+
+$ git -C /Users/moremeds/projects/livewire rev-parse --abbrev-ref HEAD
+main
+exit 0
+$ git -C /Users/moremeds/projects/livewire status --short | head -5
+(clean)
+exit 0
+
+$ ls -la /Users/moremeds/market-warehouse/grok_index/pit_membership/*/events.jsonl
+13 Sep 14:21–15:46 mtimes — the grok panels were refreshed today; fresh input
+exit 0
+```
+
+**Skipped probes:** mini `convert-dividend-currency` dry-run — the plan
+permitted it only after an approved `git checkout dividend-fx-pit` on the mini;
+the checkout is on `main`, clean, and no checkout switch was approved, so the
+dry-run is skipped per the plan's own fallback. The local end-to-end dry-run
+through the real entrypoint above covers the acceptance. No `membership-sync`
+import, no `--apply`, no writes under `/Users/moremeds/market-warehouse` — all
+per the task rules.
+
+### Acceptance
+
+| Plan §2.5 acceptance | Result |
+|---|---|
+| Full gate ≥95% | 2766 passed, 95.10%, exit 0 |
+| Dry-run detects CAD dividend, converts nothing | `detected=1, converted=0, remaining=1`, exit 0 |
+| Three ledger measurements + run row | mismatch=1.0, converted=0.0, skipped=0.0; `dividend-fx` OK |
+| `status` shows all three new checks | WARN / OK / UNKNOWN rendered |
+| Dry-run leaves store untouched | `active CAD massive 0.41` after run |
+| grok panels ingestable (input inventory) | 4,599 events across 4 panels, refreshed today |
+| Mini state for post-promote step | 1,912 non-USD rows; security_master has 1 identity (backlog WARN expected until populated); ledger has no new-job rows |
+
+**Deviations:**
+
+1. Mini dry-run not executed — requires `dividend-fx-pit` on the mini; checkout
+   switch not approved. Operator runs it post-promote per §1.7/§2.5.
+2. duckdb ledger glob probe exit 1 on AppleDouble files — ad-hoc probe only;
+   `duckdb_catalog._ledger_files` strips `._*` so livewire readers are immune.
+   Re-ran via pyarrow glob (exit 0).
