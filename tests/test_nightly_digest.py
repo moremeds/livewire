@@ -204,6 +204,29 @@ class TestMain:
         assert calls == []
         assert ledger.query("select * from executions") == []
 
+    def test_body_out_carries_the_foreign_currency_dividends_check(self, tmp_path):
+        """The ledger check must reach the mailed body — real collect, not a stub."""
+        _measurement("dividend_currency_mismatch", "all", 2, measured_at=datetime(2026, 9, 13, 12, 0, tzinfo=UTC))
+        out = tmp_path / "digest.txt"
+        assert (
+            main(
+                [
+                    "--run-date",
+                    "2026-09-13",
+                    "--body-out",
+                    str(out),
+                    "--log-dir",
+                    str(tmp_path / "logs"),
+                    "--data-lake",
+                    str(tmp_path),
+                ]
+            )
+            == 0
+        )
+        body = out.read_text(encoding="utf-8")
+        assert "[WARN] Foreign-currency dividends" in body
+        assert "mismatched=2.0" in body
+
     def test_a_failed_send_is_the_exit_code_and_still_a_row(self, tmp_path, monkeypatch):
         monkeypatch.setattr(nightly_digest, "collect", lambda *a, **k: _sections(Verdict.OK))
 

@@ -1038,3 +1038,26 @@ def test_silver_progress_reports_the_heartbeat_and_is_unknown_without_one():
     assert section.verdict is status.Verdict.OK
     assert "symbols=500.0" in section.lines[1]
     assert "universe=13311.0" in section.lines[1]
+
+
+def test_foreign_currency_dividends_warns_with_the_remaining_count():
+    _measurement("dividend_currency_mismatch", "all", 2)
+    section = _section("Foreign-currency dividends")
+    assert section.verdict is status.Verdict.WARN
+    assert "mismatched=2.0" in " ".join(section.lines)
+
+
+def test_foreign_currency_dividends_zero_is_ok():
+    _measurement("dividend_currency_mismatch", "all", 0)
+    assert _section("Foreign-currency dividends").verdict is status.Verdict.OK
+
+
+def test_foreign_currency_dividends_never_measured_is_unknown():
+    assert _section("Foreign-currency dividends").verdict is status.Verdict.UNKNOWN
+
+
+def test_foreign_currency_dividends_grades_the_latest_value():
+    """A repaired lake must read OK even while older WARN rows still exist."""
+    _measurement("dividend_currency_mismatch", "all", 5, measured_at=NOW - timedelta(hours=1))
+    _measurement("dividend_currency_mismatch", "all", 0, measured_at=NOW)
+    assert _section("Foreign-currency dividends").verdict is status.Verdict.OK

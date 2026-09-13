@@ -282,6 +282,15 @@ CHECKS: list[tuple[str, str]] = [
         "where value > 0 having count(*) > 0",
     ),
     (
+        "Foreign-currency dividends",
+        # Latest dividend-fx fact only: a repaired lake reads OK while older
+        # WARN rows still exist. Never measured is UNKNOWN, never green.
+        "select case when value > 0 then 'WARN' else 'OK' end as verdict, "
+        "value as mismatched, measured_at "
+        "from measurements where name = 'dividend_currency_mismatch' "
+        "order by measured_at desc limit 1",
+    ),
+    (
         "IB-only lanes behind",
         f"select case when count(last_session) < {len(constants.IB_ONLY_LANES)} then 'UNKNOWN' "
         "when max(behind) > $ib_slack_days then 'WARN' else 'OK' end as verdict, "
@@ -348,6 +357,10 @@ _FIXES = {
         'python scripts/livewire_ops.py ledger query "select scope, value from measurements '
         "where name = 'stale_non_equity'\"   # then query that symbol's last observation upstream"
     ),
+    "Foreign-currency dividends": (
+        "python scripts/livewire_ingest.py corporate-actions convert-dividend-currency   "
+        "# dry-run first; add --apply --output-dir <dir> to repair"
+    ),
     "Digest sent today": "launchctl start com.livewire.digest",
     "Lanes terminal": (
         "python scripts/livewire_ops.py ledger query \"select lane, outcome from lane_results where run_id = '$run'\""
@@ -409,6 +422,7 @@ def _notification_key(name: str, verdict: Verdict, rows: list[dict]) -> str:
         "failed",
         "failed_symbols",
         "failed_count",
+        "mismatched",
         "missing",
         "missing_count",
         "unterminated",

@@ -152,3 +152,32 @@ FX week is Sun–Fri so a file's own dates are the session grid; documented at
 `_FX_STALE_DAYS`. (2) evidence rows/CAS commit happen on `--apply` only —
 dry-run computes `source_hash` but persists nothing (persisting foreign bytes
 in a dry-run would be a write side effect); `runs`/`measurements` still emit.
+
+## Task 3
+
+`Foreign-currency dividends` check in `status.CHECKS` (after `Stale
+non-equity`): latest `dividend_currency_mismatch` row graded `value > 0 → WARN
+else OK`, reported as `mismatched=<count>`; no rows → UNKNOWN via the default
+empty-result path (deliberately not in `_EMPTY_IS_OK` — unmeasured is not
+green). `_FIXES` points at the Task 2 dry-run command. `mismatched` added to
+`_notification_key` fields so a changed count is a changed fault.
+
+Tests (4 status + 1 digest — the digest test runs real `collect`, not a stub):
+
+```
+$ uv run pytest tests/test_status.py -k foreign_currency -q
+FAILED x4 (StopIteration — no such section)         # pre-implementation FAIL
+$ uv run pytest tests/test_nightly_digest.py -k body_out_carries -q
+FAILED (assert '[WARN] Foreign-currency dividends' in body)
+$ uv run pytest tests/test_status.py tests/test_nightly_digest.py -q
+126 passed in 12.24s
+```
+
+Full gate:
+
+```
+$ uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning -q
+2729 passed, 2 warnings in 87.13s — Total coverage: 95.05%
+```
+
+Deviations: none.
