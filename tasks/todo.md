@@ -2,6 +2,16 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Resend SMTP from livewire@rsiarc.com (2026-09-13)
+
+Keep Nodemailer SMTP; retarget at Resend. No HTTP client.
+Plan: [2026-09-13-resend-from-livewire.md](../docs/plans/2026-09-13-resend-from-livewire.md).
+
+Graph: `R-01 -> R-02`. Production `.env` flip is gated on a Resend API key + verified `rsiarc.com`.
+
+- [x] **R-01** (`depends_on: []`): Document Resend SMTP + `livewire@rsiarc.com` in `.env.example`, runbook, project-memory; pin the field mapping in `tests/node/send_mail.test.mjs`.
+- [x] **R-02** (`depends_on: [R-01]`): Put the API key in mini `~/market-warehouse/.env` (and the MacBook checkout `.env`) and send one forced notice.
+
 ## Systematic datalake integrity implementation (2026-09-08)
 
 Implementation approved and started; production cutover remains a separate gate.

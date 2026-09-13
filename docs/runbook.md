@@ -826,22 +826,26 @@ python scripts/livewire_ops.py notify --kind page --subject "PAGE ..." --body-fi
 
 The only email surface. `notify.send` dedupes pages by fingerprint for 24h and
 records every outcome — success, failure, skip — as an `executions` row. The
-SMTP transport is `livewire_node/send_mail.mjs`.
+SMTP transport is `livewire_node/send_mail.mjs`, pointed at Resend
+(`smtp.resend.com:465`, user `resend`, password = API key). From is
+`Livewire <livewire@rsiarc.com>`. Credentials live in `~/market-warehouse/.env` on the
+mini — a release carries no `.env`. `rsiarc.com` must be verified in the
+Resend dashboard before the first send.
 
 | Variable                          | Default          | Meaning                                                        |
 | --------------------------------- | ---------------- | -------------------------------------------------------------- |
-| `MDW_ALERT_EMAIL_FROM`            | — (required)     | Sender address                                                 |
+| `MDW_ALERT_EMAIL_FROM`            | — (required)     | Sender; production `Livewire <livewire@rsiarc.com>`            |
 | `MDW_ALERT_EMAIL_TO`              | — (required)     | Recipient address                                              |
 | `MDW_ALERT_EMAIL_CC`              | unset            | Cc address                                                     |
 | `MDW_ALERT_EMAIL_BCC`             | unset            | Bcc address                                                    |
 | `MDW_ALERT_EMAIL_REPLY_TO`        | unset            | Reply-To address                                               |
 | `MDW_ALERT_EMAIL_SUBJECT_PREFIX`  | `[Livewire]`     | Subject prefix                                                 |
-| `MDW_ALERT_SMTP_URL`              | unset            | Full `smtp://user:pass@host:port` transport URL                |
-| `MDW_ALERT_SMTP_HOST`             | unset            | SMTP host (required without `SMTP_URL`)                        |
-| `MDW_ALERT_SMTP_PORT`             | unset            | SMTP port (required without `SMTP_URL`)                        |
-| `MDW_ALERT_SMTP_SECURE`           | `false`          | TLS from connect (true) vs STARTTLS                            |
-| `MDW_ALERT_SMTP_USER`             | unset            | SMTP auth user                                                 |
-| `MDW_ALERT_SMTP_PASS`             | unset            | SMTP auth password                                             |
+| `MDW_ALERT_SMTP_URL`              | unset            | Full `smtps://resend:<API_KEY>@smtp.resend.com:465` URL        |
+| `MDW_ALERT_SMTP_HOST`             | unset            | SMTP host; production `smtp.resend.com`                        |
+| `MDW_ALERT_SMTP_PORT`             | unset            | SMTP port; production `465`                                    |
+| `MDW_ALERT_SMTP_SECURE`           | `false`          | TLS from connect; production `true` (SMTPS 465)                |
+| `MDW_ALERT_SMTP_USER`             | unset            | SMTP auth user; production `resend`                            |
+| `MDW_ALERT_SMTP_PASS`             | unset            | SMTP auth password; production = Resend API key                |
 | `MDW_ALERT_TRANSPORT`             | unset            | `stream` prints the mail to stdout instead of sending (tests)  |
 | `MDW_NODE_BIN`                    | resolved         | node binary; falls back to `which node` then `/opt/homebrew/bin/node` |
 

@@ -22,7 +22,7 @@ livewire/                       # git repo
 ├── scripts/                    # 4 entrypoints: livewire_ingest.py / livewire_quality.py / livewire_ops.py / livewire_store.py
 ├── presets/                    # universe definitions (sp500, ndx100-*, r2k-*, futures-*, fx-pairs, …)
 ├── registry/gaps.json          # the coverage denominator rows (see "The one contract")
-├── livewire_node/              # nodemailer SMTP transport for notify (tests: npm run test:alerts)
+├── livewire_node/              # nodemailer SMTP (Resend) transport for notify (tests: npm run test:alerts)
 ├── launchd/                    # *.plist.example templates for the 7 scheduled jobs
 ├── tests/                      # pytest; 95% coverage gate (clients/ib_client.py exempt)
 └── docs/
