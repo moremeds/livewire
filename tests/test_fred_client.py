@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
-from clients.fred_client import FredClient, FredObservation
+from clients.constants import declared
+from clients.fred_client import FRED_OBSERVATIONS_URL, FredClient, FredObservation
 
 
 def test_requires_api_key(monkeypatch):
@@ -89,3 +91,101 @@ def test_weekly_frequency_and_aggregation_are_forwarded():
     _, kwargs = http.get.call_args
     assert kwargs["params"]["frequency"] == "w"
     assert kwargs["params"]["aggregation_method"] == "eop"
+
+
+class _FakeHttp:
+    """Stands in for the httpx module: returns or raises one scripted item per call."""
+
+    def __init__(self, items: list) -> None:
+        self._items = list(items)
+        self.calls: list[dict] = []
+
+    def get(self, url, *, params, timeout):
+        self.calls.append(params)
+        item = self._items[min(len(self.calls) - 1, len(self._items) - 1)]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _response(status_code: int, payload: dict | None = None) -> httpx.Response:
+    request = httpx.Request("GET", FRED_OBSERVATIONS_URL)
+    return httpx.Response(status_code, json=payload or {"observations": []}, request=request)
+
+
+def test_a_502_is_retried_and_the_next_attempt_is_used(monkeypatch):
+    """2026-09-14: one 502 on DGS5 failed the phase and skipped DGS10/DGS30."""
+    monkeypatch.setattr("clients.fred_client.time.sleep", lambda _s: None)
+    http = _FakeHttp(
+        [
+            _response(502),
+            _response(200, {"observations": [{"date": "2026-09-10", "value": "4.95"}]}),
+        ]
+    )
+
+    client = FredClient(api_key="test-key", http_client=http)
+    observations = client.fetch_observations("DGS10")
+
+    assert observations == [FredObservation(date="2026-09-10", value=4.95)]
+    assert len(http.calls) == 2
+
+
+def test_a_read_timeout_is_retried_and_gives_up_after_the_declared_attempts(monkeypatch):
+    monkeypatch.setattr("clients.fred_client.time.sleep", lambda _s: None)
+    http = _FakeHttp([httpx.ReadTimeout("The read operation timed out")])
+
+    client = FredClient(api_key="test-key", http_client=http)
+    with pytest.raises(httpx.ReadTimeout):
+        client.fetch_observations("DGS10")
+
+    assert len(http.calls) == int(declared("fred_retry_attempts"))
+
+
+def test_a_4xx_is_never_retried(monkeypatch):
+    """A bad key or a retired series is a request problem; retrying only burns time."""
+    monkeypatch.setattr("clients.fred_client.time.sleep", lambda _s: None)
+    http = _FakeHttp([_response(400)])
+
+    client = FredClient(api_key="bad-key", http_client=http)
+    with pytest.raises(httpx.HTTPStatusError):
+        client.fetch_observations("DGS10")
+
+    assert len(http.calls) == 1
+
+
+def test_the_retry_backs_off_between_attempts(monkeypatch):
+    slept: list[float] = []
+    monkeypatch.setattr("clients.fred_client.time.sleep", slept.append)
+    http = _FakeHttp([_response(503)])
+
+    client = FredClient(api_key="test-key", http_client=http)
+    with pytest.raises(httpx.HTTPStatusError):
+        client.fetch_observations("DGS10")
+
+    assert slept and all(delay > 0 for delay in slept)
+    assert len(slept) == int(declared("fred_retry_attempts")) - 1
+
+
+def test_an_attempts_override_below_one_still_makes_exactly_one_request(monkeypatch):
+    """A typo'd override must not skip the request and raise `None` instead."""
+    monkeypatch.setenv("LW_DECLARED_FRED_RETRY_ATTEMPTS", "0")
+    monkeypatch.setattr("clients.fred_client.time.sleep", lambda _s: None)
+    http = _FakeHttp([_response(503)])
+
+    client = FredClient(api_key="test-key", http_client=http)
+    with pytest.raises(httpx.HTTPStatusError):
+        client.fetch_observations("DGS10")
+
+    assert len(http.calls) == 1
+
+
+def test_a_malformed_payload_still_crashes_loudly_after_the_retry(monkeypatch):
+    """A changed FRED schema is a bug, not a transient outage: it must not be retried."""
+    monkeypatch.setattr("clients.fred_client.time.sleep", lambda _s: None)
+    http = _FakeHttp([_response(200, {"observations": [{"value": "4.95"}]})])
+
+    client = FredClient(api_key="test-key", http_client=http)
+    with pytest.raises(KeyError):
+        client.fetch_observations("DGS10")
+
+    assert len(http.calls) == 1

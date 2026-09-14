@@ -116,3 +116,20 @@ def test_the_lake_lock_keys_carry_a_working_env_override():
         assert constants.declared("lake_lock_poll_s/intraday") == 5.0
     finally:
         del os.environ["LW_DECLARED_LAKE_LOCK_POLL_S_INTRADAY"]
+
+
+def test_the_fred_retry_is_declared_bounded_and_backed_off():
+    attempts = constants.declared("fred_retry_attempts")
+    backoff = constants.declared("fred_retry_backoff_s")
+
+    assert attempts >= 2
+    assert attempts <= 5, "a bounded retry, not a lane that grinds on a provider outage"
+    assert backoff > 0
+
+
+def test_the_fred_retry_keys_carry_a_working_env_override(monkeypatch):
+    monkeypatch.setenv("LW_DECLARED_FRED_RETRY_ATTEMPTS", "4")
+    monkeypatch.setenv("LW_DECLARED_FRED_RETRY_BACKOFF_S", "0.5")
+
+    assert constants.declared("fred_retry_attempts") == 4.0
+    assert constants.declared("fred_retry_backoff_s") == 0.5
