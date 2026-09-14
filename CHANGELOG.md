@@ -26,10 +26,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scheduled `com.livewire.membership-sync` job runs instead of dying at
   argparse on `unrecognized arguments: ndx100 djia`; the plist template now
   names all four panels.
-- The corporate-actions lane converts foreign-currency dividends at the end
-  of its pass, under its own `runs` row, and cannot fail the lane on that
+- The corporate-actions lane converts foreign-currency dividends once per
+  cycle, each under its own `runs` row, and cannot fail the lane on that
   step. `convert-dividend-currency` was previously an operator-only
-  sub-command and Silver failed ~30 symbols on a currency mismatch.
+  sub-command and Silver failed ~30 symbols on a currency mismatch. A
+  dividend whose ex-date has not closed yet is left for the next run
+  (`ex_date_pending`) instead of being priced at today's FX, `--preset` files
+  `scope='subset'` like `--tickers`, and the conversion runs at the end of
+  every cycle — before the resumed invocation opens a second cycle the lane
+  budget may kill, and again after that cycle so its own dividends are
+  converted rather than left behind a mismatch count that already read 0.
+  "Foreign-currency dividends" reads UNKNOWN when today's corporate-actions
+  lane did not finish, so a lane killed at its budget mid-cycle cannot leave
+  that stale zero grading OK; a conversion that raises closes its own `runs`
+  row `exit_code=1` and files one `dividend_fx_error` measurement, which the
+  check reads as UNKNOWN until a later pass measures again. A pending ex-date no longer counts
+  as a mismatch, so an announced dividend cannot WARN every night until it
+  goes ex.
 - The `status` check "Foreign-currency dividends" grades only today's
   `scope='all'` measurement and reads UNKNOWN without one, instead of
   inheriting the last manual run's green. A `--tickers` repair now files
