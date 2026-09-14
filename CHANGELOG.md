@@ -18,7 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and never retries a 4xx; `livewire_scripts/fetch_fred_rates.py` catches
   `httpx.HTTPError` per series, continues, and returns 1 if any series is
   still unfetched — a total outage reads as failed, never as `inserted 0`,
-  exit 0. A malformed payload still raises.
+  exit 0. A malformed payload still raises. Both `LW_DECLARED_FRED_RETRY_*`
+  overrides are floored (attempts ≥ 1, backoff ≥ 0) so a typo cannot skip the
+  request or turn the retry into a `ValueError` the per-series catch does not absorb.
   (pm:2026-09-14-fred-502-aborted-remaining-series)
 - The raw-date staging validator no longer decodes macOS AppleDouble
   sidecars. The staging directory is created inside the raw root on the

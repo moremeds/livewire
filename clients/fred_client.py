@@ -68,7 +68,9 @@ class FredClient:
         # max(1, ...): an override of 0 or a negative would otherwise skip the
         # request entirely and raise `None` instead of a transport error.
         attempts = max(1, int(declared("fred_retry_attempts")))
-        backoff = declared("fred_retry_backoff_s")
+        # Same floor for the twin key: time.sleep(-2.0) raises ValueError, which is
+        # not an httpx error and would escape the per-series catch in run().
+        backoff = max(0.0, float(declared("fred_retry_backoff_s")))
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:

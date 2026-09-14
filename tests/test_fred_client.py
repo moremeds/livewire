@@ -189,3 +189,17 @@ def test_a_malformed_payload_still_crashes_loudly_after_the_retry(monkeypatch):
         client.fetch_observations("DGS10")
 
     assert len(http.calls) == 1
+
+
+def test_a_negative_backoff_override_still_raises_the_http_error_not_value_error(monkeypatch):
+    """The twin of the attempts floor: time.sleep(-2.0) is a ValueError, which
+    run()'s per-series catch would not absorb, and DGS10/DGS30 would be skipped again."""
+    monkeypatch.setenv("LW_DECLARED_FRED_RETRY_BACKOFF_S", "-2")
+    slept: list[float] = []
+    monkeypatch.setattr("clients.fred_client.time.sleep", slept.append)
+    http = _FakeHttp([_response(503)])
+    client = FredClient(api_key="test-key", http_client=http)
+    with pytest.raises(httpx.HTTPStatusError):
+        client.fetch_observations("DGS10")
+    assert len(http.calls) == int(declared("fred_retry_attempts"))
+    assert slept and all(delay == 0.0 for delay in slept)
