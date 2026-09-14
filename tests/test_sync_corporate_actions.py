@@ -1185,9 +1185,7 @@ def test_a_targeted_pass_does_not_file_its_repair_as_the_whole_scope(tmp_path, m
         == 0
     )
 
-    scopes = {
-        row["scope"] for row in ledger.query("select scope from measurements where name like 'dividend_%'")
-    }
+    scopes = {row["scope"] for row in ledger.query("select scope from measurements where name like 'dividend_%'")}
     assert scopes == {"subset"}
 
 
