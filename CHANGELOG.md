@@ -22,6 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   overrides are floored (attempts ≥ 1, backoff ≥ 0) so a typo cannot skip the
   request or turn the retry into a `ValueError` the per-series catch does not absorb.
   (pm:2026-09-14-fred-502-aborted-remaining-series)
+- `membership-sync --index` accepts a space-separated list, so the
+  scheduled `com.livewire.membership-sync` job runs instead of dying at
+  argparse on `unrecognized arguments: ndx100 djia`; the plist template now
+  names all four panels.
+- The corporate-actions lane converts foreign-currency dividends at the end
+  of its pass, under its own `runs` row, and cannot fail the lane on that
+  step. `convert-dividend-currency` was previously an operator-only
+  sub-command and Silver failed ~30 symbols on a currency mismatch.
+- The `status` check "Foreign-currency dividends" grades only today's
+  `scope='all'` measurement and reads UNKNOWN without one, instead of
+  inheriting the last manual run's green. A `--tickers` repair now files
+  `scope='subset'` so it cannot stand in for the whole scope, and the
+  conversion reads `security_master` once per pass instead of once per
+  symbol.
 - The raw-date staging validator no longer decodes macOS AppleDouble
   sidecars. The staging directory is created inside the raw root on the
   exFAT lake, so `glob("*.parquet")` also matched `._bucket=000.parquet`,

@@ -1063,6 +1063,29 @@ def test_foreign_currency_dividends_grades_the_latest_value():
     assert _section("Foreign-currency dividends").verdict is status.Verdict.OK
 
 
+def test_foreign_currency_dividends_without_a_measurement_today_is_unknown():
+    """Yesterday's green is not today's answer.
+
+    2026-09-14: the conversion was wired to no scheduled lane, so the newest
+    `dividend_currency_mismatch` row was Sunday's manual run (0) and the check
+    read OK through a Monday whose Silver rebuild failed ~30 symbols on the
+    currency mismatch this check exists to surface.
+    """
+    _measurement("dividend_currency_mismatch", "all", 0, measured_at=NOW - timedelta(days=1))
+    assert _section("Foreign-currency dividends").verdict is status.Verdict.UNKNOWN
+
+
+def test_foreign_currency_dividends_ignores_a_targeted_repairs_subset_row():
+    """An afternoon `--tickers` repair does not erase the night's whole-scope WARN.
+
+    The check grades today's newest row, so a one-symbol run filed under the
+    same scope would read as the whole lake's answer.
+    """
+    _measurement("dividend_currency_mismatch", "all", 3, measured_at=NOW - timedelta(hours=4))
+    _measurement("dividend_currency_mismatch", "subset", 0, measured_at=NOW)
+    assert _section("Foreign-currency dividends").verdict is status.Verdict.WARN
+
+
 def _membership_run(verdict: str, *, started: datetime):
     run_id = f"membership-sync-{started:%Y%m%dT%H%M%S}Z"
     ledger.emit(

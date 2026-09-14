@@ -403,6 +403,18 @@ def run(
         "requested": len(tickers),
         "resumed": resumed,
     }
+    # The conversion runs here, at the end of the lane that just wrote the
+    # dividends, rather than as a lane or an orchestrator step of its own: it
+    # repairs exactly what this pass reconciled, needs no schedule entry, and
+    # cannot page. PR #128 shipped `convert-dividend-currency` wired to nothing;
+    # the scheduled lane emitted no `dividend_fx_*` measurement at all and ~30
+    # symbols failed Silver on "dividend currency does not match bronze
+    # currency". It never changes the exit code — the sync's own failure *rate*
+    # is the only thing that fails this lane.
+    if not args.dry_run:
+        summary["dividend_fx"] = _convert_dividends_after_sync(
+            tickers, root, run_id, scope="all" if args.tickers is None else "subset"
+        )
     print(json.dumps(summary, sort_keys=True))
     _emit_provider_measurements(telemetry, run_id)
 
@@ -436,6 +448,28 @@ _PROVIDER_MEASUREMENTS = (
     ("provider_wait_s", "wait_s", "s"),
     ("provider_latency_p95_ms", "latency_p95_ms", "ms"),
 )
+
+
+def _convert_dividends_after_sync(tickers: list[str], root: Path, lane_run_id: str, *, scope: str) -> dict:
+    """Repair foreign-currency dividends; never fail the lane on this step."""
+    try:
+        result = convert_dividend_currency(
+            tickers=tickers,
+            apply=True,
+            output_dir=root / "repairs" / "dividend_fx",
+            lake_root=root,
+            run_id=f"{lane_run_id}-dividend-fx",
+            scope=scope,
+        )
+    except Exception as exc:
+        print(f"WARNING: dividend FX conversion failed: {exc}", file=sys.stderr)
+        return {"error": str(exc)}
+    return {
+        "converted": result["converted"],
+        "remaining": result["remaining"],
+        "run_id": result["run_id"],
+        "skipped": len(result["skipped"]),
+    }
 
 
 def _lane_run_id() -> str:
@@ -522,22 +556,34 @@ def _fx_bar(root: Path, pair: str, on: date) -> dict | None:
     return bar
 
 
-def _equity_currency(root: Path, symbol: str, now: datetime) -> tuple[str, str]:
-    """Equity bronze currency from security_master when it has a verified claim."""
-    if not (root / "security_master" / "events.parquet").exists():
-        return "USD", "default"
-    try:
-        from clients.security_master import SecurityMaster
+def _equity_currency_resolver(root: Path, now: datetime) -> Callable[[str], tuple[str, str]]:
+    """symbol -> (equity bronze currency, source), reading security_master once.
 
-        master = SecurityMaster(root, evidence_verifier=None)
-        verified = [
-            event for event in master.events(as_of=now) if event.symbol == symbol and event.status == "verified"
-        ]
-    except Exception:
-        return "USD", "default"
-    if not verified:
-        return "USD", "default"
-    return max(verified, key=lambda event: event.known_at).currency, "security_master"
+    Per symbol this re-read and re-deserialized the whole identity log. That was
+    free for the operator sub-command's one `--tickers` symbol and is a lane
+    cost now that the nightly corporate-actions pass calls it for every symbol
+    of the universe (~15k full parquet reads on the exFAT lake, inside a killable
+    LANE_BUDGET_S). One read, one dict.
+    """
+    verified: dict[str, tuple[str, datetime]] = {}
+    if (root / "security_master" / "events.parquet").exists():
+        try:
+            from clients.security_master import SecurityMaster
+
+            for event in SecurityMaster(root, evidence_verifier=None).events(as_of=now):
+                if event.status != "verified":
+                    continue
+                known = verified.get(event.symbol)
+                if known is None or event.known_at > known[1]:
+                    verified[event.symbol] = (event.currency, event.known_at)
+        except Exception:
+            verified = {}
+
+    def resolve(symbol: str) -> tuple[str, str]:
+        known = verified.get(symbol)
+        return ("USD", "default") if known is None else (known[0], "security_master")
+
+    return resolve
 
 
 def _convertible_symbols(root: Path) -> list[str]:
@@ -557,6 +603,8 @@ def convert_dividend_currency(
     lake_root: Path,
     now: datetime | None = None,
     fx_close_fn: Callable[[str, date], tuple[date, float] | None] | None = None,
+    run_id: str | None = None,
+    scope: str = "all",
 ) -> dict:
     """Supersede foreign-currency dividends with `eod_fx` rows in the equity currency.
 
@@ -574,8 +622,12 @@ def convert_dividend_currency(
             (bar["trade_date"], float(bar["close"])) if (bar := _fx_bar(root, pair, on)) else None
         )
     evidence_store = SourceEvidenceStore(root) if apply else None
+    currency_of = _equity_currency_resolver(root, now)
 
-    run_id = os.environ.get("LW_RUN_ID") or ledger.new_run_id("dividend-fx")
+    # A caller inside a lane passes its own id: sharing the orchestrator's
+    # LW_RUN_ID would file a *closed* `runs` row under the still-open
+    # daily-update run, and "Daily update finished" would read finished.
+    run_id = run_id or os.environ.get("LW_RUN_ID") or ledger.new_run_id("dividend-fx")
     run_row = {
         "run_id": run_id,
         "job": "dividend-fx",
@@ -596,7 +648,7 @@ def convert_dividend_currency(
     fx_evidence: list[tuple[str, str, dict]] = []  # (pair, sha256, row)
     try:
         for symbol in symbols:
-            equity_ccy, equity_source = _equity_currency(root, symbol, now)
+            equity_ccy, equity_source = currency_of(symbol)
             conversions: list[DividendConversion] = []
             pending: list[tuple[CorporateAction, dict]] = []
             for row in store.foreign_currency_dividends(symbol, equity_ccy):
@@ -722,7 +774,7 @@ def convert_dividend_currency(
         [
             {
                 "name": name,
-                "scope": "all",
+                "scope": scope,
                 "measured_at": now,
                 "value": float(value),
                 "unit": "count",
@@ -780,6 +832,10 @@ def convert_dividend_currency_main(argv: Sequence[str]) -> int:
         apply=args.apply,
         output_dir=args.output_dir,
         lake_root=data_lake_dir(),
+        # A targeted repair measures a handful of symbols. Filing that under
+        # scope 'all' let it overwrite the nightly whole-scope fact for the
+        # rest of the day, and `status` grades today's newest row.
+        scope="all" if args.tickers is None else "subset",
     )
     print(json.dumps(summary, sort_keys=True, default=str))
     return 0

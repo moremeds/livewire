@@ -588,7 +588,9 @@ def test_a_run_that_measured_nothing_emits_nothing(tmp_path, monkeypatch):
     rc = sync_corporate_actions.run(["--tickers", "AAPL"], client=_Client(), store=_Store(), data_lake_root=tmp_path)
 
     assert rc == 0
-    assert ledger.query("select count(*) as n from measurements")[0]["n"] == 0
+    # Narrowed only past the dividend-fx facts the lane now always emits; a
+    # provider or progress row still has to stay absent.
+    assert ledger.query("select count(*) as n from measurements where name not like 'dividend_%'")[0]["n"] == 0
 
 
 def _seed_cursor(tmp_path, path, tickers, done):
@@ -628,6 +630,11 @@ def test_a_resumed_pass_finishes_its_tail_then_opens_a_new_cycle(tmp_path):
         "NVDA",
     ]
     assert json.loads(cursor_path.read_text())["run_completed_at"] is not None
+    # Two cycles, one conversion: it runs after the loop, not per pass, so the
+    # dividend-fx measurements are not double-counted for the same night.
+    assert len(ledger.query("select run_id from runs where job = 'dividend-fx' and ended is not null")) == 1
+    converted = ledger.query("select value from measurements where name = 'dividend_fx_converted'")
+    assert len(converted) == 1
 
 
 def test_a_resumed_pass_that_does_not_finish_stays_resumable(tmp_path, capsys):
@@ -1120,3 +1127,94 @@ def test_convert_dividend_currency_usd_dividend_on_pegged_equity(tmp_path, monke
     row = CorporateActionStore(tmp_path).latest_active("NTB")[0]
     assert row.cash_amount == pytest.approx(0.32) and row.currency == "BMD"
     assert "method=peg" in row.source_ref and row.source_hash is None
+
+
+# --- the lane converts foreign-currency dividends itself ------------------------
+
+
+def test_the_lane_converts_foreign_currency_dividends_and_emits_its_measurements(tmp_path, capsys, monkeypatch):
+    """Through the real lane argv, not the manual sub-command.
+
+    PR #128 shipped `convert-dividend-currency` wired to nothing: the scheduled
+    `corporate-actions --resume` lane emitted no `dividend_fx_*` measurement and
+    ~30 symbols failed Silver on a currency mismatch.
+    """
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-20260914T050000Z-1")
+    store = _cad_lake(tmp_path)
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", "ACR", "--resume"],
+            client=_Client(),
+            store=_Store(),
+            data_lake_root=tmp_path,
+        )
+        == 0
+    )
+
+    active = store.latest_active("ACR")
+    assert len(active) == 1 and active[0].provider == "eod_fx"
+    # One summary line still, with the repair folded in.
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["dividend_fx"]["converted"] == 1 and summary["dividend_fx"]["remaining"] == 0
+    measurements = {
+        row["name"]: row["value"]
+        for row in ledger.query("select name, value from measurements where name like 'dividend_%'")
+    }
+    assert measurements["dividend_fx_converted"] == 1.0
+    assert measurements["dividend_currency_mismatch"] == 0.0
+    # Its own runs row: sharing the lane's run id would file a closed row under
+    # a still-open daily-update run.
+    fx_runs = {row["run_id"] for row in ledger.query("select run_id from runs where job = 'dividend-fx'")}
+    assert fx_runs == {"daily-update-20260914T050000Z-1-dividend-fx"}
+
+
+def test_a_targeted_pass_does_not_file_its_repair_as_the_whole_scope(tmp_path, monkeypatch):
+    """`--tickers` measures a handful of symbols, so it is not scope 'all'.
+
+    `status` grades today's newest `dividend_currency_mismatch` row; an operator
+    repairing one symbol in the afternoon would otherwise erase the night's
+    whole-scope WARN.
+    """
+    _cad_lake(tmp_path)
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", "ACR", "--resume"], client=_Client(), store=_Store(), data_lake_root=tmp_path
+        )
+        == 0
+    )
+
+    scopes = {
+        row["scope"] for row in ledger.query("select scope from measurements where name like 'dividend_%'")
+    }
+    assert scopes == {"subset"}
+
+
+def test_a_failing_dividend_conversion_cannot_fail_the_lane(tmp_path, monkeypatch, capsys):
+    def boom(**kwargs):
+        raise RuntimeError("fx bar unreadable")
+
+    monkeypatch.setattr(sync_corporate_actions, "convert_dividend_currency", boom)
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", "ACR", "--resume"],
+            client=_Client(),
+            store=_Store(),
+            data_lake_root=tmp_path,
+        )
+        == 0
+    )
+    assert "fx bar unreadable" in capsys.readouterr().err
+
+
+def test_a_dry_run_lane_does_not_convert(tmp_path):
+    store = _cad_lake(tmp_path)
+    before = store.path_for("ACR").read_bytes()
+
+    sync_corporate_actions.run(
+        ["--tickers", "ACR", "--dry-run"], client=_Client(), store=_Store(), data_lake_root=tmp_path
+    )
+
+    assert store.path_for("ACR").read_bytes() == before

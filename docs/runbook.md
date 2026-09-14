@@ -467,6 +467,17 @@ trail the grok repair produced by hand. Every run emits `runs`
 `dividend_fx_converted`/`dividend_fx_skipped` measurements; apply also commits
 each FX bar to the evidence CAS and writes one `evidence` row per ref.
 
+The nightly `corporate-actions` lane runs this itself, with `--apply` and
+`<lake>/repairs/dividend_fx/` as the output dir, at the end of its pass and
+over the same ticker scope it just reconciled (skipped under `--dry-run`).
+It files its own `runs` row (`<lane run id>-dividend-fx`) and can never
+change the lane's exit code. The command below is for a targeted repair.
+
+Measurement scope follows the ticker scope: a pass with no `--tickers` files
+`scope='all'` and is what `status` grades; a `--tickers` run files
+`scope='subset'`, so a one-symbol repair cannot erase the night's whole-scope
+WARN by being the newest row of the day.
+
 ```bash
 python scripts/livewire_ingest.py corporate-actions convert-dividend-currency                       # dry-run, all CA-store symbols
 python scripts/livewire_ingest.py corporate-actions convert-dividend-currency --tickers ACR         # dry-run, one symbol
@@ -1054,7 +1065,7 @@ Maintains the `index_membership` store: evidence-backed add/remove events per
 `security_id`, replayable `as_of`. Two modes:
 
 ```bash
-python scripts/livewire_ingest.py membership-sync [--index sp500]... [--dry-run]   # live diff
+python scripts/livewire_ingest.py membership-sync [--index sp500 ndx100 ...] [--dry-run]   # live diff; default: all four
 python scripts/livewire_ingest.py membership-sync import --index sp500 \
     --events grok_index/pit_membership/sp500/events.jsonl --source <file>...        # one-time panel import
 ```
