@@ -1,0 +1,93 @@
+  BEGIN_REVIEW r5-cursor 2498be4d41aa
+
+  r5-cursor — PR 134 security-master backfill (HEAD a88215a)
+
+  Specialty: PREMISE ATTACK. Focus: evidence commit ordering / restart safety, 5/min pacing, PIT known_at.
+
+  Workspace /Users/chenxi/projects/livewire/.worktrees/security-master-backfill at a88215a4b97e00d6821277e3bdeba3633a88219b (assignment snapshot
+  2498be4d41aa). Reviewed the r5 delta and the live callers; did not read another seat’s report.
+
+  Claimed fix (r4 ISSUE-1 MINOR: probe_dates was every needed date)
+
+  VERIFIED FIXED
+
+  r4: _covered skipped the ticker only when every needed date was resolved or empty-probed; on any remaining hole, probe_dates was rebuilt from the full
+  wanted[ticker] set, so already-empty dates were GETted again.
+
+  r5 replaces that split with one function. _open_dates is the needed dates that are neither inside a verified interval nor in empty_probes, ascending; an
+  empty tuple skips; that tuple is what is fetched.
+
+   livewire_scripts/security_master_sync.py lines 503-519
+
+  def _open_dates(
+      master: SecurityMaster, ticker: str, dates: set[datetime], now: datetime, empty_probes: set[tuple[str, str]]
+  ) -> tuple[str, ...]:
+      """The needed dates still worth asking about, ascending: not inside a
+      verified interval for this symbol, and not probed empty by an earlier run.
+      ...
+      """
+      return tuple(
+          sorted(
+              {
+                  effective_at.date().isoformat()
+                  for effective_at in dates
+                  if _resolve(master, ticker, effective_at, now) is None
+                  and (ticker, effective_at.date().isoformat()) not in empty_probes
+              }
+          )
+      )
+
+   livewire_scripts/security_master_sync.py lines 664-670
+
+          for ticker in sorted(wanted):
+              probe_dates = _open_dates(reader, ticker, wanted[ticker], now, empty_probes)
+              if not probe_dates:
+                  continue
+              counts["identity_tickers_requested"] += 1
+              try:
+                  result = fetch(ticker, probe_dates=probe_dates)
+
+  No remaining probe_dates = tuple(sorted({day.date().isoformat() for day in dates})) on the live path. _covered is gone.
+
+  fetch_ticker_identity still walks probe_dates in order until one date= body has rows; it only appends to empty_probes for dates it actually GETs
+  (clients/universe_client.py 363–368). Passing the open subset is therefore what stops the extra GET.
+
+  Extended test test_an_empty_probe_is_recorded_and_not_repeated_on_the_next_run:
+
+  • run 1: ("AAPL", ("1996-01-02", "2010-01-04")), ledger AAPL:1996-01-02
+  • run 2: no fetch (len(calls) == 1)
+  • run 3: new unresolved 2000-01-03 → calls[-1] == ("AAPL", ("2000-01-03",)) — 1996 and 2010 are not in the tuple
+
+  Premise check that looked like a stale test and is not: test_a_membership_date_past_the_existing_interval_triggers_a_fetch still asserts second-run
+  probe_dates[0] == "2005-01-03" for WLP. WLP’s body is FIGI-less (fixtures README F5); _one_record appends candidate; _resolve → resolve_symbol matches
+  status == "verified" only (clients/security_master.py 114–117). Candidate-covered dates stay “open”, so _open_dates still returns both 2005 and 2020. That
+  is the existing “FIGI-less candidate is re-fetched every run” contract, not an r5 miss.
+
+  Empty-tuple skip, 5xx/429 still not recording identity_probe_empty (raise before probe_rows.extend), and interval-start still not counting as an empty
+  probe (_resolve only, plus test_an_interval_start_alone_does_not_excuse_an_unprobed_earlier_date) are unchanged and still hold.
+
+  ★ Insight ─────────────────────────────────────
+  Coverage and the GET list were two predicates on the same dates. A boolean skip plus a full-set walk is how an already-empty date leaked back onto the
+  wire. One set-difference (unresolved ∧ not empty-probed) is the skip and the walk. _resolve is verified-only, so a candidate interval does not shrink
+  probe_dates — that is a different contract, not a hole in this filter.
+  ─────────────────────────────────────────────────
+
+  Focus area (unchanged this round, still holds)
+
+  Evidence commit / restart. Chunk flush() is still persist_raw → record_many → append identities → then ledger.emit of identity_probe_empty
+  (security_master_sync.py 630–659). Empty-probe rows still cannot outlive their bodies. A crash before that emit leaves the date open; the next run’s
+  _open_dates asks only that date (the extended test’s third step is that restart shape). Filtering probe_dates does not reorder the commit.
+
+  Pacing. Declared 5/min, pace_fn before every request, 429 → 60s once. Fewer date= GETs on a ticker that already has empty-probe rows; the 12s quantum is
+  unchanged (test_the_default_fetch_paces_every_request_at_the_declared_rate).
+
+  PIT. Identity known_at / evidence retrieved_at remain clock() at fetch, not run start. reresolve still sets known_at=now on replacement then rejection.
+  _open_dates(..., now, ...) uses the run’s start as as_of; this-run rows with known_at=fetched_at > now would not cover a later ticker anyway (one loop
+  entry per ticker).
+
+  OVER-ENGINEERING SWEEP: clean. _open_dates deletes _covered and the second all-dates construction; it is not a new layer.
+
+  No issues found.
+
+  NEW ISSUES: none
+  END_REVIEW r5-cursor 2498be4d41aa

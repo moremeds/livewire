@@ -1,0 +1,52 @@
+  BEGIN_REVIEW r2-cursor ca534d7634dd
+
+  Verification
+
+  ISSUE-1 (probe-date walk) — VERIFIED FIXED for tickers whose needed_dates include a later date Massive answers. probe_dates is the sorted unique membership
+  dates (security_master_sync.py:588-589); fetch_ticker_identity skips empty probes and stops on the first non-empty (universe_client.py:357-378).
+  test_probe_dates_are_walked_until_one_answers uses the real 1998 empty envelope then the 2010 AAPL body and stamps existed_at=2010-01-04.
+
+  ISSUE-1 (pre-floor placeholder / current member) — NOT FIXED (scoped as a user decision; still fails). Concrete input: one current add unresolved:AAPL at
+  1996-01-02 and no later membership event. Then probe_dates=("1996-01-02",) — the walk has nothing after the empty probe, _start_of is None
+  (security_master_sync.py:56-66,297-300), no master row. reresolve still does _resolve(master, ticker, placeholder.effective_at, now)
+  (membership_sync.py:655-656); 1996 is outside any 2010-start interval even when a later date does exist. members_effective_at still ignores unresolved
+  (index_membership_store.py:91-95). Apex still sees no member. The walk never injects the measured floor 2003-09-11.
+
+  ISSUE-2 (evidence commit / restart safety) — VERIFIED FIXED. flush() does record_many then append per chunk of FLUSH_EVERY_TICKERS = 50
+  (security_master_sync.py:414-416,554-623). _CommitFailed closes 1 without dropping earlier chunks (627-628). test_a_crash_mid_run_keeps_every_earlier_chunk
+  sets chunk size 1, kills the run on IMO, and the master still holds AAPL.
+
+  Other seat: fetch-time known_at — VERIFIED FIXED. fetched_at = clock() after the fetch; that value is retrieved_at and derive_identity_events(...,
+  fetched_at, ...) (602-621,571-572). test_known_at_is_each_tickers_fetch_time_not_the_runs_start asserts AAPL 13:00 / IMO 14:00 vs run now 12:00.
+
+  Other seat: probe must share FIGI or cik — VERIFIED FIXED. _is_same_listing requires fields_agree plus an affirmative FIGI or cik match
+  (universe_client.py:289-307). The real AAPL date=2010 body still stamps the active listing (same cik 0000320193 and composite FIGI).
+  test_a_probe_row_with_another_issuers_cik_never_stamps_the_current_listing keeps AAPL unstamped and appends the YHOO probe as its own record.
+
+  Other seat: cross-fetch rename joins the earlier id — VERIFIED FIXED for FIGI-matched halves. _rename_match + _one_record
+  (security_master_sync.py:175-196,261-277). test_a_rename_fetched_one_ticker_at_a_time_stays_one_security_id appends YHOO then AABA on one id, revision 2,
+  no supersedes. Real YHOO→AABA still two ids (F5, no FIGI on YHOO); that is the fixture, not a regression.
+
+  Pacing still holds: pace_fn before every _reference_page, including walked probes; 429 still retries the same paced fetch.
+
+  NEW ISSUES
+
+  ISSUE-3 [IMPORTANT] livewire_scripts/security_master_sync.py:453-455 — _covered still requires every needed date, so a successful post-floor identity never
+  skips refetch
+    Category: bug
+    Confidence: 84
+    Evidence: return all(_resolve(master, ticker, effective_at, now) is not None for effective_at in dates) (security_master_sync.py:453-455). After the
+  walk, a ticker with dates {1996-01-02, 2010-01-04} gets existed_at=2010-01-04; _resolve at 1996 is None (security_master.py:104-121). needed_dates still
+  includes the 1996 placeholder (432-449).
+    Reasoning: Chunk restart and a second security-master sync re-fetch that ticker (2–3 paced requests plus every empty pre-floor probe) even though the
+  2010 verified row is already on disk. _existing_match prevents a duplicate row, but ISSUE-2’s “already flushed tickers are done” is false for any mixed
+  pre/post date set — the production S&P/DJIA shape. _covered is still the all-or-nothing check from before the walk.
+    Suggestion: Treat a date as covered if it sits in a verified interval, or if it is strictly before that interval’s effective_from (pre-floor remainder,
+  same scope decision as ISSUE-1). Then a flushed 2010 identity skips refetch.
+    Focus: yes
+
+  ISSUE-4 is not raised. No regression found in the FIGI/cik stamp on the real AAPL 2010 probe (has both cik and FIGI). No regression in per-chunk
+  record_many-then-append ordering.
+
+  NEW ISSUES: ISSUE-3 only
+  END_REVIEW r2-cursor ca534d7634dd

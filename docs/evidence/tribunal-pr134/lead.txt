@@ -1,0 +1,6 @@
+Lead (Fable) initial findings, recorded before reading peers. Snapshot eee28ad7c929 (PR 134 @ 7abf183).
+
+ISSUE-L1 [IMPORTANT] livewire_scripts/security_master_sync.py sync(): evidence manifest is committed once, after every ticker has been fetched. Full backlog is ~3455 tickers at 5 req/min with 2-3 req each = 23-35 hours. Any exception (or ctrl-C: KeyboardInterrupt is not caught, so the run row also stays open) after fetching and before record_many loses every append; raw bodies sit in the CAS with no manifest entry; the re-run refetches everything because nothing became verified. Category: reliability/cost. Confidence 80. Resolution candidate: commit + append per chunk of N tickers (e.g. 100) — ~35 commits per full run is nowhere near the per-response cost of pm:2026-08-31. Judgment call: spec §6 says once per run.
+ISSUE-L2 [MINOR] same file: KeyboardInterrupt/SystemExit bypass close(); run row left open, status reads UNKNOWN. Same convention as membership_sync; note only. Confidence 60.
+ISSUE-L3 [FIXED in 7abf183] pacing was per ticker against a per-request constant.
+OVER-ENGINEERING SWEEP: clean for the code diff; the IdentityRecords dataclass and DerivedIdentities counts are each consumed by sync().

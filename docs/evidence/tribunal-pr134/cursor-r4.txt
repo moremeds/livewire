@@ -1,0 +1,42 @@
+  BEGIN_REVIEW r4-cursor eb466258767f
+
+  Verification
+
+  (1) Widen across renamed sibling → spec §4 conflict — VERIFIED FIXED. After _widen, _overlaps_sibling tests the widened [start, end) against other current
+  verified rows of that id, excluding the row being superseded (security_master_sync.py:206-218,295-306). Overlap refuses the join and emits _conflict_row
+  (unresolved, own id, identity_conflict+1). test_widening_one_symbol_across_its_renamed_sibling_is_a_conflict re-sees YHOO as open-ended against YHOO
+  [2015-06-01, 2017-06-19) + AABA [2018-06-01, …) and gets a new unresolved YHOO id; a start-only widen that stays disjoint still takes revision 3
+  (test_widening_one_symbol_of_a_renamed_id_takes_the_ids_next_revision). End-exclusive _overlaps still treats touching end == next start as disjoint.
+
+  (2) Empty-probe record replaces “before earliest interval” — VERIFIED FIXED for the S&P mixed-date skip. fetch_ticker_identity records dates whose date=
+  body had no rows (universe_client.py:362-385); test_probe_dates_are_walked_until_one_answers asserts empty_probes == ("1998-01-05",). Sync emits
+  identity_probe_empty with scope <ticker>:<date> only after that chunk’s record_many (security_master_sync.py:649-652,695-706). _covered is resolve OR
+  (ticker, date) in empty_probes (503-519). test_an_empty_probe_is_recorded_and_not_repeated_on_the_next_run fetches once, then zero.
+  test_an_interval_start_alone_does_not_excuse_an_unprobed_earlier_date still fetches 1996 when only a 2010 interval exists. 5xx/429 never write the fact
+  (exception path, no result). Crash before the emit refetches (fail closed). A 1996-only empty then skip is the remaining reresolve/current-member gap,
+  still escalated, not a silent over-skip of a date Massive would answer.
+
+  Empty-probe attack
+
+  • Suppress a fetch that is still needed? Not found. An empty probe is only written after a successful empty date= GET and after evidence commit. An
+    interval start does not count. _resolve miss + no empty row still fetches. A later new membership date is not in the set, so _covered fails and the
+    ticker is fetched again.
+  • Fail to suppress a fetch that is not needed? Yes, on a ticker that is still fetched for another uncovered date. _covered is all-or-nothing; probe_dates
+    is the full sorted set (662-665) and is not minus empty_probes. Concrete input: empty fact AAPL:1996-01-02, verified interval from 2010, plus a later
+    needed date past the interval (the WLP 2020 shape). _covered is false because of 2020, so the next run walks ("1996-01-02", "2010-01-04", "2020-01-02")
+    and pays the empty 1996 GET again. The S&P happy path (1996 empty + 2010 resolves, no later hole) does skip the whole ticker.
+
+  NEW ISSUES
+
+  ISSUE-1 [MINOR] livewire_scripts/security_master_sync.py:662-665 — Known empty probe dates are still sent whenever the ticker is fetched for another
+  uncovered date
+    Category: performance
+    Confidence: 82
+    Evidence: probe_dates = tuple(sorted({day.date().isoformat() for day in dates})) with no empty_probes filter (security_master_sync.py:662-665); _covered
+  only skips the ticker (515-519).
+    Reasoning: The ledger fact is used solely as an all-dates gate. A ticker that must be fetched for a later uncovered date re-walks every already-empty
+  pre-coverage date at 12s each. Wrong results are not produced (CAS and measurements are idempotent); the “not repeated on the next run” guarantee does not
+  hold unless every needed date is already resolved or empty-recorded.
+    Suggestion: Build probe_dates as the sorted needed dates that are not in empty_probes (and still not resolved). Keep _covered as “nothing left to ask.”
+    Focus: yes
+  END_REVIEW r4-cursor eb466258767f

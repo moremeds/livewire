@@ -1,0 +1,52 @@
+  BEGIN_REVIEW r1-cursor eee28ad7c929
+  ISSUE-1 [CRITICAL] livewire_scripts/security_master_sync.py:502 — Pre-2003 first membership date makes identity start and reresolve both miss current
+  S&P/DJIA members
+    Category: architecture
+    Confidence: 92
+    Evidence: probe_date = min(dates).date().isoformat(); _start_of only accepts list_date or existed_at; empty probe leaves existed_at unset
+  (clients/universe_client.py:344-360); derive_identity_events then counts identity_no_start and appends nothing (security_master_sync.py:56-66,297-300);
+  reresolve calls _resolve(master, ticker, placeholder.effective_at, now) (membership_sync.py:655-656); resolve_symbol requires _contains(effective_from,
+  effective_to, effective_at) (security_master.py:104-121); members_effective_at replays status == "verified" only (index_membership_store.py:91-95). Frozen
+  aapl-date-1998-01-05-2026-09-15.json is an empty envelope; aapl-date-2010-01-04 is not. Spec §1: sp500 back to 1996-01, djia to 1991-05; fixtures README
+  F1: this endpoint never returns list_date.
+    Reasoning: The approach treats each placeholder's effective_at as a date Massive can prove as a listing start. F1 removed list_date, so start is only the
+  date= probe. For a continuous S&P name whose only add is 1996, min(dates) is 1996, the 1998-class probe returns 0 rows, the active AAPL listing is dropped
+  as identity_no_start, and reresolve never rewrites the placeholder. Even if the probe were moved to 2003-09-11 and a verified interval started then,
+  _resolve at 1996 still returns None, so today's member never enters verified replay and Apex still sees an empty index. Spec §8's "pre-2003 events stay
+  unresolved" is not the same as "current members become visible after 2003". Tests hide this: _fetcher stamps existed_at=probe_date onto the active body
+  without simulating an empty probe (tests/test_security_master_sync.py:362-377); every sync test uses 2010-01-04.
+    Suggestion: Probe the earliest needed date on/after the measured reference floor (2003-09-11), not min(dates). For placeholders whose effective_at is
+  before that interval, do not convert in place: after a restart-safe verified add at the first covered date (known_at=now), leave or reject the pre-floor
+  placeholder so members_effective_at from that date forward contains the live member. Add a sync+reresolve test that feeds aapl-date-1998-01-05 as
+  probe_date with a 1996 add still current.
+    Focus: yes
+
+  ISSUE-2 [IMPORTANT] livewire_scripts/security_master_sync.py:497-555 — security-master sync is not restart-safe across the paced fetch; identities land
+  only after every ticker is fetched
+    Category: architecture
+    Confidence: 88
+    Evidence: The fetch loop persist_raws every body into pending/manifest, then one record_many, then appends (security_master_sync.py:517-555). There is no
+  ticker cursor. pace_s = 60.0 / constants.declared("massive_requests_per_minute/reference") is 12s per request (443-452), and each ticker is 2–3 requests,
+  over ~3500 unresolved tickers (spec §1). reresolve is restart-safe per placeholder (membership_sync.py:601-606,664-708); this pass is not. Twin: pm
+  2026-09-05 corporate-actions restarted from symbol one.
+    Reasoning: record_many before any SecurityMaster.append is the right verifier order (manifest-less identity rows cannot land). Batching all fetches
+  before that commit makes the expensive phase all-or-nothing: SIGKILL at ticker 2000 leaves CAS blobs, no manifest, no identity rows, _covered false, and
+  the retry refetches 1–3500. At 5/min that is ~30h of Massive time thrown away. Partial restart only begins after the single record_many. --tickers is an
+  operator workaround, not a cursor.
+    Suggestion: After each ticker (or a small batch), record_many that ticker's refs, append its derived rows, persist a done-cursor of tickers whose
+  verified intervals now cover the post-floor dates. Keep per-ticker evidence cites. Do not wait for the full universe. Add an interrupted-sync test
+  symmetric to test_an_interrupted_pass_is_completed_by_the_retry_with_no_duplicate.
+    Focus: yes
+
+  OVER-ENGINEERING SWEEP: clean
+
+  Unverified / blockers:
+  • Workspace HEAD is 7abf183; assignment snapshot is eee28ad7c929. Files cited were opened in
+    /Users/chenxi/projects/livewire/.worktrees/security-master-backfill.
+  • Production earliest effective_at per ticker was not re-measured on the mini this review; the 1996/1991 bounds are taken from spec §1.
+  • Per-request pacing against 5/min looks correct (pace_fn before every _reference_page, including the first; 429 sleeps 60s then retries the same paced
+    fetch). No pacing defect raised.
+  • reresolve known_at=now is PIT-honest for as_of before the pass (test_pit_honesty_an_as_of_before_the_reresolve_still_sees_nothing; members_effective_at
+    filters known_at <= as_of). The hole is not backdating; it is that the converted event never gets written for pre-coverage adds.
+
+  END_REVIEW r1-cursor eee28ad7c929

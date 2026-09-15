@@ -1,0 +1,64 @@
+• BEGIN_REVIEW r1-codex eee28ad7c929
+
+  ISSUE-1 [CRITICAL] livewire_scripts/security_master_sync.py:549 — Identity knowledge is backdated to the run’s start
+  Category: bug
+  Confidence: 100
+  Evidence: derive_identity_events(records, writer.events(), now, ticker_refs); line 523 also sets retrieved_at=now, and line 131 sets known_at=now.
+  Reasoning: Every ticker uses the timestamp captured before the fetch loop, despite per-request sleeps and retries. Once committed, an as-of query between run
+  start and a ticker’s actual retrieval can see information fetched later. Spec §4 explicitly requires fetch-time known_at.
+  Suggestion: Capture each response’s retrieval time and carry the latest supporting retrieval timestamp with each pending identity into derivation.
+  Focus: yes
+
+  ISSUE-2 [CRITICAL] clients/universe_client.py:350 — A FIGI-less historical listing can acquire another issuer’s verified identity
+  Category: bug
+  Confidence: 100
+  Evidence: candidates = [i for i, known in enumerate(records) if _is_same_listing(known, probed)]; line 297 treats missing probe fields as wildcards, and line
+  360 stamps the selected current record with existed_at=probe_date.
+  Reasoning: When the historical listing lacks FIGIs and the inactive lookup is empty, the current listing can match solely through its MIC. CIK disagreement is
+  ignored. An in-memory test double with different historical/current CIKs produced a verified interval for the current issuer starting at the historical probe
+  date. Sorting candidates does not establish continuity.
+  Suggestion: Require affirmative identity evidence before transferring the probe date onto a FIGI-bearing listing. Preserve an unmatched FIGI-less probe
+  separately as a candidate; fail closed on conflicting identity evidence.
+  Focus: yes
+
+  ISSUE-3 [IMPORTANT] livewire_scripts/security_master_sync.py:549 — Per-ticker derivation bypasses cross-symbol rename continuity
+  Category: bug
+  Confidence: 100
+  Evidence: for records, ticker_refs in pending: calls derivation separately for each ticker. Existing matching at line 167 requires (item.provider, item.symbol,
+  item.exchange_mic) == (_PROVIDER, record.ticker, record.mic).
+  Reasoning: The rename test supplies both symbols together, but the real caller never does. Processing that same labelled rename test double through separate
+  calls produces two security IDs despite matching FIGIs and disjoint intervals. Existing rows cannot bridge the calls because symbol equality is required. The
+  store permits the split because its FIGI collision check excludes non-overlapping intervals.
+  Suggestion: Reconcile evidenced rename continuity against existing master rows across symbols, preserving the security ID and revision sequence. Test separate
+  fetches and restart between their appends.
+  Focus: yes
+
+  ISSUE-4 [IMPORTANT] livewire_scripts/security_master_sync.py:502 — An unavailable earliest date prevents resolving later supported memberships
+  Category: bug
+  Confidence: 99
+  Evidence: probe_date = min(dates).date().isoformat() followed by one fetch(ticker, probe_date=probe_date).
+  Reasoning: No returned listing has list_date in the captured fixtures. If the earliest needed date is outside provider coverage, the empty probe leaves every
+  record without a start, even when another needed date is supported. The frozen AAPL responses reproduce zero derived events for 1998-01-05 and one for 2010-01-
+  04. With both dates needed, this loop always selects 1998 and never reaches 2010, including on retries.
+  Suggestion: After an empty earliest probe, try later uncovered membership dates with the same request pacing. Retain unsupported earlier events as unresolved.
+  Focus: no
+
+  OVER-ENGINEERING SWEEP: clean
+
+  Verification:
+
+  - Reviewed HEAD 7abf183fbd77b0e61dd5b741982a677fe6fdc888; unrelated herd.toml modification preserved.
+  - Executed 11 existing identity-fetch test methods directly: all passed.
+  - In-memory reproductions confirmed the historical-identity mismatch, per-ticker rename split, and early/later probe behavior.
+  - Evidence manifest commit precedes identity appends; default fetching paces each request.
+
+  Blockers/unverified:
+
+  - Findings above block acceptance.
+  - Storage tests and full pytest were not run: their temporary-file fixtures require writes unavailable in this read-only assignment. Two identity-fetch methods
+    also required fixtures.
+
+  - Production rate limits, deployment, and Apex consumer results remain unverified.
+  - No files changed; no other reviewers’ reports read.
+
+  END_REVIEW r1-codex eee28ad7c929

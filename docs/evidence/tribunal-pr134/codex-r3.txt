@@ -1,0 +1,50 @@
+• BEGIN_REVIEW r3-codex 59dc17b16aac
+
+  ### Follow-up verdicts
+
+  1. Cross-fetch rename overlap — VERIFIED FIXED for a newly encountered symbol. security_master_sync.py:270–289 checks existing intervals and produces an
+     unresolved row on its own ID with identity_conflict=1. In-memory verification passed.
+
+  2. Revision allocation — VERIFIED FIXED. _next_revision at security_master_sync.py:148–152 considers every row of the security ID. Third rename, earlier-
+     interval widening, and allocation after supersession all passed the real master validator. Widening now exposes the separate overlap regression below.
+
+  3. Pre-coverage refetch suppression — REGRESSION. _covered assumes every date before an existing interval was already probed unsuccessfully. An existing
+     interval starting in 2015 suppresses a newly requested 2010 date without any probe evidence. This is distinct from the unchanged placeholder policy
+     escalated to the user.
+
+  ### New findings
+
+  ISSUE-1 [CRITICAL] livewire_scripts/security_master_sync.py:267 — Widening bypasses the new overlap guard
+  Category: bug
+  Confidence: 100
+  Evidence: widened = _widen(match, existing, record, start, end, now, refs) returns before the overlap check at line 270. _widen now allocates a valid revision
+  at line 223.
+  Reasoning: Seed one security with symbol A covering 2010–2015 and symbol B covering 2015–2020. Refetch A with an end in 2016. The widened row is verified at
+  revision 3, overlaps B, and passes the actual master validator because same-ID collision checks are skipped. Previously this input was rejected by the revision
+  defect; the revision fix now permits contradictory verified intervals.
+  Suggestion: Validate the resulting widened interval against other current verified intervals on that ID, excluding the row being superseded. Apply the conflict
+  policy when they overlap.
+  Focus: yes
+
+  ISSUE-2 [IMPORTANT] livewire_scripts/security_master_sync.py:501 — Existing interval start is treated as proof of failed earlier probes
+  Category: bug
+  Confidence: 100
+  Evidence: _resolve(...) is not None or (earliest is not None and effective_at < earliest).
+  Reasoning: A prior run for one index can establish an interval starting in 2015. Importing another index’s 2010 membership afterward causes _covered to return
+  true, although 2010 was never queried and does not resolve. The sync therefore skips the fetch needed to widen coverage. An in-memory reproduction confirmed
+  this for a labelled AAPL interval; the repository already contains a successful 2010 AAPL probe fixture.
+  Suggestion: Suppress only dates with persisted evidence of unsuccessful probing. An interval start alone cannot establish that an earlier date was attempted or
+  unavailable.
+  Focus: yes
+
+  OVER-ENGINEERING SWEEP: clean
+
+  ### Verification and limits
+
+  Verified HEAD 6039c6b0f30e6b42ba10026e5207ce898e9bdf6a. Read the added tests and reproduced both fixes and both regressions in memory using the actual
+  derivation and master-validation code.
+
+  Filesystem tests and full pytest remain unexecuted under the read-only assignment. No files changed; unrelated herd.toml changes preserved. Acceptance remains
+  blocked by the two findings above.
+
+  END_REVIEW r3-codex 59dc17b16aac
