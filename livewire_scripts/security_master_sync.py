@@ -13,12 +13,24 @@ identity rules it encodes are the table in
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
+import os
+import socket
+import sys
+import time as time_module
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time
+from pathlib import Path
 
+from clients import constants, ledger
+from clients.index_membership_store import IndexMembershipStore
 from clients.security_master import SecurityIdentityEvent, SecurityMaster
-from clients.universe_client import IdentityRecord
+from clients.source_evidence import SourceEvidence, SourceEvidenceStore
+from clients.universe_client import IdentityRecord, UniverseFetchError, fetch_ticker_identity
+from livewire_scripts.membership_sync import DEFAULT_INDEXES, _evidence_verifier, _measure, _resolve
+from livewire_scripts.paths import data_lake_dir
 
 _PROVIDER = "massive"
 
@@ -352,3 +364,229 @@ def derive_identity_events(
             )
         )
     return DerivedIdentities(events, counts)
+
+
+# The list form of Massive's reference endpoint; `fetch_ticker_identity` calls
+# it with `ticker`, `active` and `date` parameters.
+_SOURCE_URL = "https://api.polygon.io/v3/reference/tickers"
+
+MEASURE_NAMES = (
+    "identity_tickers_requested",
+    "identity_events_appended",
+    *COUNT_NAMES,
+    "identity_collisions",
+    "identity_fetch_failed",
+)
+
+
+def needed_dates(store: IndexMembershipStore, indexes: list[str]) -> dict[str, set[datetime]]:
+    """ticker -> the effective dates its current unresolved events need.
+
+    Current means non-superseded; a rejected placeholder chain is skipped, so a
+    reresolved index stops asking for identities it already has.
+    """
+    wanted: dict[str, set[datetime]] = {}
+    for index_id in indexes:
+        events = store.events(index_id)
+        superseded = {item.supersedes for item in events if item.supersedes is not None}
+        for event in events:
+            if (
+                event.event_id in superseded
+                or event.status != "unresolved"
+                or not event.security_id.startswith("unresolved:")
+            ):
+                continue
+            wanted.setdefault(event.security_id.removeprefix("unresolved:"), set()).add(event.effective_at)
+    return wanted
+
+
+def _covered(master: SecurityMaster, ticker: str, dates: set[datetime], now: datetime) -> bool:
+    """Every needed date already sits inside a verified interval for this symbol."""
+    return all(_resolve(master, ticker, effective_at, now) is not None for effective_at in dates)
+
+
+def _append_all(master: SecurityMaster, events: list[SecurityIdentityEvent]) -> tuple[int, int]:
+    """Append derived rows; a collision the master raises is counted, never swallowed."""
+    appended = collisions = 0
+    for event in events:
+        try:
+            if master.append(event):
+                appended += 1
+        except ValueError as exc:
+            collisions += 1
+            print(json.dumps({"skipped": event.symbol, "reason": str(exc)}, sort_keys=True))
+    return appended, collisions
+
+
+def sync(
+    *,
+    indexes: list[str],
+    data_lake_root: Path,
+    now: datetime,
+    tickers: list[str] | None = None,
+    fetch_fn=None,
+    sleep_fn=None,
+    dry_run: bool = False,
+) -> int:
+    """Fetch Massive identities for every unresolved membership ticker.
+
+    Idempotent: a ticker whose verified intervals already cover every needed
+    membership date is skipped without a fetch. Evidence is committed once per
+    run, before any identity row is appended — the verifier the master runs
+    checks raw bytes only, so this ordering is what keeps a manifest-less
+    identity row out of the store (spec §6).
+    """
+    root = Path(data_lake_root)
+    evidence = SourceEvidenceStore(root)
+    reader = SecurityMaster(root, evidence_verifier=None)
+    store = IndexMembershipStore(root, security_master=reader, evidence_verifier=None)
+    sleep = sleep_fn or time_module.sleep
+    fetch = fetch_fn or (
+        lambda ticker, *, probe_date=None: fetch_ticker_identity(
+            ticker, os.environ.get("MASSIVE_API_KEY"), probe_date=probe_date
+        )
+    )
+    pace_s = 60.0 / constants.declared("massive_requests_per_minute/reference")
+    backoff_s = constants.declared("massive_backoff_s/reference")
+    scope = "subset" if tickers else "all"
+
+    run_id = os.environ.get("LW_RUN_ID") or ledger.new_run_id("security-master-sync")
+    run_row = {
+        "run_id": run_id,
+        "job": "security-master-sync",
+        "host": socket.gethostname(),
+        "release_sha": os.environ.get("LW_RELEASE_SHA"),
+        "presets_sha": None,
+        "registry_sha": None,
+        "started": now,
+        "ended": None,
+        "exit_code": None,
+        "verdict": None,
+    }
+    ledger.emit("runs", [run_row], run_id=run_id)
+
+    def close(exit_code: int) -> int:
+        ledger.emit(
+            "runs",
+            [
+                run_row
+                | {
+                    "ended": datetime.now(UTC),
+                    "exit_code": exit_code,
+                    "verdict": "OK" if exit_code == 0 else "FAILED",
+                }
+            ],
+            run_id=run_id,
+        )
+        return exit_code
+
+    counts = dict.fromkeys(MEASURE_NAMES, 0)
+    try:
+        wanted = needed_dates(store, indexes)
+        if tickers:
+            selected = {ticker.upper() for ticker in tickers}
+            wanted = {ticker: dates for ticker, dates in wanted.items() if ticker in selected}
+
+        pending: list[tuple[list[IdentityRecord], tuple[tuple[str, str], ...]]] = []
+        manifest: list[SourceEvidence] = []
+        first = True
+        for ticker in sorted(wanted):
+            dates = wanted[ticker]
+            if _covered(reader, ticker, dates, now):
+                continue
+            if not first:
+                sleep(pace_s)
+            first = False
+            counts["identity_tickers_requested"] += 1
+            probe_date = min(dates).date().isoformat()
+            try:
+                result = fetch(ticker, probe_date=probe_date)
+            except UniverseFetchError as exc:
+                if exc.status_code != 429:
+                    counts["identity_fetch_failed"] += 1
+                    continue
+                sleep(backoff_s)
+                try:
+                    result = fetch(ticker, probe_date=probe_date)
+                except UniverseFetchError:
+                    counts["identity_fetch_failed"] += 1
+                    continue
+            refs: list[tuple[str, str]] = []
+            for body in result.responses:
+                artifact = evidence.persist_raw(body)
+                manifest.append(
+                    SourceEvidence(
+                        ref=artifact.ref,
+                        sha256=artifact.sha256,
+                        source_url=f"{_SOURCE_URL}?ticker={ticker}",
+                        retrieved_at=now,
+                        publication_time=None,
+                        mediawiki_revision_id=None,
+                        mediawiki_revision_time=None,
+                        content_type="application/json",
+                    )
+                )
+                refs.append((artifact.ref, artifact.sha256))
+            # each identity row cites its own ticker's bodies, not the run's
+            pending.append((result.records, tuple(refs)))
+
+        if not dry_run and manifest:
+            # One commit for the whole run: `record` is not buffered and a
+            # per-response commit cost 41 min/night
+            # (pm:2026-08-31-source-evidence-per-response-cost). A failed
+            # commit appends nothing at all: the master's verifier checks raw
+            # bytes only, so an identity row could otherwise outlive its
+            # manifest entry (spec §6).
+            try:
+                evidence.record_many(manifest)
+            except Exception as exc:  # noqa: BLE001 — any commit failure is terminal
+                print(json.dumps({"evidence_commit_failed": str(exc)}, sort_keys=True))
+                return close(1)
+
+        writer = reader if dry_run else SecurityMaster(root, evidence_verifier=_evidence_verifier(evidence))
+        for records, refs in pending:
+            derived = derive_identity_events(records, writer.events(), now, refs)
+            for name, value in derived.counts.items():
+                counts[name] += value
+            if dry_run:
+                continue
+            appended, collisions = _append_all(writer, derived.events)
+            counts["identity_events_appended"] += appended
+            counts["identity_collisions"] += collisions
+
+        _measure(run_id, scope, now, counts)
+        print(json.dumps({"scope": scope, "run_id": run_id, "dry_run": dry_run} | counts, sort_keys=True))
+    except Exception:
+        close(1)
+        raise
+    return close(1 if counts["identity_fetch_failed"] else 0)
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(argv) if argv is not None else sys.argv[1:]
+    parser = argparse.ArgumentParser(
+        prog="livewire_ingest.py security-master",
+        description="Backfill security identities from Massive reference data",
+    )
+    parser.add_argument("subcommand", choices=["sync"])
+    parser.add_argument(
+        "--index",
+        action="extend",
+        nargs="+",
+        choices=sorted(DEFAULT_INDEXES),
+        help="Index stores to drain (space-separated and/or repeatable; default: all four)",
+    )
+    parser.add_argument("--tickers", action="extend", nargs="+", help="Explicit ticker subset, for repairs")
+    parser.add_argument("--dry-run", action="store_true", help="Fetch and derive without appending")
+    args = parser.parse_args(argv)
+    return sync(
+        indexes=args.index or list(DEFAULT_INDEXES),
+        tickers=args.tickers,
+        data_lake_root=data_lake_dir(),
+        now=datetime.now(UTC),
+        dry_run=args.dry_run,
+    )
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

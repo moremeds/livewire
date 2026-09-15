@@ -436,6 +436,7 @@ def test_ingest_universe_sync_bypasses_ib_preflight(monkeypatch) -> None:
         ("universe-sync", "livewire_scripts.universe_sync"),
         ("shepherd-universe", "livewire_scripts.shepherd_universe"),
         ("membership-sync", "livewire_scripts.membership_sync"),
+        ("security-master", "livewire_scripts.security_master_sync"),
     ],
 )
 def test_ingest_universe_refresh_commands_load_scheduled_env(monkeypatch, tmp_path, command, module) -> None:
@@ -465,6 +466,12 @@ def test_ingest_universe_refresh_commands_load_scheduled_env(monkeypatch, tmp_pa
     assert livewire_ingest.main([command]) == 0
     assert loader_calls == [tmp_path]
     assert calls == [(module, [])]
+
+
+def test_ingest_knows_the_security_master_command() -> None:
+    assert livewire_ingest.COMMANDS["security-master"] == "livewire_scripts.security_master_sync"
+    # it is not an IB command: the whole path is Massive REST
+    assert "security-master" not in livewire_ingest.IB_COMMANDS
 
 
 def test_ingest_other_commands_do_not_load_env(monkeypatch) -> None:

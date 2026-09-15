@@ -30,6 +30,7 @@ COMMANDS = {
     "universe-sync": "livewire_scripts.universe_sync",
     "shepherd-universe": "livewire_scripts.shepherd_universe",
     "membership-sync": "livewire_scripts.membership_sync",
+    "security-master": "livewire_scripts.security_master_sync",
 }
 
 # Commands that talk to IB Gateway. cboe-vol uses CBOE's public API; fx uses
@@ -116,10 +117,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv[:1])
     rest = argv[1:]
 
-    if args.command in {"universe-sync", "shepherd-universe", "membership-sync"}:
+    if args.command in {"universe-sync", "shepherd-universe", "membership-sync", "security-master"}:
         # `com.livewire.universe-refresh` chains the first two and is joined by
         # `com.livewire.membership-sync` — the plists that invoke this
-        # entrypoint directly. Every other job goes through `livewire_ops.py
+        # entrypoint directly. `security-master` is run by hand from a cold
+        # shell and needs the same `MASSIVE_API_KEY`. Every other job goes through `livewire_ops.py
         # run-*-job`, which loads the same files before dispatching. launchd
         # starts these cold, so there is no parent env to inherit.
         # Without this, `universe_sync` logged `MASSIVE_API_KEY not set —
