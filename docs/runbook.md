@@ -956,7 +956,7 @@ error. `no_trade`/`partial` never fail a run.
 ```bash
 source ~/market-warehouse/.venv/bin/activate
 python scripts/livewire_store.py duckdb views          # what the catalog exposes
-python scripts/livewire_store.py duckdb build          # rebuild + publish the coverage table
+python scripts/livewire_store.py duckdb build          # rebuild + publish the coverage table; also snapshots it to <lake>/catalog/analytics.duckdb for lake-bound readers
 python scripts/livewire_store.py duckdb freshness      # per-view staleness buckets
 python scripts/livewire_store.py duckdb lag            # silver trailing or missing vs bronze
 python scripts/livewire_store.py duckdb stale --days 30

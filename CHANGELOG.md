@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `duckdb build` now also publishes a read-only snapshot of the coverage
+  catalog to `<lake>/catalog/analytics.duckdb` (temp + `os.replace`), so a
+  consumer bound to the lake volume can open it while the writer keeps its
+  working copy on local disk.
 - `livewire_ingest.py security-master sync` backfills security identities from
   Massive `/v3/reference/tickers`, and `livewire_ingest.py membership-sync
   reresolve --index <id> --confidence {B,C,D}` rewrites each resolvable
