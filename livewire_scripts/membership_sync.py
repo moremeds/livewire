@@ -42,10 +42,12 @@ from livewire_scripts.paths import data_lake_dir
 Confidence = Literal["B", "C", "D"]
 
 # The security master records equity identities under provider `massive`; US
-# index constituents list on NASDAQ, NYSE or NYSE Arca — resolve across all
-# three rather than assume one venue.
+# index constituents list on NASDAQ, NYSE, NYSE Arca or NYSE American — resolve
+# across all four rather than assume one venue. The Russell list carries 44
+# NYSE American names (measured from the TradingView scanner 2026-09-15) and
+# the master holds them under XASE.
 _RESOLVE_PROVIDER = "massive"
-_RESOLVE_MICS = ("XNAS", "XNYS", "ARCX")
+_RESOLVE_MICS = ("XNAS", "XNYS", "ARCX", "XASE")
 
 _CONFIDENCE_STATUS = {"B": "verified", "C": "candidate", "D": "candidate"}
 
@@ -86,6 +88,18 @@ def _resolve(master: SecurityMaster, ticker: str, effective_at: datetime, as_of:
 def _event_id(index_id: str, key: str, action: str, effective_date: str, source_hashes: tuple[str, ...]) -> str:
     payload = "\x00".join([index_id, key, action, effective_date, *source_hashes])
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def unresolved_backlog(events: list[MembershipEvent]) -> set[str]:
+    """Distinct `security_id`s among current rows still carrying no identity.
+
+    One helper for `import`, `sync` and `reresolve`. Counting superseded rows
+    too — which import and sync used to do — would let a reresolve drain the
+    number to zero while the rejected placeholder chain sat in the store, and
+    the next nightly sync would restore the WARN.
+    """
+    superseded = {item.supersedes for item in events if item.supersedes is not None}
+    return {item.security_id for item in events if item.event_id not in superseded and item.status == "unresolved"}
 
 
 def import_events(
@@ -150,10 +164,6 @@ def import_events(
         revisions: dict[str, int] = {}
         for event in existing:
             revisions[event.security_id] = max(revisions.get(event.security_id, 0), event.revision)
-        # The measurement is the store's current unresolved backlog, not this
-        # run's appends — a re-import that adds nothing must still report it,
-        # or a standing WARN in status would silently clear.
-        unresolved_ids = {event.security_id for event in existing if event.status == "unresolved"}
 
         added = removed = skipped = 0
         for line in events_path.read_text().splitlines():
@@ -192,9 +202,11 @@ def import_events(
                     added += 1
                 else:
                     removed += 1
-                if resolved is None:
-                    unresolved_ids.add(security_id)
 
+        # The measurement is the store's current unresolved backlog, not this
+        # run's appends — a re-import that adds nothing must still report it,
+        # or a standing WARN in status would silently clear.
+        unresolved_ids = unresolved_backlog(store.events(index_id))
         ledger.emit(
             "measurements",
             [
@@ -405,11 +417,11 @@ def sync(
             revisions: dict[str, int] = {}
             for event in existing:
                 revisions[event.security_id] = max(revisions.get(event.security_id, 0), event.revision)
-            unresolved_ids = {event.security_id for event in existing if event.status == "unresolved"}
             try:
                 tickers, source = fetch(index_id)
             except Exception as exc:
                 failures[index_id] = exc
+                unresolved_ids = unresolved_backlog(store.events(index_id))
                 _measure(
                     run_id,
                     index_id,
@@ -452,10 +464,9 @@ def sync(
                         revisions[security_id] = event.revision
                         if action == "add":
                             added += 1
-                            if resolved is None:
-                                unresolved_ids.add(security_id)
                         else:
                             removed += 1
+            unresolved_ids = unresolved_backlog(store.events(index_id))
             _measure(
                 run_id,
                 index_id,
@@ -499,6 +510,262 @@ def sync(
     return exit_code
 
 
+def _replay_is_balanced(events: list[MembershipEvent], proposed: MembershipEvent) -> bool:
+    """Would inserting `proposed` leave a balanced add/remove replay?
+
+    The same rule `pit_silver_revision` enforces ("duplicate open membership
+    interval", "membership removal has no open interval"), filtered to the
+    status the proposed event will carry: PIT Silver replays verified events
+    only, so a guard over mixed statuses could pass an add-then-remove whose
+    add is `candidate` and leave the verified replay with a remove and no open
+    add. A nightly `sync` add that landed *later* than the historical add being
+    inserted is caught here and nowhere else.
+    """
+    superseded = {item.supersedes for item in events if item.supersedes is not None}
+    sequence = [
+        item
+        for item in events
+        if item.event_id not in superseded
+        and item.status == proposed.status
+        and item.security_id == proposed.security_id
+    ]
+    sequence.append(proposed)
+    sequence.sort(key=lambda item: (item.effective_at, item.known_at, item.revision, item.event_id))
+    is_open = False
+    for item in sequence:
+        if item.action == "add":
+            if is_open:
+                return False
+            is_open = True
+        else:
+            if not is_open:
+                return False
+            is_open = False
+    return True
+
+
+def _open_resolved_adds(master: SecurityMaster, events: list[MembershipEvent], as_of: datetime) -> dict[str, str]:
+    """Ticker -> security_id of every resolved add still open in the index.
+
+    Seeds `last_add` with adds resolved by an earlier pass (spec §3.3 rule 1):
+    a retry that lands after an add's pair but before its delisting-date
+    remove must still resolve that remove through the add, not the clock. The
+    ticker comes from the master row of that id containing the add's date.
+    """
+    symbols = [
+        (item.security_id, item.symbol, item.effective_from, item.effective_to) for item in master.events(as_of=as_of)
+    ]
+    superseded = {item.supersedes for item in events if item.supersedes is not None}
+    current = [
+        item
+        for item in events
+        if item.event_id not in superseded
+        and item.status not in ("unresolved", "rejected")
+        and not item.security_id.startswith("unresolved:")
+    ]
+    current.sort(key=lambda item: (item.effective_at, item.known_at, item.revision, item.event_id))
+    open_adds: dict[str, str] = {}
+    for item in current:
+        tickers = [
+            symbol
+            for security_id, symbol, start, end in symbols
+            if security_id == item.security_id
+            and start <= item.effective_at
+            and (end is None or item.effective_at < end)
+        ]
+        for ticker in tickers:
+            if item.action == "add":
+                open_adds[ticker] = item.security_id
+            else:
+                open_adds.pop(ticker, None)
+    return open_adds
+
+
+def _resolved_event_id(placeholder_id: str, security_id: str) -> str:
+    return hashlib.sha256(f"reresolve\x00{placeholder_id}\x00{security_id}".encode()).hexdigest()
+
+
+def _rejection_event_id(placeholder_id: str) -> str:
+    return hashlib.sha256(f"reresolve-reject\x00{placeholder_id}".encode()).hexdigest()
+
+
+def reresolve(
+    *,
+    index_id: str,
+    data_lake_root: Path,
+    now: datetime,
+    confidence: Confidence,
+) -> dict:
+    """Rewrite each resolvable `unresolved:` placeholder onto its security_id.
+
+    Two appends per placeholder because `IndexMembershipStore` only lets an
+    event supersede one with the same `(index_id, security_id)`: the resolved
+    event first, then the `rejected` revision of the placeholder. That order is
+    restart-safe — a crash between them leaves the placeholder current and the
+    retry recovers the stored replacement by its deterministic `event_id`; the
+    reverse order would lose the membership on retry.
+
+    `known_at = now` keeps PIT honest: an `as_of` before this pass still sees
+    the placeholder (spec 2026-09-13-dividend-fx-and-pit-membership, rule 8 of
+    docs/contracts/shepherd-security-identity.md).
+    """
+    root = Path(data_lake_root)
+    evidence = SourceEvidenceStore(root)
+    verifier = _evidence_verifier(evidence)
+    master = SecurityMaster(root, evidence_verifier=None)
+    store = IndexMembershipStore(root, security_master=master, evidence_verifier=verifier)
+
+    run_id = os.environ.get("LW_RUN_ID") or ledger.new_run_id("membership-reresolve")
+    run_row = {
+        "run_id": run_id,
+        "job": "membership-reresolve",
+        "host": socket.gethostname(),
+        "release_sha": os.environ.get("LW_RELEASE_SHA"),
+        "presets_sha": None,
+        "registry_sha": None,
+        "started": now,
+        "ended": None,
+        "exit_code": None,
+        "verdict": None,
+    }
+    ledger.emit("runs", [run_row], run_id=run_id)
+    try:
+        resolved_status = "candidate" if index_id == "r2k-proxy" else _CONFIDENCE_STATUS[confidence]
+        events = store.events(index_id)
+        superseded = {item.supersedes for item in events if item.supersedes is not None}
+        placeholders = sorted(
+            (
+                item
+                for item in events
+                if item.event_id not in superseded
+                and item.status == "unresolved"
+                and item.security_id.startswith("unresolved:")
+            ),
+            key=lambda item: (item.effective_at, item.known_at, item.revision, item.event_id),
+        )
+        by_id = {item.event_id: item for item in events}
+        revisions: dict[str, int] = {}
+        for item in events:
+            revisions[item.security_id] = max(revisions.get(item.security_id, 0), item.revision)
+
+        last_add = _open_resolved_adds(master, list(by_id.values()), now)
+        resolved_count = conflicts = 0
+        for placeholder in placeholders:
+            ticker = placeholder.security_id.removeprefix("unresolved:")
+            if placeholder.action == "add":
+                security_id = _resolve(master, ticker, placeholder.effective_at, now)
+            else:
+                # Master intervals are end-exclusive, so a remove effective on
+                # the delisting date resolves through its own add, not the clock.
+                security_id = last_add.get(ticker) or _resolve(master, ticker, placeholder.effective_at, now)
+            if security_id is None:
+                continue
+
+            replacement_id = _resolved_event_id(placeholder.event_id, security_id)
+            if replacement_id not in by_id:
+                # Fail closed on an unbalanced replay; no conflict check runs on
+                # a recovery, because the replacement is already in the store.
+                proposed = MembershipEvent(
+                    event_id=replacement_id,
+                    index_id=index_id,
+                    security_id=security_id,
+                    action=placeholder.action,
+                    announced_at=placeholder.announced_at,
+                    effective_at=placeholder.effective_at,
+                    known_at=now,
+                    source_refs=placeholder.source_refs,
+                    source_hashes=placeholder.source_hashes,
+                    revision=revisions.get(security_id, 0) + 1,
+                    supersedes=None,
+                    status=resolved_status,
+                )
+                if not _replay_is_balanced(list(by_id.values()), proposed):
+                    conflicts += 1
+                    continue
+                store.append(proposed)
+                revisions[security_id] = proposed.revision
+                by_id[proposed.event_id] = proposed
+                resolved_count += 1
+
+            rejection_id = _rejection_event_id(placeholder.event_id)
+            if rejection_id not in by_id:
+                revisions[placeholder.security_id] = revisions.get(placeholder.security_id, 0) + 1
+                rejection = MembershipEvent(
+                    event_id=rejection_id,
+                    index_id=index_id,
+                    security_id=placeholder.security_id,
+                    action=placeholder.action,
+                    announced_at=placeholder.announced_at,
+                    effective_at=placeholder.effective_at,
+                    known_at=now,
+                    source_refs=placeholder.source_refs,
+                    source_hashes=placeholder.source_hashes,
+                    revision=revisions[placeholder.security_id],
+                    supersedes=placeholder.event_id,
+                    status="rejected",
+                )
+                store.append(rejection)
+                by_id[rejection.event_id] = rejection
+            if placeholder.action == "add":
+                last_add[ticker] = security_id
+            else:
+                last_add.pop(ticker, None)
+
+        backlog = len(unresolved_backlog(store.events(index_id)))
+        _measure(
+            run_id,
+            index_id,
+            now,
+            {"membership_reresolve_conflict": conflicts, "membership_unresolved": backlog},
+        )
+    except Exception:
+        ledger.emit(
+            "runs",
+            [run_row | {"ended": datetime.now(UTC), "exit_code": 1, "verdict": "FAILED"}],
+            run_id=run_id,
+        )
+        raise
+    ledger.emit(
+        "runs",
+        [run_row | {"ended": datetime.now(UTC), "exit_code": 0, "verdict": "OK"}],
+        run_id=run_id,
+    )
+    return {
+        "index": index_id,
+        "resolved": resolved_count,
+        "conflicts": conflicts,
+        "unresolved": backlog,
+        "run_id": run_id,
+    }
+
+
+def _reresolve_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="livewire_ingest.py membership-sync reresolve",
+        description="Rewrite resolvable unresolved: placeholders onto their security_id",
+    )
+    parser.add_argument("--index", required=True, choices=sorted(DEFAULT_INDEXES))
+    parser.add_argument(
+        "--confidence",
+        required=True,
+        choices=["B", "C", "D"],
+        help="A placeholder does not record the confidence its history was imported under",
+    )
+    args = parser.parse_args(argv)
+    print(
+        json.dumps(
+            reresolve(
+                index_id=args.index,
+                data_lake_root=data_lake_dir(),
+                now=datetime.now(UTC),
+                confidence=args.confidence,
+            ),
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def _import_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="livewire_ingest.py membership-sync import",
@@ -535,6 +802,8 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(argv) if argv is not None else sys.argv[1:]
     if argv[:1] == ["import"]:
         return _import_main(argv[1:])
+    if argv[:1] == ["reresolve"]:
+        return _reresolve_main(argv[1:])
     parser = argparse.ArgumentParser(
         prog="livewire_ingest.py membership-sync",
         description="Diff each index's live source against the membership store",
