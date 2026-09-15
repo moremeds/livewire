@@ -1703,3 +1703,59 @@ def test_an_unreadable_pending_list_warns_and_does_not_kill_the_lane(tmp_path, m
     assert "unreadable dividend FX pending list" in capsys.readouterr().err
     # The conversion still ran and still measured.
     assert ledger.query("select run_id from runs where job = 'dividend-fx' and ended is not null")
+
+
+def test_the_currency_resolver_picks_a_row_when_two_share_one_known_at(tmp_path):
+    """One identity fetch can append several rows for one symbol with the same
+    known_at. The resolver keeps the first row it encounters on an equal
+    known_at, with no provider, MIC or interval filter — assert the choice, not
+    just that the field survived."""
+    from clients.security_master import SecurityIdentityEvent, SecurityMaster
+
+    fixture = Path(__file__).parent / "fixtures" / "massive_reference" / "imo-active-2026-09-15.json"
+    row = (json.loads(fixture.read_bytes()).get("results") or [])[0]
+    symbol, currency, mic = row["ticker"], row["currency_name"].upper(), row["primary_exchange"]
+    # All 13,181 active US stock listings (14 pages of
+    # ?market=stocks&active=true&limit=1000, measured on the mini 2026-09-15)
+    # are currency_name: usd — no real non-USD listing exists on this endpoint
+    # (fixtures README F6). The equal-known_at tie-break is therefore exercised
+    # with two real USD rows: this proves the resolver returns a currency and
+    # does not raise, not which of two different currencies wins.
+
+    root = tmp_path / "lake"
+    master = SecurityMaster(root, evidence_verifier=lambda ref, digest: ref.endswith(digest))
+    known_at = datetime(2026, 9, 15, 12, 0, tzinfo=UTC)
+    for index, (interval_start, interval_end) in enumerate(
+        [
+            (datetime(2000, 1, 3, tzinfo=UTC), datetime(2010, 1, 4, tzinfo=UTC)),
+            (datetime(2010, 1, 4, tzinfo=UTC), None),
+        ]
+    ):
+        master.append(
+            SecurityIdentityEvent(
+                event_id=f"currency-{index}",
+                security_id=master.new_security_id(),
+                revision=1,
+                symbol=symbol,
+                provider="massive",
+                exchange_mic=mic,
+                currency=currency,
+                effective_from=interval_start,
+                effective_to=interval_end,
+                known_at=known_at,
+                issuer_name=row["name"],
+                cik=None,
+                composite_figi=None,
+                share_class_figi=None,
+                continuity_basis="provider_figi",
+                relationship_type=None,
+                related_security_id=None,
+                source_refs=("artifact://sha256/" + "d" * 64,),
+                source_hashes=("d" * 64,),
+                status="verified",
+                supersedes=None,
+            )
+        )
+
+    resolve = sync_corporate_actions._equity_currency_resolver(root, known_at)
+    assert resolve(symbol) == (currency, "security_master")

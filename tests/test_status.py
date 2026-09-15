@@ -1202,3 +1202,43 @@ def test_unresolved_memberships_warns_with_per_index_counts():
 
     _measurement("membership_unresolved", "sp500", 0, measured_at=NOW + timedelta(seconds=1))
     assert _section("Unresolved memberships").verdict is status.Verdict.OK
+
+
+def _reresolve_run(verdict: str, *, started: datetime):
+    run_id = f"membership-reresolve-{started:%Y%m%dT%H%M%S}Z"
+    ledger.emit(
+        "runs",
+        [
+            {
+                "run_id": run_id,
+                "job": "membership-reresolve",
+                "host": "macmini",
+                "release_sha": "deadbeef",
+                "presets_sha": None,
+                "registry_sha": None,
+                "started": started,
+                "ended": started,
+                "exit_code": 0 if verdict == "OK" else 1,
+                "verdict": verdict,
+            }
+        ],
+        run_id=run_id,
+    )
+
+
+def test_a_reresolve_run_cannot_hide_a_failed_membership_sync():
+    """The reresolve pass files under its own job. Under `membership-sync` a
+    later OK row would hide the night's FAILED scheduled run, because the check
+    grades the latest run of the day."""
+    monday = date(2026, 9, 14)
+    _membership_run("FAILED", started=datetime(2026, 9, 14, 1, 0, tzinfo=UTC))
+    _reresolve_run("OK", started=datetime(2026, 9, 14, 4, 0, tzinfo=UTC))
+
+    assert _membership_section("Membership sync ran today", monday).verdict is status.Verdict.BAD
+
+
+def test_the_unresolved_memberships_hint_names_commands_that_exist():
+    hint = status._FIXES["Unresolved memberships"]
+    assert "security-master sync" in hint
+    assert "reresolve" in hint
+    assert "livewire_ops.py membership --index" not in hint
