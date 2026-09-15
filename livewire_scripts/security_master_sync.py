@@ -500,22 +500,29 @@ def needed_dates(store: IndexMembershipStore, indexes: list[str]) -> dict[str, s
     return wanted
 
 
-def _covered(
+def _open_dates(
     master: SecurityMaster, ticker: str, dates: set[datetime], now: datetime, empty_probes: set[tuple[str, str]]
-) -> bool:
-    """Every needed date sits inside a verified interval for this symbol, or
-    was probed on an earlier run and answered nothing.
+) -> tuple[str, ...]:
+    """The needed dates still worth asking about, ascending: not inside a
+    verified interval for this symbol, and not probed empty by an earlier run.
 
     An earlier run's empty probe is a persisted fact (`identity_probe_empty`
-    measurement, scope `<ticker>:<date>`), not an inference from an interval's
-    start: an interval beginning in 2015 says nothing about whether 2010 was
-    ever asked. Without the second clause a ticker with one pre-coverage date
-    (the S&P 500 shape) would be refetched on every run and after every restart.
+    measurement, scope `<ticker>:<date>`), never an inference from an
+    interval's start: an interval beginning in 2015 says nothing about whether
+    2010 was ever asked. Without that record a ticker with one pre-coverage
+    date (the S&P 500 shape) would be refetched on every run and after every
+    restart; with it, a ticker fetched for one new date does not re-walk the
+    old ones. An empty tuple means the ticker is covered.
     """
-    return all(
-        _resolve(master, ticker, effective_at, now) is not None
-        or (ticker, effective_at.date().isoformat()) in empty_probes
-        for effective_at in dates
+    return tuple(
+        sorted(
+            {
+                effective_at.date().isoformat()
+                for effective_at in dates
+                if _resolve(master, ticker, effective_at, now) is None
+                and (ticker, effective_at.date().isoformat()) not in empty_probes
+            }
+        )
     )
 
 
@@ -655,12 +662,10 @@ def sync(
             probe_rows.clear()
 
         for ticker in sorted(wanted):
-            dates = wanted[ticker]
-            if _covered(reader, ticker, dates, now, empty_probes):
+            probe_dates = _open_dates(reader, ticker, wanted[ticker], now, empty_probes)
+            if not probe_dates:
                 continue
             counts["identity_tickers_requested"] += 1
-            # Ascending: the earliest date the provider answers is the start.
-            probe_dates = tuple(sorted({day.date().isoformat() for day in dates}))
             try:
                 result = fetch(ticker, probe_dates=probe_dates)
             except UniverseFetchError as exc:

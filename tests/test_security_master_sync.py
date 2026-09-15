@@ -855,6 +855,33 @@ def test_an_empty_probe_is_recorded_and_not_repeated_on_the_next_run(tmp_path):
     assert security_master_sync.sync(**kwargs) == 0
     assert len(calls) == 1  # covered: 2010 resolves, 1996 was probed empty
 
+    # a second pre-coverage date reopens the ticker, but the recorded empty
+    # 1996 probe and the resolved 2010 date are not walked again
+    evidence = SourceEvidenceStore(lake)
+    artifact = evidence.persist_raw(b'{"note": "placeholder membership evidence"}\n')
+    IndexMembershipStore(
+        lake,
+        security_master=SecurityMaster(lake, evidence_verifier=None),
+        evidence_verifier=lambda ref, digest: ref.endswith(digest),
+    ).append(
+        MembershipEvent(
+            event_id="placeholder-sp500-AAPL-2000-01-03",
+            index_id="sp500",
+            security_id="unresolved:AAPL",
+            action="add",
+            announced_at=None,
+            effective_at=datetime(2000, 1, 3, tzinfo=UTC),
+            known_at=datetime(2026, 9, 13, tzinfo=UTC),
+            source_refs=(artifact.ref,),
+            source_hashes=(artifact.sha256,),
+            revision=3,
+            supersedes=None,
+            status="unresolved",
+        )
+    )
+    assert security_master_sync.sync(**kwargs) == 0
+    assert calls[-1] == ("AAPL", ("2000-01-03",))
+
 
 def test_an_interval_start_alone_does_not_excuse_an_unprobed_earlier_date(tmp_path):
     """An interval beginning in 2010 says nothing about 1996 unless 1996 was
