@@ -29,7 +29,7 @@ from clients.index_membership_store import IndexMembershipStore
 from clients.security_master import SecurityIdentityEvent, SecurityMaster, _overlaps
 from clients.source_evidence import SourceEvidence, SourceEvidenceStore
 from clients.universe_client import IdentityRecord, UniverseFetchError, fetch_ticker_identity
-from livewire_scripts.membership_sync import _RESOLVE_MICS, DEFAULT_INDEXES, _evidence_verifier, _measure, _resolve
+from livewire_scripts.membership_sync import DEFAULT_INDEXES, _evidence_verifier, _measure, _resolve
 from livewire_scripts.paths import data_lake_dir
 
 _PROVIDER = "massive"
@@ -203,6 +203,36 @@ def _rename_match(record: IdentityRecord, existing: list[SecurityIdentityEvent])
     )
 
 
+def _overlaps_sibling(
+    security_id: str,
+    start: datetime,
+    end: datetime | None,
+    existing: list[SecurityIdentityEvent],
+    *,
+    exclude: str | None,
+) -> bool:
+    """Whether [start, end) overlaps another current verified row of this id."""
+    return any(
+        _overlaps(start, end, item.effective_from, item.effective_to)
+        for item in _current(existing)
+        if item.security_id == security_id and item.status == "verified" and item.event_id != exclude
+    )
+
+
+def _conflict_row(
+    record: IdentityRecord,
+    start: datetime,
+    end: datetime | None,
+    now: datetime,
+    refs: tuple[tuple[str, str], ...],
+    new_id,
+) -> SecurityIdentityEvent:
+    """This half of a FIGI conflict: `unresolved` on its own id, nothing inferred."""
+    return _build(
+        security_id=new_id(), revision=1, record=record, start=start, end=end, status="unresolved", now=now, refs=refs
+    )
+
+
 def _widen(
     match: SecurityIdentityEvent,
     existing: list[SecurityIdentityEvent],
@@ -265,29 +295,22 @@ def _one_record(
     match = _existing_match(record, existing, "verified")
     if match is not None:
         widened = _widen(match, existing, record, start, end, now, refs)
+        if widened is not None and _overlaps_sibling(
+            widened.security_id, widened.effective_from, widened.effective_to, existing, exclude=match.event_id
+        ):
+            # A renamed id holds one row per symbol; widening one across the
+            # other is the spec §4 conflict, and the master's collision check
+            # skips rows sharing an id, so it is refused here.
+            counts["identity_conflict"] += 1
+            return [_conflict_row(record, start, end, now, refs, new_id)]
         return [widened] if widened is not None else []
     renamed = _rename_match(record, existing)
-    if renamed is not None and any(
-        _overlaps(start, end, item.effective_from, item.effective_to)
-        for item in _current(existing)
-        if item.security_id == renamed.security_id and item.status == "verified"
-    ):
+    if renamed is not None and _overlaps_sibling(renamed.security_id, start, end, existing, exclude=None):
         # The master's collision check skips rows sharing an id, so an overlap
         # must be refused here: same FIGIs, overlapping dates is the spec §4
         # conflict row, and this half stays unresolved on its own id.
         counts["identity_conflict"] += 1
-        return [
-            _build(
-                security_id=new_id(),
-                revision=1,
-                record=record,
-                start=start,
-                end=end,
-                status="unresolved",
-                now=now,
-                refs=refs,
-            )
-        ]
+        return [_conflict_row(record, start, end, now, refs, new_id)]
     if renamed is not None:
         # Same issuer under a new symbol: a new revision on its id.
         return [
@@ -477,28 +500,21 @@ def needed_dates(store: IndexMembershipStore, indexes: list[str]) -> dict[str, s
     return wanted
 
 
-def _covered(master: SecurityMaster, ticker: str, dates: set[datetime], now: datetime) -> bool:
+def _covered(
+    master: SecurityMaster, ticker: str, dates: set[datetime], now: datetime, empty_probes: set[tuple[str, str]]
+) -> bool:
     """Every needed date sits inside a verified interval for this symbol, or
-    before the earliest one.
+    was probed on an earlier run and answered nothing.
 
-    A date before the earliest verified interval is the pre-coverage remainder:
-    the probe walk already asked the provider for it and got nothing, so a
-    refetch would only repeat the empty probes. Without this clause a ticker
-    with one pre-coverage date (the S&P 500 shape) would be refetched on every
-    run and after every restart.
+    An earlier run's empty probe is a persisted fact (`identity_probe_empty`
+    measurement, scope `<ticker>:<date>`), not an inference from an interval's
+    start: an interval beginning in 2015 says nothing about whether 2010 was
+    ever asked. Without the second clause a ticker with one pre-coverage date
+    (the S&P 500 shape) would be refetched on every run and after every restart.
     """
-    superseded = {item.supersedes for item in master.events(as_of=now) if item.supersedes is not None}
-    starts = [
-        item.effective_from
-        for item in master.events(as_of=now)
-        if item.event_id not in superseded
-        and item.status == "verified"
-        and (item.provider, item.symbol) == ("massive", ticker)
-        and item.exchange_mic in _RESOLVE_MICS
-    ]
-    earliest = min(starts, default=None)
     return all(
-        _resolve(master, ticker, effective_at, now) is not None or (earliest is not None and effective_at < earliest)
+        _resolve(master, ticker, effective_at, now) is not None
+        or (ticker, effective_at.date().isoformat()) in empty_probes
         for effective_at in dates
     )
 
@@ -591,12 +607,17 @@ def sync(
     counts = dict.fromkeys(MEASURE_NAMES, 0)
     try:
         wanted = needed_dates(store, indexes)
+        empty_probes = {
+            tuple(row["scope"].split(":", 1))
+            for row in ledger.query("select scope from measurements where name = 'identity_probe_empty'")
+        }
         if tickers:
             selected = {ticker.upper() for ticker in tickers}
             wanted = {ticker: dates for ticker, dates in wanted.items() if ticker in selected}
 
         pending: list[tuple[list[IdentityRecord], tuple[tuple[str, str], ...], datetime]] = []
         manifest: list[SourceEvidence] = []
+        probe_rows: list[dict] = []
         writer = reader if dry_run else SecurityMaster(root, evidence_verifier=_evidence_verifier(evidence))
 
         def flush() -> None:
@@ -625,12 +646,17 @@ def sync(
                 appended, collisions = _append_all(writer, derived.events)
                 counts["identity_events_appended"] += appended
                 counts["identity_collisions"] += collisions
+            if probe_rows and not dry_run:
+                # Recorded only once the chunk's evidence is committed: the
+                # fact "this date was asked" must never outlive its bodies.
+                ledger.emit("measurements", list(probe_rows), run_id=run_id)
             pending.clear()
             manifest.clear()
+            probe_rows.clear()
 
         for ticker in sorted(wanted):
             dates = wanted[ticker]
-            if _covered(reader, ticker, dates, now):
+            if _covered(reader, ticker, dates, now, empty_probes):
                 continue
             counts["identity_tickers_requested"] += 1
             # Ascending: the earliest date the provider answers is the start.
@@ -666,6 +692,18 @@ def sync(
                 refs.append((artifact.ref, artifact.sha256))
             # each identity row cites its own ticker's bodies, not the run's
             pending.append((result.records, tuple(refs), fetched_at))
+            probe_rows.extend(
+                {
+                    "name": "identity_probe_empty",
+                    "scope": f"{ticker}:{probe_date}",
+                    "measured_at": fetched_at,
+                    "value": 1.0,
+                    "unit": "count",
+                    "source": "measured",
+                    "run_id": run_id,
+                }
+                for probe_date in result.empty_probes
+            )
             if len(pending) >= FLUSH_EVERY_TICKERS:
                 flush()
         flush()

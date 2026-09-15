@@ -193,6 +193,31 @@ def test_a_cross_fetch_rename_with_overlapping_dates_is_a_conflict_not_a_join(tm
     assert master.append(later.events[0]) is True
 
 
+def test_widening_one_symbol_across_its_renamed_sibling_is_a_conflict(tmp_path):
+    """A renamed id holds YHOO [2015-06-01, 2017-06-19) and AABA [2018-06-01, ...).
+    Re-seeing YHOO as open-ended would widen it across AABA: the master's
+    collision check skips rows on one id, so the derivation refuses it."""
+    aaba_delisted = _records("aaba-active-false-2026-09-15.json", existed_at="2018-06-01")[0]
+    earlier = aaba_delisted.__class__(  # test double, as in the rename tests above
+        **{
+            **aaba_delisted.__dict__,
+            "ticker": "YHOO",
+            "existed_at": "2015-06-01",
+            "delisted_utc": _records("yhoo-active-false-2026-09-15.json")[0].delisted_utc,
+        }
+    )
+    master = _master(tmp_path)
+    for event in _derive([earlier, aaba_delisted]).events:
+        assert master.append(event) is True
+
+    still_listed = earlier.__class__(**{**earlier.__dict__, "delisted_utc": None})
+    later = _derive([still_listed], existing=master.events())
+
+    assert [(e.symbol, e.status, e.revision, e.supersedes) for e in later.events] == [("YHOO", "unresolved", 1, None)]
+    assert later.events[0].security_id not in {e.security_id for e in master.events()}
+    assert later.counts["identity_conflict"] == 1
+
+
 def test_widening_one_symbol_of_a_renamed_id_takes_the_ids_next_revision(tmp_path):
     """A renamed id holds one row per symbol (revisions 1 and 2). Widening the
     earlier symbol must append revision 3: `matched.revision + 1` would be 2,
@@ -804,27 +829,48 @@ def test_the_default_fetch_paces_every_request_at_the_declared_rate(tmp_path, mo
     assert slept == [12.0, 12.0, 12.0]  # 60 / massive_requests_per_minute/reference
 
 
-def test_a_date_before_the_earliest_verified_interval_does_not_force_a_refetch(tmp_path):
-    """The S&P 500 shape: one pre-coverage add (1996) and one later date the
-    provider answered. Once the 2010 interval is on disk, the 1996 date is the
-    pre-coverage remainder and the ticker must not be fetched again."""
+def test_an_empty_probe_is_recorded_and_not_repeated_on_the_next_run(tmp_path):
+    """The S&P 500 shape: one pre-coverage add (1996) and one date the provider
+    answered (2010). The first run records the empty 1996 probe in the ledger;
+    the second run sees the 2010 interval and that record, and fetches nothing."""
     lake = _placeholder_lake(tmp_path, [("AAPL", "1996-01-02"), ("AAPL", "2010-01-04")])
-    calls: list[tuple[str, str | None]] = []
-    fetch = _fetcher({"AAPL": ["aapl-active-2026-09-15.json"]}, calls)
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def fetch(ticker: str, *, probe_dates: tuple[str, ...] = ()):
+        calls.append((ticker, probe_dates))
+        return IdentityRecords(
+            responses=[_fixture("aapl-active-2026-09-15.json"), _fixture("aapl-date-1998-01-05-2026-09-15.json")],
+            records=_records("aapl-active-2026-09-15.json", existed_at="2010-01-04"),
+            empty_probes=("1996-01-02",),
+        )
+
     kwargs = dict(
         indexes=["sp500"], data_lake_root=lake, now=NOW, clock_fn=lambda: NOW, fetch_fn=fetch, sleep_fn=lambda _s: None
     )
+    assert security_master_sync.sync(**kwargs) == 0
+    assert calls == [("AAPL", ("1996-01-02", "2010-01-04"))]
+    probes = ledger.query("select scope from measurements where name = 'identity_probe_empty'")
+    assert [row["scope"] for row in probes] == ["AAPL:1996-01-02"]
 
-    # first run: the fake stamps existed_at at the first probe date, so pin the
-    # verified interval to 2010 by seeding the master directly instead
+    assert security_master_sync.sync(**kwargs) == 0
+    assert len(calls) == 1  # covered: 2010 resolves, 1996 was probed empty
+
+
+def test_an_interval_start_alone_does_not_excuse_an_unprobed_earlier_date(tmp_path):
+    """An interval beginning in 2010 says nothing about 1996 unless 1996 was
+    asked: with no empty-probe record the ticker is fetched."""
+    lake = _placeholder_lake(tmp_path, [("AAPL", "1996-01-02"), ("AAPL", "2010-01-04")])
     master = _master(tmp_path)
     for event in _derive(_records("aapl-active-2026-09-15.json", existed_at="2010-01-04")).events:
         assert master.append(event) is True
+    calls: list[tuple[str, str | None]] = []
+    fetch = _fetcher({"AAPL": ["aapl-active-2026-09-15.json"]}, calls)
 
-    security_master_sync.sync(**kwargs)
+    security_master_sync.sync(
+        indexes=["sp500"], data_lake_root=lake, now=NOW, clock_fn=lambda: NOW, fetch_fn=fetch, sleep_fn=lambda _s: None
+    )
 
-    assert calls == []
-    assert _measurements()[("identity_tickers_requested", "all")] == 0
+    assert [ticker for ticker, _ in calls] == ["AAPL"]
 
 
 def test_a_superseded_placeholder_is_not_refetched(tmp_path):

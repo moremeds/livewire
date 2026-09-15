@@ -35,9 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   halves arrive in separate fetches, a `date=` probe row must share a FIGI or
   cik with the listing it stamps, the needed dates are probed in order until
   one answers, a cross-fetch rename with overlapping dates is a conflict on
-  its own id, revisions follow the id's history, and a date before the
-  earliest verified interval no longer forces a refetch (code review
-  2026-09-15).
+  its own id, widening one symbol across its renamed sibling is likewise a
+  conflict, revisions follow the id's history, and an empty `date=` probe is
+  recorded as an `identity_probe_empty` measurement so the next run does not
+  repeat it (code review 2026-09-15).
 - Three facts measured against the production key on 2026-09-15 shape what the
   backfill can produce (`tests/fixtures/massive_reference/README.md`, F1/F5/F6;
   the frozen bodies are the tests' only input, which never touch the network):

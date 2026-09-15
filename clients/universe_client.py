@@ -234,6 +234,9 @@ class IdentityRecords:
 
     responses: list[bytes]
     records: list[IdentityRecord]
+    # `date=` probes that returned no record, so the caller can persist that
+    # the date was asked and not repeat the probe on the next run.
+    empty_probes: tuple[str, ...] = ()
 
 
 def _reference_page(ticker: str, key: str, params: dict[str, str]) -> tuple[bytes, list[dict]]:
@@ -356,11 +359,13 @@ def fetch_ticker_identity(
 
     if any(record.list_date for record in records):
         probe_dates = ()
+    empty_probes: list[str] = []
     for probe_date in probe_dates:
         pace()
         body, rows = _reference_page(ticker, key, {"date": probe_date})
         bodies.append(body)
         if not rows:
+            empty_probes.append(probe_date)
             continue
         for row in rows:
             probed = _identity_record(row, ticker, probe_date)
@@ -377,7 +382,7 @@ def fetch_ticker_identity(
                 records[index] = replace(records[index], existed_at=probe_date)
         break
 
-    return IdentityRecords(responses=bodies, records=records)
+    return IdentityRecords(responses=bodies, records=records, empty_probes=tuple(empty_probes))
 
 
 _POLYGON_THROTTLE_SECONDS = 0.25

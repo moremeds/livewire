@@ -594,6 +594,7 @@ class TestFetchTickerIdentity:
         assert [call.request.params.get("date") for call in responses.calls] == [None, None, "1998-01-05", "2010-01-04"]
         assert len(result.responses) == 4  # every body is evidence, the empty probe included
         assert [(r.ticker, r.existed_at) for r in result.records] == [("AAPL", "2010-01-04")]
+        assert result.empty_probes == ("1998-01-05",)
 
     @responses.activate
     def test_a_probe_row_with_another_issuers_cik_never_stamps_the_current_listing(self):

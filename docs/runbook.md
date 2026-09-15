@@ -1118,6 +1118,9 @@ python scripts/livewire_ingest.py security-master sync --tickers AAPL YHOO      
   `identity_events_appended`, `identity_candidate`, `identity_no_start`,
   `identity_conflict`, `identity_unknown_to_provider`, `identity_collisions`,
   `identity_fetch_failed` (any > 0 → exit 1).
+  `identity_probe_empty` rows (scope `<ticker>:<date>`, one per `date=` probe
+  that returned nothing) are the persisted record that a date was asked, so
+  the next run skips a ticker whose remaining dates were all probed empty.
 - **Not scheduled.** This is a manual backfill; a weekly refresh is decided
   after the first full run's numbers.
 
