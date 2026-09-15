@@ -323,6 +323,10 @@ def run(
     scope = "all" if not args.tickers and not args.preset else "subset"
     dividend_fx: dict | None = None
     fx_passes = 0
+    foreign_tickers: set[str] = set()
+    # One security_master read for the whole run, shared by every marking
+    # decision; the conversion builds its own for its own `now`.
+    equity_currency_of = _equity_currency_resolver(root, datetime.now(UTC))
     # At most two passes: finish whatever last night left, then -- if there is
     # budget left -- run this night's own pass. A SIGKILL at the lane budget
     # simply leaves the current pass resumable tomorrow.
@@ -371,6 +375,8 @@ def run(
                         cycle_failed += 1
                         print(f"{ticker}: {exc}", file=sys.stderr)
                         continue
+                    if _has_convertible_dividend(fetched.events or [], equity_currency_of(ticker)[0]):
+                        foreign_tickers.add(ticker)
                     for key in ("inserted", "revised", "cancelled", "unchanged"):
                         counters[key] += int(getattr(result, key))
                     cursor.mark_completed(ticker, now=datetime.now(UTC))
@@ -402,7 +408,22 @@ def run(
         if not args.dry_run:
             fx_passes += 1
             fx_run_id = f"{run_id}-dividend-fx" + ("" if fx_passes == 1 else f"-{fx_passes}")
-            dividend_fx = _convert_dividends_after_sync(tickers, root, fx_run_id, scope=scope)
+            # A dividend's currency does not change, so the only symbols that can
+            # need conversion tonight are the ones this pass just reconciled a
+            # non-USD dividend for, plus whatever the last conversion left
+            # pending. Scanning all ~13.3K store files to rediscover the few
+            # dozen is the thing this replaces -- and because the union is by
+            # construction every symbol that can have one today, an unrestricted
+            # lane run still measures `scope='all'`.
+            targets = sorted(foreign_tickers | _read_pending_dividend_fx(root))
+            dividend_fx = _convert_dividends_after_sync(targets, root, fx_run_id, scope=scope)
+            # A failed conversion wrote no pending list, so the marks are all
+            # that is left of this cycle's work: carry them into the next
+            # cycle. Losing them entirely is repaired by the next fetch that
+            # succeeds for the symbol: it returns the full dividend history and
+            # re-marks it.
+            if "error" not in dividend_fx:
+                foreign_tickers = set()
         if not (complete and continues_an_earlier_night):
             break
         cursor = open_cursor(cursor_path, identity, resume=False, now=datetime.now(UTC))
@@ -465,6 +486,48 @@ _PROVIDER_MEASUREMENTS = (
 )
 
 
+def _has_convertible_dividend(events: Sequence[object], equity_currency: str) -> bool:
+    """Did this fetch carry a cash dividend in a currency the equity does not pay in?
+
+    Not "not USD": `foreign_currency_dividends` compares against the *equity*
+    currency, so a USD dividend on a BMD-denominated equity needs conversion
+    just as much as a CAD one on a USD equity. Read off the rows the pass
+    already handled -- re-reading the store to find them is the ~13.3K-file
+    scan this replaces.
+    """
+    return any((getattr(event, "currency", None) or "USD").upper() != equity_currency.upper() for event in events)
+
+
+def _pending_dividend_fx_path(root: Path) -> Path:
+    return root / "repairs" / "dividend_fx" / "pending.json"
+
+
+def _read_pending_dividend_fx(root: Path) -> set[str]:
+    """Symbols the last conversion could not finish (`ex_date_pending`, `no_fx_bar`)."""
+    path = _pending_dividend_fx_path(root)
+    if not path.exists():
+        return set()
+    try:
+        payload = json.loads(path.read_text())
+        return {canonical_symbol(str(symbol)) for symbol in payload["symbols"]}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        # A file that exists and cannot be read is a fact, not a nothing: say so
+        # once. The next successful conversion rewrites it.
+        print(f"WARNING: unreadable dividend FX pending list {path}: {exc}", file=sys.stderr)
+        return set()
+
+
+def _write_pending_dividend_fx(root: Path, skipped: list[dict]) -> None:
+    path = _pending_dividend_fx_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    symbols = sorted({str(row["symbol"]) for row in skipped})
+    # temp -> os.replace: a torn write would read back as invalid JSON, the
+    # reader would return an empty set, and every pending symbol would be lost.
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps({"symbols": symbols}, indent=1) + "\n")
+    os.replace(temporary, path)
+
+
 def _convert_dividends_after_sync(tickers: list[str], root: Path, fx_run_id: str, *, scope: str) -> dict:
     """Repair foreign-currency dividends; never fail the lane on this step."""
     try:
@@ -501,6 +564,13 @@ def _convert_dividends_after_sync(tickers: list[str], root: Path, fx_run_id: str
         except Exception as ledger_exc:  # pragma: no cover - the ledger is the last resort
             print(f"WARNING: could not record the dividend FX failure: {ledger_exc}", file=sys.stderr)
         return {"error": str(exc)}
+    # Tomorrow's scope: a skipped row is still owed a conversion. The nightly
+    # fetch re-marks it too, but only once that symbol is fetched and
+    # reconciled again; this list bridges the nights it is not.
+    try:
+        _write_pending_dividend_fx(root, result["skipped"])
+    except OSError as exc:
+        print(f"WARNING: could not record the dividend FX pending list: {exc}", file=sys.stderr)
     return {
         "converted": result["converted"],
         "remaining": result["remaining"],
@@ -661,7 +731,9 @@ def convert_dividend_currency(
     root = Path(lake_root)
     now = now or datetime.now(UTC)
     store = CorporateActionStore(root)
-    symbols = [canonical_symbol(t) for t in tickers] if tickers else _convertible_symbols(root)
+    # An explicit list -- including an empty one -- is the caller's scope. Only
+    # `tickers=None` (the manual sub-command with no --tickers) scans the store.
+    symbols = [canonical_symbol(t) for t in tickers] if tickers is not None else _convertible_symbols(root)
     if fx_close_fn is None:
         fx_close_fn = lambda pair, on: (  # noqa: E731
             (bar["trade_date"], float(bar["close"])) if (bar := _fx_bar(root, pair, on)) else None

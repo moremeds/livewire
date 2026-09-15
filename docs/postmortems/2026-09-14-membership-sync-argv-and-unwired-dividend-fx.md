@@ -125,3 +125,13 @@ Three defects in the wiring above, found on review of this branch.
   any failure and its own counts are written `strict=True`, so `status` reads a
   single rule — the newest whole-scope row of the day — plus the lane-done gate
   a SIGKILL cannot satisfy.
+- **Mark non-USD, don't rescan (user, 2026-09-15).** "分红用的币种又不会变，mark
+  non-USD 的就行了" — the nightly conversion was opening every one of the ~13.3K
+  CA-store files to rediscover the few dozen foreign-currency symbols. The lane
+  now marks a ticker while it reconciles it — against that equity's own
+  currency, since a USD dividend on a BMD-denominated equity needs converting
+  too — and carries leftovers in `repairs/dividend_fx/pending.json`;
+  `tickers=[]` means an empty scope instead of falling back to the full scan,
+  which is now only the manual sub-command's bootstrap/audit path. Every fetch
+  returns the symbol's full dividend history, so a lost mark is repaired by the next successful fetch of that symbol,
+  not a permanent miss.

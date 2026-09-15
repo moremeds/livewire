@@ -42,7 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   row `exit_code=1` and files one `dividend_fx_error` measurement, which the
   check reads as UNKNOWN until a later pass measures again. A pending ex-date no longer counts
   as a mismatch, so an announced dividend cannot WARN every night until it
-  goes ex.
+  goes ex. The lane's conversion scope is the tickers whose fetch carried a
+  dividend in a currency other than that equity's own, plus
+  `repairs/dividend_fx/pending.json`, not a nightly scan of all ~13.3K
+  corporate-action files; every fetch returns full history, so the marking
+  self-heals nightly, and the manual sub-command with no `--tickers` still
+  scans the store.
 - The `status` check "Foreign-currency dividends" grades only today's
   `scope='all'` measurement and reads UNKNOWN without one, instead of
   inheriting the last manual run's green. A `--tickers` repair now files
