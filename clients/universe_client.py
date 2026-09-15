@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import requests
@@ -31,7 +31,16 @@ _POLYGON_BASE = "https://api.polygon.io"
 
 
 class UniverseFetchError(Exception):
-    """Failed to fetch index constituent data."""
+    """Failed to fetch index constituent data.
+
+    `status_code` is the provider's HTTP status when the failure was one (a 429
+    is a pacing decision for the caller, a 5xx is a fetch failure); it is None
+    for a transport error or a missing key.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -188,6 +197,160 @@ def check_ticker_status(
         market=data.get("market"),
         list_date=data.get("list_date"),
     )
+
+
+_REFERENCE_URL = f"{_POLYGON_BASE}/v3/reference/tickers"
+
+
+@dataclass(frozen=True)
+class IdentityRecord:
+    """One Massive `/v3/reference/tickers` listing row, field-for-field.
+
+    `existed_at` is the `date=` probe date when the record came back from that
+    probe and from nowhere else — the only proof of a start date this provider
+    gives for a record with no `list_date`.
+    """
+
+    ticker: str
+    name: str | None
+    cik: str | None
+    composite_figi: str | None
+    share_class_figi: str | None
+    mic: str | None
+    currency: str | None
+    list_date: str | None
+    delisted_utc: str | None
+    existed_at: str | None
+
+
+@dataclass(frozen=True)
+class IdentityRecords:
+    """The exact response bytes and the parsed records of one identity fetch.
+
+    The bytes are returned untouched so the caller commits them to the evidence
+    CAS; nothing here writes.
+    """
+
+    responses: list[bytes]
+    records: list[IdentityRecord]
+
+
+def _reference_page(ticker: str, key: str, params: dict[str, str]) -> tuple[bytes, list[dict]]:
+    """One `/v3/reference/tickers` list call: exact bytes plus its results.
+
+    A transport failure or a 5xx raises; a 404 or an empty `results` is data,
+    never an exception — the twin of the `fetch_batch` rule, so a provider
+    outage can never read as "this ticker does not exist". Emptiness is read
+    from `results` only: an empty envelope carries no `count` key at all.
+    """
+    try:
+        resp = requests.get(
+            _REFERENCE_URL,
+            params={"ticker": ticker.upper(), **params, "apiKey": key},
+            timeout=_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        raise UniverseFetchError(f"Massive reference lookup failed for {ticker}: {exc}") from exc
+    if resp.status_code == 404:
+        return resp.content, []
+    try:
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise UniverseFetchError(
+            f"Massive reference lookup failed for {ticker}: {exc}",
+            status_code=resp.status_code,
+        ) from exc
+    return resp.content, list(resp.json().get("results") or [])
+
+
+def _identity_record(row: dict, ticker: str, existed_at: str | None) -> IdentityRecord:
+    currency = row.get("currency_name")
+    return IdentityRecord(
+        ticker=(row.get("ticker") or ticker).upper(),
+        name=row.get("name"),
+        cik=row.get("cik"),
+        composite_figi=row.get("composite_figi"),
+        share_class_figi=row.get("share_class_figi"),
+        # primary_exchange is already a MIC in Massive's payload (XNAS, XNYS,
+        # ARCX, XASE, BATS) — used as-is, never remapped.
+        mic=row.get("primary_exchange"),
+        currency=None if currency is None else currency.upper(),
+        list_date=row.get("list_date"),
+        delisted_utc=row.get("delisted_utc"),
+        existed_at=existed_at,
+    )
+
+
+def _identity_key(record: IdentityRecord) -> tuple:
+    return (record.composite_figi, record.share_class_figi, record.mic, record.delisted_utc)
+
+
+def _is_same_listing(known: IdentityRecord, probed: IdentityRecord) -> bool:
+    """Whether a `date=` record is the listing already seen, with fewer fields.
+
+    A `date=` body may omit `primary_exchange` (measured 2026-09-15), so an
+    exact key comparison would split one listing into two records. A field the
+    probe did not return matches anything; a field it did return must agree.
+    """
+    return all(
+        probed_field is None or probed_field == known_field
+        for known_field, probed_field in zip(_identity_key(known), _identity_key(probed))
+    )
+
+
+def fetch_ticker_identity(
+    ticker: str,
+    api_key: str | None = None,
+    *,
+    probe_date: str | None = None,
+) -> IdentityRecords:
+    """Fetch one ticker's listing identity from Massive reference data.
+
+    Three calls at most, in order: the active listing, the delisted listing,
+    and — only when neither carries a `list_date` and `probe_date` is given —
+    a historical `date=` probe, whose records are stamped `existed_at`. That
+    probe is the only start date available for a record Massive lists without
+    one; an empty probe proves nothing and appends nothing (spec §4). The probe
+    sends `ticker` and `date` only: `date=` with `active=false` comes back
+    empty even for a ticker that existed on that date.
+
+    This is the list form of the endpoint with query parameters, a different
+    code path from `check_ticker_status`'s single-ticker `/{T}` path form.
+    """
+    key = api_key or os.environ.get("MASSIVE_API_KEY")
+    if not key:
+        raise UniverseFetchError("MASSIVE_API_KEY required for ticker identity lookup")
+
+    bodies: list[bytes] = []
+    records: list[IdentityRecord] = []
+    seen: set[tuple] = set()
+    for params in ({}, {"active": "false"}):
+        body, rows = _reference_page(ticker, key, params)
+        bodies.append(body)
+        for row in rows:
+            record = _identity_record(row, ticker, None)
+            if _identity_key(record) not in seen:
+                seen.add(_identity_key(record))
+                records.append(record)
+
+    if probe_date is not None and not any(record.list_date for record in records):
+        body, rows = _reference_page(ticker, key, {"date": probe_date})
+        bodies.append(body)
+        for row in rows:
+            probed = _identity_record(row, ticker, probe_date)
+            candidates = [i for i, known in enumerate(records) if _is_same_listing(known, probed)]
+            # A probe row with no FIGI matches every listing loosely; on a reused
+            # ticker it must stamp the FIGI-less (old) record, not the new one.
+            candidates.sort(key=lambda i: records[i].composite_figi != probed.composite_figi)
+            index = candidates[0] if candidates else None
+            if index is None:
+                seen.add(_identity_key(probed))
+                records.append(probed)
+            else:
+                # Same listing, now with a proven date it existed on.
+                records[index] = replace(records[index], existed_at=probe_date)
+
+    return IdentityRecords(responses=bodies, records=records)
 
 
 _POLYGON_THROTTLE_SECONDS = 0.25
