@@ -76,6 +76,15 @@ DECLARED: dict[str, tuple[float, str]] = {
     "massive_window_days": (1827, "days"),
     # Massive REST FX plan: 5 succeed, the 6th 429s, no Retry-After. FX-scoped.
     "massive_requests_per_minute/fx": (5, "per_min"),
+    # Massive REST /v3/reference/tickers. Its published limit is unknown; 5/min
+    # is the only Massive REST rate this repo has measured, and it is FX-scoped,
+    # so this scope starts at the same number and is re-measured by the first
+    # `--tickers` sample run on the mini (spec §2). Pace the full backfill with
+    # LW_DECLARED_MASSIVE_REQUESTS_PER_MINUTE_REFERENCE set to what that run saw.
+    "massive_requests_per_minute/reference": (5, "per_min"),
+    # The single 429 backoff for that endpoint; a second 429 is a fetch failure,
+    # not a longer wait.
+    "massive_backoff_s/reference": (60, "s"),
     # Minimum share of a raw flat file's ticker set a publish must cover.
     "flatfile_min_publish_ratio": (0.9, "ratio"),
     # Coverage ratio below which the surface and the digest complain.

@@ -133,3 +133,26 @@ def test_the_fred_retry_keys_carry_a_working_env_override(monkeypatch):
 
     assert constants.declared("fred_retry_attempts") == 4.0
     assert constants.declared("fred_retry_backoff_s") == 0.5
+
+
+def test_the_reference_endpoint_rate_limit_is_scoped_like_the_fx_one():
+    """Every rate-limit number in this repo carries a scope
+    (pm:2026-07-27-fx-dxy-provider-floors). The /v3/reference/tickers limit is
+    not the FX one and must not be read off the FX key."""
+    assert constants.DECLARED["massive_requests_per_minute/reference"] == (5, "per_min")
+    assert constants.DECLARED["massive_backoff_s/reference"] == (60, "s")
+    assert constants.split_scope("massive_requests_per_minute/reference") == (
+        "massive_requests_per_minute",
+        "reference",
+    )
+    assert constants.split_scope("massive_backoff_s/reference") == ("massive_backoff_s", "reference")
+    # the FX scope is untouched
+    assert constants.declared("massive_requests_per_minute/fx") == 5
+
+
+def test_the_reference_pacing_constants_take_their_own_env_override(monkeypatch):
+    monkeypatch.setenv("LW_DECLARED_MASSIVE_REQUESTS_PER_MINUTE_REFERENCE", "30")
+    monkeypatch.setenv("LW_DECLARED_MASSIVE_BACKOFF_S_REFERENCE", "90")
+    assert constants.declared("massive_requests_per_minute/reference") == 30
+    assert constants.declared("massive_backoff_s/reference") == 90
+    assert constants.declared("massive_requests_per_minute/fx") == 5
