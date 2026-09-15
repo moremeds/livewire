@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -303,8 +304,13 @@ def fetch_ticker_identity(
     api_key: str | None = None,
     *,
     probe_date: str | None = None,
+    pace_fn: Callable[[], None] | None = None,
 ) -> IdentityRecords:
     """Fetch one ticker's listing identity from Massive reference data.
+
+    `pace_fn` runs before every request: the declared rate is per request,
+    and a ticker costs two or three of them, so pacing per ticker would run
+    the endpoint at two to three times the declared rate.
 
     Three calls at most, in order: the active listing, the delisted listing,
     and — only when neither carries a `list_date` and `probe_date` is given —
@@ -324,7 +330,9 @@ def fetch_ticker_identity(
     bodies: list[bytes] = []
     records: list[IdentityRecord] = []
     seen: set[tuple] = set()
+    pace = pace_fn or (lambda: None)
     for params in ({}, {"active": "false"}):
+        pace()
         body, rows = _reference_page(ticker, key, params)
         bodies.append(body)
         for row in rows:
@@ -334,6 +342,7 @@ def fetch_ticker_identity(
                 records.append(record)
 
     if probe_date is not None and not any(record.list_date for record in records):
+        pace()
         body, rows = _reference_page(ticker, key, {"date": probe_date})
         bodies.append(body)
         for row in rows:

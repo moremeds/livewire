@@ -607,7 +607,7 @@ def test_sync_dispatches_from_the_real_entrypoint_argv(tmp_path, monkeypatch):
     monkeypatch.setattr(
         security_master_sync,
         "fetch_ticker_identity",
-        lambda ticker, key, probe_date=None: IdentityRecords(
+        lambda ticker, key, probe_date=None, pace_fn=None: IdentityRecords(
             responses=[_fixture("aapl-active-2026-09-15.json")],
             records=_records("aapl-active-2026-09-15.json", existed_at=probe_date),
         ),
@@ -615,6 +615,28 @@ def test_sync_dispatches_from_the_real_entrypoint_argv(tmp_path, monkeypatch):
     monkeypatch.setenv("MASSIVE_API_KEY", "test-key")
 
     assert livewire_ingest.main(["security-master", "sync", "--index", "sp500", "--dry-run"]) == 0
+
+
+def test_the_default_fetch_paces_every_request_at_the_declared_rate(tmp_path, monkeypatch):
+    """The constant is requests per minute and a ticker is 2-3 requests, so
+    the pace runs inside the fetch, before each request, never once per ticker."""
+    lake = _placeholder_lake(tmp_path, [("AAPL", "2010-01-04")])
+    slept: list[float] = []
+
+    def fake_fetch(ticker, key, probe_date=None, pace_fn=None):
+        for _request in range(3):
+            pace_fn()
+        return IdentityRecords(
+            responses=[_fixture("aapl-active-2026-09-15.json")],
+            records=_records("aapl-active-2026-09-15.json", existed_at=probe_date),
+        )
+
+    monkeypatch.setattr(security_master_sync, "fetch_ticker_identity", fake_fetch)
+    monkeypatch.setenv("MASSIVE_API_KEY", "test-key")
+
+    security_master_sync.sync(indexes=["sp500"], data_lake_root=lake, now=NOW, sleep_fn=slept.append, dry_run=True)
+
+    assert slept == [12.0, 12.0, 12.0]  # 60 / massive_requests_per_minute/reference
 
 
 def test_a_superseded_placeholder_is_not_refetched(tmp_path):

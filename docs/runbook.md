@@ -1103,8 +1103,8 @@ python scripts/livewire_ingest.py security-master sync --tickers AAPL YHOO      
   for every ticker and `effective_from` comes from the probe date or from
   nothing (`identity_no_start`). The probe sends only `ticker` and `date`;
   adding `active=false` to it returns an empty envelope (F3).
-- **Pacing**: `massive_requests_per_minute/reference` (5/min declared) between
-  tickers; one 429 backs off `massive_backoff_s/reference` (60 s) and retries
+- **Pacing**: `massive_requests_per_minute/reference` (5/min declared) before
+  every request (a ticker is 2-3 requests); one 429 backs off `massive_backoff_s/reference` (60 s) and retries
   once, then counts a fetch failure. The 5/min is provisional — carried over
   from the FX scope, not measured on `/reference`. Measure it with the sample
   run below and pass it back as

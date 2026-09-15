@@ -441,12 +441,17 @@ def sync(
     reader = SecurityMaster(root, evidence_verifier=None)
     store = IndexMembershipStore(root, security_master=reader, evidence_verifier=None)
     sleep = sleep_fn or time_module.sleep
+    pace_s = 60.0 / constants.declared("massive_requests_per_minute/reference")
+    # Paced per request inside the fetch (a ticker is 2-3 requests), including
+    # the run's first one: one idle pace_s beats a rate computed per ticker.
     fetch = fetch_fn or (
         lambda ticker, *, probe_date=None: fetch_ticker_identity(
-            ticker, os.environ.get("MASSIVE_API_KEY"), probe_date=probe_date
+            ticker,
+            os.environ.get("MASSIVE_API_KEY"),
+            probe_date=probe_date,
+            pace_fn=lambda: sleep(pace_s),
         )
     )
-    pace_s = 60.0 / constants.declared("massive_requests_per_minute/reference")
     backoff_s = constants.declared("massive_backoff_s/reference")
     scope = "subset" if tickers else "all"
 
@@ -489,14 +494,10 @@ def sync(
 
         pending: list[tuple[list[IdentityRecord], tuple[tuple[str, str], ...]]] = []
         manifest: list[SourceEvidence] = []
-        first = True
         for ticker in sorted(wanted):
             dates = wanted[ticker]
             if _covered(reader, ticker, dates, now):
                 continue
-            if not first:
-                sleep(pace_s)
-            first = False
             counts["identity_tickers_requested"] += 1
             probe_date = min(dates).date().isoformat()
             try:

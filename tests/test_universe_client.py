@@ -441,6 +441,20 @@ def _fixture(name: str) -> bytes:
 
 class TestFetchTickerIdentity:
     @responses.activate
+    def test_pace_fn_runs_before_every_request_not_once_per_ticker(self):
+        responses.add(responses.GET, REFERENCE_URL, body=_fixture("aapl-active-2026-09-15.json"), status=200)
+        responses.add(responses.GET, REFERENCE_URL, body=_fixture("dell-active-false-2026-09-15.json"), status=200)
+        responses.add(responses.GET, REFERENCE_URL, body=_fixture("aapl-date-2010-01-04-2026-09-15.json"), status=200)
+        paced: list[int] = []
+
+        fetch_ticker_identity(
+            "AAPL", api_key="test-key", probe_date="2010-01-04", pace_fn=lambda: paced.append(len(responses.calls))
+        )
+
+        # called before request 1, 2 and 3: the request count seen at each pace
+        assert paced == [0, 1, 2]
+
+    @responses.activate
     def test_a_listed_ticker_still_gets_the_date_probe_because_the_list_endpoint_has_no_list_date(self):
         # Measured 2026-09-15: no body from this endpoint carries list_date
         # (fixtures README F1), so the probe runs for every ticker, listed or
