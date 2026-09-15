@@ -1,0 +1,95 @@
+• BEGIN_REVIEW r4 d439f845260f
+
+  ## Sources loaded
+
+  Required rules retained from prior rounds:
+
+  - /Users/chenxi/projects/livewire/.worktrees/security-master-backfill/CLAUDE.md
+  - /Users/chenxi/.claude/CLAUDE.md
+  - docs/superpowers/specs/2026-09-02-livewire-ledger-design.md
+  - docs/contracts/shepherd-security-identity.md
+
+  Read the frozen round-4 spec and delta; rechecked identity validation, PIT Silver replay, repair-prefix handling, and status checks. Reviewed tracked
+  implementations remain unchanged from the base.
+
+  Verified SHA-256: d439f845260fda055aef63605e88d67385fad8c3327a5031c62de411c36d9708.
+
+  Spec below means spec-frozen-r4.md. No files changed or production operations performed.
+
+  ## Per-finding status
+
+   Finding                                          Status    Evidence
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   R3-1: incorrect unresolved/candidate meanings    CLOSED    Material date/FIGI contradictions now produce unresolved; missing share-class evidence produces
+                                                              candidate. The invented reservation of unresolved is removed. Spec:207–209 matches docs/contracts/
+                                                              shepherd-security-identity.md:76–86.
+  ───────────────────────────────────────────────  ────────  ────────────────────────────────────────────────────────────────────────────────────────────────────
+   R3-2: mixed-status replay guard                  CLOSED    Proposed verified events are checked against verified history, so candidate events cannot supply a
+                                                              missing verified add or hide a duplicate verified add. Spec:140–150 matches the relevant filtering
+                                                              at clients/pit_silver_revision.py:261–271.
+  ───────────────────────────────────────────────  ────────  ────────────────────────────────────────────────────────────────────────────────────────────────────
+   R3-3: wrong repair-prefix description            CLOSED    Membership prefixes and security-master prefixes are now distinguished. Spec:281–284; clients/
+                                                              pit_silver_revision.py:249–258; clients/shepherd_repair.py:720–729.
+  ───────────────────────────────────────────────  ────────  ────────────────────────────────────────────────────────────────────────────────────────────────────
+   Mixed-status counterexample                      CLOSED    Candidate add followed by proposed verified remove now fails the guard. An explicit acceptance
+                                                              case is included at spec:314–316.
+
+  ## Confirmed claims
+
+  - Both candidate and unresolved are valid identity dispositions; neither enters verified identity resolution. Evidence and interval validation still apply to
+    both. clients/security_master.py:114–121,197–223.
+
+  - The revised guard preserves verified-only balance checking. Candidate-only balance checking is an additional conservative rule; candidate appends do not
+    modify PIT Silver’s verified replay. clients/pit_silver_revision.py:262–271.
+
+  - Recovery still precedes conflict detection and reuses stored replacement content. Spec:136–139,163–170 remains compatible with strict event-ID deduplication
+    at clients/revisioned_parquet.py:56–60.
+
+  - Separate repair job naming and distinct-ID backlog counting remain intact. Spec:186–192,236–254; livewire_scripts/status.py:323–346.
+  - The round-4 changes do not alter the previously verified resolver signatures, MIC handling, confidence mapping, currency selection, evidence batching, scoped
+    constants, or ticker-status API.
+
+  No new contradiction with store invariants or existing status checks was found in this delta.
+
+  ## Refuted or unverifiable claims
+
+  No remaining refuted claim among R3-1, R3-2, and R3-3.
+
+  The following remain verification boundaries:
+
+  - Provider captures and their claimed fields are not authenticated by this review. Spec:29–41,288–291.
+  - Production counts and Apex behavior remain unverified, as permitted by the assignment. Spec:10–17,338–344.
+  - Reference-endpoint capacity remains unmeasured; the initial pacing value is provisional. Spec:46–56.
+  - Tests described in §7 are acceptance requirements, not executed evidence.
+
+  ## Counterexamples
+
+  Both previously reported mixed-status failures are prevented:
+
+  1. Candidate add → proposed verified remove: the verified sequence contains only a remove, so the guard rejects it.
+  2. Verified add → candidate remove → proposed verified add: the candidate remove is excluded; the verified sequence contains two adds, so the guard rejects the
+     proposed add.
+
+  These outcomes match clients/pit_silver_revision.py:262–271. They are source-derived reasoning, not executed test results.
+
+  ## Missing related paths
+
+  None newly identified for this bounded correction.
+
+  The planned actual PIT Silver and interrupted-pair operator-view checks cover the previously missing paths. Spec:314–318.
+
+  ## Unrelated pre-existing issues
+
+  No new unrelated findings. The currency resolver’s lack of interval filtering remains explicitly outside scope; the corrected equal-timestamp description
+  remains accurate. Spec:226–232,351; livewire_scripts/sync_corporate_actions.py:688–693.
+
+  ## Verdict (PASS/FIX/ESCALATE) with reasons
+
+  PASS — bounded design-spec review.
+
+  R3-1, R3-2, R3-3, and the mixed-status counterexample are closed. No additional correction is required by this verification round.
+
+  This does not establish implementation correctness, passing tests, provider entitlement, or production acceptance. Those remain subject to the spec’s fixture,
+  test, and mini-run requirements.
+
+  END_REVIEW r4 d439f845260f
