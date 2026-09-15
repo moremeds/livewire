@@ -28,6 +28,8 @@
 
 Nothing in Tasks 2–6 can be written before these files exist: every later test loads them by name. This task produces data files only, no code.
 
+**Executed on the mini on 2026-09-15 with the production key.** The bodies below are what the endpoint actually returned; the "Observed on capture" list at the end of this task records the seven ways they differ from what the spec assumed, and Tasks 2, 3 and 6 are written to the facts, not to the assumptions.
+
 **Files**
 
 - Create: `tests/fixtures/massive_reference/README.md`
@@ -35,12 +37,15 @@ Nothing in Tasks 2–6 can be written before these files exist: every later test
 - Create: `tests/fixtures/massive_reference/aapl-date-2010-01-04-2026-09-15.json`
 - Create: `tests/fixtures/massive_reference/aapl-date-1998-01-05-2026-09-15.json`
 - Create: `tests/fixtures/massive_reference/yhoo-active-false-2026-09-15.json`
-- Create: `tests/fixtures/massive_reference/aaba-active-2026-09-15.json`
+- Create: `tests/fixtures/massive_reference/yhoo-date-2015-06-01-2026-09-15.json`
+- Create: `tests/fixtures/massive_reference/yhoo-date-2015-06-01-active-false-2026-09-15.json`
+- Create: `tests/fixtures/massive_reference/aaba-active-false-2026-09-15.json`
+- Create: `tests/fixtures/massive_reference/aaba-date-2018-06-01-2026-09-15.json`
+- Create: `tests/fixtures/massive_reference/aaba-date-2018-06-01-active-false-2026-09-15.json`
 - Create: `tests/fixtures/massive_reference/wlp-active-false-2026-09-15.json`
 - Create: `tests/fixtures/massive_reference/dell-active-false-2026-09-15.json`
 - Create: `tests/fixtures/massive_reference/aamrq-active-false-2026-09-15.json`
 - Create: `tests/fixtures/massive_reference/imo-active-2026-09-15.json` (XASE listing — Imperial Oil Ltd trades on NYSE American)
-- Create: `tests/fixtures/massive_reference/nonusd-<TICKER>-active-2026-09-15.json` (the executor picks a real Massive-listed non-USD equity and records which one in the README; do not invent a ticker)
 - Create: `tests/fixtures/massive_reference/delisted-earliest-2026-09-15.json`
 
 **Interfaces**
@@ -50,7 +55,7 @@ Nothing in Tasks 2–6 can be written before these files exist: every later test
 
 ### Steps
 
-- [ ] 1. Capture the bodies on the mini. Run exactly this (the mini owns the production key; the MacBook does not — CLAUDE.md "How to work in this repo" rule 1):
+- [x] 1. Capture the bodies on the mini. Run exactly this (the mini owns the production key; the MacBook does not — CLAUDE.md "How to work in this repo" rule 1):
 
 ```bash
 ssh macmini
@@ -63,7 +68,13 @@ curl -sS "$B?ticker=AAPL&apiKey=$MASSIVE_API_KEY"                    -o aapl-act
 curl -sS "$B?ticker=AAPL&date=2010-01-04&apiKey=$MASSIVE_API_KEY"    -o aapl-date-2010-01-04-$STAMP.json
 curl -sS "$B?ticker=AAPL&date=1998-01-05&apiKey=$MASSIVE_API_KEY"    -o aapl-date-1998-01-05-$STAMP.json
 curl -sS "$B?ticker=YHOO&active=false&apiKey=$MASSIVE_API_KEY"       -o yhoo-active-false-$STAMP.json
-curl -sS "$B?ticker=AABA&apiKey=$MASSIVE_API_KEY"                    -o aaba-active-$STAMP.json
+curl -sS "$B?ticker=YHOO&date=2015-06-01&apiKey=$MASSIVE_API_KEY"    -o yhoo-date-2015-06-01-$STAMP.json
+curl -sS "$B?ticker=YHOO&date=2015-06-01&active=false&apiKey=$MASSIVE_API_KEY" \
+                                                                     -o yhoo-date-2015-06-01-active-false-$STAMP.json
+curl -sS "$B?ticker=AABA&active=false&apiKey=$MASSIVE_API_KEY"       -o aaba-active-false-$STAMP.json
+curl -sS "$B?ticker=AABA&date=2018-06-01&apiKey=$MASSIVE_API_KEY"    -o aaba-date-2018-06-01-$STAMP.json
+curl -sS "$B?ticker=AABA&date=2018-06-01&active=false&apiKey=$MASSIVE_API_KEY" \
+                                                                     -o aaba-date-2018-06-01-active-false-$STAMP.json
 curl -sS "$B?ticker=WLP&active=false&apiKey=$MASSIVE_API_KEY"        -o wlp-active-false-$STAMP.json
 curl -sS "$B?ticker=DELL&active=false&apiKey=$MASSIVE_API_KEY"       -o dell-active-false-$STAMP.json
 curl -sS "$B?ticker=AAMRQ&active=false&apiKey=$MASSIVE_API_KEY"      -o aamrq-active-false-$STAMP.json
@@ -74,30 +85,24 @@ curl -sS "$B?active=false&sort=delisted_utc&order=asc&limit=1&apiKey=$MASSIVE_AP
 
 Sleep 15 s between calls: the only measured Massive REST limit in this repo is 5 req/min (FX-scoped), and this endpoint's limit is unknown until Task 7's sample run measures it.
 
-- [ ] 2. Pick the non-USD listing. There is no fabricated ticker here: query candidates until one returns a record whose `currency_name` is not `usd`, then save that body. Record the ticker, its MIC and its currency in the README.
+- [x] 2. Establish whether a non-USD listing exists at all, instead of assuming one does. Page the whole active US stock universe and count the distinct currencies:
 
 ```bash
-for T in IMO CNI SU BCE; do
-  curl -sS "$B?ticker=$T&apiKey=$MASSIVE_API_KEY" | python3 -c \
-    'import json,sys; r=json.load(sys.stdin).get("results",[]); print([(x["ticker"],x.get("currency_name"),x.get("primary_exchange")) for x in r])'
-  sleep 15
-done
-# then, for the ticker whose currency_name is not "usd":
-curl -sS "$B?ticker=<TICKER>&apiKey=$MASSIVE_API_KEY" -o nonusd-<TICKER>-$STAMP.json
+curl -sS "$B?market=stocks&active=true&limit=1000&apiKey=$MASSIVE_API_KEY"  # then follow next_url
 ```
 
-If every candidate is USD, widen the search rather than inventing one; the §7 currency test needs a real non-USD listing. If no non-USD US listing exists on this endpoint, stop and report that to the user — do not substitute a fabricated body (CLAUDE.md "No synthetic data").
+Result: 13,181 active US stock listings across 14 pages, every one `currency_name: usd` (F6). There is no real non-USD listing on this endpoint, so the planned `nonusd-<TICKER>` fixture is **not** created and none is invented (CLAUDE.md "No synthetic data"). Task 6's currency test uses `imo-active-2026-09-15.json` instead and asserts what the resolver does, not which currency wins.
 
-- [ ] 3. Verify each body is a real JSON envelope (`status`, `count`, `results`) and not an error page, then hash:
+- [x] 3. Verify each body is a real JSON envelope (`status`, `results`) and not an error page, then hash:
 
 ```bash
 for f in *.json; do python3 -m json.tool "$f" >/dev/null || echo "NOT JSON: $f"; done
 shasum -a 256 *.json
 ```
 
-Expected: `aapl-date-1998-01-05-2026-09-15.json`, `dell-active-false-2026-09-15.json` and `aamrq-active-false-2026-09-15.json` carry `"count": 0` and an empty or absent `results`. `yhoo-active-false-2026-09-15.json` carries `delisted_utc` 2017-06-19. If a body contains an API error instead, fix the key/params and recapture — a fixture must be a real response.
+Observed: `aapl-date-1998-01-05`, `dell-active-false`, `aamrq-active-false`, `yhoo-date-2015-06-01-active-false` and `aaba-date-2018-06-01-active-false` are empty envelopes — `results: []` and **no `count` key at all** (F2). `yhoo-active-false-2026-09-15.json` carries `delisted_utc` 2017-06-19 and `aaba-active-false-2026-09-15.json` carries `delisted_utc` 2019-10-07. If a body contains an API error instead, fix the key/params and recapture — a fixture must be a real response.
 
-- [ ] 4. Copy them into the worktree (from the MacBook):
+- [x] 4. Copy them into the worktree (from the MacBook):
 
 ```bash
 mkdir -p /Users/chenxi/projects/livewire/.worktrees/security-master-backfill/tests/fixtures/massive_reference
@@ -105,7 +110,7 @@ scp 'macmini:/tmp/massive_reference/*.json' \
   /Users/chenxi/projects/livewire/.worktrees/security-master-backfill/tests/fixtures/massive_reference/
 ```
 
-- [ ] 5. Write the README that makes each file auditable:
+- [x] 5. Write the README that makes each file auditable — the table below with the real digests, followed by the "Observed on capture" section of this task reproduced verbatim:
 
 ```markdown
 # Frozen Massive reference responses
@@ -117,24 +122,25 @@ Real tickers, real values, captured once — tests never hit the network.
 Re-record only by rerunning the capture in Task 0 of the plan and updating this
 table; never hand-edit a body.
 
-| file                                   | request                                             | as-of      | sha256  |
-| -------------------------------------- | --------------------------------------------------- | ---------- | ------- |
-| aapl-active-2026-09-15.json            | `?ticker=AAPL`                                      | 2026-09-15 | `<sha>` |
-| aapl-date-2010-01-04-2026-09-15.json   | `?ticker=AAPL&date=2010-01-04`                      | 2026-09-15 | `<sha>` |
-| aapl-date-1998-01-05-2026-09-15.json   | `?ticker=AAPL&date=1998-01-05` (count 0)            | 2026-09-15 | `<sha>` |
-| yhoo-active-false-2026-09-15.json      | `?ticker=YHOO&active=false`                         | 2026-09-15 | `<sha>` |
-| aaba-active-2026-09-15.json            | `?ticker=AABA`                                      | 2026-09-15 | `<sha>` |
-| wlp-active-false-2026-09-15.json       | `?ticker=WLP&active=false`                          | 2026-09-15 | `<sha>` |
-| dell-active-false-2026-09-15.json      | `?ticker=DELL&active=false` (count 0)               | 2026-09-15 | `<sha>` |
-| aamrq-active-false-2026-09-15.json     | `?ticker=AAMRQ&active=false` (count 0)              | 2026-09-15 | `<sha>` |
-| imo-active-2026-09-15.json             | `?ticker=IMO` (XASE listing)                        | 2026-09-15 | `<sha>` |
-| nonusd-<TICKER>-active-2026-09-15.json | `?ticker=<TICKER>` (currency `<CCY>`, MIC `<MIC>`)  | 2026-09-15 | `<sha>` |
-| delisted-earliest-2026-09-15.json      | `?active=false&sort=delisted_utc&order=asc&limit=1` | 2026-09-15 | `<sha>` |
+| file                                              | request                                             | as-of      | sha256                                                             |
+| ------------------------------------------------- | --------------------------------------------------- | ---------- | ------------------------------------------------------------------ |
+| aapl-active-2026-09-15.json                       | `?ticker=AAPL`                                      | 2026-09-15 | `5b1e89eaf77f714a04148d640b75d97aba509f4eb41d2f0f2f65fb83fe789fbe` |
+| aapl-date-2010-01-04-2026-09-15.json              | `?ticker=AAPL&date=2010-01-04`                      | 2026-09-15 | `0a166f2c09db363bfe1bac9ec611414d6623f02576171535a12165c1f5b9139a` |
+| aapl-date-1998-01-05-2026-09-15.json              | `?ticker=AAPL&date=1998-01-05` (empty)              | 2026-09-15 | `11e4693b89cb3df7b3e1e7fffa53b97b2de8df48fa473103bdaa66ba0f8c9d6f` |
+| yhoo-active-false-2026-09-15.json                 | `?ticker=YHOO&active=false`                         | 2026-09-15 | `d74951c5931be9ed8b078e79b6be32a37ac05d195dca1c79732d88dc982bb922` |
+| yhoo-date-2015-06-01-2026-09-15.json              | `?ticker=YHOO&date=2015-06-01`                      | 2026-09-15 | `5b0f6e06ed9af04fca61f79b30d93ab28dd8073306995caa11e45a1a3b8d6300` |
+| yhoo-date-2015-06-01-active-false-2026-09-15.json | `?ticker=YHOO&date=2015-06-01&active=false` (empty) | 2026-09-15 | `71b2d2fc4364fc217520ba7c4ddc7fac6555f20722dca6a0e0479285fb8b2148` |
+| aaba-active-false-2026-09-15.json                 | `?ticker=AABA&active=false`                         | 2026-09-15 | `57f49956e8efbef3daa687054684579ba5176a1688f01444ca4539b169f49754` |
+| aaba-date-2018-06-01-2026-09-15.json              | `?ticker=AABA&date=2018-06-01`                      | 2026-09-15 | `9cd81115fde049f83cbf7fbcfd2a09953c9de04bbb31135f694e55fd2c2f3fa5` |
+| aaba-date-2018-06-01-active-false-2026-09-15.json | `?ticker=AABA&date=2018-06-01&active=false` (empty) | 2026-09-15 | `8817938e503702a93666877a0d8357f888cba674cc9d99b5e426d16a105354e3` |
+| wlp-active-false-2026-09-15.json                  | `?ticker=WLP&active=false`                          | 2026-09-15 | `bdb4c060d186aa033a0bf3d6661983b2dafe967ace9d1aa565a4ee678565045b` |
+| dell-active-false-2026-09-15.json                 | `?ticker=DELL&active=false` (empty)                 | 2026-09-15 | `2d1ee42d8b42c64c3a096002a1db6dca9e76c2ef4565912a967c4849132e82f5` |
+| aamrq-active-false-2026-09-15.json                | `?ticker=AAMRQ&active=false` (empty)                | 2026-09-15 | `e7d2142541451d6018ea84bbbd096d9d77997f4f92d1af60c3191818e58c2ac5` |
+| imo-active-2026-09-15.json                        | `?ticker=IMO` (XASE listing)                        | 2026-09-15 | `462b50fb0056c7088314711df4f5c80a053e4b3526ce27670626de191ad26ccb` |
+| delisted-earliest-2026-09-15.json                 | `?active=false&sort=delisted_utc&order=asc&limit=1` | 2026-09-15 | `ec4678c57853e629939b757433f312b183f9347b71318bb527f7e419772eb612` |
 ```
 
-Replace every `<sha>` with the digest from step 3 and every `<TICKER>`/`<CCY>`/`<MIC>` with the real values from step 2.
-
-- [ ] 6. Milestone commit:
+- [x] 6. Milestone commit:
 
 ```bash
 git add tests/fixtures/massive_reference
@@ -143,6 +149,18 @@ git commit -m "test(fixtures): freeze real Massive reference responses for the i
 Bodies recorded from the mini on 2026-09-15 with the production key; every
 later test loads these by name so no test touches the network."
 ```
+
+### Observed on capture
+
+Measured on the mini on 2026-09-15. These are the facts the later tasks are written to.
+
+- **F1.** No body carries `list_date`. This list endpoint never returns it, so the `date=` probe always runs for every ticker and `effective_from` always comes from `existed_at` (the probe date) or from nothing.
+- **F2.** An empty envelope has no `count` key at all: `{"results":[],"status":"OK","request_id":"..."}`. A parser must not read `count` to decide emptiness.
+- **F3.** `date=` combined with `active=false` returns an empty envelope even for a ticker that existed on that date; the date probe must send only `ticker` and `date`.
+- **F4.** A `date=` body may omit `primary_exchange` — `aapl-date-2010-01-04` has none, `yhoo-date-2015-06-01` has `XNAS`.
+- **F5.** Delisted records may carry no FIGI: `yhoo-active-false` and `wlp-active-false` carry `cik` only, while `aaba-active-false` carries `composite_figi` `BBG000KB2D74`, `share_class_figi` `BBG001S8V781` and `cik` `0001011006`. YHOO's `cik` is `0000316736`. So YHOO → AABA is **not** a FIGI-matched rename in this data: YHOO derives to a `candidate` `provider_reference` row and AABA to a `verified` `provider_figi` row — two security_ids.
+- **F6.** All 13,181 active US stock listings (14 pages of `?market=stocks&active=true&limit=1000`) are `currency_name: usd`. No real non-USD fixture exists on this endpoint, so the `nonusd-<TICKER>` fixture is not created.
+- **F7.** `?ticker=AABA` without `active=false` is empty (AABA delisted 2019-10-07); the plan's `aaba-active` file was replaced by `aaba-active-false`.
 
 ---
 
@@ -264,29 +282,40 @@ def _fixture(name: str) -> bytes:
 
 class TestFetchTickerIdentity:
     @responses.activate
-    def test_an_active_ticker_needs_no_date_probe(self):
+    def test_a_listed_ticker_still_gets_the_date_probe_because_the_list_endpoint_has_no_list_date(self):
+        # Measured 2026-09-15: no body from this endpoint carries list_date
+        # (fixtures README F1), so the probe runs for every ticker, listed or
+        # not, and existed_at is the only start date available.
         responses.add(responses.GET, REFERENCE_URL, body=_fixture("aapl-active-2026-09-15.json"), status=200)
-        responses.add(responses.GET, REFERENCE_URL, body=_fixture("aapl-date-1998-01-05-2026-09-15.json"), status=200)
+        # AAPL is listed, so the active=false page is an empty envelope; dell's
+        # frozen body is that same empty envelope.
+        responses.add(responses.GET, REFERENCE_URL, body=_fixture("dell-active-false-2026-09-15.json"), status=200)
+        responses.add(responses.GET, REFERENCE_URL, body=_fixture("aapl-date-2010-01-04-2026-09-15.json"), status=200)
 
         result = fetch_ticker_identity("AAPL", api_key="test-key", probe_date="2010-01-04")
 
-        # two calls only: active, then active=false. The record carries list_date.
-        assert len(responses.calls) == 2
+        # three calls: active, active=false, then the date probe.
+        assert len(responses.calls) == 3
         assert responses.calls[0].request.params.get("active") is None
         assert responses.calls[1].request.params["active"] == "false"
         assert "date" not in responses.calls[1].request.params
-        assert len(result.responses) == 2
+        # The probe sends ticker and date only: date= with active=false comes
+        # back empty even for a ticker that existed on that date (README F3).
+        assert set(responses.calls[2].request.params) == {"ticker", "date", "apiKey"}
+        assert responses.calls[2].request.params["date"] == "2010-01-04"
+        assert len(result.responses) == 3
         record = result.records[0]
         assert record.ticker == "AAPL"
-        assert record.list_date is not None
-        assert record.existed_at is None
+        assert record.list_date is None  # the field exists in the spec; this endpoint never fills it
+        assert record.existed_at == "2010-01-04"
         assert record.mic == "XNAS"  # primary_exchange is already a MIC, used as-is
         assert record.currency == "USD"  # currency_name uppercased
 
     @responses.activate
-    def test_the_date_probe_runs_only_when_no_record_carries_a_list_date(self):
+    def test_the_date_probe_runs_when_no_record_carries_a_list_date_which_is_always(self):
         # Both listing calls empty, so the date probe is the third call and its
-        # record is stamped existed_at.
+        # record is stamped existed_at. No record ever carries list_date
+        # (README F1), so the guard never suppresses the probe in practice.
         responses.add(responses.GET, REFERENCE_URL, body=_fixture("dell-active-false-2026-09-15.json"), status=200)
         responses.add(responses.GET, REFERENCE_URL, body=_fixture("dell-active-false-2026-09-15.json"), status=200)
         responses.add(responses.GET, REFERENCE_URL, body=_fixture("aapl-date-2010-01-04-2026-09-15.json"), status=200)
@@ -317,6 +346,9 @@ class TestFetchTickerIdentity:
 
         assert result.records == []
         assert len(result.responses) == 3
+        # An empty envelope from this endpoint has no `count` key at all
+        # (README F2): emptiness is decided from `results`, never from `count`.
+        assert "count" not in json.loads(result.responses[0])
 
     @responses.activate
     def test_a_404_is_an_empty_result_not_an_exception(self):
@@ -374,7 +406,7 @@ class TestFetchTickerIdentity:
         assert fetch_ticker_identity("IMO", api_key="test-key").records[0].mic == "XASE"
 ```
 
-Add `from pathlib import Path` and `fetch_ticker_identity` to the module's imports at the top of `tests/test_universe_client.py`.
+Add `import json`, `from pathlib import Path` and `fetch_ticker_identity` to the module's imports at the top of `tests/test_universe_client.py`.
 
 - [ ] 2. Run and see it fail:
 
@@ -604,7 +636,13 @@ def _fixture(name: str) -> bytes:
 
 
 def _records(name: str, *, existed_at: str | None = None) -> list[IdentityRecord]:
-    """Parse a frozen body into IdentityRecords the way fetch_ticker_identity does."""
+    """Parse a frozen body into IdentityRecords the way fetch_ticker_identity does.
+
+    `existed_at` is passed by every test that needs a derivable start: no body
+    from this endpoint carries `list_date` (fixtures README F1), so the `date=`
+    probe date is the only start a record can have. It is this pure function's
+    input, not a claim about the provider.
+    """
     rows = json.loads(_fixture(name)).get("results") or []
     return [
         IdentityRecord(
@@ -636,7 +674,8 @@ def _derive(records, existing=(), now=NOW):
 
 
 def test_one_record_with_a_figi_is_one_verified_interval(tmp_path):
-    derived = _derive(_records("aapl-active-2026-09-15.json"))
+    # existed_at is the real aapl-date-2010-01-04 probe date (README F1).
+    derived = _derive(_records("aapl-active-2026-09-15.json", existed_at="2010-01-04"))
 
     assert len(derived.events) == 1
     event = derived.events[0]
@@ -652,10 +691,44 @@ def test_one_record_with_a_figi_is_one_verified_interval(tmp_path):
     assert master.resolve_symbol("massive", "AAPL", "XNAS", datetime(2015, 1, 2, tzinfo=UTC), NOW) == event.security_id
 
 
-def test_a_rename_is_one_security_id_with_two_symbol_rows(tmp_path):
-    """YHOO → AABA: same composite and share-class FIGI, disjoint Massive dates."""
-    records = _records("yhoo-active-false-2026-09-15.json") + _records("aaba-active-2026-09-15.json")
+def test_the_real_yhoo_aaba_pair_is_two_ids_because_massive_gives_yhoo_no_figi(tmp_path):
+    """The spec's rename example does not hold in the real data (README F5).
+
+    Massive's YHOO delisted record carries `cik` only — no composite or
+    share-class FIGI — while AABA carries both. Nothing links them, so the
+    derivation must not invent a rename: two security_ids, YHOO a candidate on
+    provider_reference, AABA verified on provider_figi, and no conflict, because
+    two records with no common FIGI do not contradict each other.
+    """
+    records = _records("yhoo-active-false-2026-09-15.json", existed_at="2015-06-01") + _records(
+        "aaba-active-false-2026-09-15.json", existed_at="2018-06-01"
+    )
     derived = _derive(records)
+
+    assert len({event.security_id for event in derived.events}) == 2
+    by_symbol = {event.symbol: event for event in derived.events}
+    assert by_symbol["YHOO"].status == "candidate"
+    assert by_symbol["YHOO"].continuity_basis == "provider_reference"
+    assert by_symbol["AABA"].status == "verified"
+    assert by_symbol["AABA"].continuity_basis == "provider_figi"
+    assert derived.counts["identity_conflict"] == 0
+
+
+def test_a_figi_matched_rename_is_one_security_id_with_two_symbol_rows(tmp_path):
+    """The rename rule itself, exercised with a labelled test double.
+
+    Both records below are the real AABA bodies — same composite and share-class
+    FIGI, same cik — and the earlier one has its ticker overridden, because the
+    real YHOO record carries no FIGI to match on (README F5). The override is
+    the test's, never a fixture edit.
+    """
+    aaba_delisted = _records("aaba-active-false-2026-09-15.json", existed_at="2018-06-01")[0]
+    # test double: real AABA FIGIs, ticker overridden — Massive carries no FIGI
+    # on the real YHOO record (fixtures README F5)
+    earlier = aaba_delisted.__class__(
+        **{**aaba_delisted.__dict__, "ticker": "YHOO", "existed_at": "2015-06-01", "delisted_utc": None}
+    )
+    derived = _derive([earlier, aaba_delisted])
 
     assert len({event.security_id for event in derived.events}) == 1
     assert sorted(event.revision for event in derived.events) == [1, 2]
@@ -665,15 +738,18 @@ def test_a_rename_is_one_security_id_with_two_symbol_rows(tmp_path):
 
     master = _master(tmp_path)
     for event in derived.events:
-        assert master.append(event) is True
-    yhoo = master.resolve_symbol("massive", "YHOO", "XNAS", datetime(2010, 1, 4, tzinfo=UTC), NOW)
-    aaba = master.resolve_symbol("massive", "AABA", "XNAS", datetime(2018, 1, 4, tzinfo=UTC), NOW)
+        assert master.append(event) is True  # disjoint intervals on one id
+    yhoo = master.resolve_symbol("massive", "YHOO", "XNAS", datetime(2016, 1, 4, tzinfo=UTC), NOW)
+    aaba = master.resolve_symbol("massive", "AABA", "XNAS", datetime(2019, 1, 4, tzinfo=UTC), NOW)
     assert yhoo is not None and yhoo == aaba
 
 
 def test_matching_figis_with_overlapping_dates_are_two_unresolved_rows(tmp_path):
-    left = _records("yhoo-active-false-2026-09-15.json")[0]
-    overlapping = [left, left.__class__(**{**left.__dict__, "ticker": "AABA", "delisted_utc": None})]
+    # test double: real AABA FIGIs (the delisted YHOO body carries none, fixtures
+    # README F5); the second record reuses them under the earlier ticker with an
+    # interval that overlaps the first.
+    left = _records("aaba-active-false-2026-09-15.json", existed_at="2015-06-01")[0]
+    overlapping = [left, left.__class__(**{**left.__dict__, "ticker": "YHOO", "delisted_utc": None})]
     derived = _derive(overlapping)
 
     assert len({event.security_id for event in derived.events}) == 2
@@ -687,7 +763,7 @@ def test_matching_figis_with_overlapping_dates_are_two_unresolved_rows(tmp_path)
 
 
 def test_a_differing_share_class_figi_is_a_material_conflict(tmp_path):
-    base = _records("aapl-active-2026-09-15.json")[0]
+    base = _records("aapl-active-2026-09-15.json", existed_at="2010-01-04")[0]
     other = base.__class__(**{**base.__dict__, "ticker": "AAPL", "share_class_figi": "BBG001S5N8V8"})
     derived = _derive([base, other])
 
@@ -697,8 +773,8 @@ def test_a_differing_share_class_figi_is_a_material_conflict(tmp_path):
 
 
 def test_a_missing_share_class_figi_on_one_side_is_incomplete_not_contradictory():
-    base = _records("aapl-active-2026-09-15.json")[0]
-    partial = base.__class__(**{**base.__dict__, "share_class_figi": None, "list_date": "1990-01-02"})
+    base = _records("aapl-active-2026-09-15.json", existed_at="2010-01-04")[0]
+    partial = base.__class__(**{**base.__dict__, "share_class_figi": None, "existed_at": "1990-01-02"})
     derived = _derive([base, partial])
 
     assert len({event.security_id for event in derived.events}) == 2
@@ -707,9 +783,9 @@ def test_a_missing_share_class_figi_on_one_side_is_incomplete_not_contradictory(
 
 
 def test_a_different_composite_figi_is_two_ids_with_disjoint_intervals(tmp_path):
-    delisted = _records("wlp-active-false-2026-09-15.json")[0]
+    delisted = _records("wlp-active-false-2026-09-15.json", existed_at="2010-01-04")[0]
     reused = _records("aapl-active-2026-09-15.json")[0]
-    reused = reused.__class__(**{**reused.__dict__, "ticker": "WLP", "list_date": "2020-01-02"})
+    reused = reused.__class__(**{**reused.__dict__, "ticker": "WLP", "existed_at": "2020-01-02"})
     derived = _derive([delisted, reused])
 
     assert len({event.security_id for event in derived.events}) == 2
@@ -719,14 +795,14 @@ def test_a_different_composite_figi_is_two_ids_with_disjoint_intervals(tmp_path)
 
 
 def test_an_existing_partial_interval_is_widened_on_the_same_id(tmp_path):
-    first = _derive(_records("aapl-active-2026-09-15.json")).events[0]
+    first = _derive(_records("aapl-active-2026-09-15.json", existed_at="2010-01-04")).events[0]
     narrowed = SecurityIdentityEvent(
         **{**first.__dict__, "effective_to": datetime(2015, 1, 1, tzinfo=UTC)}
     )
     master = _master(tmp_path)
     master.append(narrowed)
 
-    derived = _derive(_records("aapl-active-2026-09-15.json"), existing=master.events())
+    derived = _derive(_records("aapl-active-2026-09-15.json", existed_at="2010-01-04"), existing=master.events())
 
     assert len(derived.events) == 1
     widened = derived.events[0]
@@ -738,15 +814,17 @@ def test_an_existing_partial_interval_is_widened_on_the_same_id(tmp_path):
 
 
 def test_a_covered_interval_derives_nothing(tmp_path):
-    event = _derive(_records("aapl-active-2026-09-15.json")).events[0]
+    event = _derive(_records("aapl-active-2026-09-15.json", existed_at="2010-01-04")).events[0]
     master = _master(tmp_path)
     master.append(event)
 
-    assert _derive(_records("aapl-active-2026-09-15.json"), existing=master.events()).events == []
+    assert (
+        _derive(_records("aapl-active-2026-09-15.json", existed_at="2010-01-04"), existing=master.events()).events == []
+    )
 
 
 def test_a_record_without_any_figi_is_candidate_and_does_not_resolve(tmp_path):
-    base = _records("aapl-active-2026-09-15.json")[0]
+    base = _records("aapl-active-2026-09-15.json", existed_at="2010-01-04")[0]
     bare = base.__class__(**{**base.__dict__, "composite_figi": None, "share_class_figi": None})
     derived = _derive([bare])
 
@@ -759,9 +837,11 @@ def test_a_record_without_any_figi_is_candidate_and_does_not_resolve(tmp_path):
     assert master.resolve_symbol("massive", "AAPL", "XNAS", NOW, NOW) is None
 
 
-def test_no_list_date_and_an_empty_probe_appends_nothing():
+def test_no_start_and_an_empty_probe_appends_nothing():
+    # F1 makes this the ordinary case, not the edge case: no record carries a
+    # list_date, so a ticker whose date= probe came back empty has no start.
     base = _records("wlp-active-false-2026-09-15.json")[0]
-    undated = base.__class__(**{**base.__dict__, "list_date": None, "existed_at": None})
+    undated = base.__class__(**{**base.__dict__, "existed_at": None})
     derived = _derive([undated])
 
     assert derived.events == []
@@ -772,13 +852,13 @@ def test_an_empty_probe_does_not_backdate_a_delisted_record():
     """A start of known_at would invent a date and, for a delisted record, an
     interval that ends before it starts — which the master rejects."""
     base = _records("yhoo-active-false-2026-09-15.json")[0]
-    undated = base.__class__(**{**base.__dict__, "list_date": None})
+    undated = base.__class__(**{**base.__dict__, "existed_at": None})
     assert _derive([undated]).events == []
 
 
-def test_a_probed_start_is_used_when_there_is_no_list_date():
+def test_a_probed_start_is_used_because_there_is_never_a_list_date():
     base = _records("wlp-active-false-2026-09-15.json")[0]
-    probed = base.__class__(**{**base.__dict__, "list_date": None, "existed_at": "2010-01-04"})
+    probed = base.__class__(**{**base.__dict__, "existed_at": "2010-01-04"})
     event = _derive([probed]).events[0]
     assert event.effective_from == datetime(2010, 1, 4, tzinfo=UTC)
 
@@ -790,13 +870,13 @@ def test_no_record_at_all_is_counted_unknown_to_provider():
 
 
 def test_a_nyse_american_identity_resolves_under_xase(tmp_path):
-    event = _derive(_records("imo-active-2026-09-15.json")).events[0]
+    event = _derive(_records("imo-active-2026-09-15.json", existed_at="2010-01-04")).events[0]
     master = _master(tmp_path)
     master.append(event)
     assert master.resolve_symbol("massive", "IMO", "XASE", NOW, NOW) == event.security_id
 ```
 
-When the non-USD fixture's ticker is known from Task 0, the currency assertion lives in Task 6's test, not here.
+There is no currency assertion here. Every one of the 13,181 active US stock listings on this endpoint is `usd` (fixtures README F6), so the equal-`known_at` currency case is exercised in Task 6 with `imo-active-2026-09-15.json` and asserts what the resolver returns, not which of two currencies wins.
 
 - [ ] 2. Run and see it fail:
 
@@ -1153,7 +1233,7 @@ def derive_identity_events(
 uv run pytest tests/test_security_master_sync.py -q
 ```
 
-Expected: all pass. If the rename test fails because YHOO and AABA carry different `share_class_figi` values in the real bodies, that is the provider's answer, not a bug — change the test to assert the `identity_conflict` branch and note the fixture's values in a comment. Never edit a fixture to make a test pass.
+Expected: all pass. The YHOO/AABA question the spec left open is already answered by the captured bodies: Massive gives YHOO no FIGI at all, so the real pair derives two ids and the rename rule is exercised by the labelled test double above (Task 0, README F5). That is the provider's answer, not a bug. Never edit a fixture to make a test pass.
 
 - [ ] 5. Milestone commit:
 
@@ -2416,10 +2496,15 @@ def test_the_currency_resolver_picks_a_row_when_two_share_one_known_at(tmp_path)
 
     from clients.security_master import SecurityIdentityEvent, SecurityMaster
 
-    fixture = _Path(__file__).parent / "fixtures" / "massive_reference" / "nonusd-<TICKER>-active-2026-09-15.json"
+    fixture = _Path(__file__).parent / "fixtures" / "massive_reference" / "imo-active-2026-09-15.json"
     row = (json.loads(fixture.read_bytes()).get("results") or [])[0]
     symbol, currency, mic = row["ticker"], row["currency_name"].upper(), row["primary_exchange"]
-    assert currency != "USD"  # the fixture is a real non-USD listing
+    # All 13,181 active US stock listings (14 pages of
+    # ?market=stocks&active=true&limit=1000, measured on the mini 2026-09-15)
+    # are currency_name: usd — no real non-USD listing exists on this endpoint
+    # (fixtures README F6). The equal-known_at tie-break is therefore exercised
+    # with two real USD rows: this proves the resolver returns a currency and
+    # does not raise, not which of two different currencies wins.
 
     root = tmp_path / "lake"
     master = SecurityMaster(root, evidence_verifier=lambda ref, digest: ref.endswith(digest))
@@ -2457,7 +2542,7 @@ def test_the_currency_resolver_picks_a_row_when_two_share_one_known_at(tmp_path)
     assert resolve(symbol) == (currency, "security_master")
 ```
 
-Replace `<TICKER>` with the ticker chosen in Task 0. If the two derived rows would carry different currencies for that symbol, assert the first-encountered one explicitly and say so in the test's docstring — the resolver has no interval filter and making it interval-aware is out of scope (spec §9).
+Both rows carry the same real currency, so the assertion is on the resolver returning it from the `security_master` source. The resolver has no interval filter and making it interval-aware is out of scope (spec §9); which of two *different* currencies would win on an equal `known_at` cannot be tested against real data from this endpoint (F6) and is left untested rather than fabricated.
 
 - [ ] 2. Run and see it fail:
 
@@ -2694,14 +2779,25 @@ sample-then-pace procedure, and the spec status line."
 
 ### Known gaps to raise at execution time
 
-- The spec's rename example (YHOO → AABA) assumes the two real bodies share a
-  `composite_figi` **and** a `share_class_figi`. That is unverified until Task 0
-  captures them. If they differ, Task 3's rename test becomes a conflict test
-  and the rename path stays exercised by a constructed pair — noted inline in
-  Task 3 step 4.
-- The non-USD listing for §7's currency test has no named ticker in the spec;
-  Task 0 step 2 picks a real one and records it, and stops rather than
-  fabricating if none is found.
+- **Resolved by Task 0 (F5).** The spec's rename example (YHOO → AABA) does not
+  hold in the real data: Massive's YHOO delisted record carries `cik`
+  `0000316736` and no FIGI, while AABA carries `composite_figi` `BBG000KB2D74`,
+  `share_class_figi` `BBG001S8V781` and `cik` `0001011006`. Nothing links them,
+  so the real pair derives two security_ids — YHOO `candidate` on
+  `provider_reference`, AABA `verified` on `provider_figi`, `identity_conflict`
+  0 — and the FIGI-matched rename rule is exercised by a labelled test double
+  built from the two real AABA bodies (Task 3).
+- **Resolved by Task 0 (F6).** There is no non-USD listing to name: all 13,181
+  active US stock listings on this endpoint are `currency_name: usd`. The
+  `nonusd-<TICKER>` fixture is not created and none is fabricated; Task 6's
+  equal-`known_at` test uses `imo-active-2026-09-15.json` and asserts that the
+  resolver returns the row's currency from `security_master`, leaving
+  "which of two different currencies wins" untested.
+- **Also resolved by Task 0 (F1).** This list endpoint never returns
+  `list_date`, so the `date=` probe runs for every ticker and `effective_from`
+  comes from the probe date or from nothing. `IdentityRecord.list_date` stays in
+  the shape the spec defines but is always `None` from this provider, and every
+  Task 3 test that needs a derivable start passes `existed_at` explicitly.
 - The endpoint's real rate limit is unknown; the declared 5/min is a starting
   value, re-measured by the sample run in Task 7's runbook procedure before the
   full backfill.
