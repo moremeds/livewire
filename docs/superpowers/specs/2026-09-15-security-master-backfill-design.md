@@ -1,7 +1,8 @@
 # Security master backfill from Massive reference data
 
-Status: design, approved in chat 2026-09-15; revised after seesaw review
-rounds 1–3 (same day). Phase 1 of two; phase 2 (Russell 2000 history from SEC EDGAR
+Status: implemented 2026-09-15 (this plan:
+`docs/superpowers/plans/2026-09-15-security-master-backfill.md`); not yet run on
+the mini. Phase 1 of two; phase 2 (Russell 2000 history from SEC EDGAR
 N-PORT / N-Q / N-CSR / N-30D) gets its own spec once this one has run on the
 mini.
 
@@ -42,6 +43,16 @@ fixtures of §7, saved before implementation starts):
 
 So: coverage from about 2003, historical state via `date=`, delistings
 listed, FIGI and CIK present, some names missing. Nothing before 2003.
+
+**Observed on capture** — the frozen bodies contradict the table above and the
+tests are written to the bodies, not to this section. Seven facts, measured on
+the mini 2026-09-15: `tests/fixtures/massive_reference/README.md`. Chiefly F1:
+no body carries `list_date`, this list endpoint never returns it, so the
+`date=` probe runs for every ticker and `effective_from` always comes from the
+probe date or from nothing — the `list_date` in the `ticker=AAPL&date=…` row
+above is not there. Also F5 (a delisted record may carry no FIGI, so YHOO →
+AABA is not a FIGI-matched rename) and F6 (all 13,181 active US stock listings
+are `currency_name: usd`; no non-USD fixture exists).
 
 The endpoint's rate limit is not published for this plan. Two new declared
 constants in `clients/constants.py`, same scoped shape as
