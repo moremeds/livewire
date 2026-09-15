@@ -1109,9 +1109,10 @@ python scripts/livewire_ingest.py security-master sync --tickers AAPL YHOO      
   from the FX scope, not measured on `/reference`. Measure it with the sample
   run below and pass it back as
   `LW_DECLARED_MASSIVE_REQUESTS_PER_MINUTE_REFERENCE`.
-- **Evidence**: every response body goes to the CAS, one `record_many` per run
-  before any append. If that commit raises, nothing is appended and the run
-  exits 1.
+- **Evidence**: every response body goes to the CAS; one `record_many` per
+  chunk of 50 tickers (`FLUSH_EVERY_TICKERS`), committed before that chunk's
+  identities are appended. A crash mid-run keeps every earlier chunk; if a
+  commit raises, nothing from its chunk is appended and the run exits 1.
 - **Ledger**: `runs` rows `job='security-master-sync'`; measurements scoped
   `all` (or `subset` under `--tickers`): `identity_tickers_requested`,
   `identity_events_appended`, `identity_candidate`, `identity_no_start`,

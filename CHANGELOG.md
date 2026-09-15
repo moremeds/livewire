@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memberships" remediation hint now names these two commands instead of the
   read-only `livewire_ops.py membership` query, which only listed the
   unresolved members and fixed nothing.
+  Pacing is per request (a ticker is 2-3 requests), `known_at` is each
+  ticker's fetch time, evidence is committed per 50-ticker chunk so a crash
+  keeps earlier chunks, a rename is joined to its earlier symbol's id when the
+  halves arrive in separate fetches, a `date=` probe row must share a FIGI or
+  cik with the listing it stamps, and the needed dates are probed in order
+  until one answers (code review 2026-09-15).
 - Three facts measured against the production key on 2026-09-15 shape what the
   backfill can produce (`tests/fixtures/massive_reference/README.md`, F1/F5/F6;
   the frozen bodies are the tests' only input, which never touch the network):

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -283,7 +283,7 @@ def _identity_record(row: dict, ticker: str, existed_at: str | None) -> Identity
 
 
 def _identity_key(record: IdentityRecord) -> tuple:
-    return (record.composite_figi, record.share_class_figi, record.mic, record.delisted_utc)
+    return (record.composite_figi, record.share_class_figi, record.cik, record.mic, record.delisted_utc)
 
 
 def _is_same_listing(known: IdentityRecord, probed: IdentityRecord) -> bool:
@@ -292,29 +292,42 @@ def _is_same_listing(known: IdentityRecord, probed: IdentityRecord) -> bool:
     A `date=` body may omit `primary_exchange` (measured 2026-09-15), so an
     exact key comparison would split one listing into two records. A field the
     probe did not return matches anything; a field it did return must agree.
+    Agreement alone is not enough: a probe row carrying neither FIGI nor cik
+    would match every listing, and on a reused ticker it would hand the old
+    issuer's start date to the current one. The probe must share a FIGI or a
+    cik with the listing it stamps; otherwise it stays its own record.
     """
-    return all(
+    fields_agree = all(
         probed_field is None or probed_field == known_field
         for known_field, probed_field in zip(_identity_key(known), _identity_key(probed), strict=True)
     )
+    affirmative = (probed.composite_figi is not None and probed.composite_figi == known.composite_figi) or (
+        probed.cik is not None and probed.cik == known.cik
+    )
+    return fields_agree and affirmative
 
 
 def fetch_ticker_identity(
     ticker: str,
     api_key: str | None = None,
     *,
-    probe_date: str | None = None,
+    probe_dates: Sequence[str] = (),
     pace_fn: Callable[[], None] | None = None,
 ) -> IdentityRecords:
     """Fetch one ticker's listing identity from Massive reference data.
+
+    `probe_dates` are tried in the order given until one returns a record;
+    the caller passes the needed membership dates ascending, so the earliest
+    date the provider can answer becomes `existed_at`. An earliest date below
+    the provider's coverage must not cost the ticker its later memberships.
 
     `pace_fn` runs before every request: the declared rate is per request,
     and a ticker costs two or three of them, so pacing per ticker would run
     the endpoint at two to three times the declared rate.
 
-    Three calls at most, in order: the active listing, the delisted listing,
-    and — only when neither carries a `list_date` and `probe_date` is given —
-    a historical `date=` probe, whose records are stamped `existed_at`. That
+    Two list calls, then — only when neither record carries a `list_date` and
+    `probe_dates` is non-empty — historical `date=` probes, whose records are
+    stamped `existed_at`. That
     probe is the only start date available for a record Massive lists without
     one; an empty probe proves nothing and appends nothing (spec §4). The probe
     sends `ticker` and `date` only: `date=` with `active=false` comes back
@@ -341,10 +354,14 @@ def fetch_ticker_identity(
                 seen.add(_identity_key(record))
                 records.append(record)
 
-    if probe_date is not None and not any(record.list_date for record in records):
+    if any(record.list_date for record in records):
+        probe_dates = ()
+    for probe_date in probe_dates:
         pace()
         body, rows = _reference_page(ticker, key, {"date": probe_date})
         bodies.append(body)
+        if not rows:
+            continue
         for row in rows:
             probed = _identity_record(row, ticker, probe_date)
             candidates = [i for i, known in enumerate(records) if _is_same_listing(known, probed)]
@@ -358,6 +375,7 @@ def fetch_ticker_identity(
             else:
                 # Same listing, now with a proven date it existed on.
                 records[index] = replace(records[index], existed_at=probe_date)
+        break
 
     return IdentityRecords(responses=bodies, records=records)
 

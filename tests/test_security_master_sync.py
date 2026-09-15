@@ -143,6 +143,31 @@ def test_a_figi_matched_rename_is_one_security_id_with_two_symbol_rows(tmp_path)
     assert yhoo is not None and yhoo == aaba
 
 
+def test_a_rename_fetched_one_ticker_at_a_time_stays_one_security_id(tmp_path):
+    """`sync` fetches each ticker on its own, so the two halves of a rename never
+    reach one derive call; the second half must find the first in the master."""
+    aaba_delisted = _records("aaba-active-false-2026-09-15.json", existed_at="2018-06-01")[0]
+    earlier = aaba_delisted.__class__(  # test double, as in the one-call rename test above
+        **{
+            **aaba_delisted.__dict__,
+            "ticker": "YHOO",
+            "existed_at": "2015-06-01",
+            "delisted_utc": _records("yhoo-active-false-2026-09-15.json")[0].delisted_utc,
+        }
+    )
+    master = _master(tmp_path)
+    for event in _derive([earlier]).events:
+        assert master.append(event) is True
+
+    later = _derive([aaba_delisted], existing=master.events())
+
+    assert [(e.security_id, e.revision, e.symbol, e.supersedes) for e in later.events] == [
+        (master.events()[0].security_id, 2, "AABA", None)
+    ]
+    assert master.append(later.events[0]) is True
+    assert _derive([aaba_delisted], existing=master.events()).events == []  # covered on refetch
+
+
 def test_matching_figis_with_overlapping_dates_are_two_unresolved_rows(tmp_path):
     # test double: real AABA FIGIs (the delisted YHOO body carries none, fixtures
     # README F5); the second record reuses them under the earlier ticker with an
@@ -368,12 +393,16 @@ def _fetcher(bodies: dict[str, list[str]], calls: list[tuple[str, str | None]]):
     record has a derivable start at all.
     """
 
-    def fetch(ticker: str, *, probe_date: str | None = None) -> IdentityRecords:
-        calls.append((ticker, probe_date))
+    def fetch(ticker: str, *, probe_dates: tuple[str, ...] = ()) -> IdentityRecords:
+        calls.append((ticker, probe_dates[0] if probe_dates else None))
         names = bodies[ticker]
         return IdentityRecords(
             responses=[_fixture(name) for name in names],
-            records=[record for name in names for record in _records(name, existed_at=probe_date)],
+            records=[
+                record
+                for name in names
+                for record in _records(name, existed_at=probe_dates[0] if probe_dates else None)
+            ],
         )
 
     return fetch
@@ -391,7 +420,12 @@ def test_sync_appends_identities_and_resolves_the_placeholder_ticker(tmp_path):
 
     assert (
         security_master_sync.sync(
-            indexes=["sp500"], data_lake_root=lake, now=NOW, fetch_fn=fetch, sleep_fn=lambda _s: None
+            indexes=["sp500"],
+            data_lake_root=lake,
+            now=NOW,
+            clock_fn=lambda: NOW,
+            fetch_fn=fetch,
+            sleep_fn=lambda _s: None,
         )
         == 0
     )
@@ -409,7 +443,12 @@ def test_each_identity_row_cites_only_its_own_tickers_bodies(tmp_path):
 
     assert (
         security_master_sync.sync(
-            indexes=["sp500"], data_lake_root=lake, now=NOW, fetch_fn=fetch, sleep_fn=lambda _s: None
+            indexes=["sp500"],
+            data_lake_root=lake,
+            now=NOW,
+            clock_fn=lambda: NOW,
+            fetch_fn=fetch,
+            sleep_fn=lambda _s: None,
         )
         == 0
     )
@@ -423,7 +462,9 @@ def test_a_second_run_makes_no_fetch(tmp_path):
     lake = _placeholder_lake(tmp_path, [("AAPL", "2010-01-04")])
     calls: list[tuple[str, str | None]] = []
     fetch = _fetcher({"AAPL": ["aapl-active-2026-09-15.json"]}, calls)
-    kwargs = dict(indexes=["sp500"], data_lake_root=lake, now=NOW, fetch_fn=fetch, sleep_fn=lambda _s: None)
+    kwargs = dict(
+        indexes=["sp500"], data_lake_root=lake, now=NOW, clock_fn=lambda: NOW, fetch_fn=fetch, sleep_fn=lambda _s: None
+    )
 
     security_master_sync.sync(**kwargs)
     calls.clear()
@@ -438,7 +479,9 @@ def test_a_membership_date_past_the_existing_interval_triggers_a_fetch(tmp_path)
     lake = _placeholder_lake(tmp_path, [("WLP", "2005-01-03"), ("WLP", "2020-01-02")])
     calls: list[tuple[str, str | None]] = []
     fetch = _fetcher({"WLP": ["wlp-active-false-2026-09-15.json"]}, calls)
-    kwargs = dict(indexes=["sp500"], data_lake_root=lake, now=NOW, fetch_fn=fetch, sleep_fn=lambda _s: None)
+    kwargs = dict(
+        indexes=["sp500"], data_lake_root=lake, now=NOW, clock_fn=lambda: NOW, fetch_fn=fetch, sleep_fn=lambda _s: None
+    )
 
     security_master_sync.sync(**kwargs)
     calls.clear()
@@ -456,6 +499,7 @@ def test_dry_run_appends_nothing(tmp_path):
             indexes=["sp500"],
             data_lake_root=lake,
             now=NOW,
+            clock_fn=lambda: NOW,
             fetch_fn=fetch,
             sleep_fn=lambda _s: None,
             dry_run=True,
@@ -476,11 +520,64 @@ def test_a_raising_record_many_appends_nothing_and_exits_one(tmp_path, monkeypat
 
     assert (
         security_master_sync.sync(
-            indexes=["sp500"], data_lake_root=lake, now=NOW, fetch_fn=fetch, sleep_fn=lambda _s: None
+            indexes=["sp500"],
+            data_lake_root=lake,
+            now=NOW,
+            clock_fn=lambda: NOW,
+            fetch_fn=fetch,
+            sleep_fn=lambda _s: None,
         )
         == 1
     )
     assert SecurityMaster(lake, evidence_verifier=None).events() == []
+    terminal = ledger.query("select verdict from runs where job='security-master-sync' and ended is not null")
+    assert [row["verdict"] for row in terminal] == ["FAILED"]
+
+
+def test_known_at_is_each_tickers_fetch_time_not_the_runs_start(tmp_path):
+    """Spec §4: `known_at` is the fetch time. A paced run spans hours, and an
+    as_of inside it must not see identities fetched after it."""
+    lake = _placeholder_lake(tmp_path, [("AAPL", "2010-01-04"), ("IMO", "2010-01-04")])
+    fetch = _fetcher({"AAPL": ["aapl-active-2026-09-15.json"], "IMO": ["imo-active-2026-09-15.json"]}, [])
+    ticks = iter([datetime(2026, 9, 15, 13, 0, tzinfo=UTC), datetime(2026, 9, 15, 14, 0, tzinfo=UTC)])
+
+    security_master_sync.sync(
+        indexes=["sp500"],
+        data_lake_root=lake,
+        now=NOW,
+        clock_fn=lambda: next(ticks),
+        fetch_fn=fetch,
+        sleep_fn=lambda _s: None,
+    )
+
+    rows = {row.symbol: row.known_at for row in SecurityMaster(lake, evidence_verifier=None).events()}
+    assert rows == {"AAPL": datetime(2026, 9, 15, 13, 0, tzinfo=UTC), "IMO": datetime(2026, 9, 15, 14, 0, tzinfo=UTC)}
+    assert {item.retrieved_at for item in SourceEvidenceStore(lake).list_verified()} == set(rows.values())
+
+
+def test_a_crash_mid_run_keeps_every_earlier_chunk(tmp_path, monkeypatch):
+    """One commit per chunk, not per run: a crash at a later ticker must not
+    throw away the identities already fetched (Cursor/lead review finding)."""
+    lake = _placeholder_lake(tmp_path, [("AAPL", "2010-01-04"), ("IMO", "2010-01-04")])
+    good = _fetcher({"AAPL": ["aapl-active-2026-09-15.json"]}, [])
+
+    def fetch(ticker: str, *, probe_dates: tuple[str, ...] = ()):
+        if ticker == "IMO":
+            raise RuntimeError("disk full")  # not a UniverseFetchError: the run dies here
+        return good(ticker, probe_dates=probe_dates)
+
+    monkeypatch.setattr(security_master_sync, "FLUSH_EVERY_TICKERS", 1)
+    with pytest.raises(RuntimeError):
+        security_master_sync.sync(
+            indexes=["sp500"],
+            data_lake_root=lake,
+            now=NOW,
+            clock_fn=lambda: NOW,
+            fetch_fn=fetch,
+            sleep_fn=lambda _s: None,
+        )
+
+    assert [row.symbol for row in SecurityMaster(lake, evidence_verifier=None).events()] == ["AAPL"]
     terminal = ledger.query("select verdict from runs where job='security-master-sync' and ended is not null")
     assert [row["verdict"] for row in terminal] == ["FAILED"]
 
@@ -496,7 +593,9 @@ def test_evidence_is_committed_once_per_run(tmp_path, monkeypatch):
         lambda self, evidence: (commits.append(len(evidence)), original(self, evidence))[1],
     )
 
-    security_master_sync.sync(indexes=["sp500"], data_lake_root=lake, now=NOW, fetch_fn=fetch, sleep_fn=lambda _s: None)
+    security_master_sync.sync(
+        indexes=["sp500"], data_lake_root=lake, now=NOW, clock_fn=lambda: NOW, fetch_fn=fetch, sleep_fn=lambda _s: None
+    )
 
     assert commits == [2]
 
@@ -504,12 +603,17 @@ def test_evidence_is_committed_once_per_run(tmp_path, monkeypatch):
 def test_a_fetch_failure_is_counted_and_exits_one(tmp_path):
     lake = _placeholder_lake(tmp_path, [("AAPL", "2010-01-04")])
 
-    def fetch(ticker: str, *, probe_date: str | None = None):
+    def fetch(ticker: str, *, probe_dates: tuple[str, ...] = ()):
         raise UniverseFetchError("Massive reference lookup failed for AAPL: boom", status_code=503)
 
     assert (
         security_master_sync.sync(
-            indexes=["sp500"], data_lake_root=lake, now=NOW, fetch_fn=fetch, sleep_fn=lambda _s: None
+            indexes=["sp500"],
+            data_lake_root=lake,
+            now=NOW,
+            clock_fn=lambda: NOW,
+            fetch_fn=fetch,
+            sleep_fn=lambda _s: None,
         )
         == 1
     )
@@ -521,13 +625,13 @@ def test_a_429_backs_off_once_then_counts_a_failure(tmp_path):
     slept: list[float] = []
     attempts: list[str] = []
 
-    def fetch(ticker: str, *, probe_date: str | None = None):
+    def fetch(ticker: str, *, probe_dates: tuple[str, ...] = ()):
         attempts.append(ticker)
         raise UniverseFetchError("rate limited", status_code=429)
 
     assert (
         security_master_sync.sync(
-            indexes=["sp500"], data_lake_root=lake, now=NOW, fetch_fn=fetch, sleep_fn=slept.append
+            indexes=["sp500"], data_lake_root=lake, now=NOW, clock_fn=lambda: NOW, fetch_fn=fetch, sleep_fn=slept.append
         )
         == 1
     )
@@ -542,7 +646,12 @@ def test_a_ticker_unknown_to_massive_is_counted_and_appends_nothing(tmp_path):
 
     assert (
         security_master_sync.sync(
-            indexes=["sp500"], data_lake_root=lake, now=NOW, fetch_fn=fetch, sleep_fn=lambda _s: None
+            indexes=["sp500"],
+            data_lake_root=lake,
+            now=NOW,
+            clock_fn=lambda: NOW,
+            fetch_fn=fetch,
+            sleep_fn=lambda _s: None,
         )
         == 0
     )
@@ -553,7 +662,9 @@ def test_a_ticker_unknown_to_massive_is_counted_and_appends_nothing(tmp_path):
 def test_a_master_collision_is_counted_never_swallowed(tmp_path):
     lake = _placeholder_lake(tmp_path, [("AAPL", "2010-01-04")])
     fetch = _fetcher({"AAPL": ["aapl-active-2026-09-15.json"]}, [])
-    security_master_sync.sync(indexes=["sp500"], data_lake_root=lake, now=NOW, fetch_fn=fetch, sleep_fn=lambda _s: None)
+    security_master_sync.sync(
+        indexes=["sp500"], data_lake_root=lake, now=NOW, clock_fn=lambda: NOW, fetch_fn=fetch, sleep_fn=lambda _s: None
+    )
     # a second identity for the same listing under a fresh id collides on FIGI
     master = SecurityMaster(lake, evidence_verifier=None)
     first = master.events()[0]
@@ -580,6 +691,7 @@ def test_the_tickers_flag_files_its_measurements_under_subset(tmp_path):
             tickers=["AAPL"],
             data_lake_root=lake,
             now=NOW,
+            clock_fn=lambda: NOW,
             fetch_fn=fetch,
             sleep_fn=lambda _s: None,
         )
@@ -592,7 +704,9 @@ def test_the_tickers_flag_files_its_measurements_under_subset(tmp_path):
 def test_the_run_opens_and_closes_a_security_master_sync_row(tmp_path):
     lake = _placeholder_lake(tmp_path, [("AAPL", "2010-01-04")])
     fetch = _fetcher({"AAPL": ["aapl-active-2026-09-15.json"]}, [])
-    security_master_sync.sync(indexes=["sp500"], data_lake_root=lake, now=NOW, fetch_fn=fetch, sleep_fn=lambda _s: None)
+    security_master_sync.sync(
+        indexes=["sp500"], data_lake_root=lake, now=NOW, clock_fn=lambda: NOW, fetch_fn=fetch, sleep_fn=lambda _s: None
+    )
 
     rows = ledger.query("select ended, verdict, exit_code from runs where job='security-master-sync'")
     assert len(rows) == 2
@@ -607,9 +721,9 @@ def test_sync_dispatches_from_the_real_entrypoint_argv(tmp_path, monkeypatch):
     monkeypatch.setattr(
         security_master_sync,
         "fetch_ticker_identity",
-        lambda ticker, key, probe_date=None, pace_fn=None: IdentityRecords(
+        lambda ticker, key, probe_dates=(), pace_fn=None: IdentityRecords(
             responses=[_fixture("aapl-active-2026-09-15.json")],
-            records=_records("aapl-active-2026-09-15.json", existed_at=probe_date),
+            records=_records("aapl-active-2026-09-15.json", existed_at=probe_dates[0] if probe_dates else None),
         ),
     )
     monkeypatch.setenv("MASSIVE_API_KEY", "test-key")
@@ -623,18 +737,20 @@ def test_the_default_fetch_paces_every_request_at_the_declared_rate(tmp_path, mo
     lake = _placeholder_lake(tmp_path, [("AAPL", "2010-01-04")])
     slept: list[float] = []
 
-    def fake_fetch(ticker, key, probe_date=None, pace_fn=None):
+    def fake_fetch(ticker, key, probe_dates=(), pace_fn=None):
         for _request in range(3):
             pace_fn()
         return IdentityRecords(
             responses=[_fixture("aapl-active-2026-09-15.json")],
-            records=_records("aapl-active-2026-09-15.json", existed_at=probe_date),
+            records=_records("aapl-active-2026-09-15.json", existed_at=probe_dates[0] if probe_dates else None),
         )
 
     monkeypatch.setattr(security_master_sync, "fetch_ticker_identity", fake_fetch)
     monkeypatch.setenv("MASSIVE_API_KEY", "test-key")
 
-    security_master_sync.sync(indexes=["sp500"], data_lake_root=lake, now=NOW, sleep_fn=slept.append, dry_run=True)
+    security_master_sync.sync(
+        indexes=["sp500"], data_lake_root=lake, now=NOW, clock_fn=lambda: NOW, sleep_fn=slept.append, dry_run=True
+    )
 
     assert slept == [12.0, 12.0, 12.0]  # 60 / massive_requests_per_minute/reference
 
@@ -665,7 +781,12 @@ def test_a_superseded_placeholder_is_not_refetched(tmp_path):
     fetch = _fetcher({"AAPL": ["aapl-active-2026-09-15.json"]}, calls)
     assert (
         security_master_sync.sync(
-            indexes=["sp500"], data_lake_root=lake, now=NOW, fetch_fn=fetch, sleep_fn=lambda _s: None
+            indexes=["sp500"],
+            data_lake_root=lake,
+            now=NOW,
+            clock_fn=lambda: NOW,
+            fetch_fn=fetch,
+            sleep_fn=lambda _s: None,
         )
         == 0
     )
@@ -682,7 +803,12 @@ def test_an_unexpected_failure_still_closes_the_run_row(tmp_path, monkeypatch):
 
     with pytest.raises(OSError, match="membership log unreadable"):
         security_master_sync.sync(
-            indexes=["sp500"], data_lake_root=lake, now=NOW, fetch_fn=lambda t, **k: None, sleep_fn=lambda _s: None
+            indexes=["sp500"],
+            data_lake_root=lake,
+            now=NOW,
+            clock_fn=lambda: NOW,
+            fetch_fn=lambda t, **k: None,
+            sleep_fn=lambda _s: None,
         )
 
     terminal = ledger.query(

@@ -448,7 +448,7 @@ class TestFetchTickerIdentity:
         paced: list[int] = []
 
         fetch_ticker_identity(
-            "AAPL", api_key="test-key", probe_date="2010-01-04", pace_fn=lambda: paced.append(len(responses.calls))
+            "AAPL", api_key="test-key", probe_dates=("2010-01-04",), pace_fn=lambda: paced.append(len(responses.calls))
         )
 
         # called before request 1, 2 and 3: the request count seen at each pace
@@ -465,7 +465,7 @@ class TestFetchTickerIdentity:
         responses.add(responses.GET, REFERENCE_URL, body=_fixture("dell-active-false-2026-09-15.json"), status=200)
         responses.add(responses.GET, REFERENCE_URL, body=_fixture("aapl-date-2010-01-04-2026-09-15.json"), status=200)
 
-        result = fetch_ticker_identity("AAPL", api_key="test-key", probe_date="2010-01-04")
+        result = fetch_ticker_identity("AAPL", api_key="test-key", probe_dates=("2010-01-04",))
 
         # three calls: active, active=false, then the date probe.
         assert len(responses.calls) == 3
@@ -497,7 +497,7 @@ class TestFetchTickerIdentity:
         responses.add(responses.GET, REFERENCE_URL, body=_fixture("dell-active-false-2026-09-15.json"), status=200)
         responses.add(responses.GET, REFERENCE_URL, body=_fixture("aapl-date-2010-01-04-2026-09-15.json"), status=200)
 
-        result = fetch_ticker_identity("DELL", api_key="test-key", probe_date="2010-01-04")
+        result = fetch_ticker_identity("DELL", api_key="test-key", probe_dates=("2010-01-04",))
 
         assert len(responses.calls) == 3
         assert responses.calls[2].request.params["date"] == "2010-01-04"
@@ -519,7 +519,7 @@ class TestFetchTickerIdentity:
         for _ in range(3):
             responses.add(responses.GET, REFERENCE_URL, body=_fixture("aamrq-active-false-2026-09-15.json"), status=200)
 
-        result = fetch_ticker_identity("AAMRQ", api_key="test-key", probe_date="2010-01-04")
+        result = fetch_ticker_identity("AAMRQ", api_key="test-key", probe_dates=("2010-01-04",))
 
         assert result.records == []
         assert len(result.responses) == 3
@@ -575,9 +575,42 @@ class TestFetchTickerIdentity:
         responses.add(responses.GET, REFERENCE_URL, body=_fixture("yhoo-active-false-2026-09-15.json"), status=200)
         responses.add(responses.GET, REFERENCE_URL, body=_fixture("yhoo-date-2015-06-01-2026-09-15.json"), status=200)
 
-        result = fetch_ticker_identity("YHOO", api_key="test-key", probe_date="2015-06-01")
+        result = fetch_ticker_identity("YHOO", api_key="test-key", probe_dates=("2015-06-01",))
 
         assert [(r.ticker, r.existed_at) for r in result.records] == [("AABA", None), ("YHOO", "2015-06-01")]
+
+    @responses.activate
+    def test_probe_dates_are_walked_until_one_answers(self):
+        """An earliest membership date below the provider's coverage must not
+        cost the ticker its later memberships: the real 1998 probe is an empty
+        envelope, the real 2010 probe is not, and the 2010 date is the start."""
+        responses.add(responses.GET, REFERENCE_URL, body=_fixture("aapl-active-2026-09-15.json"), status=200)
+        responses.add(responses.GET, REFERENCE_URL, body=_fixture("dell-active-false-2026-09-15.json"), status=200)
+        responses.add(responses.GET, REFERENCE_URL, body=_fixture("aapl-date-1998-01-05-2026-09-15.json"), status=200)
+        responses.add(responses.GET, REFERENCE_URL, body=_fixture("aapl-date-2010-01-04-2026-09-15.json"), status=200)
+
+        result = fetch_ticker_identity("AAPL", api_key="test-key", probe_dates=("1998-01-05", "2010-01-04"))
+
+        assert [call.request.params.get("date") for call in responses.calls] == [None, None, "1998-01-05", "2010-01-04"]
+        assert len(result.responses) == 4  # every body is evidence, the empty probe included
+        assert [(r.ticker, r.existed_at) for r in result.records] == [("AAPL", "2010-01-04")]
+
+    @responses.activate
+    def test_a_probe_row_with_another_issuers_cik_never_stamps_the_current_listing(self):
+        # test double for a reused ticker whose old issuer is missing from the
+        # delisted page: the active page is the real AAPL body, the delisted page
+        # empty, the probe the real YHOO 2015 body (no FIGI, cik 0000316736). A
+        # match on venue alone would hand AAPL a 2015 start it never proved.
+        responses.add(responses.GET, REFERENCE_URL, body=_fixture("aapl-active-2026-09-15.json"), status=200)
+        responses.add(responses.GET, REFERENCE_URL, body=_fixture("dell-active-false-2026-09-15.json"), status=200)
+        responses.add(responses.GET, REFERENCE_URL, body=_fixture("yhoo-date-2015-06-01-2026-09-15.json"), status=200)
+
+        result = fetch_ticker_identity("AAPL", api_key="test-key", probe_dates=("2015-06-01",))
+
+        assert [(r.ticker, r.cik, r.existed_at) for r in result.records] == [
+            ("AAPL", "0000320193", None),
+            ("YHOO", "0000316736", "2015-06-01"),
+        ]
 
     @responses.activate
     def test_a_delisted_record_carries_its_delisting_date(self):

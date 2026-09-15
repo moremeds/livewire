@@ -172,6 +172,30 @@ def _existing_match(
     )
 
 
+def _rename_match(record: IdentityRecord, existing: list[SecurityIdentityEvent]) -> SecurityIdentityEvent | None:
+    """The master's current verified row carrying this record's FIGIs under
+    another symbol: a rename seen one ticker at a time (spec §4 rename row).
+
+    `sync` fetches each ticker on its own, so the two halves of a rename never
+    reach `derive_identity_events` together; without this the second half
+    would open a second `security_id` for one issuer, which the master allows
+    because its FIGI collision check ignores disjoint intervals.
+    """
+    if not record.composite_figi or not record.share_class_figi:
+        return None
+    return next(
+        (
+            item
+            for item in _current(existing)
+            if item.status == "verified"
+            and item.provider == _PROVIDER
+            and item.symbol != record.ticker
+            and (item.composite_figi, item.share_class_figi) == (record.composite_figi, record.share_class_figi)
+        ),
+        None,
+    )
+
+
 def _widen(
     match: SecurityIdentityEvent,
     record: IdentityRecord,
@@ -234,6 +258,23 @@ def _one_record(
     if match is not None:
         widened = _widen(match, record, start, end, now, refs)
         return [widened] if widened is not None else []
+    renamed = _rename_match(record, existing)
+    if renamed is not None:
+        # Same issuer under a new symbol: a new revision on its id. Overlapping
+        # intervals are left to the master's collision check, which raises and
+        # is counted by the caller, never silently joined here.
+        return [
+            _build(
+                security_id=renamed.security_id,
+                revision=renamed.revision + 1,
+                record=record,
+                start=start,
+                end=end,
+                status="verified",
+                now=now,
+                refs=refs,
+            )
+        ]
     return [
         _build(
             security_id=new_id(),
@@ -370,6 +411,15 @@ def derive_identity_events(
 # it with `ticker`, `active` and `date` parameters.
 _SOURCE_URL = "https://api.polygon.io/v3/reference/tickers"
 
+# Tickers fetched between two evidence commits. At 5 req/min a chunk is
+# ~30 min of requests, so a crash loses at most that much refetching.
+FLUSH_EVERY_TICKERS = 50
+
+
+class _CommitFailed(Exception):
+    """`record_many` raised; the chunk's identities were not appended."""
+
+
 MEASURE_NAMES = (
     "identity_tickers_requested",
     "identity_events_appended",
@@ -426,6 +476,7 @@ def sync(
     tickers: list[str] | None = None,
     fetch_fn=None,
     sleep_fn=None,
+    clock_fn=None,
     dry_run: bool = False,
 ) -> int:
     """Fetch Massive identities for every unresolved membership ticker.
@@ -441,14 +492,18 @@ def sync(
     reader = SecurityMaster(root, evidence_verifier=None)
     store = IndexMembershipStore(root, security_master=reader, evidence_verifier=None)
     sleep = sleep_fn or time_module.sleep
+    # `known_at` and `retrieved_at` are the fetch time, not the run's start
+    # (spec §4): a paced run spans hours, and an as_of inside it must not see
+    # identities fetched after it.
+    clock = clock_fn or (lambda: datetime.now(UTC))
     pace_s = 60.0 / constants.declared("massive_requests_per_minute/reference")
     # Paced per request inside the fetch (a ticker is 2-3 requests), including
     # the run's first one: one idle pace_s beats a rate computed per ticker.
     fetch = fetch_fn or (
-        lambda ticker, *, probe_date=None: fetch_ticker_identity(
+        lambda ticker, *, probe_dates=(): fetch_ticker_identity(
             ticker,
             os.environ.get("MASSIVE_API_KEY"),
-            probe_date=probe_date,
+            probe_dates=probe_dates,
             pace_fn=lambda: sleep(pace_s),
         )
     )
@@ -492,26 +547,59 @@ def sync(
             selected = {ticker.upper() for ticker in tickers}
             wanted = {ticker: dates for ticker, dates in wanted.items() if ticker in selected}
 
-        pending: list[tuple[list[IdentityRecord], tuple[tuple[str, str], ...]]] = []
+        pending: list[tuple[list[IdentityRecord], tuple[tuple[str, str], ...], datetime]] = []
         manifest: list[SourceEvidence] = []
+        writer = reader if dry_run else SecurityMaster(root, evidence_verifier=_evidence_verifier(evidence))
+
+        def flush() -> None:
+            """Commit this chunk's manifest, then append its identities.
+
+            One commit per chunk, never per response (41 min/night,
+            pm:2026-08-31-source-evidence-per-response-cost) and never one per
+            run: a full backlog is a day of paced requests, and a single commit
+            at the end made a crash at ticker 2000 throw all of it away. A
+            failed commit appends nothing from its chunk: the master's verifier
+            checks raw bytes only, so an identity row could otherwise outlive
+            its manifest entry (spec §6).
+            """
+            if not dry_run and manifest:
+                try:
+                    evidence.record_many(manifest)
+                except Exception as exc:  # noqa: BLE001 — any commit failure is terminal
+                    print(json.dumps({"evidence_commit_failed": str(exc)}, sort_keys=True))
+                    raise _CommitFailed from exc
+            for records, ticker_refs, fetched_at in pending:
+                derived = derive_identity_events(records, writer.events(), fetched_at, ticker_refs)
+                for name, value in derived.counts.items():
+                    counts[name] += value
+                if dry_run:
+                    continue
+                appended, collisions = _append_all(writer, derived.events)
+                counts["identity_events_appended"] += appended
+                counts["identity_collisions"] += collisions
+            pending.clear()
+            manifest.clear()
+
         for ticker in sorted(wanted):
             dates = wanted[ticker]
             if _covered(reader, ticker, dates, now):
                 continue
             counts["identity_tickers_requested"] += 1
-            probe_date = min(dates).date().isoformat()
+            # Ascending: the earliest date the provider answers is the start.
+            probe_dates = tuple(sorted({day.date().isoformat() for day in dates}))
             try:
-                result = fetch(ticker, probe_date=probe_date)
+                result = fetch(ticker, probe_dates=probe_dates)
             except UniverseFetchError as exc:
                 if exc.status_code != 429:
                     counts["identity_fetch_failed"] += 1
                     continue
                 sleep(backoff_s)
                 try:
-                    result = fetch(ticker, probe_date=probe_date)
+                    result = fetch(ticker, probe_dates=probe_dates)
                 except UniverseFetchError:
                     counts["identity_fetch_failed"] += 1
                     continue
+            fetched_at = clock()
             refs: list[tuple[str, str]] = []
             for body in result.responses:
                 artifact = evidence.persist_raw(body)
@@ -520,7 +608,7 @@ def sync(
                         ref=artifact.ref,
                         sha256=artifact.sha256,
                         source_url=f"{_SOURCE_URL}?ticker={ticker}",
-                        retrieved_at=now,
+                        retrieved_at=fetched_at,
                         publication_time=None,
                         mediawiki_revision_id=None,
                         mediawiki_revision_time=None,
@@ -529,34 +617,15 @@ def sync(
                 )
                 refs.append((artifact.ref, artifact.sha256))
             # each identity row cites its own ticker's bodies, not the run's
-            pending.append((result.records, tuple(refs)))
-
-        if not dry_run and manifest:
-            # One commit for the whole run: `record` is not buffered and a
-            # per-response commit cost 41 min/night
-            # (pm:2026-08-31-source-evidence-per-response-cost). A failed
-            # commit appends nothing at all: the master's verifier checks raw
-            # bytes only, so an identity row could otherwise outlive its
-            # manifest entry (spec §6).
-            try:
-                evidence.record_many(manifest)
-            except Exception as exc:  # noqa: BLE001 — any commit failure is terminal
-                print(json.dumps({"evidence_commit_failed": str(exc)}, sort_keys=True))
-                return close(1)
-
-        writer = reader if dry_run else SecurityMaster(root, evidence_verifier=_evidence_verifier(evidence))
-        for records, ticker_refs in pending:
-            derived = derive_identity_events(records, writer.events(), now, ticker_refs)
-            for name, value in derived.counts.items():
-                counts[name] += value
-            if dry_run:
-                continue
-            appended, collisions = _append_all(writer, derived.events)
-            counts["identity_events_appended"] += appended
-            counts["identity_collisions"] += collisions
+            pending.append((result.records, tuple(refs), fetched_at))
+            if len(pending) >= FLUSH_EVERY_TICKERS:
+                flush()
+        flush()
 
         _measure(run_id, scope, now, counts)
         print(json.dumps({"scope": scope, "run_id": run_id, "dry_run": dry_run} | counts, sort_keys=True))
+    except _CommitFailed:
+        return close(1)
     except Exception:
         close(1)
         raise

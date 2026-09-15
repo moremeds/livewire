@@ -68,7 +68,7 @@ repo carries a scope (pm:2026-07-27-fx-dxy-provider-floors).
 
 ## 3. Components
 
-### 3.1 `clients/universe_client.py` — `fetch_ticker_identity(ticker, api_key, *, probe_date=None)`
+### 3.1 `clients/universe_client.py` — `fetch_ticker_identity(ticker, api_key, *, probe_dates=(), pace_fn=None)`
 
 One function next to the existing `check_ticker_status` (which uses the
 single-ticker `/v3/reference/tickers/{T}` path form; this one uses the list
@@ -76,8 +76,10 @@ form with query parameters, a new code path). Calls, in order:
 
 1. `/v3/reference/tickers?ticker=T` (active)
 2. `/v3/reference/tickers?ticker=T&active=false` (delisted)
-3. only when neither record carries `list_date` and `probe_date` is given:
-   `/v3/reference/tickers?ticker=T&date=<probe_date>`
+3. only when neither record carries `list_date` and `probe_dates` is non-empty:
+   `/v3/reference/tickers?ticker=T&date=<probe_date>` for each date in order,
+   stopping at the first that returns a record (an earliest date below the
+   provider's coverage must not cost the ticker its later memberships)
 
 Returns `IdentityRecords(responses: list[bytes], records: list[IdentityRecord])`
 where `IdentityRecord` has `ticker, name, cik, composite_figi,
@@ -110,16 +112,18 @@ Per run:
    3,500 tickers.
 2. For each ticker with at least one needed date not inside a verified
    interval for that symbol in the master, call
-   `fetch_ticker_identity(ticker, key, probe_date=earliest_needed_date)`,
+   `fetch_ticker_identity(ticker, key, probe_dates=needed_dates_ascending)`,
    paced by the declared constant. Covering only the earliest date would
    skip a ticker whose later membership falls past the end of an existing
    interval, and the widening rule of §4 could never run.
-3. Evidence, once per run: `SourceEvidenceStore.persist_raw(bytes)` per
-   response as it arrives, then one `record_many([...])` for all responses
-   before any identity event is appended (`record` is not buffered; it calls
-   `record_many` with one item, and per-response manifest commits cost 41
-   min/night, pm:2026-08-31). If `record_many` raises, nothing is appended and
-   the run exits 1.
+3. Evidence, once per chunk of 50 tickers (`FLUSH_EVERY_TICKERS`; amended at
+   code review 2026-09-15, it was once per run): `SourceEvidenceStore.persist_raw(bytes)`
+   per response as it arrives, then one `record_many([...])` for the chunk
+   before any of its identity events is appended (`record` is not buffered; it
+   calls `record_many` with one item, and per-response manifest commits cost
+   41 min/night, pm:2026-08-31; one commit per run made a crash late in a
+   day-long paced run discard every fetch). If `record_many` raises, nothing
+   from that chunk is appended and the run exits 1; earlier chunks stand.
 4. Derive identity events (section 4) and append through
    `SecurityMaster.append` on a master constructed with
    `evidence_verifier=_evidence_verifier(evidence_store)` (the helper in
