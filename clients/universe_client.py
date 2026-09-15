@@ -294,7 +294,7 @@ def _is_same_listing(known: IdentityRecord, probed: IdentityRecord) -> bool:
     """
     return all(
         probed_field is None or probed_field == known_field
-        for known_field, probed_field in zip(_identity_key(known), _identity_key(probed))
+        for known_field, probed_field in zip(_identity_key(known), _identity_key(probed), strict=True)
     )
 
 
