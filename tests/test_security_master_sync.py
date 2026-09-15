@@ -168,6 +168,55 @@ def test_a_rename_fetched_one_ticker_at_a_time_stays_one_security_id(tmp_path):
     assert _derive([aaba_delisted], existing=master.events()).events == []  # covered on refetch
 
 
+def test_a_cross_fetch_rename_with_overlapping_dates_is_a_conflict_not_a_join(tmp_path):
+    """The master's collision check skips rows on one id, so the join must
+    refuse an overlap itself (spec §4: same FIGIs, overlapping dates)."""
+    aaba_delisted = _records("aaba-active-false-2026-09-15.json", existed_at="2018-06-01")[0]
+    earlier = aaba_delisted.__class__(  # test double, as in the rename tests above
+        **{
+            **aaba_delisted.__dict__,
+            "ticker": "YHOO",
+            "existed_at": "2015-06-01",
+            "delisted_utc": _records("yhoo-active-false-2026-09-15.json")[0].delisted_utc,  # 2017-06-19
+        }
+    )
+    master = _master(tmp_path)
+    for event in _derive([earlier]).events:
+        assert master.append(event) is True
+
+    overlapping = aaba_delisted.__class__(**{**aaba_delisted.__dict__, "existed_at": "2016-01-04"})
+    later = _derive([overlapping], existing=master.events())
+
+    assert [(e.symbol, e.status, e.revision) for e in later.events] == [("AABA", "unresolved", 1)]
+    assert later.events[0].security_id != master.events()[0].security_id
+    assert later.counts["identity_conflict"] == 1
+    assert master.append(later.events[0]) is True
+
+
+def test_widening_one_symbol_of_a_renamed_id_takes_the_ids_next_revision(tmp_path):
+    """A renamed id holds one row per symbol (revisions 1 and 2). Widening the
+    earlier symbol must append revision 3: `matched.revision + 1` would be 2,
+    which the master rejects as a revision collision."""
+    aaba_delisted = _records("aaba-active-false-2026-09-15.json", existed_at="2018-06-01")[0]
+    earlier = aaba_delisted.__class__(  # test double, as in the rename tests above
+        **{
+            **aaba_delisted.__dict__,
+            "ticker": "YHOO",
+            "existed_at": "2015-06-01",
+            "delisted_utc": _records("yhoo-active-false-2026-09-15.json")[0].delisted_utc,
+        }
+    )
+    master = _master(tmp_path)
+    for event in _derive([earlier, aaba_delisted]).events:
+        assert master.append(event) is True
+
+    earlier_seen_earlier = earlier.__class__(**{**earlier.__dict__, "existed_at": "2014-01-02"})
+    widened = _derive([earlier_seen_earlier], existing=master.events()).events
+
+    assert [(e.symbol, e.revision, e.supersedes is not None) for e in widened] == [("YHOO", 3, True)]
+    assert master.append(widened[0]) is True
+
+
 def test_matching_figis_with_overlapping_dates_are_two_unresolved_rows(tmp_path):
     # test double: real AABA FIGIs (the delisted YHOO body carries none, fixtures
     # README F5); the second record reuses them under the earlier ticker with an
@@ -753,6 +802,29 @@ def test_the_default_fetch_paces_every_request_at_the_declared_rate(tmp_path, mo
     )
 
     assert slept == [12.0, 12.0, 12.0]  # 60 / massive_requests_per_minute/reference
+
+
+def test_a_date_before_the_earliest_verified_interval_does_not_force_a_refetch(tmp_path):
+    """The S&P 500 shape: one pre-coverage add (1996) and one later date the
+    provider answered. Once the 2010 interval is on disk, the 1996 date is the
+    pre-coverage remainder and the ticker must not be fetched again."""
+    lake = _placeholder_lake(tmp_path, [("AAPL", "1996-01-02"), ("AAPL", "2010-01-04")])
+    calls: list[tuple[str, str | None]] = []
+    fetch = _fetcher({"AAPL": ["aapl-active-2026-09-15.json"]}, calls)
+    kwargs = dict(
+        indexes=["sp500"], data_lake_root=lake, now=NOW, clock_fn=lambda: NOW, fetch_fn=fetch, sleep_fn=lambda _s: None
+    )
+
+    # first run: the fake stamps existed_at at the first probe date, so pin the
+    # verified interval to 2010 by seeding the master directly instead
+    master = _master(tmp_path)
+    for event in _derive(_records("aapl-active-2026-09-15.json", existed_at="2010-01-04")).events:
+        assert master.append(event) is True
+
+    security_master_sync.sync(**kwargs)
+
+    assert calls == []
+    assert _measurements()[("identity_tickers_requested", "all")] == 0
 
 
 def test_a_superseded_placeholder_is_not_refetched(tmp_path):

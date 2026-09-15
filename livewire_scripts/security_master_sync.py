@@ -26,10 +26,10 @@ from pathlib import Path
 
 from clients import constants, ledger
 from clients.index_membership_store import IndexMembershipStore
-from clients.security_master import SecurityIdentityEvent, SecurityMaster
+from clients.security_master import SecurityIdentityEvent, SecurityMaster, _overlaps
 from clients.source_evidence import SourceEvidence, SourceEvidenceStore
 from clients.universe_client import IdentityRecord, UniverseFetchError, fetch_ticker_identity
-from livewire_scripts.membership_sync import DEFAULT_INDEXES, _evidence_verifier, _measure, _resolve
+from livewire_scripts.membership_sync import _RESOLVE_MICS, DEFAULT_INDEXES, _evidence_verifier, _measure, _resolve
 from livewire_scripts.paths import data_lake_dir
 
 _PROVIDER = "massive"
@@ -145,6 +145,13 @@ def _build(
     )
 
 
+def _next_revision(existing: list[SecurityIdentityEvent], security_id: str) -> int:
+    """The master requires `max(revision of the id) + 1`, over every row of the
+    id, superseded ones included. A renamed id carries one row per symbol, so
+    `matched_row.revision + 1` would collide as soon as the id has two."""
+    return max((item.revision for item in existing if item.security_id == security_id), default=0) + 1
+
+
 def _current(existing: list[SecurityIdentityEvent]) -> list[SecurityIdentityEvent]:
     superseded = {item.supersedes for item in existing if item.supersedes is not None}
     return [item for item in existing if item.event_id not in superseded]
@@ -198,6 +205,7 @@ def _rename_match(record: IdentityRecord, existing: list[SecurityIdentityEvent])
 
 def _widen(
     match: SecurityIdentityEvent,
+    existing: list[SecurityIdentityEvent],
     record: IdentityRecord,
     start: datetime,
     end: datetime | None,
@@ -212,7 +220,7 @@ def _widen(
     widened_end = None if match.effective_to is None or end is None else max(match.effective_to, end)
     return _build(
         security_id=match.security_id,
-        revision=match.revision + 1,
+        revision=_next_revision(existing, match.security_id),
         record=record,
         start=min(match.effective_from, start),
         end=widened_end,
@@ -240,7 +248,7 @@ def _one_record(
         # would append a duplicate every run.
         match = _existing_match(record, existing, "candidate")
         if match is not None:
-            widened = _widen(match, record, start, end, now, refs, status="candidate")
+            widened = _widen(match, existing, record, start, end, now, refs, status="candidate")
             return [widened] if widened is not None else []
         return [
             _build(
@@ -256,17 +264,36 @@ def _one_record(
         ]
     match = _existing_match(record, existing, "verified")
     if match is not None:
-        widened = _widen(match, record, start, end, now, refs)
+        widened = _widen(match, existing, record, start, end, now, refs)
         return [widened] if widened is not None else []
     renamed = _rename_match(record, existing)
+    if renamed is not None and any(
+        _overlaps(start, end, item.effective_from, item.effective_to)
+        for item in _current(existing)
+        if item.security_id == renamed.security_id and item.status == "verified"
+    ):
+        # The master's collision check skips rows sharing an id, so an overlap
+        # must be refused here: same FIGIs, overlapping dates is the spec §4
+        # conflict row, and this half stays unresolved on its own id.
+        counts["identity_conflict"] += 1
+        return [
+            _build(
+                security_id=new_id(),
+                revision=1,
+                record=record,
+                start=start,
+                end=end,
+                status="unresolved",
+                now=now,
+                refs=refs,
+            )
+        ]
     if renamed is not None:
-        # Same issuer under a new symbol: a new revision on its id. Overlapping
-        # intervals are left to the master's collision check, which raises and
-        # is counted by the caller, never silently joined here.
+        # Same issuer under a new symbol: a new revision on its id.
         return [
             _build(
                 security_id=renamed.security_id,
-                revision=renamed.revision + 1,
+                revision=_next_revision(existing, renamed.security_id),
                 record=record,
                 start=start,
                 end=end,
@@ -451,8 +478,29 @@ def needed_dates(store: IndexMembershipStore, indexes: list[str]) -> dict[str, s
 
 
 def _covered(master: SecurityMaster, ticker: str, dates: set[datetime], now: datetime) -> bool:
-    """Every needed date already sits inside a verified interval for this symbol."""
-    return all(_resolve(master, ticker, effective_at, now) is not None for effective_at in dates)
+    """Every needed date sits inside a verified interval for this symbol, or
+    before the earliest one.
+
+    A date before the earliest verified interval is the pre-coverage remainder:
+    the probe walk already asked the provider for it and got nothing, so a
+    refetch would only repeat the empty probes. Without this clause a ticker
+    with one pre-coverage date (the S&P 500 shape) would be refetched on every
+    run and after every restart.
+    """
+    superseded = {item.supersedes for item in master.events(as_of=now) if item.supersedes is not None}
+    starts = [
+        item.effective_from
+        for item in master.events(as_of=now)
+        if item.event_id not in superseded
+        and item.status == "verified"
+        and (item.provider, item.symbol) == ("massive", ticker)
+        and item.exchange_mic in _RESOLVE_MICS
+    ]
+    earliest = min(starts, default=None)
+    return all(
+        _resolve(master, ticker, effective_at, now) is not None or (earliest is not None and effective_at < earliest)
+        for effective_at in dates
+    )
 
 
 def _append_all(master: SecurityMaster, events: list[SecurityIdentityEvent]) -> tuple[int, int]:
