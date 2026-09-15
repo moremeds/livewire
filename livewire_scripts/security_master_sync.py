@@ -544,8 +544,8 @@ def sync(
                 return close(1)
 
         writer = reader if dry_run else SecurityMaster(root, evidence_verifier=_evidence_verifier(evidence))
-        for records, refs in pending:
-            derived = derive_identity_events(records, writer.events(), now, refs)
+        for records, ticker_refs in pending:
+            derived = derive_identity_events(records, writer.events(), now, ticker_refs)
             for name, value in derived.counts.items():
                 counts[name] += value
             if dry_run:
