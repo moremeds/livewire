@@ -28,6 +28,9 @@ from livewire_scripts.status import (
 RUN = "daily-update-20260902T060000Z-1"
 INTRADAY_RUN = "intraday-catchup-20260902T100000Z-1"
 NOW = datetime.now(UTC)
+# An "earlier today" row that cannot cross the UTC day boundary the way
+# `NOW - timedelta(hours=n)` does when the suite runs just after midnight.
+EARLIER_TODAY = NOW.replace(hour=0, minute=0, second=0, microsecond=0)
 EPOCH = date(1970, 1, 1)
 
 
@@ -1058,9 +1061,78 @@ def test_foreign_currency_dividends_never_measured_is_unknown():
 
 def test_foreign_currency_dividends_grades_the_latest_value():
     """A repaired lake must read OK even while older WARN rows still exist."""
-    _measurement("dividend_currency_mismatch", "all", 5, measured_at=NOW - timedelta(hours=1))
+    _measurement("dividend_currency_mismatch", "all", 5, measured_at=EARLIER_TODAY)
     _measurement("dividend_currency_mismatch", "all", 0, measured_at=NOW)
     assert _section("Foreign-currency dividends").verdict is status.Verdict.OK
+
+
+def test_foreign_currency_dividends_without_a_measurement_today_is_unknown():
+    """Yesterday's green is not today's answer.
+
+    2026-09-14: the conversion was wired to no scheduled lane, so the newest
+    `dividend_currency_mismatch` row was Sunday's manual run (0) and the check
+    read OK through a Monday whose Silver rebuild failed ~30 symbols on the
+    currency mismatch this check exists to surface.
+    """
+    _measurement("dividend_currency_mismatch", "all", 0, measured_at=NOW - timedelta(days=1))
+    assert _section("Foreign-currency dividends").verdict is status.Verdict.UNKNOWN
+
+
+def test_foreign_currency_dividends_is_unknown_when_todays_lane_did_not_finish():
+    """A lane killed at its budget after cycle one's conversion leaves cycle
+    two's dividends unconverted behind an already-filed zero."""
+    _measurement("dividend_currency_mismatch", "all", 0)
+    _lane("corporate-actions", outcome="timeout", exit_code=124)
+    section = _section("Foreign-currency dividends")
+    assert section.verdict is status.Verdict.UNKNOWN
+    assert "lane_outcome=timeout" in " ".join(section.lines)
+
+
+def test_foreign_currency_dividends_zero_is_ok_when_todays_lane_finished():
+    _measurement("dividend_currency_mismatch", "all", 0)
+    _lane("corporate-actions")
+    assert _section("Foreign-currency dividends").verdict is status.Verdict.OK
+
+
+def test_foreign_currency_dividends_is_unknown_when_todays_conversion_errored():
+    """A failing conversion files `dividend_fx_error`; the lane swallows the
+    exception, so that row is the only thing standing in front of an earlier
+    cycle's zero."""
+    _measurement("dividend_currency_mismatch", "all", 0, measured_at=EARLIER_TODAY)
+    _measurement("dividend_fx_error", "all", 1, measured_at=NOW)
+    section = _section("Foreign-currency dividends")
+    assert section.verdict is status.Verdict.UNKNOWN
+    assert "fact=dividend_fx_error" in " ".join(section.lines)
+
+
+def test_foreign_currency_dividends_recovers_when_a_later_pass_measures_again():
+    _measurement("dividend_fx_error", "all", 1, measured_at=EARLIER_TODAY)
+    _measurement("dividend_currency_mismatch", "all", 0, measured_at=NOW)
+    assert _section("Foreign-currency dividends").verdict is status.Verdict.OK
+
+
+def test_foreign_currency_dividends_ignores_a_subset_error():
+    """A targeted `--tickers` repair that failed says nothing about the lake."""
+    _measurement("dividend_currency_mismatch", "all", 0, measured_at=EARLIER_TODAY)
+    _measurement("dividend_fx_error", "subset", 1, measured_at=NOW)
+    assert _section("Foreign-currency dividends").verdict is status.Verdict.OK
+
+
+def test_foreign_currency_dividends_ignores_a_subset_zero_after_a_whole_scope_zero():
+    _measurement("dividend_currency_mismatch", "all", 0, measured_at=EARLIER_TODAY)
+    _measurement("dividend_currency_mismatch", "subset", 0, measured_at=NOW)
+    assert _section("Foreign-currency dividends").verdict is status.Verdict.OK
+
+
+def test_foreign_currency_dividends_ignores_a_targeted_repairs_subset_row():
+    """An afternoon `--tickers` repair does not erase the night's whole-scope WARN.
+
+    The check grades today's newest row, so a one-symbol run filed under the
+    same scope would read as the whole lake's answer.
+    """
+    _measurement("dividend_currency_mismatch", "all", 3, measured_at=EARLIER_TODAY)
+    _measurement("dividend_currency_mismatch", "subset", 0, measured_at=NOW)
+    assert _section("Foreign-currency dividends").verdict is status.Verdict.WARN
 
 
 def _membership_run(verdict: str, *, started: datetime):

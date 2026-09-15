@@ -283,11 +283,40 @@ CHECKS: list[tuple[str, str]] = [
     ),
     (
         "Foreign-currency dividends",
-        # Latest dividend-fx fact only: a repaired lake reads OK while older
-        # WARN rows still exist. Never measured is UNKNOWN, never green.
-        "select case when value > 0 then 'WARN' else 'OK' end as verdict, "
-        "value as mismatched, measured_at "
-        "from measurements where name = 'dividend_currency_mismatch' "
+        # Today's dividend-fx fact only: a repaired lake reads OK while older
+        # WARN rows still exist, and a day with no conversion at all reads
+        # UNKNOWN rather than inheriting yesterday's green. 2026-09-14: the
+        # conversion was wired to no lane, so the newest row was Sunday's manual
+        # run (mismatch=0) and the check stayed OK through a Monday that failed
+        # ~30 symbols in Silver. A detector with no output is dead, not healthy.
+        # scope='all' only: a targeted `--tickers` repair measures a handful of
+        # symbols and would otherwise erase the night's whole-scope WARN as the
+        # newest row of the day. 'all' is the lane's own pass over the universe
+        # it reconciles, which is what Silver consumes.
+        # A zero is whole-scope evidence only if today's corporate-actions lane
+        # finished: the lane converts at the end of every cycle, so a lane
+        # SIGKILLed at its budget after cycle one's conversion leaves cycle
+        # two's foreign-currency dividends unconverted behind that cycle's
+        # already-filed zero. No lane row today at all is a manual run and
+        # grades as before.
+        # ... and a failing conversion files `dividend_fx_error` instead of a
+        # count. The lane swallows that exception, which can be raised before
+        # the `runs` row is opened or after it closed OK, so one rule -- the
+        # newest whole-scope row of the day -- covers every failure mode a gate
+        # per mode would keep missing.
+        "select case when name = 'dividend_fx_error' then 'UNKNOWN' "
+        "when value > 0 then 'WARN' "
+        "when coalesce(("
+        "  select coalesce(outcome, 'running') from lane_results "
+        "  where lane = 'corporate-actions' and date(started) = date '$today' "
+        "  order by started desc, ended desc nulls last limit 1), 'done') <> 'done' then 'UNKNOWN' "
+        "else 'OK' end as verdict, "
+        "name as fact, value as mismatched, measured_at, coalesce(("
+        "  select coalesce(outcome, 'running') from lane_results "
+        "  where lane = 'corporate-actions' and date(started) = date '$today' "
+        "  order by started desc, ended desc nulls last limit 1), 'none') as lane_outcome "
+        "from measurements where name in ('dividend_currency_mismatch', 'dividend_fx_error') "
+        "and scope = 'all' and date(measured_at) = date '$today' "
         "order by measured_at desc limit 1",
     ),
     (

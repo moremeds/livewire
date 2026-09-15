@@ -19,7 +19,7 @@
         <string>-c</string>
         <!-- Replace /path/to/warehouse with your actual warehouse path. Runs the
              immutable release `current` points at, like the other lake jobs. -->
-        <string>cd /path/to/warehouse/current &amp;&amp; .venv/bin/python scripts/livewire_ingest.py membership-sync</string>
+        <string>cd /path/to/warehouse/current &amp;&amp; .venv/bin/python scripts/livewire_ingest.py membership-sync --index sp500 ndx100 djia r2k-proxy</string>
     </array>
 
     <key>StartCalendarInterval</key>

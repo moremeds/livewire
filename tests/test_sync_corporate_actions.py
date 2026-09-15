@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -588,7 +588,9 @@ def test_a_run_that_measured_nothing_emits_nothing(tmp_path, monkeypatch):
     rc = sync_corporate_actions.run(["--tickers", "AAPL"], client=_Client(), store=_Store(), data_lake_root=tmp_path)
 
     assert rc == 0
-    assert ledger.query("select count(*) as n from measurements")[0]["n"] == 0
+    # Narrowed only past the dividend-fx facts the lane now always emits; a
+    # provider or progress row still has to stay absent.
+    assert ledger.query("select count(*) as n from measurements where name not like 'dividend_%'")[0]["n"] == 0
 
 
 def _seed_cursor(tmp_path, path, tickers, done):
@@ -628,6 +630,15 @@ def test_a_resumed_pass_finishes_its_tail_then_opens_a_new_cycle(tmp_path):
         "NVDA",
     ]
     assert json.loads(cursor_path.read_text())["run_completed_at"] is not None
+    # One conversion per cycle, each under its own run id: the second cycle
+    # writes dividends of its own, and a conversion that ran only before it
+    # would file a 0 mismatch that `status` then grades OK.
+    fx_runs = {
+        row["run_id"] for row in ledger.query("select run_id from runs where job = 'dividend-fx' and ended is not null")
+    }
+    assert len(fx_runs) == 2
+    converted = ledger.query("select value from measurements where name = 'dividend_fx_converted'")
+    assert len(converted) == 2
 
 
 def test_a_resumed_pass_that_does_not_finish_stays_resumable(tmp_path, capsys):
@@ -701,6 +712,19 @@ def _fx_lake(root: Path, rows: list[dict]) -> None:
         ]
     )
     pq.write_table(table, path)
+
+
+_ACR_CAD_DIVIDEND = MassiveDividend(
+    provider_event_id="acr-div-1",
+    ticker="ACR",
+    ex_dividend_date=_ACR_EX,
+    cash_amount=Decimal("0.41"),
+    currency="CAD",
+    declaration_date=None,
+    record_date=None,
+    pay_date=None,
+    payload_hash="acr-cad-v1",
+)
 
 
 def _cad_lake(tmp_path):
@@ -1120,3 +1144,562 @@ def test_convert_dividend_currency_usd_dividend_on_pegged_equity(tmp_path, monke
     row = CorporateActionStore(tmp_path).latest_active("NTB")[0]
     assert row.cash_amount == pytest.approx(0.32) and row.currency == "BMD"
     assert "method=peg" in row.source_ref and row.source_hash is None
+
+
+# --- the lane converts foreign-currency dividends itself ------------------------
+
+
+def test_the_lane_converts_foreign_currency_dividends_and_emits_its_measurements(tmp_path, capsys, monkeypatch):
+    """Through the real lane argv, not the manual sub-command.
+
+    PR #128 shipped `convert-dividend-currency` wired to nothing: the scheduled
+    `corporate-actions --resume` lane emitted no `dividend_fx_*` measurement and
+    ~30 symbols failed Silver on a currency mismatch.
+    """
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-20260914T050000Z-1")
+    store = _cad_lake(tmp_path)
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", "ACR", "--resume"],
+            # The pass itself marks ACR: the lane converts what it just
+            # reconciled in a foreign currency, not the whole store.
+            client=_DividendClient({"ACR": [_ACR_CAD_DIVIDEND]}),
+            store=store,
+            data_lake_root=tmp_path,
+        )
+        == 0
+    )
+
+    active = store.latest_active("ACR")
+    assert len(active) == 1 and active[0].provider == "eod_fx"
+    # One summary line still, with the repair folded in.
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["dividend_fx"]["converted"] == 1 and summary["dividend_fx"]["remaining"] == 0
+    measurements = {
+        row["name"]: row["value"]
+        for row in ledger.query("select name, value from measurements where name like 'dividend_%'")
+    }
+    assert measurements["dividend_fx_converted"] == 1.0
+    assert measurements["dividend_currency_mismatch"] == 0.0
+    # Its own runs row: sharing the lane's run id would file a closed row under
+    # a still-open daily-update run.
+    fx_runs = {row["run_id"] for row in ledger.query("select run_id from runs where job = 'dividend-fx'")}
+    assert fx_runs == {"daily-update-20260914T050000Z-1-dividend-fx"}
+
+
+def test_a_targeted_pass_does_not_file_its_repair_as_the_whole_scope(tmp_path, monkeypatch):
+    """`--tickers` measures a handful of symbols, so it is not scope 'all'.
+
+    `status` grades today's newest `dividend_currency_mismatch` row; an operator
+    repairing one symbol in the afternoon would otherwise erase the night's
+    whole-scope WARN.
+    """
+    _cad_lake(tmp_path)
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", "ACR", "--resume"], client=_Client(), store=_Store(), data_lake_root=tmp_path
+        )
+        == 0
+    )
+
+    scopes = {row["scope"] for row in ledger.query("select scope from measurements where name like 'dividend_%'")}
+    assert scopes == {"subset"}
+
+
+def test_a_failing_dividend_conversion_cannot_fail_the_lane(tmp_path, monkeypatch, capsys):
+    def boom(**kwargs):
+        raise RuntimeError("fx bar unreadable")
+
+    monkeypatch.setattr(sync_corporate_actions, "convert_dividend_currency", boom)
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", "ACR", "--resume"],
+            client=_Client(),
+            store=_Store(),
+            data_lake_root=tmp_path,
+        )
+        == 0
+    )
+    assert "fx bar unreadable" in capsys.readouterr().err
+
+
+def test_a_dry_run_lane_does_not_convert(tmp_path):
+    store = _cad_lake(tmp_path)
+    before = store.path_for("ACR").read_bytes()
+
+    sync_corporate_actions.run(
+        ["--tickers", "ACR", "--dry-run"], client=_Client(), store=_Store(), data_lake_root=tmp_path
+    )
+
+    assert store.path_for("ACR").read_bytes() == before
+
+
+def _cad_lake_on(tmp_path, ex_date: date, fx_date: date):
+    """One ACR CAD dividend on `ex_date` with a USDCAD bar on `fx_date`."""
+    store = CorporateActionStore(tmp_path)
+    store.reconcile(
+        "ACR",
+        [
+            MassiveDividend(
+                provider_event_id="acr-div-1",
+                ticker="ACR",
+                ex_dividend_date=ex_date,
+                cash_amount=Decimal("0.41"),
+                currency="CAD",
+                declaration_date=None,
+                record_date=None,
+                pay_date=None,
+                payload_hash="acr-cad-v1",
+            )
+        ],
+        datetime(2026, 9, 13, tzinfo=UTC),
+    )
+    _fx_lake(tmp_path, [{"trade_date": fx_date, "close": _ACR_USDCAD}])
+    return store
+
+
+def test_an_announced_future_ex_date_is_not_converted_at_todays_fx(tmp_path):
+    """`_fx_bar` accepts a bar up to 7 days stale, so an ex-date announced a few
+    days ahead would be priced at today's close and never recomputed -- after
+    conversion its currency matches the equity's and it leaves the scan."""
+    now = datetime(2026, 9, 14, 6, tzinfo=UTC)
+    store = _cad_lake_on(tmp_path, now.date() + timedelta(days=3), now.date())
+    before = store.path_for("ACR").read_bytes()
+
+    summary = sync_corporate_actions.convert_dividend_currency(
+        tickers=["ACR"], apply=True, output_dir=tmp_path / "out", lake_root=tmp_path, now=now
+    )
+
+    assert summary["converted"] == 0
+    assert summary["skipped"] == [
+        {"symbol": "ACR", "ex_date": (now.date() + timedelta(days=3)).isoformat(), "reason": "ex_date_pending"}
+    ]
+    assert store.path_for("ACR").read_bytes() == before
+    # Not a leftover: the next run converts it, so it must not WARN nightly.
+    assert summary["remaining"] == 0
+    mismatch = ledger.query(
+        "select value from measurements where name = 'dividend_currency_mismatch' order by measured_at desc limit 1"
+    )
+    assert mismatch[0]["value"] == 0.0
+
+
+def test_a_missing_fx_bar_still_counts_as_a_mismatch(tmp_path):
+    """`no_fx_bar` is a real leftover; `ex_date_pending` is not."""
+    now = datetime(2026, 9, 14, 6, tzinfo=UTC)
+    store = _cad_lake_on(tmp_path, now.date() + timedelta(days=3), now.date())
+    store.reconcile(
+        "BCE",
+        [
+            MassiveDividend(
+                provider_event_id="bce-div-1",
+                ticker="BCE",
+                ex_dividend_date=now.date() - timedelta(days=400),
+                cash_amount=Decimal("0.99"),
+                currency="CAD",
+                declaration_date=None,
+                record_date=None,
+                pay_date=None,
+                payload_hash="bce-cad-v1",
+            )
+        ],
+        datetime(2026, 9, 13, tzinfo=UTC),
+    )
+
+    summary = sync_corporate_actions.convert_dividend_currency(
+        tickers=["ACR", "BCE"], apply=True, output_dir=tmp_path / "out", lake_root=tmp_path, now=now
+    )
+
+    assert summary["detected"] == 2 and summary["converted"] == 0
+    assert {row["reason"] for row in summary["skipped"]} == {"ex_date_pending", "no_fx_bar"}
+    assert summary["remaining"] == 1
+
+
+def test_a_settled_ex_date_still_converts(tmp_path):
+    now = datetime(2026, 9, 14, 6, tzinfo=UTC)
+    store = _cad_lake_on(tmp_path, now.date() - timedelta(days=1), now.date() - timedelta(days=1))
+
+    summary = sync_corporate_actions.convert_dividend_currency(
+        tickers=["ACR"], apply=True, output_dir=tmp_path / "out", lake_root=tmp_path, now=now
+    )
+
+    assert summary["converted"] == 1 and summary["skipped"] == []
+    assert store.latest_active("ACR")[0].currency == "USD"
+
+
+def test_a_preset_pass_does_not_file_its_repair_as_the_whole_scope(tmp_path):
+    """`--preset` is a scope restriction exactly like `--tickers`."""
+    _cad_lake(tmp_path)
+    preset = tmp_path / "preset.json"
+    preset.write_text(json.dumps({"name": "test", "tickers": ["ACR"]}))
+
+    assert (
+        sync_corporate_actions.run(["--preset", str(preset)], client=_Client(), store=_Store(), data_lake_root=tmp_path)
+        == 0
+    )
+
+    scopes = {row["scope"] for row in ledger.query("select scope from measurements where name like 'dividend_%'")}
+    assert scopes == {"subset"}
+
+
+def test_the_conversion_runs_even_when_the_second_cycle_aborts(tmp_path):
+    """The tail finished, so the dividends it wrote are converted before the
+    invocation opens a fresh cycle that the lane budget may kill."""
+    tickers = ["AAPL", "MSFT", "NVDA"]
+    cursor_path = tmp_path / "cursor.json"
+    _seed_cursor(tmp_path, cursor_path, tickers, ["AAPL", "MSFT"])
+    real_open_cursor = sync_corporate_actions.open_cursor
+    calls: list[bool] = []
+
+    def flaky_open_cursor(path, identity, *, resume, now):
+        calls.append(resume)
+        if not resume:
+            raise RuntimeError("killed at the lane budget")
+        return real_open_cursor(path, identity, resume=resume, now=now)
+
+    sync_corporate_actions.open_cursor = flaky_open_cursor
+    try:
+        with pytest.raises(RuntimeError, match="killed at the lane budget"):
+            sync_corporate_actions.run(
+                ["--tickers", *tickers, "--cursor", str(cursor_path), "--resume"],
+                client=_Client(),
+                store=_Store(),
+                data_lake_root=tmp_path,
+            )
+    finally:
+        sync_corporate_actions.open_cursor = real_open_cursor
+
+    assert calls == [True, False]
+    assert len(ledger.query("select run_id from runs where job = 'dividend-fx' and ended is not null")) == 1
+
+
+class _DividendClient:
+    """A provider that returns real dividend events for named tickers."""
+
+    def __init__(self, dividends: dict[str, list]):
+        self.dividends = dividends
+        self.calls: list[str] = []
+
+    def get_splits(self, ticker):
+        self.calls.append(ticker)
+        return []
+
+    def get_dividends(self, ticker):
+        return list(self.dividends.get(ticker, []))
+
+    def close(self):
+        pass
+
+
+def test_the_second_cycles_own_dividends_are_converted_the_same_night(tmp_path):
+    """The real store, not a stub: a conversion that ran only once, before the
+    second cycle, left that cycle's dividends in CAD while the mismatch count it
+    had already filed read 0 -- `status` OK on a night Silver fails on them."""
+    tickers = ["ACR", "ZZZ"]
+    cursor_path = tmp_path / "cursor.json"
+    _seed_cursor(tmp_path, cursor_path, tickers, ["ACR"])
+    _fx_lake(tmp_path, [{"trade_date": _ACR_EX, "close": _ACR_USDCAD}])
+    store = CorporateActionStore(tmp_path)
+    client = _DividendClient(
+        {
+            "ACR": [
+                MassiveDividend(
+                    provider_event_id="acr-div-1",
+                    ticker="ACR",
+                    ex_dividend_date=_ACR_EX,
+                    cash_amount=Decimal("0.41"),
+                    currency="CAD",
+                    declaration_date=None,
+                    record_date=None,
+                    pay_date=None,
+                    payload_hash="acr-cad-v1",
+                )
+            ]
+        }
+    )
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", *tickers, "--cursor", str(cursor_path), "--resume"],
+            client=client,
+            store=store,
+            data_lake_root=tmp_path,
+        )
+        == 0
+    )
+
+    # Cycle one finished the tail (ZZZ); cycle two fetched ACR and wrote the CAD
+    # dividend, and the conversion at the end of that cycle superseded it.
+    active = store.latest_active("ACR")
+    assert [row.provider for row in active] == ["eod_fx"]
+    assert active[0].currency == "USD" and active[0].cash_amount == pytest.approx(_ACR_CONVERTED)
+    newest = ledger.query(
+        "select value from measurements where name = 'dividend_currency_mismatch' order by measured_at desc limit 1"
+    )
+    assert newest[0]["value"] == 0.0
+    fx_runs = {row["run_id"] for row in ledger.query("select run_id from runs where job = 'dividend-fx'")}
+    assert len(fx_runs) == 2
+
+
+def test_a_failing_second_cycle_conversion_closes_its_run_row(tmp_path, monkeypatch, capsys):
+    """The lane swallows the exception, so the closed `runs` row is the only
+    evidence that cycle one's zero no longer describes the store."""
+    tickers = ["ACR", "ZZZ"]
+    cursor_path = tmp_path / "cursor.json"
+    _seed_cursor(tmp_path, cursor_path, tickers, ["ACR"])
+    _fx_lake(tmp_path, [{"trade_date": _ACR_EX, "close": _ACR_USDCAD}])
+    client = _DividendClient(
+        {
+            "ACR": [
+                MassiveDividend(
+                    provider_event_id="acr-div-1",
+                    ticker="ACR",
+                    ex_dividend_date=_ACR_EX,
+                    cash_amount=Decimal("0.41"),
+                    currency="CAD",
+                    declaration_date=None,
+                    record_date=None,
+                    pay_date=None,
+                    payload_hash="acr-cad-v1",
+                )
+            ]
+        }
+    )
+
+    def unwritable(*args, **kwargs):
+        raise OSError("evidence CAS unwritable")
+
+    # A dependency, not the wrapper, and one reached *after* the conversion
+    # loop: the run row is really opened, the rows are really written, and only
+    # cycle two gets there -- cycle one has no foreign dividend to price.
+    monkeypatch.setattr(sync_corporate_actions.SourceEvidenceStore, "persist_raw", unwritable)
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", *tickers, "--cursor", str(cursor_path), "--resume"],
+            client=client,
+            store=CorporateActionStore(tmp_path),
+            data_lake_root=tmp_path,
+        )
+        == 0
+    )
+
+    assert "evidence CAS unwritable" in capsys.readouterr().err
+    rows = ledger.query("select run_id, ended, exit_code from runs where job = 'dividend-fx' and ended is not null")
+    assert len(rows) == 2
+    assert [row["exit_code"] for row in sorted(rows, key=lambda r: r["run_id"])] == [0, 1]
+
+
+def test_a_conversion_that_fails_before_its_run_row_still_files_an_error(tmp_path, monkeypatch, capsys):
+    """The `runs` row cannot cover a failure raised before it is opened; the
+    `dividend_fx_error` measurement is what `status` reads."""
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-20260914T050000Z-1")
+    _cad_lake(tmp_path)
+    (tmp_path / "bronze/asset_class=equity/symbol=ACR").mkdir(parents=True)
+
+    def unreadable(*args, **kwargs):
+        raise OSError("corporate-action store unreadable")
+
+    # A dependency the conversion builds *before* it opens its run row, and one
+    # the lane itself does not use (the lane's store is injected).
+    monkeypatch.setattr(sync_corporate_actions, "CorporateActionStore", unreadable)
+
+    assert sync_corporate_actions.run([], client=_Client(), store=_Store(), data_lake_root=tmp_path) == 0
+
+    assert "corporate-action store unreadable" in capsys.readouterr().err
+    rows = ledger.query("select scope, value, run_id from measurements where name = 'dividend_fx_error'")
+    assert [(row["scope"], row["value"]) for row in rows] == [("all", 1.0)]
+    assert rows[0]["run_id"] == "daily-update-20260914T050000Z-1-dividend-fx"
+    assert ledger.query("select run_id from runs where job = 'dividend-fx'") == []
+
+
+def test_a_measurement_write_failure_closes_the_run_and_never_reads_as_a_zero(tmp_path, monkeypatch, capsys):
+    """A swallowed measurement write used to close the run OK with no count at
+    all. It now fails the conversion, so the run row closes `exit_code=1`."""
+    _cad_lake(tmp_path)
+    real_emit = ledger.emit
+
+    def no_measurements(table, rows, *, run_id):
+        if table == "measurements":
+            raise OSError("ledger volume full")
+        return real_emit(table, rows, run_id=run_id)
+
+    monkeypatch.setattr(sync_corporate_actions.ledger, "emit", no_measurements)
+
+    assert (
+        sync_corporate_actions.run(["--tickers", "ACR"], client=_Client(), store=_Store(), data_lake_root=tmp_path) == 0
+    )
+
+    assert "ledger volume full" in capsys.readouterr().err
+    # `ledger.query` reads parquet directly, so it is unaffected by the patched
+    # emit (and monkeypatch.undo() here would also undo the ledger-root fixture).
+    closed = ledger.query("select ended, exit_code from runs where job = 'dividend-fx' and ended is not null")
+    assert [row["exit_code"] for row in closed] == [1]
+    # The error row goes through the same failing path, so nothing is filed:
+    # the closed FAILED run row is the only record, and no zero was written
+    # either -- the check reads UNKNOWN on an absent measurement. Known
+    # residual: an earlier whole-scope zero from the same day would still
+    # grade OK in this partial-ledger-outage case (tribunal ISSUE-8, disclosed).
+    assert ledger.query("select name from measurements where name = 'dividend_fx_error'") == []
+
+
+# --- the nightly conversion scope: mark non-USD, do not rescan the store ---------
+
+
+def _never(root):
+    raise AssertionError("the nightly lane must not scan every store file")
+
+
+def test_only_the_tickers_with_a_non_usd_dividend_are_converted(tmp_path, monkeypatch):
+    """A USD dividend cannot need conversion, so it never enters the scope."""
+    monkeypatch.setattr(sync_corporate_actions, "_convertible_symbols", _never)
+    _fx_lake(tmp_path, [{"trade_date": _ACR_EX, "close": _ACR_USDCAD}])
+    store = CorporateActionStore(tmp_path)
+    usd = MassiveDividend(
+        provider_event_id="msft-div-1",
+        ticker="MSFT",
+        ex_dividend_date=_ACR_EX,
+        cash_amount=Decimal("0.75"),
+        currency="USD",
+        declaration_date=None,
+        record_date=None,
+        pay_date=None,
+        payload_hash="msft-usd-v1",
+    )
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", "ACR", "MSFT"],
+            client=_DividendClient({"ACR": [_ACR_CAD_DIVIDEND], "MSFT": [usd]}),
+            store=store,
+            data_lake_root=tmp_path,
+        )
+        == 0
+    )
+
+    assert [row.provider for row in store.latest_active("ACR")] == ["eod_fx"]
+    assert [row.provider for row in store.latest_active("MSFT")] == ["massive"]
+    # One symbol in scope, not two and not the whole store.
+    measurements = {
+        row["name"]: row["value"]
+        for row in ledger.query("select name, value from measurements where name like 'dividend_%'")
+    }
+    assert measurements["dividend_fx_converted"] == 1.0
+
+
+def test_a_symbol_left_pending_last_night_is_converted_without_being_refetched(tmp_path, monkeypatch):
+    """Its dividend was reconciled on an earlier night; until its next successful fetch re-marks it, pending.json is what keeps it in scope."""
+    monkeypatch.setattr(sync_corporate_actions, "_convertible_symbols", _never)
+    store = _cad_lake(tmp_path)  # ACR's CAD dividend is already in the store
+    (tmp_path / "repairs" / "dividend_fx").mkdir(parents=True)
+    (tmp_path / "repairs" / "dividend_fx" / "pending.json").write_text(json.dumps({"symbols": ["acr"]}))
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", "ZZZ"],
+            client=_DividendClient({}),
+            store=store,
+            data_lake_root=tmp_path,
+        )
+        == 0
+    )
+
+    assert [row.provider for row in store.latest_active("ACR")] == ["eod_fx"]
+    # Converted, so nothing is owed tomorrow.
+    assert json.loads((tmp_path / "repairs" / "dividend_fx" / "pending.json").read_text())["symbols"] == []
+
+
+def test_a_night_with_no_foreign_dividend_measures_zero_without_scanning_the_store(tmp_path, monkeypatch):
+    monkeypatch.setattr(sync_corporate_actions, "_convertible_symbols", _never)
+
+    assert (
+        sync_corporate_actions.run(["--tickers", "AAPL"], client=_Client(), store=_Store(), data_lake_root=tmp_path)
+        == 0
+    )
+
+    measurements = {
+        row["name"]: row["value"]
+        for row in ledger.query("select name, value, scope from measurements where name like 'dividend_%'")
+    }
+    assert measurements["dividend_currency_mismatch"] == 0.0
+    scopes = {row["scope"] for row in ledger.query("select scope from measurements where name like 'dividend_%'")}
+    assert scopes == {"subset"}
+    assert ledger.query("select run_id from runs where job = 'dividend-fx' and ended is not null")
+
+
+def test_the_manual_subcommand_without_tickers_still_scans_the_store(tmp_path, monkeypatch):
+    """The bootstrap/audit path: it is the only full pass over the CA store."""
+    _cad_lake(tmp_path)
+    monkeypatch.setattr(sync_corporate_actions, "data_lake_dir", lambda: tmp_path)
+
+    assert (
+        sync_corporate_actions.convert_dividend_currency_main(["--apply", "--output-dir", str(tmp_path / "out")]) == 0
+    )
+
+    assert [row.provider for row in CorporateActionStore(tmp_path).latest_active("ACR")] == ["eod_fx"]
+
+
+def test_a_usd_dividend_on_a_pegged_equity_is_marked_by_the_lane(tmp_path, monkeypatch):
+    """Marking compares against the *equity* currency, which is what the store's
+    `foreign_currency_dividends` predicate compares against. "not USD" would miss
+    a USD dividend on a BMD-denominated equity entirely."""
+    monkeypatch.setattr(sync_corporate_actions, "_convertible_symbols", _never)
+    from clients.security_master import SecurityMaster
+
+    master = SecurityMaster(tmp_path, evidence_verifier=lambda ref, digest: True)
+    assert master.append(_sm_event("NTB", "BMD"))
+    store = CorporateActionStore(tmp_path)
+    usd_on_bmd = MassiveDividend(
+        provider_event_id="ntb-div-2",
+        ticker="NTB",
+        ex_dividend_date=date(2017, 11, 10),
+        cash_amount=Decimal("0.32"),
+        currency="USD",
+        declaration_date=None,
+        record_date=None,
+        pay_date=None,
+        payload_hash="ntb-usd-v1",
+    )
+    usd_on_usd = MassiveDividend(
+        provider_event_id="msft-div-1",
+        ticker="MSFT",
+        ex_dividend_date=date(2017, 11, 10),
+        cash_amount=Decimal("0.75"),
+        currency="USD",
+        declaration_date=None,
+        record_date=None,
+        pay_date=None,
+        payload_hash="msft-usd-v1",
+    )
+
+    assert (
+        sync_corporate_actions.run(
+            ["--tickers", "NTB", "MSFT"],
+            client=_DividendClient({"NTB": [usd_on_bmd], "MSFT": [usd_on_usd]}),
+            store=store,
+            data_lake_root=tmp_path,
+        )
+        == 0
+    )
+
+    converted = store.latest_active("NTB")[0]
+    assert converted.provider == "eod_fx" and converted.currency == "BMD"
+    assert [row.provider for row in store.latest_active("MSFT")] == ["massive"]
+
+
+def test_an_unreadable_pending_list_warns_and_does_not_kill_the_lane(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sync_corporate_actions, "_convertible_symbols", _never)
+    pending = tmp_path / "repairs" / "dividend_fx" / "pending.json"
+    pending.parent.mkdir(parents=True)
+    pending.write_text("{not json")
+
+    assert (
+        sync_corporate_actions.run(["--tickers", "AAPL"], client=_Client(), store=_Store(), data_lake_root=tmp_path)
+        == 0
+    )
+
+    assert "unreadable dividend FX pending list" in capsys.readouterr().err
+    # The conversion still ran and still measured.
+    assert ledger.query("select run_id from runs where job = 'dividend-fx' and ended is not null")

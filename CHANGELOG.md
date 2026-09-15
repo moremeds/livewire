@@ -22,6 +22,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   overrides are floored (attempts ≥ 1, backoff ≥ 0) so a typo cannot skip the
   request or turn the retry into a `ValueError` the per-series catch does not absorb.
   (pm:2026-09-14-fred-502-aborted-remaining-series)
+- `membership-sync --index` accepts a space-separated list, so the
+  scheduled `com.livewire.membership-sync` job runs instead of dying at
+  argparse on `unrecognized arguments: ndx100 djia`; the plist template now
+  names all four panels.
+- The corporate-actions lane converts foreign-currency dividends once per
+  cycle, each under its own `runs` row, and cannot fail the lane on that
+  step. `convert-dividend-currency` was previously an operator-only
+  sub-command and Silver failed ~30 symbols on a currency mismatch. A
+  dividend whose ex-date has not closed yet is left for the next run
+  (`ex_date_pending`) instead of being priced at today's FX, `--preset` files
+  `scope='subset'` like `--tickers`, and the conversion runs at the end of
+  every cycle — before the resumed invocation opens a second cycle the lane
+  budget may kill, and again after that cycle so its own dividends are
+  converted rather than left behind a mismatch count that already read 0.
+  "Foreign-currency dividends" reads UNKNOWN when today's corporate-actions
+  lane did not finish, so a lane killed at its budget mid-cycle cannot leave
+  that stale zero grading OK; a conversion that raises closes its own `runs`
+  row `exit_code=1` and files one `dividend_fx_error` measurement, which the
+  check reads as UNKNOWN until a later pass measures again. A pending ex-date no longer counts
+  as a mismatch, so an announced dividend cannot WARN every night until it
+  goes ex. The lane's conversion scope is the tickers whose fetch carried a
+  dividend in a currency other than that equity's own, plus
+  `repairs/dividend_fx/pending.json`, not a nightly scan of all ~13.3K
+  corporate-action files; every fetch returns full history, so the marking
+  self-heals nightly, and the manual sub-command with no `--tickers` still
+  scans the store.
+- The `status` check "Foreign-currency dividends" grades only today's
+  `scope='all'` measurement and reads UNKNOWN without one, instead of
+  inheriting the last manual run's green. A `--tickers` repair now files
+  `scope='subset'` so it cannot stand in for the whole scope, and the
+  conversion reads `security_master` once per pass instead of once per
+  symbol.
 - The raw-date staging validator no longer decodes macOS AppleDouble
   sidecars. The staging directory is created inside the raw root on the
   exFAT lake, so `glob("*.parquet")` also matched `._bucket=000.parquet`,

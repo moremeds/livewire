@@ -541,9 +541,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--index",
-        action="append",
+        action="extend",
+        nargs="+",
         choices=sorted(DEFAULT_INDEXES),
-        help="Index to sync (repeatable; default: all four)",
+        help="Indexes to sync (space-separated and/or repeatable; default: all four)",
     )
     parser.add_argument("--dry-run", action="store_true", help="Print the diff without appending events")
     args = parser.parse_args(argv)

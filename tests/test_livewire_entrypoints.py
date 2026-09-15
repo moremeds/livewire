@@ -983,3 +983,46 @@ def test_ops_membership_names_a_symbol_for_an_expired_identity(tmp_path, monkeyp
     assert livewire_ops.main(["membership", "--index", "sp500", "--effective-at", "2015-01-01"]) == 0
     out, err = capsys.readouterr()
     assert out.splitlines() == ["CSCO"] and err.strip() == "1"
+
+
+def _membership_sync_argv() -> list[str]:
+    """The argv the scheduled `com.livewire.membership-sync` plist produces."""
+    import plistlib
+    import shlex
+
+    payload = plistlib.loads((REPO_ROOT / "launchd" / "com.livewire.membership-sync.plist.example").read_bytes())
+    words = shlex.split(payload["ProgramArguments"][2])
+    start = words.index("scripts/livewire_ingest.py")
+    return words[start + 1 :]
+
+
+def test_the_scheduled_membership_sync_argv_parses_and_covers_every_index(monkeypatch) -> None:
+    """The exact argv from the plist, through the real argparse, not a mock.
+
+    The template names the four panels as one space-separated list; the flag was
+    declared `action="append"`, which takes one value, so the scheduled job died
+    every weekday on `unrecognized arguments: ndx100 djia` and never synced a
+    single membership event.
+    """
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        membership_sync,
+        "sync",
+        lambda **kwargs: seen.update(kwargs) or 0,
+    )
+    monkeypatch.setattr(membership_sync, "data_lake_dir", lambda: REPO_ROOT)
+    monkeypatch.setattr(livewire_ingest, "load_scheduled_env", lambda repo_root: None)
+
+    argv = _membership_sync_argv()
+    assert argv[0] == "membership-sync"
+    assert livewire_ingest.main(argv) == 0
+    assert sorted(seen["indexes"]) == sorted(membership_sync.DEFAULT_INDEXES)
+
+
+def test_membership_sync_index_flag_is_also_repeatable(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(membership_sync, "sync", lambda **kwargs: seen.update(kwargs) or 0)
+    monkeypatch.setattr(membership_sync, "data_lake_dir", lambda: REPO_ROOT)
+
+    assert membership_sync.main(["--index", "sp500", "--index", "djia", "ndx100"]) == 0
+    assert sorted(seen["indexes"]) == ["djia", "ndx100", "sp500"]

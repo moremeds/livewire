@@ -319,6 +319,14 @@ def run(
             None,
         )
 
+    # `--preset` restricts the scope exactly like `--tickers` does.
+    scope = "all" if not args.tickers and not args.preset else "subset"
+    dividend_fx: dict | None = None
+    fx_passes = 0
+    foreign_tickers: set[str] = set()
+    # One security_master read for the whole run, shared by every marking
+    # decision; the conversion builds its own for its own `now`.
+    equity_currency_of = _equity_currency_resolver(root, datetime.now(UTC))
     # At most two passes: finish whatever last night left, then -- if there is
     # budget left -- run this night's own pass. A SIGKILL at the lane budget
     # simply leaves the current pass resumable tomorrow.
@@ -367,6 +375,8 @@ def run(
                         cycle_failed += 1
                         print(f"{ticker}: {exc}", file=sys.stderr)
                         continue
+                    if _has_convertible_dividend(fetched.events or [], equity_currency_of(ticker)[0]):
+                        foreign_tickers.add(ticker)
                     for key in ("inserted", "revised", "cancelled", "unchanged"):
                         counters[key] += int(getattr(result, key))
                     cursor.mark_completed(ticker, now=datetime.now(UTC))
@@ -388,6 +398,32 @@ def run(
         complete = len(cursor.completed) == len(tickers) and counters["failed"] == 0
         if complete:
             cursor.mark_run_completed(now=datetime.now(UTC))
+        # At the end of every cycle, not once after the loop. Deferred to the
+        # end it never ran at all on a night the second cycle was SIGKILLed at
+        # the lane budget; run once before the second cycle it filed a 0
+        # `dividend_currency_mismatch` and then let that cycle's own dividends
+        # go unconverted -- `status` OK on a night Silver fails on them. Each
+        # cycle's conversion gets its own run id: two open/close pairs under
+        # one run_id are one run to every `group by run_id` reader.
+        if not args.dry_run:
+            fx_passes += 1
+            fx_run_id = f"{run_id}-dividend-fx" + ("" if fx_passes == 1 else f"-{fx_passes}")
+            # A dividend's currency does not change, so the only symbols that can
+            # need conversion tonight are the ones this pass just reconciled a
+            # non-USD dividend for, plus whatever the last conversion left
+            # pending. Scanning all ~13.3K store files to rediscover the few
+            # dozen is the thing this replaces -- and because the union is by
+            # construction every symbol that can have one today, an unrestricted
+            # lane run still measures `scope='all'`.
+            targets = sorted(foreign_tickers | _read_pending_dividend_fx(root))
+            dividend_fx = _convert_dividends_after_sync(targets, root, fx_run_id, scope=scope)
+            # A failed conversion wrote no pending list, so the marks are all
+            # that is left of this cycle's work: carry them into the next
+            # cycle. Losing them entirely is repaired by the next fetch that
+            # succeeds for the symbol: it returns the full dividend history and
+            # re-marks it.
+            if "error" not in dividend_fx:
+                foreign_tickers = set()
         if not (complete and continues_an_earlier_night):
             break
         cursor = open_cursor(cursor_path, identity, resume=False, now=datetime.now(UTC))
@@ -403,6 +439,18 @@ def run(
         "requested": len(tickers),
         "resumed": resumed,
     }
+    # The conversion runs inside the loop above, at the end of each cycle that
+    # just wrote dividends, rather than as a lane or an orchestrator step of
+    # its own: it repairs exactly what that pass reconciled, needs no schedule
+    # entry, and cannot page. The summary carries the last cycle's result --
+    # the newest scope='all' measurement is the one `status` grades.
+    # PR #128 shipped `convert-dividend-currency` wired to nothing;
+    # the scheduled lane emitted no `dividend_fx_*` measurement at all and ~30
+    # symbols failed Silver on "dividend currency does not match bronze
+    # currency". It never changes the exit code — the sync's own failure *rate*
+    # is the only thing that fails this lane.
+    if dividend_fx is not None:
+        summary["dividend_fx"] = dividend_fx
     print(json.dumps(summary, sort_keys=True))
     _emit_provider_measurements(telemetry, run_id)
 
@@ -438,15 +486,116 @@ _PROVIDER_MEASUREMENTS = (
 )
 
 
+def _has_convertible_dividend(events: Sequence[object], equity_currency: str) -> bool:
+    """Did this fetch carry a cash dividend in a currency the equity does not pay in?
+
+    Not "not USD": `foreign_currency_dividends` compares against the *equity*
+    currency, so a USD dividend on a BMD-denominated equity needs conversion
+    just as much as a CAD one on a USD equity. Read off the rows the pass
+    already handled -- re-reading the store to find them is the ~13.3K-file
+    scan this replaces.
+    """
+    return any((getattr(event, "currency", None) or "USD").upper() != equity_currency.upper() for event in events)
+
+
+def _pending_dividend_fx_path(root: Path) -> Path:
+    return root / "repairs" / "dividend_fx" / "pending.json"
+
+
+def _read_pending_dividend_fx(root: Path) -> set[str]:
+    """Symbols the last conversion could not finish (`ex_date_pending`, `no_fx_bar`)."""
+    path = _pending_dividend_fx_path(root)
+    if not path.exists():
+        return set()
+    try:
+        payload = json.loads(path.read_text())
+        return {canonical_symbol(str(symbol)) for symbol in payload["symbols"]}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        # A file that exists and cannot be read is a fact, not a nothing: say so
+        # once. The next successful conversion rewrites it.
+        print(f"WARNING: unreadable dividend FX pending list {path}: {exc}", file=sys.stderr)
+        return set()
+
+
+def _write_pending_dividend_fx(root: Path, skipped: list[dict]) -> None:
+    path = _pending_dividend_fx_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    symbols = sorted({str(row["symbol"]) for row in skipped})
+    # temp -> os.replace: a torn write would read back as invalid JSON, the
+    # reader would return an empty set, and every pending symbol would be lost.
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps({"symbols": symbols}, indent=1) + "\n")
+    os.replace(temporary, path)
+
+
+def _convert_dividends_after_sync(tickers: list[str], root: Path, fx_run_id: str, *, scope: str) -> dict:
+    """Repair foreign-currency dividends; never fail the lane on this step."""
+    try:
+        result = convert_dividend_currency(
+            tickers=tickers,
+            apply=True,
+            output_dir=root / "repairs" / "dividend_fx",
+            lake_root=root,
+            run_id=fx_run_id,
+            scope=scope,
+        )
+    except Exception as exc:
+        print(f"WARNING: dividend FX conversion failed: {exc}", file=sys.stderr)
+        # One signal, not a gate per failure mode: the lane swallows this
+        # exception, and it can be raised before the `runs` row is opened or
+        # after it closed OK. `status` reads the newest whole-scope row of the
+        # day, so this row stands in front of an earlier cycle's stale zero.
+        try:
+            ledger.emit(
+                "measurements",
+                [
+                    {
+                        "name": "dividend_fx_error",
+                        "scope": scope,
+                        "measured_at": datetime.now(UTC),
+                        "value": 1.0,
+                        "unit": "count",
+                        "source": "measured",
+                        "run_id": fx_run_id,
+                    }
+                ],
+                run_id=fx_run_id,
+            )
+        except Exception as ledger_exc:  # pragma: no cover - the ledger is the last resort
+            print(f"WARNING: could not record the dividend FX failure: {ledger_exc}", file=sys.stderr)
+        return {"error": str(exc)}
+    # Tomorrow's scope: a skipped row is still owed a conversion. The nightly
+    # fetch re-marks it too, but only once that symbol is fetched and
+    # reconciled again; this list bridges the nights it is not.
+    try:
+        _write_pending_dividend_fx(root, result["skipped"])
+    except OSError as exc:
+        print(f"WARNING: could not record the dividend FX pending list: {exc}", file=sys.stderr)
+    return {
+        "converted": result["converted"],
+        "remaining": result["remaining"],
+        "run_id": result["run_id"],
+        "skipped": len(result["skipped"]),
+    }
+
+
 def _lane_run_id() -> str:
     """The run this lane's ledger rows belong to; the orchestrator supplies it."""
     return os.environ.get("LW_RUN_ID") or ledger.new_run_id("corporate-actions")
 
 
-def _emit_measurements(rows: list[dict], run_id: str) -> None:
+def _emit_measurements(rows: list[dict], run_id: str, *, strict: bool = False) -> None:
+    """Telemetry must not fail a good run -- unless the rows *are* the answer.
+
+    `strict=True` for the conversion's own counts: a swallowed write leaves the
+    run closing OK with no measurement, and `status` then grades an earlier
+    cycle's zero. The provider totals are telemetry and keep swallowing.
+    """
     try:
         ledger.emit("measurements", rows, run_id=run_id)
-    except Exception as exc:  # pragma: no cover - telemetry must not fail a good run
+    except Exception as exc:
+        if strict:
+            raise
         print(f"WARNING: could not write measurements: {exc}", file=sys.stderr)
 
 
@@ -522,22 +671,34 @@ def _fx_bar(root: Path, pair: str, on: date) -> dict | None:
     return bar
 
 
-def _equity_currency(root: Path, symbol: str, now: datetime) -> tuple[str, str]:
-    """Equity bronze currency from security_master when it has a verified claim."""
-    if not (root / "security_master" / "events.parquet").exists():
-        return "USD", "default"
-    try:
-        from clients.security_master import SecurityMaster
+def _equity_currency_resolver(root: Path, now: datetime) -> Callable[[str], tuple[str, str]]:
+    """symbol -> (equity bronze currency, source), reading security_master once.
 
-        master = SecurityMaster(root, evidence_verifier=None)
-        verified = [
-            event for event in master.events(as_of=now) if event.symbol == symbol and event.status == "verified"
-        ]
-    except Exception:
-        return "USD", "default"
-    if not verified:
-        return "USD", "default"
-    return max(verified, key=lambda event: event.known_at).currency, "security_master"
+    Per symbol this re-read and re-deserialized the whole identity log. That was
+    free for the operator sub-command's one `--tickers` symbol and is a lane
+    cost now that the nightly corporate-actions pass calls it for every symbol
+    of the universe (~15k full parquet reads on the exFAT lake, inside a killable
+    LANE_BUDGET_S). One read, one dict.
+    """
+    verified: dict[str, tuple[str, datetime]] = {}
+    if (root / "security_master" / "events.parquet").exists():
+        try:
+            from clients.security_master import SecurityMaster
+
+            for event in SecurityMaster(root, evidence_verifier=None).events(as_of=now):
+                if event.status != "verified":
+                    continue
+                known = verified.get(event.symbol)
+                if known is None or event.known_at > known[1]:
+                    verified[event.symbol] = (event.currency, event.known_at)
+        except Exception:
+            verified = {}
+
+    def resolve(symbol: str) -> tuple[str, str]:
+        known = verified.get(symbol)
+        return ("USD", "default") if known is None else (known[0], "security_master")
+
+    return resolve
 
 
 def _convertible_symbols(root: Path) -> list[str]:
@@ -557,6 +718,8 @@ def convert_dividend_currency(
     lake_root: Path,
     now: datetime | None = None,
     fx_close_fn: Callable[[str, date], tuple[date, float] | None] | None = None,
+    run_id: str | None = None,
+    scope: str = "all",
 ) -> dict:
     """Supersede foreign-currency dividends with `eod_fx` rows in the equity currency.
 
@@ -568,14 +731,20 @@ def convert_dividend_currency(
     root = Path(lake_root)
     now = now or datetime.now(UTC)
     store = CorporateActionStore(root)
-    symbols = [canonical_symbol(t) for t in tickers] if tickers else _convertible_symbols(root)
+    # An explicit list -- including an empty one -- is the caller's scope. Only
+    # `tickers=None` (the manual sub-command with no --tickers) scans the store.
+    symbols = [canonical_symbol(t) for t in tickers] if tickers is not None else _convertible_symbols(root)
     if fx_close_fn is None:
         fx_close_fn = lambda pair, on: (  # noqa: E731
             (bar["trade_date"], float(bar["close"])) if (bar := _fx_bar(root, pair, on)) else None
         )
     evidence_store = SourceEvidenceStore(root) if apply else None
+    currency_of = _equity_currency_resolver(root, now)
 
-    run_id = os.environ.get("LW_RUN_ID") or ledger.new_run_id("dividend-fx")
+    # A caller inside a lane passes its own id: sharing the orchestrator's
+    # LW_RUN_ID would file a *closed* `runs` row under the still-open
+    # daily-update run, and "Daily update finished" would read finished.
+    run_id = run_id or os.environ.get("LW_RUN_ID") or ledger.new_run_id("dividend-fx")
     run_row = {
         "run_id": run_id,
         "job": "dividend-fx",
@@ -596,11 +765,19 @@ def convert_dividend_currency(
     fx_evidence: list[tuple[str, str, dict]] = []  # (pair, sha256, row)
     try:
         for symbol in symbols:
-            equity_ccy, equity_source = _equity_currency(root, symbol, now)
+            equity_ccy, equity_source = currency_of(symbol)
             conversions: list[DividendConversion] = []
             pending: list[tuple[CorporateAction, dict]] = []
             for row in store.foreign_currency_dividends(symbol, equity_ccy):
                 detected += 1
+                # An ex-date that has not closed yet: `_fx_bar` would price it
+                # at a bar up to _FX_STALE_DAYS old, and after conversion the
+                # row matches the equity currency and is never re-examined.
+                # Strictly >=: the ex-date session's FX close is only final by
+                # the next morning's run.
+                if row.ex_date >= now.date():
+                    skipped.append({"symbol": symbol, "ex_date": row.ex_date.isoformat(), "reason": "ex_date_pending"})
+                    continue
                 peg_rate: float | None = None
                 if equity_ccy == "USD" and row.currency in USD_PEGGED:
                     peg_rate = USD_PEGGED[row.currency]
@@ -671,77 +848,86 @@ def convert_dividend_currency(
                         "new_action_id": active_by_supersedes[old.action_id],
                     }
                 )
+
+        # Commit each FX bar's exact bytes to the evidence CAS and mirror one
+        # `evidence` row per HashedRef into the ledger — apply runs only.
+        if evidence_store is not None and fx_evidence:
+            seen: set[str] = set()
+            for pair, sha, bar in fx_evidence:
+                if sha in seen:
+                    continue
+                seen.add(sha)
+                artifact = evidence_store.persist_raw(canonical_bytes(bar, default=str), expected_sha256=sha)
+                evidence_store.record(
+                    SourceEvidence(
+                        ref=artifact.ref,
+                        sha256=artifact.sha256,
+                        source_url=f"bronze://fx/{pair}/1d.parquet#{bar['trade_date'].isoformat()}",
+                        retrieved_at=now,
+                        publication_time=None,
+                        mediawiki_revision_id=None,
+                        mediawiki_revision_time=None,
+                        content_type="application/vnd.livewire.fx-bar+json",
+                    )
+                )
+                ledger.emit(
+                    "evidence",
+                    [
+                        {
+                            "evidence_hash": artifact.sha256,
+                            "kind": "fx_bar",
+                            "subject": pair,
+                            "payload_json": json.dumps(bar, default=str),
+                            "source_url": f"bronze://fx/{pair}/1d.parquet#{bar['trade_date'].isoformat()}",
+                            "fetched_at": now,
+                            "proposer": "dividend-fx",
+                            "run_id": run_id,
+                        }
+                    ],
+                    run_id=run_id,
+                )
+
+        # A dividend whose ex-date has not closed yet is not a leftover: the
+        # next run converts it. Counting it would WARN every night for every
+        # announced dividend and send the operator to a remedy that re-skips
+        # the same rows. `no_fx_bar` stays counted -- that one is real.
+        pending_ex_dates = sum(1 for row in skipped if row["reason"] == "ex_date_pending")
+        remaining = detected - len(applied) - pending_ex_dates
+        _emit_measurements(
+            [
+                {
+                    "name": name,
+                    "scope": scope,
+                    "measured_at": now,
+                    "value": float(value),
+                    "unit": "count",
+                    "source": "measured",
+                    "run_id": run_id,
+                }
+                for name, value in (
+                    ("dividend_currency_mismatch", remaining),
+                    ("dividend_fx_converted", len(applied)),
+                    ("dividend_fx_skipped", len(skipped)),
+                )
+            ],
+            run_id,
+            strict=True,
+        )
+        ledger.emit(
+            "runs",
+            [run_row | {"ended": datetime.now(UTC), "exit_code": 0, "verdict": "OK"}],
+            run_id=run_id,
+        )
     except BaseException:
+        # The whole body, not just the conversion loop: the lane wrapper
+        # swallows this exception and files one `dividend_fx_error` row, which
+        # is what `status` reads; the FAILED close here is the run's own record.
         ledger.emit(
             "runs",
             [run_row | {"ended": datetime.now(UTC), "exit_code": 1, "verdict": "FAILED"}],
             run_id=run_id,
         )
         raise
-
-    # Commit each FX bar's exact bytes to the evidence CAS and mirror one
-    # `evidence` row per HashedRef into the ledger — apply runs only.
-    if evidence_store is not None and fx_evidence:
-        seen: set[str] = set()
-        for pair, sha, bar in fx_evidence:
-            if sha in seen:
-                continue
-            seen.add(sha)
-            artifact = evidence_store.persist_raw(canonical_bytes(bar, default=str), expected_sha256=sha)
-            evidence_store.record(
-                SourceEvidence(
-                    ref=artifact.ref,
-                    sha256=artifact.sha256,
-                    source_url=f"bronze://fx/{pair}/1d.parquet#{bar['trade_date'].isoformat()}",
-                    retrieved_at=now,
-                    publication_time=None,
-                    mediawiki_revision_id=None,
-                    mediawiki_revision_time=None,
-                    content_type="application/vnd.livewire.fx-bar+json",
-                )
-            )
-            ledger.emit(
-                "evidence",
-                [
-                    {
-                        "evidence_hash": artifact.sha256,
-                        "kind": "fx_bar",
-                        "subject": pair,
-                        "payload_json": json.dumps(bar, default=str),
-                        "source_url": f"bronze://fx/{pair}/1d.parquet#{bar['trade_date'].isoformat()}",
-                        "fetched_at": now,
-                        "proposer": "dividend-fx",
-                        "run_id": run_id,
-                    }
-                ],
-                run_id=run_id,
-            )
-
-    remaining = detected - len(applied)
-    _emit_measurements(
-        [
-            {
-                "name": name,
-                "scope": "all",
-                "measured_at": now,
-                "value": float(value),
-                "unit": "count",
-                "source": "measured",
-                "run_id": run_id,
-            }
-            for name, value in (
-                ("dividend_currency_mismatch", remaining),
-                ("dividend_fx_converted", len(applied)),
-                ("dividend_fx_skipped", len(skipped)),
-            )
-        ],
-        run_id,
-    )
-    ledger.emit(
-        "runs",
-        [run_row | {"ended": datetime.now(UTC), "exit_code": 0, "verdict": "OK"}],
-        run_id=run_id,
-    )
 
     manifest_path = None
     if apply and output_dir is not None:
@@ -780,6 +966,10 @@ def convert_dividend_currency_main(argv: Sequence[str]) -> int:
         apply=args.apply,
         output_dir=args.output_dir,
         lake_root=data_lake_dir(),
+        # A targeted repair measures a handful of symbols. Filing that under
+        # scope 'all' let it overwrite the nightly whole-scope fact for the
+        # rest of the day, and `status` grades today's newest row.
+        scope="all" if args.tickers is None else "subset",
     )
     print(json.dumps(summary, sort_keys=True, default=str))
     return 0

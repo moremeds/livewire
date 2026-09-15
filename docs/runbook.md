@@ -467,6 +467,40 @@ trail the grok repair produced by hand. Every run emits `runs`
 `dividend_fx_converted`/`dividend_fx_skipped` measurements; apply also commits
 each FX bar to the evidence CAS and writes one `evidence` row per ref.
 
+The nightly `corporate-actions` lane runs this itself, with `--apply` and
+`<lake>/repairs/dividend_fx/` as the output dir, at the end of **every** resume
+cycle — a resumed tail and this night's own pass each convert their own
+dividends, under `<lane run id>-dividend-fx` and then `-dividend-fx-2`. It can
+never change the lane's exit code. The command below is for a targeted repair.
+
+Its scope is **not** the whole store: a dividend's currency does not change, so
+the lane converts only the tickers whose fetch this cycle carried a cash
+dividend in a currency other than that equity's own (a USD dividend on a
+BMD-denominated equity counts), plus whatever the previous conversion left in
+`<lake>/repairs/dividend_fx/pending.json` (`ex_date_pending` / `no_fx_bar`).
+That union is every symbol that can need a conversion tonight, which is why it
+still measures `scope='all'`. It self-heals: each nightly fetch returns a
+symbol's full dividend history, so every symbol with a foreign-currency
+dividend is re-marked every night — `pending.json` only bridges a symbol whose
+own fetch failed the same night, and a lost mark is repaired by the next successful fetch of that symbol (not necessarily the next night: consecutive fetch failures or a resumed cycle that skips it delay that).
+Running this command with no `--tickers` is the one full pass over the CA
+store — the bootstrap and audit path.
+
+Measurement scope follows the ticker scope: a pass with neither `--tickers` nor
+`--preset` files `scope='all'` and is what `status` grades; either flag files
+`scope='subset'`, so a one-symbol repair cannot erase the night's whole-scope
+WARN by being the newest row of the day.
+
+A dividend whose ex-date has not closed yet is skipped as `ex_date_pending` and
+is **not** counted in `dividend_currency_mismatch` — the next run converts it at
+the real ex-date close; `no_fx_bar` is counted, being a genuine leftover. The
+`status` check grades the newest whole-scope row of the day among
+`dividend_currency_mismatch` and `dividend_fx_error`: a conversion that raised
+files the error row (the lane swallows the exception) and reads UNKNOWN, and a
+later successful pass supersedes it. On top of that, today's `corporate-actions`
+lane must have finished (`lane_results.outcome='done'`) — a SIGKILL at the lane
+budget emits nothing at all, so no row can speak for it.
+
 ```bash
 python scripts/livewire_ingest.py corporate-actions convert-dividend-currency                       # dry-run, all CA-store symbols
 python scripts/livewire_ingest.py corporate-actions convert-dividend-currency --tickers ACR         # dry-run, one symbol
@@ -1054,7 +1088,7 @@ Maintains the `index_membership` store: evidence-backed add/remove events per
 `security_id`, replayable `as_of`. Two modes:
 
 ```bash
-python scripts/livewire_ingest.py membership-sync [--index sp500]... [--dry-run]   # live diff
+python scripts/livewire_ingest.py membership-sync [--index sp500 ndx100 ...] [--dry-run]   # live diff; default: all four
 python scripts/livewire_ingest.py membership-sync import --index sp500 \
     --events grok_index/pit_membership/sp500/events.jsonl --source <file>...        # one-time panel import
 ```
