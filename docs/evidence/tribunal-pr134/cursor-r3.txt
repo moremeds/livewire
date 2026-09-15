@@ -1,0 +1,28 @@
+  BEGIN_REVIEW r3-cursor 59dc17b16aac
+
+  Verification
+
+  (1) Cross-fetch rename overlap → spec §4 conflict — VERIFIED FIXED. After _rename_match, overlapping current verified rows of that id are not joined: new
+  unresolved id, identity_conflict += 1 (security_master_sync.py:269-290). Overlap uses clients.security_master._overlaps (end-exclusive; touching end ==
+  next start is not an overlap, same as _contains). test_a_cross_fetch_rename_with_overlapping_dates_is_a_conflict_not_a_join appends YHOO 2015–2017, then
+  AABA starting 2016: own id, unresolved, revision 1. Disjoint AABA 2018 still joins (test_a_rename_fetched_one_ticker_at_a_time_stays_one_security_id).
+  Same-call overlap still splits both as unresolved (test_matching_figis_with_overlapping_dates_are_two_unresolved_rows). The already-written first half
+  cannot be un-verified (append-only); refusing the second half is the fail-closed move.
+
+  (2) Widen/rename revision = max(id)+1 — VERIFIED FIXED. _next_revision is max(revision of that security_id)+1 over every row, superseded included
+  (security_master_sync.py:148-152), matching SecurityMaster._validate_append (security_master.py:152-155). _widen and the disjoint rename path both use it
+  (223, 296). test_widening_one_symbol_of_a_renamed_id_takes_the_ids_next_revision has revs 1+2 on one id, then a YHOO start widen at revision 3;
+  matched.revision + 1 would have been 2 and the master would reject it.
+
+  (3) _covered pre-coverage remainder — VERIFIED FIXED. A needed date counts as covered if _resolve hits or it is strictly before the ticker’s earliest
+  current verified Massive interval on a resolve MIC (security_master_sync.py:480-503).
+  test_a_date_before_the_earliest_verified_interval_does_not_force_a_refetch seeds AAPL from 2010 with placeholders at 1996 and 2010; second sync fetches
+  nothing. Dates after the interval still miss _resolve and are not < earliest, so the WLP-style later-date widen refetch still runs.
+
+  Still open (unchanged, not in this delta): Cursor r2 ISSUE-1 second half — a lone pre-floor add (1996-01-02 only) still has empty probe_dates, no identity,
+  and reresolve at that effective_at still does not produce a verified current member. Escalated as scoped.
+
+  No regression found in the three patched paths.
+
+  NEW ISSUES: none
+  END_REVIEW r3-cursor 59dc17b16aac

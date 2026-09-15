@@ -12,8 +12,9 @@ from types import SimpleNamespace
 import pytest
 
 from clients import ledger
-from clients.index_membership_store import IndexMembershipStore
+from clients.index_membership_store import IndexMembershipStore, MembershipEvent
 from clients.mediawiki_client import MediaWikiSnapshot
+from clients.pit_silver_revision import PitSilverRevisionPublisher
 from clients.security_master import SecurityIdentityEvent, SecurityMaster
 from clients.shepherd_repair import HashedRef
 from clients.source_evidence import SourceEvidence, SourceEvidenceStore, canonical_bytes
@@ -472,4 +473,426 @@ def test_sync_failed_run_row_when_processing_raises(tmp_path, monkeypatch):
             fetch_fn=lambda index_id: _fetched(lake, {"AAPL"}),
         )
     terminal = ledger.query("select verdict, exit_code from runs where job='membership-sync' and ended is not null")
+    assert {(row["verdict"], row["exit_code"]) for row in terminal} == {("FAILED", 1)}
+
+
+# --- reresolve -----------------------------------------------------------
+
+RERESOLVE_NOW = datetime(2026, 9, 15, 3, 0, tzinfo=UTC)
+
+# The two errors pit_silver_revision raises when a verified membership replay
+# is unbalanced; the reresolve guard exists to keep both out of the store.
+_REPLAY_ERRORS = {"duplicate open membership interval", "membership removal has no open interval"}
+
+
+def _reresolve(tmp_path: Path, *, index_id: str = "sp500", confidence: str = "B", now=None) -> dict:
+    return membership_sync.reresolve(
+        index_id=index_id,
+        data_lake_root=tmp_path / "lake",
+        now=now or RERESOLVE_NOW,
+        confidence=confidence,
+    )
+
+
+def _receipt(as_of: datetime) -> dict:
+    """The read-only corporate-action receipt shape pit_silver_revision checks."""
+    receipt = {
+        "version": 1,
+        "operation": "shepherd-actions-export",
+        "asOf": as_of.isoformat(),
+        "symbols": [],
+        "summary": {"requested": 0, "verified": 0, "unresolved": 0},
+        "mutated": False,
+    }
+    encoded = (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    receipt["receiptHash"] = f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+    return receipt
+
+
+def _pit_replay_error(lake: Path, as_of: datetime) -> str | None:
+    """Run pit_silver_revision's own replay over the index and return its error.
+
+    `_build_core` verifies membership evidence, then replays the verified
+    events — the step under test — and only afterwards reaches the identity and
+    Silver-revision inputs this fixture does not build. Anything the replay
+    itself rejects surfaces as one of `_REPLAY_ERRORS`.
+    """
+    events = _store(lake).events("sp500")
+    try:
+        PitSilverRevisionPublisher(lake)._build_core("sp500", len(events), as_of, _receipt(as_of))
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def test_reresolve_replaces_the_placeholder_and_rejects_it(tmp_path):
+    _import(tmp_path)
+    lake = tmp_path / "lake"
+    master = SecurityMaster(lake, evidence_verifier=verifies)
+    aeos = _verified_security(master, "AEOS")
+
+    result = _reresolve(tmp_path)
+
+    assert result["resolved"] == 2  # AEOS add + remove
+    events = _store(lake).events("sp500")
+    placeholders = [e for e in events if e.security_id == "unresolved:AEOS"]
+    assert {e.status for e in placeholders} == {"unresolved", "rejected"}
+    resolved = [e for e in events if e.security_id == aeos]
+    assert {e.action for e in resolved} == {"add", "remove"}
+    assert all(e.status == "verified" for e in resolved)
+    assert all(e.known_at == RERESOLVE_NOW for e in resolved)
+
+
+def test_reresolve_emits_the_run_and_measurements(tmp_path):
+    _import(tmp_path)
+    _verified_security(SecurityMaster(tmp_path / "lake", evidence_verifier=verifies), "AEOS")
+
+    _reresolve(tmp_path)
+
+    runs = ledger.query("select verdict from runs where job='membership-reresolve' and ended is not null")
+    assert {row["verdict"] for row in runs} == {"OK"}
+    rows = ledger.query(
+        "select name, scope, value from measurements "
+        "where name in ('membership_reresolve_conflict', 'membership_unresolved') and scope='sp500' "
+        "and measured_at >= '2026-09-15'"
+    )
+    by_name = {row["name"]: row["value"] for row in rows}
+    assert by_name["membership_reresolve_conflict"] == 0.0
+    assert by_name["membership_unresolved"] == 0.0
+
+
+def test_a_second_reresolve_appends_nothing(tmp_path):
+    _import(tmp_path)
+    _verified_security(SecurityMaster(tmp_path / "lake", evidence_verifier=verifies), "AEOS")
+    _reresolve(tmp_path)
+    before = len(_store(tmp_path / "lake").events("sp500"))
+
+    assert _reresolve(tmp_path)["resolved"] == 0
+    assert len(_store(tmp_path / "lake").events("sp500")) == before
+
+
+def test_pit_honesty_an_as_of_before_the_reresolve_still_sees_nothing(tmp_path):
+    _import(tmp_path)
+    lake = tmp_path / "lake"
+    aeos = _verified_security(SecurityMaster(lake, evidence_verifier=verifies), "AEOS")
+    _reresolve(tmp_path)
+    store = _store(lake)
+
+    at = dt("2005-01-01")
+    assert aeos not in store.members_effective_at("sp500", at, NOW)
+    assert aeos in store.members_effective_at("sp500", at, RERESOLVE_NOW)
+
+
+def test_an_interrupted_pass_is_completed_by_the_retry_with_no_duplicate(tmp_path, monkeypatch):
+    """A crash between the resolved append and the rejection leaves the
+    placeholder current; the retry reuses the stored replacement as is."""
+    _import(tmp_path)
+    lake = tmp_path / "lake"
+    aeos = _verified_security(SecurityMaster(lake, evidence_verifier=verifies), "AEOS")
+
+    original = IndexMembershipStore.append
+    calls = {"n": 0}
+
+    def crash_after_first_resolved(self, item):
+        if item.status != "rejected":
+            calls["n"] += 1
+            result = original(self, item)
+            if calls["n"] == 1:
+                raise RuntimeError("interrupted")
+            return result
+        return original(self, item)
+
+    monkeypatch.setattr(IndexMembershipStore, "append", crash_after_first_resolved)
+    with pytest.raises(RuntimeError):
+        _reresolve(tmp_path)
+    monkeypatch.undo()
+
+    _reresolve(tmp_path)
+    events = _store(lake).events("sp500")
+    resolved_adds = [e for e in events if e.security_id == aeos and e.action == "add"]
+    assert len(resolved_adds) == 1
+    members = membership_sync._current_members(events)
+    assert "unresolved:AEOS" not in members
+
+
+def test_an_add_and_a_remove_on_the_delisting_date_both_resolve_to_one_id(tmp_path):
+    """Master intervals are end-exclusive, so a remove effective on the
+    delisting date would never resolve on its own and its add would become a
+    permanent member the next sync removes a second time."""
+    lake = tmp_path / "lake"
+    _import(tmp_path)
+    master = SecurityMaster(lake, evidence_verifier=verifies)
+    security_id = master.new_security_id()
+    master.append(
+        SecurityIdentityEvent(
+            event_id="identity-AEOS-closed",
+            security_id=security_id,
+            revision=1,
+            symbol="AEOS",
+            provider="massive",
+            exchange_mic="XNAS",
+            currency="USD",
+            effective_from=dt("2000-01-01"),
+            effective_to=dt("2007-01-01"),
+            known_at=dt("2000-01-01"),
+            issuer_name="AEOS issuer",
+            cik="0000000009",
+            composite_figi=None,
+            share_class_figi=None,
+            continuity_basis="provider_figi",
+            relationship_type=None,
+            related_security_id=None,
+            source_refs=("artifact://sha256/" + "a" * 64,),
+            source_hashes=("a" * 64,),
+            status="verified",
+            supersedes=None,
+        )
+    )
+
+    _reresolve(tmp_path)
+
+    events = _store(lake).events("sp500")
+    resolved = [e for e in events if e.security_id == security_id]
+    assert {e.action for e in resolved} == {"add", "remove"}
+    assert security_id not in membership_sync._current_members(events)
+
+
+def test_a_retry_after_the_add_pair_still_resolves_the_delisting_date_remove(tmp_path, monkeypatch):
+    """Spec §3.3 rule 1: the add may come from an earlier pass. A crash after
+    the add's pair (resolved + rejection) but before the remove leaves the
+    add placeholder superseded; the retry must find the open add through the
+    store, because the clock alone never resolves a remove on the delisting
+    date (end-exclusive intervals)."""
+    lake = tmp_path / "lake"
+    _import(tmp_path)
+    master = SecurityMaster(lake, evidence_verifier=verifies)
+    security_id = master.new_security_id()
+    master.append(
+        SecurityIdentityEvent(
+            event_id="identity-AEOS-closed",
+            security_id=security_id,
+            revision=1,
+            symbol="AEOS",
+            provider="massive",
+            exchange_mic="XNAS",
+            currency="USD",
+            effective_from=dt("2000-01-01"),
+            effective_to=dt("2007-01-01"),
+            known_at=dt("2000-01-01"),
+            issuer_name="AEOS issuer",
+            cik="0000000009",
+            composite_figi=None,
+            share_class_figi=None,
+            continuity_basis="provider_figi",
+            relationship_type=None,
+            related_security_id=None,
+            source_refs=("artifact://sha256/" + "a" * 64,),
+            source_hashes=("a" * 64,),
+            status="verified",
+            supersedes=None,
+        )
+    )
+
+    original = IndexMembershipStore.append
+    seen = {"rejected": 0}
+
+    def crash_after_the_first_rejection(self, item):
+        result = original(self, item)
+        if item.status == "rejected":
+            seen["rejected"] += 1
+            if seen["rejected"] == 1:
+                raise RuntimeError("interrupted")
+        return result
+
+    monkeypatch.setattr(IndexMembershipStore, "append", crash_after_the_first_rejection)
+    with pytest.raises(RuntimeError):
+        _reresolve(tmp_path)
+    monkeypatch.undo()
+
+    _reresolve(tmp_path)
+
+    events = _store(lake).events("sp500")
+    resolved = [e for e in events if e.security_id == security_id]
+    assert {e.action for e in resolved} == {"add", "remove"}
+    assert security_id not in membership_sync._current_members(events)
+    assert "unresolved:AEOS" not in membership_sync._current_members(events)
+
+
+def test_a_later_sync_add_for_the_same_id_makes_the_historical_add_fail_closed(tmp_path):
+    """The case a check at effective_at alone misses: the nightly sync already
+    opened a membership, later in time, for the id this add resolves to."""
+    _import(tmp_path)
+    lake = tmp_path / "lake"
+    aeos = _verified_security(SecurityMaster(lake, evidence_verifier=verifies), "AEOS")
+    store = _store(lake)
+    store.append(
+        MembershipEvent(
+            event_id="sync-add-aeos",
+            index_id="sp500",
+            security_id=aeos,
+            action="add",
+            announced_at=None,
+            effective_at=dt("2026-09-14"),
+            known_at=dt("2026-09-14"),
+            source_refs=("artifact://sha256/" + SOURCE_SHA,),
+            source_hashes=(SOURCE_SHA,),
+            revision=1,
+            supersedes=None,
+            status="verified",
+        )
+    )
+
+    result = _reresolve(tmp_path)
+
+    assert result["conflicts"] >= 1
+    # the placeholder is untouched: no resolved add, no rejection
+    events = store.events("sp500")
+    assert not [e for e in events if e.security_id == aeos and e.effective_at == dt("2004-01-01")]
+    assert [e for e in events if e.security_id == "unresolved:AEOS" and e.status == "rejected"] == []
+
+
+def test_a_candidate_add_then_a_remove_at_confidence_b_fails_closed(tmp_path):
+    """PIT Silver replays verified events only, so the guard filters to the
+    status the proposed event will carry: a remove whose add is candidate must
+    not be appended as verified."""
+    _import(tmp_path, confidence="C")  # placeholders' resolved status will be candidate
+    lake = tmp_path / "lake"
+    aeos = _verified_security(SecurityMaster(lake, evidence_verifier=verifies), "AEOS")
+    _reresolve(tmp_path, confidence="C")  # add + remove land as candidate
+
+    # now a second, verified-confidence pass over a fresh placeholder remove
+    store = _store(lake)
+    store.append(
+        MembershipEvent(
+            event_id="placeholder-remove-only",
+            index_id="sp500",
+            security_id="unresolved:AEOS",
+            action="remove",
+            announced_at=None,
+            effective_at=dt("2009-01-01"),
+            known_at=dt("2026-09-14"),
+            source_refs=("artifact://sha256/" + SOURCE_SHA,),
+            source_hashes=(SOURCE_SHA,),
+            revision=max(e.revision for e in store.events("sp500") if e.security_id == "unresolved:AEOS") + 1,
+            supersedes=None,
+            status="unresolved",
+        )
+    )
+
+    result = _reresolve(tmp_path, confidence="B", now=RERESOLVE_NOW.replace(hour=4))
+
+    assert result["conflicts"] >= 1
+    assert not [e for e in store.events("sp500") if e.security_id == aeos and e.status == "verified"]
+
+
+def test_pit_silver_replay_over_a_reresolved_index_raises_nothing(tmp_path):
+    _import(tmp_path)
+    lake = tmp_path / "lake"
+    _verified_security(SecurityMaster(lake, evidence_verifier=verifies), "AEOS")
+    _reresolve(tmp_path)
+
+    assert _pit_replay_error(lake, RERESOLVE_NOW) not in _REPLAY_ERRORS
+
+
+def test_the_pit_replay_probe_catches_an_unbalanced_index(tmp_path):
+    """Negative control for the probe above: a second open add for one id is
+    exactly what the reresolve guard refuses to write."""
+    _import(tmp_path)
+    lake = tmp_path / "lake"
+    store = _store(lake)
+    aapl = SecurityMaster(lake, evidence_verifier=None).resolve_symbol("massive", "AAPL", "XNAS", NOW, NOW)
+    store.append(
+        MembershipEvent(
+            event_id="unbalanced-second-add",
+            index_id="sp500",
+            security_id=aapl,
+            action="add",
+            announced_at=None,
+            effective_at=dt("2020-01-01"),
+            known_at=dt("2026-09-14"),
+            source_refs=("artifact://sha256/" + SOURCE_SHA,),
+            source_hashes=(SOURCE_SHA,),
+            revision=max(e.revision for e in store.events("sp500") if e.security_id == aapl) + 1,
+            supersedes=None,
+            status="verified",
+        )
+    )
+
+    assert _pit_replay_error(lake, RERESOLVE_NOW) == "duplicate open membership interval"
+
+
+def test_confidence_maps_to_status_and_r2k_proxy_is_always_candidate(tmp_path):
+    _import(tmp_path)
+    lake = tmp_path / "lake"
+    aeos = _verified_security(SecurityMaster(lake, evidence_verifier=verifies), "AEOS")
+
+    _reresolve(tmp_path, confidence="C")
+
+    resolved = [e for e in _store(lake).events("sp500") if e.security_id == aeos]
+    assert {e.status for e in resolved} == {"candidate"}
+
+
+def test_the_backlog_measure_agrees_across_import_sync_and_reresolve(tmp_path):
+    _import(tmp_path)
+    lake = tmp_path / "lake"
+    _verified_security(SecurityMaster(lake, evidence_verifier=verifies), "AEOS")
+    after = _reresolve(tmp_path)["unresolved"]
+
+    events = _store(lake).events("sp500")
+    assert after == len(membership_sync.unresolved_backlog(events))
+    # a rejected placeholder chain is out of the backlog, so a re-import and the
+    # nightly sync report the same number rather than restoring the WARN
+    assert _import(tmp_path)["unresolved"] == after
+    assert (
+        membership_sync.sync(
+            indexes=["sp500"],
+            data_lake_root=lake,
+            now=SYNC_NOW,
+            fetch_fn=lambda index_id: _fetched(lake, {"AAPL", "MSFT"}),
+        )
+        == 0
+    )
+    rows = ledger.query(
+        "select value from measurements where name='membership_unresolved' and scope='sp500' "
+        "and measured_at >= '2026-09-14' and measured_at < '2026-09-15'"
+    )
+    assert {row["value"] for row in rows} == {float(after)}
+
+
+def test_xase_is_one_of_the_resolve_mics():
+    """The Russell list carries 44 NYSE American names (measured 2026-09-15)."""
+    assert membership_sync._RESOLVE_MICS == ("XNAS", "XNYS", "ARCX", "XASE")
+
+
+def test_a_ticker_that_still_does_not_resolve_is_left_alone_and_counted(tmp_path):
+    _import(tmp_path)
+    result = _reresolve(tmp_path)
+    assert result["resolved"] == 0
+    assert result["unresolved"] == 1  # unresolved:AEOS
+
+
+def test_reresolve_cli_dispatches(tmp_path, monkeypatch):
+    _import(tmp_path)
+    lake = tmp_path / "lake"
+    aeos = _verified_security(SecurityMaster(lake, evidence_verifier=verifies), "AEOS")
+    monkeypatch.setenv("MDW_DATA_LAKE", str(lake))
+
+    assert membership_sync.main(["reresolve", "--index", "sp500", "--confidence", "B"]) == 0
+    assert [e for e in _store(lake).events("sp500") if e.security_id == aeos]
+
+
+def test_reresolve_emits_a_failed_run_row_when_the_pass_raises(tmp_path, monkeypatch):
+    _import(tmp_path)
+    _verified_security(SecurityMaster(tmp_path / "lake", evidence_verifier=verifies), "AEOS")
+    monkeypatch.setattr(
+        membership_sync,
+        "_resolve",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("master corrupt")),
+    )
+
+    with pytest.raises(RuntimeError, match="master corrupt"):
+        _reresolve(tmp_path)
+    terminal = ledger.query(
+        "select verdict, exit_code from runs where job='membership-reresolve' and ended is not null"
+    )
     assert {(row["verdict"], row["exit_code"]) for row in terminal} == {("FAILED", 1)}

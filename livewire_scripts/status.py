@@ -418,8 +418,9 @@ _FIXES = {
     ),
     "Membership sync ran today": "launchctl start com.livewire.membership-sync   # then read logs/launchd/com.livewire.membership-sync.stderr.log",
     "Unresolved memberships": (
-        'python scripts/livewire_ops.py membership --index <id> --effective-at $(date +%F) | grep "^?"   '
-        "# an unresolved:<ticker> member needs a security_master identity"
+        "python scripts/livewire_ingest.py security-master sync --index <id>   "
+        "# fetch identities, then: "
+        "python scripts/livewire_ingest.py membership-sync reresolve --index <id> --confidence B"
     ),
     "Digest sent today": "launchctl start com.livewire.digest",
     "Lanes terminal": (

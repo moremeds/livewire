@@ -1,0 +1,39 @@
+• BEGIN_REVIEW r4-codex eb466258767f
+
+  ### Follow-up verdicts
+
+  1. Widening across a renamed sibling — VERIFIED FIXED. security_master_sync.py:298–305 checks the resulting widened interval against sibling rows, excluding
+     the superseded row. Reproduction produced an unresolved row on a separate ID with identity_conflict=1. Safe widening still produced verified revision 3.
+
+  2. Unsupported coverage inference — VERIFIED FIXED. _covered now requires resolution or an exact recorded empty-probe scope. An unprobed earlier date correctly
+     requires fetching; a negative record for another ticker does not suppress it.
+
+  ### Empty-probe record checks
+
+  - Evidence commit precedes negative-record emission (security_master_sync.py:636, :652); a commit exception prevents emission.
+  - Exact cached dates suppress a ticker fetch when all other needed dates resolve.
+  - When another date remains uncovered, cached empty dates are unnecessarily probed again—see ISSUE-1.
+  - Provider corrections after an empty response remain unverified; the current records have no expiration or refresh mechanism.
+
+  ISSUE-1 [MINOR] livewire_scripts/security_master_sync.py:663 — Mixed date sets repeat already-recorded empty probes
+  Category: performance
+  Confidence: 100
+  Evidence: probe_dates = tuple(sorted({day.date().isoformat() for day in dates})).
+  Reasoning: The cache is consulted only by the whole-ticker _covered check. With a recorded empty probe for 1998-01-05 and an uncovered 2010-01-04 date, that
+  check fails and both dates enter the fetch. An in-memory execution of the actual sync/fetch path confirmed another request for 1998-01-05. Each repeated empty
+  probe consumes a request and its pacing delay.
+  Suggestion: Exclude recorded empty dates when constructing probe_dates, while retaining dates needed to establish or extend identity intervals. Add a mixed
+  cached/new-date test.
+  Focus: yes
+
+  OVER-ENGINEERING SWEEP: clean
+
+  ### Verification and limits
+
+  Verified HEAD 19274bdeab70ea5474a2e9cf804d2d67643726f5. Executed 13 existing identity-fetch test methods directly: all passed. Additional in-memory checks
+  covered conflicting/safe widening, exact negative-cache scope, and mixed-date scheduling.
+
+  Filesystem persistence tests and full pytest were not run under the read-only assignment. No files changed; unrelated herd.toml changes preserved. Both prior
+  findings are fixed; one minor request-repetition issue remains.
+
+  END_REVIEW r4-codex eb466258767f

@@ -1082,15 +1082,102 @@ python scripts/livewire_ingest.py shepherd-universe import-decision --manifest <
 python scripts/livewire_ingest.py shepherd-universe verify --index <INDEX> --revision <N> [--effective-at ...] [--as-of ...]
 ```
 
+### `security-master` — identity backfill from Massive reference data
+
+Fetches `GET /v3/reference/tickers` for every ticker still carrying an
+`unresolved:<ticker>` membership event and appends the resulting intervals to
+`security_master/events.parquet`.
+
+```bash
+python scripts/livewire_ingest.py security-master sync [--index sp500 ndx100 djia r2k-proxy] [--dry-run]
+python scripts/livewire_ingest.py security-master sync --tickers AAPL YHOO      # repair subset
+```
+
+- **Idempotent**: a ticker whose *verified* intervals already cover every date
+  its memberships need is skipped without a fetch. A membership date past the
+  end of an existing interval does trigger a fetch — that is how the widening
+  rule runs. A ticker that only ever derives a `candidate` row is therefore
+  re-fetched on every run; only verified intervals count as covered.
+- **No `list_date`**: this endpoint never returns one (measured 2026-09-15,
+  `tests/fixtures/massive_reference/README.md` F1), so the `date=` probe runs
+  for every ticker and `effective_from` comes from the probe date or from
+  nothing (`identity_no_start`). The probe sends only `ticker` and `date`;
+  adding `active=false` to it returns an empty envelope (F3).
+- **Pacing**: `massive_requests_per_minute/reference` (5/min declared) before
+  every request (a ticker is 2-3 requests); one 429 backs off `massive_backoff_s/reference` (60 s) and retries
+  once, then counts a fetch failure. The 5/min is provisional — carried over
+  from the FX scope, not measured on `/reference`. Measure it with the sample
+  run below and pass it back as
+  `LW_DECLARED_MASSIVE_REQUESTS_PER_MINUTE_REFERENCE`.
+- **Evidence**: every response body goes to the CAS; one `record_many` per
+  chunk of 50 tickers (`FLUSH_EVERY_TICKERS`), committed before that chunk's
+  identities are appended. A crash mid-run keeps every earlier chunk; if a
+  commit raises, nothing from its chunk is appended and the run exits 1.
+- **Ledger**: `runs` rows `job='security-master-sync'`; measurements scoped
+  `all` (or `subset` under `--tickers`): `identity_tickers_requested`,
+  `identity_events_appended`, `identity_candidate`, `identity_no_start`,
+  `identity_conflict`, `identity_unknown_to_provider`, `identity_collisions`,
+  `identity_fetch_failed` (any > 0 → exit 1).
+  `identity_probe_empty` rows (scope `<ticker>:<date>`, one per `date=` probe
+  that returned nothing) are the persisted record that a date was asked, so
+  the next run skips a ticker whose remaining dates were all probed empty.
+- **Not scheduled.** This is a manual backfill; a weekly refresh is decided
+  after the first full run's numbers.
+
+#### The mini run order
+
+Both commands run before the next weekday 01:00Z `com.livewire.membership-sync`
+— the reresolve guard fails closed if a nightly sync add lands first.
+
+```bash
+ssh macmini
+source ~/market-warehouse/.venv/bin/activate
+cd ~/market-warehouse/current
+set -a; source ~/market-warehouse/.env; set +a
+
+# 0. check the ledger for an in-flight run before starting
+python scripts/livewire_ops.py ledger query \
+  "select job, started, verdict from runs where ended is null"
+
+# 1. sample first: measure the endpoint's real rate before pacing the full run
+time python scripts/livewire_ingest.py security-master sync --tickers AAPL MSFT NVDA AMD INTC
+
+# 2. full run, paced by what step 1 measured (requests / elapsed minutes)
+LW_DECLARED_MASSIVE_REQUESTS_PER_MINUTE_REFERENCE=<measured> \
+  python scripts/livewire_ingest.py security-master sync
+
+# 3. reresolve each index, one at a time; r2k-proxy is candidate whatever is passed
+for IDX in sp500 ndx100 djia; do
+  python scripts/livewire_ingest.py membership-sync reresolve --index $IDX --confidence B
+done
+python scripts/livewire_ingest.py membership-sync reresolve --index r2k-proxy --confidence C
+
+# 4. the acceptance signal
+python scripts/livewire_ops.py status | grep -A2 "Unresolved memberships"
+# apex re-verifies its verified reading itself (its /v1/membership/indices and
+# /history endpoints, apex v0.1.7 on the mini); message the apex session when
+# the reresolve runs have finished.
+```
+
+Report per index, split at 2003-01-01: `membership_unresolved` before and
+after, `identity_unknown_to_provider`, `identity_candidate`,
+`identity_conflict`, `identity_no_start`, `membership_reresolve_conflict`,
+elapsed time and the observed requests per minute. Pre-2003 events are
+expected to stay unresolved in this phase — Massive's earliest delisting is
+2003-09-11. A delisted record may carry no FIGI at all (YHOO carries `cik`
+only), so a rename is not always collapsible: YHOO and AABA derive two
+security_ids, `identity_conflict` 0.
+
 ### `membership-sync` — point-in-time index membership
 
 Maintains the `index_membership` store: evidence-backed add/remove events per
-`security_id`, replayable `as_of`. Two modes:
+`security_id`, replayable `as_of`. Three modes:
 
 ```bash
 python scripts/livewire_ingest.py membership-sync [--index sp500 ndx100 ...] [--dry-run]   # live diff; default: all four
 python scripts/livewire_ingest.py membership-sync import --index sp500 \
     --events grok_index/pit_membership/sp500/events.jsonl --source <file>...        # one-time panel import
+python scripts/livewire_ingest.py membership-sync reresolve --index sp500 --confidence B   # placeholder → security_id
 ```
 
 - **Live sync** fetches each index's current source — Wikipedia
@@ -1115,6 +1202,18 @@ python scripts/livewire_ingest.py membership-sync import --index sp500 \
   `announced_at` = none (the panels carry none), `--source` files committed to
   the CAS as the events' `source_refs`/`source_hashes`. `event_id` is a content
   hash, so re-running the same import appends nothing.
+- **`reresolve`** rewrites each current `unresolved:<ticker>` event onto the
+  `security_id` the master now resolves, then appends the `rejected` revision
+  of the placeholder. `--confidence` is required and takes one index per run: a
+  placeholder does not record the confidence its history was imported under, so
+  the operator asserts it per run; `r2k-proxy` is always `candidate`.
+  `known_at = now`, so an `as_of` before the pass still sees the placeholder.
+  Idempotent; an interrupted pass is completed by the retry. Run
+  `security-master sync` first — a ticker with no identity stays a placeholder.
+- **Ledger:** `runs` rows `job='membership-reresolve'` — deliberately not
+  `membership-sync`, so a later OK pass cannot hide the night's FAILED
+  scheduled run. Measurements `membership_reresolve_conflict` and
+  `membership_unresolved`, per index.
 - **Ledger:** `runs` rows `job='membership-sync'` (FAILED + exit 3 when any
   fetch fails); per-index measurements `membership_events_added`,
   `membership_events_removed`, `membership_unresolved` (standing backlog, not a

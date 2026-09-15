@@ -1,0 +1,204 @@
+• BEGIN_REVIEW r1 1cafca27e4db
+
+  ## Sources loaded
+
+  Acknowledged required rules:
+
+  - /Users/chenxi/projects/livewire/.worktrees/security-master-backfill/CLAUDE.md
+  - /Users/chenxi/.claude/CLAUDE.md
+  - docs/superpowers/specs/2026-09-02-livewire-ledger-design.md
+  - docs/contracts/shepherd-security-identity.md
+
+  Reviewed the frozen spec, named implementations, and related callers. References to spec below mean spec-frozen.md.
+
+  Verified snapshot SHA-256: 1cafca27e4db087296695ba5adae9b0ab81f4fefa6e1614b6089b779145908af. Workspace HEAD: 7f2791b10a64ab28b6b00c881c8e7e2ca7d39221. Starting
+  changes: modified herd.toml; untracked design spec. No files changed.
+
+  ## Confirmed claims
+
+  - Identity API and storage: new_security_id() generates opaque UUID-based IDs; resolve_symbol(provider, symbol, exchange_mic, effective_at, as_of) matches the
+    spec. Storage is security_master/events.parquet. Evidence: clients/security_master.py:82–125.
+
+  - Verification and collisions: verified identities require a FIGI or strong continuity basis. Cross-security overlapping symbol/MIC and FIGI collisions are
+    rejected. Revisions increment per security; supersession must reference the same security with compatible revision/knowledge ordering. Evidence: clients/
+    security_master.py:148–187,190–226.
+
+  - Membership semantics: revisions increment per security within each index log; cross-security supersession is forbidden. Verified adds require identity
+    coverage at the event time; removes only require a known verified identity. Evidence: clients/index_membership_store.py:112–138.
+
+  - PIT filtering: members_effective_at replays visible, non-superseded verified events, then checks identity coverage at the requested effective/as-of times.
+    Later correction timestamps preserve earlier queries, provided both replacement records are successfully written. Evidence: clients/
+    index_membership_store.py:79–105; docs/contracts/shepherd-security-identity.md:78–89.
+
+  - Resolver/status helpers: existing MICs are XNAS, XNYS, ARCX; resolution requires exactly one distinct ID across venues. _status_for returns candidate for
+    resolved r2k-proxy, verified for other resolved indexes. Evidence: livewire_scripts/membership_sync.py:44–50,75–83,341–344.
+
+  - Ledger conventions: proposed reference scope and environment override spelling match constants.py. Both named status checks exist. Evidence: clients/
+    constants.py:97–123; livewire_scripts/status.py:323–347.
+
+  - Existing ticker checker: check_ticker_status(ticker, api_key=None) uses the single-ticker details endpoint, returns TickerStatus, maps 404 to inactive, and
+    wraps request errors. Bulk checking uses _POLYGON_THROTTLE_SECONDS = 0.25. Evidence: clients/universe_client.py:163–213.
+
+  - Append locking: individual appends are serialized and atomically published. This does not make a pair of appends transactional. Evidence: clients/
+    revisioned_parquet.py:45–80.
+
+  ## Refuted or unverifiable claims
+
+  ### F1 — HIGH: placeholder replacement is not restart-safe
+
+  Spec 103–115 rejects the placeholder before appending its replacement, then excludes rejected/superseded placeholders on retry. A failure between those writes
+  permanently removes that event from the proposed retry population.
+
+  Required correction: specify recoverable replacement ordering or reconciliation of incomplete pairs, including deterministic event identity and destination
+  revision allocation.
+
+  Evidence: clients/index_membership_store.py:73–77,112–129; clients/revisioned_parquet.py:45–62.
+
+  ### F2 — HIGH: normal sync restores the supposedly drained backlog
+
+  Spec 163–168 overlooks both existing measurement producers. Import and regular sync count every historical row with status == "unresolved", including
+  superseded rows. The proposed rejected revisions leave those original rows present.
+
+  Required correction: use the same active-event backlog definition in import, sync, and reresolve.
+
+  Evidence: livewire_scripts/membership_sync.py:156,213,408,417,466; livewire_scripts/status.py:338–347.
+
+  ### F3 — HIGH: an extra successful run is not harmless
+
+  Spec 148–151 correctly identifies latest-run selection but draws the wrong conclusion. A later successful reresolve with job="membership-sync" hides a failed
+  source sync, despite fetching no constituent source.
+
+  Required correction: preserve the check’s ability to distinguish actual source synchronization from identity repair.
+
+  Evidence: livewire_scripts/status.py:323–335.
+
+  ### F4 — HIGH: identity and interval rules permit unsupported verification
+
+  Spec 126–139 merges on composite FIGI alone, closes overlapping intervals by inference, and does not reconcile existing identities beyond checking the earliest
+  membership date.
+
+  The frozen contract requires compatible share-class/issuer/interval evidence and leaves material conflicts unresolved. Store validation does not enforce these
+  requirements within one security ID: same-ID rows bypass collision checks.
+
+  Required correction: define handling for contradictory identifiers, missing bounds, existing matching identities, and partial interval coverage. A successful
+  date probe must be tied to the particular identity it proves; an empty probe cannot justify backdating a current record.
+
+  Evidence: clients/security_master.py:171–187,249–259; docs/contracts/shepherd-security-identity.md:43–57,60–79.
+
+  ### F5 — HIGH: historical source confidence is promoted implicitly
+
+  Spec 108–109 applies the live-sync _status_for rule to all historical placeholders. Import supports confidence C/D, which remains candidate even after identity
+  resolution. An unresolved row does not preserve that confidence in a dedicated field.
+
+  Required correction: recover or explicitly validate original membership confidence before promotion. Identity verification alone does not establish membership-
+  source quality.
+
+  Evidence: livewire_scripts/membership_sync.py:50,147,185,516; clients/index_membership_store.py:43–56.
+
+  ### F6 — HIGH: evidence commit instructions contradict the API
+
+  Spec 84–87 calls record per response while claiming one commit per run. record() immediately calls record_many([evidence]); it does not buffer.
+
+  Furthermore, the reused verifier checks raw bytes only. It cannot detect a failed or missing manifest commit, contrary to the safety rationale at spec 177–179.
+  MDW_SOURCE_EVIDENCE is an enable/disable environment setting, not a commit target.
+
+  Required correction: explicitly batch manifest records, commit before publishing dependent identity events, and propagate commit failure. Preserve response/
+  request provenance needed to construct SourceEvidence.
+
+  Evidence: clients/source_evidence.py:80–91,208–259,276–280; livewire_scripts/membership_sync.py:65–72; livewire_scripts/sync_corporate_actions.py:47–53,74–102.
+
+  ### F7 — MEDIUM: currency description and acceptance check are insufficient
+
+  The current function is _equity_currency_resolver, not _equity_currency. It chooses the greatest known_at among verified rows per symbol, without filtering
+  superseded rows or effective intervals. Equal timestamps retain the first encountered row.
+
+  Checking that a currency survives serialization does not prove the conversion caller selects the correct listing.
+
+  Evidence: livewire_scripts/sync_corporate_actions.py:674–701; callers at 329,742.
+
+  ### Other incorrect or unverified claims
+
+  - Endpoint fields: the claimed mini captures are not supplied. Public documentation distinguishes All Tickers from Ticker Overview; the latter documents
+    list_date. The historical All Tickers list_date claim therefore needs its exact captured response before implementation depends on it. Public documentation
+    supports date, active filtering, MIC fields, and history beginning September 10, 2003. All Tickers
+    (https://massive.com/docs/rest/stocks/tickers/all-tickers), Ticker Overview (https://massive.com/docs/rest/stocks/tickers/ticker-overview).
+
+  - Production facts remain unverified: spec 9–16,22,29–37,119–120—counts, MUNJ-only master, source histories, HTTP 503, absent production executions, and 44
+    XASE names. No mini or Apex runtime evidence was inspected.
+
+  - Existing bulk writer: “nothing … writes identity intervals in bulk” is too broad. import_decision accepts lists, preflights them, and appends identities and
+    memberships to production stores. It does more than stage manifests. Evidence: livewire_scripts/shepherd_universe.py:406–447.
+
+  - PIT citation: the named ledger document has no “PIT is honest” section. That wording occurs in membership_sync.py:7–9; the governing correction rule is in
+    the identity contract at 78–79.
+
+  - Rate policy remains incomplete: spec 175 names a declared backoff without specifying its key/value; the first-run pacing value and matching measured-rate
+    emission are also unspecified. declared() requires an existing key. Evidence: clients/constants.py:111–123.
+
+  - Scheduled Silver claim: membership-aware readers exist in Shepherd/PIT Silver, but the claimed ordinary daily Silver-lane dependency is not established by
+    the inspected rebuild_silver.py or daily runner.
+
+  ## Counterexamples
+
+  These are hypothetical state sequences derived from source, not observed market data.
+
+  1. Interrupted migration: placeholder add P → rejected revision R commits → process stops before resolved add S. Retry selects neither superseded P nor
+     rejected R. The membership is lost from current replay. Supports F1.
+
+  2. Backlog regression: P is unresolved; R supersedes it successfully. Reresolve reports zero. The next normal sync still includes P in unresolved_ids,
+     restoring WARN. Supports F2.
+
+  3. Masked failure: weekday source sync finishes FAILED at 01:00; reresolve finishes OK at 02:00 under the same job name. The status query selects 02:00 and
+     reports OK. Supports F3.
+
+  4. Contradictory share class: two overlapping observations share a composite FIGI but have different share-class FIGIs. Assigning one security ID bypasses
+     cross-security collision validation and publishes both as verified, contrary to the contract. Supports F4.
+
+  5. Retry collision: an existing identity covers only a later part of a ticker’s history. The earliest-date skip fails; a new ID is generated with an
+     overlapping interval and matching FIGI. Append raises a collision instead of extending/reusing the existing identity. Supports F4.
+
+  6. Confidence promotion: import an unresolved non-Russell event with confidence C. Resolve its identity later. The proposed _status_for makes membership
+     verified, whereas resolving during the original import would have produced candidate. Supports F5.
+
+  7. Removal boundary: identity interval ends at time T; placeholder removal is effective at T. _resolve(..., T, ...) returns none because intervals are end-
+     exclusive, although membership removal validation permits that known identity. The proposed pass leaves the removal unresolved. Evidence: clients/
+     security_master.py:249–250; clients/index_membership_store.py:130–138.
+
+  8. Duplicate historical add: regular sync adds the newly resolved ID before reresolve runs. Reresolve then inserts its historical add without reconciling the
+     existing add. Set replay hides the duplication, but PIT Silver rejects “duplicate open membership interval.” Evidence: livewire_scripts/
+     membership_sync.py:422–450; clients/pit_silver_revision.py:260–274.
+
+  ## Missing related paths
+
+  - Import and regular-sync measurement/replay paths: F2, F5, and counterexample 8 require explicit coverage.
+  - members_at: uses candidate/unresolved-inclusive replay and symbol fallback; migration should preserve this operator view. Evidence: livewire_scripts/
+    membership_sync.py:259–297.
+
+  - Shepherd and PIT Silver: consume revision prefixes; PIT Silver additionally requires balanced, nonduplicate intervals. Test those consumers, not only set
+    membership. Evidence: livewire_scripts/shepherd_daily.py:50–75; clients/pit_silver_revision.py:247–274.
+
+  - Both currency consumers: verify actual currency selection after historical/reused-symbol imports. Evidence: livewire_scripts/
+    sync_corporate_actions.py:329,742.
+
+  - Entrypoint environment loading: add the proposed command to dispatch and address credential loading; the current scheduled-env allowlist omits it. Evidence:
+    scripts/livewire_ingest.py:32,119–125.
+
+  These are existing paths affected by the proposed work, not requests for new features.
+
+  ## Unrelated pre-existing issues
+
+  - Existing import idempotency has a timestamp-sensitive seam: it regenerates an event with a later known_at, while identical event IDs require identical row
+    content. Evidence: livewire_scripts/membership_sync.py:166,180; clients/revisioned_parquet.py:56–60. This review does not request unrelated import redesign.
+
+  - Documentation is stale in places: the ledger spec’s three-element constant representation differs from current scope-encoded keys and two-element values.
+    Evidence: ledger design 213–224; clients/constants.py:41–42,102–108.
+
+  ## Verdict (PASS/FIX/ESCALATE) with reasons
+
+  FIX. Blockers are interrupted replacement recovery, persistent backlog correctness, source-sync status masking, unsupported identity continuity, confidence
+  promotion, and evidence publication ordering.
+
+  This was a static review. No implementation tests, authenticated provider probes, production reads, or Apex acceptance checks were run. Supplied production
+  measurements remain unverified.
+
+  END_REVIEW r1 1cafca27e4db

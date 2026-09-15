@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `livewire_ingest.py security-master sync` backfills security identities from
+  Massive `/v3/reference/tickers`, and `livewire_ingest.py membership-sync
+  reresolve --index <id> --confidence {B,C,D}` rewrites each resolvable
+  `unresolved:<ticker>` placeholder onto its opaque `security_id`. The mini
+  held 3,455 unresolved membership ids against one verified identity row, so
+  every PIT membership query answered the empty set and apex's
+  `/v1/membership/*` served 503. Identity rules are the spec §4 table: a rename
+  collapses to one `security_id` with two symbol rows; conflicting or
+  incomplete FIGI evidence yields two ids that deliberately do not resolve; a
+  record with no provable start appends nothing. Evidence is committed once per
+  run before any append, a lost ticker exits 1, the reresolve pass fails closed
+  on a replay its insertion would unbalance, and `known_at = now` keeps an
+  `as_of` before the pass seeing the placeholder. Two scoped constants —
+  `massive_requests_per_minute/reference` and `massive_backoff_s/reference` —
+  pace it; the 5/min is provisional, carried over from the FX scope, and the
+  first `--tickers` sample run on the mini measures the real rate to pass back
+  as `LW_DECLARED_MASSIVE_REQUESTS_PER_MINUTE_REFERENCE`. The "Unresolved
+  memberships" remediation hint now names these two commands instead of the
+  read-only `livewire_ops.py membership` query, which only listed the
+  unresolved members and fixed nothing.
+  Pacing is per request (a ticker is 2-3 requests), `known_at` is each
+  ticker's fetch time, evidence is committed per 50-ticker chunk so a crash
+  keeps earlier chunks, a rename is joined to its earlier symbol's id when the
+  halves arrive in separate fetches, a `date=` probe row must share a FIGI or
+  cik with the listing it stamps, the needed dates are probed in order until
+  one answers, a cross-fetch rename with overlapping dates is a conflict on
+  its own id, widening one symbol across its renamed sibling is likewise a
+  conflict, revisions follow the id's history, and an empty `date=` probe is
+  recorded as an `identity_probe_empty` measurement so the next run does not
+  repeat it (code review 2026-09-15).
+- Three facts measured against the production key on 2026-09-15 shape what the
+  backfill can produce (`tests/fixtures/massive_reference/README.md`, F1/F5/F6;
+  the frozen bodies are the tests' only input, which never touch the network):
+  the endpoint never returns `list_date`, so `effective_from` always comes from
+  the `date=` probe or from nothing; a delisted record may carry no FIGI at all
+  (YHOO carries `cik` only, AABA carries both FIGIs), so YHOO → AABA derives
+  two security_ids rather than one renamed identity; and all 13,181 active US
+  stock listings are `currency_name: usd`, so no non-USD listing exists to
+  fixture. A ticker that derives only a `candidate` row is re-fetched on every
+  run — only verified intervals count as covered.
+
 ### Fixed
 
 - A transient FRED failure no longer skips the rates series after it. One

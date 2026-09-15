@@ -1,0 +1,55 @@
+• BEGIN_REVIEW r2-codex ca534d7634dd
+
+  ### Follow-up verdicts
+
+  - Original ISSUE-1 — VERIFIED FIXED. security_master_sync.py:602 captures time after fetching each ticker; lines 611 and 572 use it for evidence retrieval and
+    identity derivation.
+
+  - Original ISSUE-2 — VERIFIED FIXED for the reported input. universe_client.py:285–307 checks CIK agreement and requires affirmative matching evidence. The
+    conflicting-CIK regression test passed.
+
+  - Original ISSUE-3 — REGRESSION. Two disjoint symbols now retain one security ID, but overlapping intervals become verified and subsequent revisions can be
+    rejected. See NEW ISSUE-1/2.
+
+  - Original ISSUE-4 — VERIFIED FIXED. security_master_sync.py:589 supplies sorted dates; universe_client.py:359–364 continues after empty responses. The frozen
+    1998→2010 probe test passed.
+
+  - End-of-run evidence commit — VERIFIED FIXED by source inspection. security_master_sync.py:565–579 commits each chunk’s evidence before its identities; lines
+    621–623 flush periodically and at completion. Completed chunks survive a later fetch failure. Filesystem crash behavior was not executed under the read-only
+    assignment.
+
+  ### New findings
+
+  ISSUE-1 [CRITICAL] livewire_scripts/security_master_sync.py:268 — Cross-fetch rename bypasses overlap validation
+  Category: bug
+  Confidence: 100
+  Evidence: security_id=renamed.security_id and status="verified"; lines 263–265 claim the master will reject overlapping intervals. However, clients/
+  security_master.py:174 skips collisions when prior.security_id == item.security_id.
+  Reasoning: Fetch one symbol covering 2010–2015, then another with identical FIGIs covering 2014–2020. The second becomes a verified row on the same ID, and the
+  actual master validator accepts it. This contradicts the existing rule that overlapping rename evidence remains unresolved.
+  Suggestion: Check interval compatibility against all current rows on the matched security before reusing its ID. Route overlaps through the conflict policy and
+  add a separate-fetch overlap regression test.
+  Focus: yes
+
+  ISSUE-2 [IMPORTANT] livewire_scripts/security_master_sync.py:269 — Rename revisions come from one interval instead of the security’s history
+  Category: bug
+  Confidence: 100
+  Evidence: revision=renamed.revision + 1; _rename_match returns the first matching current row at lines 186–195. _widen likewise uses match.revision + 1 at line
+  215.
+  Reasoning: After two disjoint renamed symbols occupy revisions 1 and 2, a third symbol matches the first row and proposes revision 2 again. The actual
+  validator rejects it with security revision must be 3. Widening the earlier interval fails identically. Retries repeat the rejection.
+  Suggestion: Allocate revisions from the maximum revision across all rows sharing the security ID, including superseded rows. Apply this to rename and widening
+  paths; test a third rename and widening an earlier interval.
+  Focus: yes
+
+  OVER-ENGINEERING SWEEP: clean
+
+  ### Verification and limits
+
+  Verified HEAD 2b1982a14156687b37b2148d6b226782b5ce26ee. Directly executed 13 existing identity-fetch test methods: all passed. In-memory reproductions using
+  the real master validator confirmed both new defects.
+
+  Full pytest and filesystem persistence tests were not run because they require writes. No files changed; unrelated herd.toml changes preserved. Acceptance
+  remains blocked by the rename regressions.
+
+  END_REVIEW r2-codex ca534d7634dd

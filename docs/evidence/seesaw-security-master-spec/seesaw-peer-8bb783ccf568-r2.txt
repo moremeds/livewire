@@ -1,0 +1,231 @@
+• BEGIN_REVIEW r2 8bb783ccf568
+
+  ## Sources loaded
+
+  Required rules loaded in round 1 and retained for this review:
+
+  - /Users/chenxi/projects/livewire/.worktrees/security-master-backfill/CLAUDE.md
+  - /Users/chenxi/.claude/CLAUDE.md
+  - docs/superpowers/specs/2026-09-02-livewire-ledger-design.md
+  - docs/contracts/shepherd-security-identity.md
+
+  Read the cumulative frozen spec and round-1 delta; rechecked relevant store, replay, evidence, currency, and status source. Those tracked files are unchanged
+  from the reviewed base.
+
+  Verified SHA-256: 8bb783ccf5685361114b6e3452a5f96a106b162aefc4f3ad347832aa23165c64.
+
+  Below, spec means spec-frozen-r2.md. No files changed, workers spawned, or production operations performed.
+
+  ## Per-finding status
+
+   Round-1 item                                               Status                            Reason
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   F1: interrupted replacement                                STILL OPEN                        Resolved-first ordering fixes the original loss, but step 2 can
+                                                                                                reject its own already-written replacement before recovery
+                                                                                                reaches step 4. Spec:131–147.
+  ─────────────────────────────────────────────────────────  ────────────────────────────────  ──────────────────────────────────────────────────────────────────
+   F2: backlog restored by normal sync                        CLOSED                            Shared active-row filtering explicitly covers import, sync, and
+                                                                                                reresolve. Spec:164–169. Metric cardinality changes separately
+                                                                                                below.
+  ─────────────────────────────────────────────────────────  ────────────────────────────────  ──────────────────────────────────────────────────────────────────
+   F3: successful repair hides failed sync                    CLOSED                            Separate membership-reresolve job preserves the existing check.
+                                                                                                Spec:210–213; status.py:323–335.
+  ─────────────────────────────────────────────────────────  ────────────────────────────────  ──────────────────────────────────────────────────────────────────
+   F4: identity/interval verification                         STILL OPEN                        FIGI compatibility improved, but inferred overlap closure and
+                                                                                                incomplete interval selection remain; contradictory claims are
+                                                                                                labeled candidate. Spec:97–99,183–194.
+  ─────────────────────────────────────────────────────────  ────────────────────────────────  ──────────────────────────────────────────────────────────────────
+   F5: implicit confidence promotion                          CLOSED                            Required operator confidence replaces automatic promotion.
+                                                                                                Spec:149–153 matches membership_sync.py:147,185.
+  ─────────────────────────────────────────────────────────  ────────────────────────────────  ──────────────────────────────────────────────────────────────────
+   F6: evidence batching/publication                          CLOSED                            One record_many before identity publication, with fatal commit
+                                                                                                failure, matches the API. Spec:101–106,247–249;
+                                                                                                source_evidence.py:208–219.
+  ─────────────────────────────────────────────────────────  ────────────────────────────────  ──────────────────────────────────────────────────────────────────
+   F7: currency caller/test                                   STILL OPEN — narrow correction    Correct function and caller-level test added, but “appended
+                                                                                                last” remains false for equal timestamps. Spec:201–206;
+                                                                                                sync_corporate_actions.py:688–693.
+  ─────────────────────────────────────────────────────────  ────────────────────────────────  ──────────────────────────────────────────────────────────────────
+   Counterexample 1: crash loses event                        STILL OPEN                        Original reject-first failure removed; retry is now obstructed
+                                                                                                by the conflict guard.
+  ─────────────────────────────────────────────────────────  ────────────────────────────────  ──────────────────────────────────────────────────────────────────
+   Counterexample 2: backlog regression                       CLOSED                            Shared non-superseded filtering addresses it.
+  ─────────────────────────────────────────────────────────  ────────────────────────────────  ──────────────────────────────────────────────────────────────────
+   Counterexample 3: masked failure                           CLOSED                            Distinct job name addresses it.
+  ─────────────────────────────────────────────────────────  ────────────────────────────────  ──────────────────────────────────────────────────────────────────
+   Counterexample 4: conflicting share classes merged         CLOSED for that exact case        Differing share classes no longer become one verified identity.
+                                                                                                Candidate versus unresolved remains a contract issue.
+  ─────────────────────────────────────────────────────────  ────────────────────────────────  ──────────────────────────────────────────────────────────────────
+   Counterexample 5: partial interval creates duplicate ID    CLOSED for that exact case        Existing-ID widening is now explicit. Spec:186.
+  ─────────────────────────────────────────────────────────  ────────────────────────────────  ──────────────────────────────────────────────────────────────────
+   Counterexample 6: confidence-C promotion                   CLOSED                            Required confidence flag preserves candidate status when C is
+                                                                                                asserted.
+  ─────────────────────────────────────────────────────────  ────────────────────────────────  ──────────────────────────────────────────────────────────────────
+   Counterexample 7: delisting-boundary remove                STILL OPEN                        Add-based identity lookup fixes resolution, but step 2 blocks
+                                                                                                the valid removal.
+  ─────────────────────────────────────────────────────────  ────────────────────────────────  ──────────────────────────────────────────────────────────────────
+   Counterexample 8: later duplicate add                      STILL OPEN                        Checking membership only at the historical event time misses a
+                                                                                                later existing add.
+
+  ## Confirmed claims
+
+  - Store revision, supersession, evidence, and identity requirements remain correctly identified. Evidence: clients/security_master.py:148–226; clients/
+    index_membership_store.py:112–138.
+
+  - Individual appends are atomic; deterministic event IDs do not permit changed row content on retry. Evidence: clients/revisioned_parquet.py:46–62.
+  - _resolve, existing MICs, _CONFIDENCE_STATUS, and _status_for are described consistently with source. Evidence: livewire_scripts/membership_sync.py:44–50,75–
+    83,147,341–344.
+
+  - Both status checks, the obsolete remediation hint, and latest-run selection are correctly described. Evidence: livewire_scripts/status.py:323–347,419–422.
+  - The list endpoint is now distinguished from check_ticker_status’s details endpoint. Its signature and existing bulk throttle remain unchanged. Evidence:
+    clients/universe_client.py:163–213.
+
+  - Scoped constant/environment-key naming and the scheduled-env allowlist are correctly identified. Evidence: clients/constants.py:97–123; scripts/
+    livewire_ingest.py:119–125.
+
+  - members_at uses candidate/unresolved-inclusive replay with symbol fallback. Evidence: livewire_scripts/membership_sync.py:240–297.
+  - Evidence verification reads raw bytes rather than requiring manifest membership, so the new commit-before-append ordering is necessary and correct. Evidence:
+    livewire_scripts/membership_sync.py:65–72; clients/source_evidence.py:276–280.
+
+  ## Refuted or unverifiable claims
+
+  ### N1 — HIGH: conflict guard rejects valid removals
+
+  Spec:131–135 applies to every event. An open membership is precisely what a valid removal should close. After successfully migrating an add, the corresponding
+  remove therefore becomes a conflict.
+
+  Restrict and define the guard by action; removal validation must preserve balanced replay.
+
+  Evidence: clients/index_membership_store.py:98–102,130–138; clients/pit_silver_revision.py:264–271.
+
+  ### N2 — HIGH: recovery must precede conflict detection
+
+  Spec:145–147 says an existing deterministic replacement completes rejection only. But spec:131–135 checks for an open verified membership first. A previously
+  committed replacement add satisfies that condition.
+
+  Explicitly detect a completed replacement before applying conflict checks. Reuse the stored replacement rather than reconstructing it with a new timestamp/
+  revision.
+
+  Evidence: clients/revisioned_parquet.py:56–60; clients/index_membership_store.py:116–119.
+
+  ### N3 — HIGH: the duplicate-add check examines the wrong time range
+
+  Spec:132 checks whether membership is already open at the incoming event’s effective time. A historical add can precede an existing nightly-sync add, so the
+  guard passes even though replay subsequently encounters two adds.
+
+  The check must validate the proposed event against the affected replay sequence, including later events. The operational ordering at spec:251–253 does not
+  establish the claimed fail-closed fallback.
+
+  Evidence: livewire_scripts/membership_sync.py:422–428; clients/pit_silver_revision.py:261–271.
+
+  ### N4 — HIGH: fallback creates invalid delisted intervals
+
+  Spec:190–194 sets missing-start candidates to:
+
+  - effective_from = known_at
+  - effective_to = delisted_utc
+
+  For an already-delisted record, the end predates the fetch time. Candidate status does not relax interval validation, so append raises instead of recording the
+  promised candidate.
+
+  Specify a valid disposition for an unbounded historical record without inventing its start.
+
+  Evidence: clients/security_master.py:197–202.
+
+  ### N5 — MEDIUM: identity conflict policy remains inconsistent
+
+  Spec:183 still resolves overlapping dates by closing the older interval at the newer start, without requiring compatible issuer evidence or adjudication of
+  conflicting dates. Matching FIGIs do not override material contradictions.
+
+  Spec:184 also labels differing-share-class conflicts candidate, whereas the contract distinguishes incomplete evidence from materially contradictory evidence.
+
+  Evidence: docs/contracts/shepherd-security-identity.md:42–49,76–86; same-ID rows bypass collision checks at clients/security_master.py:174–175.
+
+  ### N6 — MEDIUM: earliest-date skip can leave later intervals permanently uncovered
+
+  Spec:97–99,116–117 skips fetching once the earliest membership date is covered. That does not establish coverage for later unresolved events. The newly
+  specified widening rule cannot help if this skip prevents fetching.
+
+  Check coverage of the unresolved dates needed by this pass, not only the earliest one.
+
+  Evidence: clients/security_master.py:114–121; spec:186.
+
+  ### N7 — MEDIUM: backlog cardinality changes silently
+
+  Existing import/sync count distinct unresolved security IDs. Spec:165,227 changes this to rows. Three historical events for one unresolved ticker change the
+  measurement from 1 to 3 without any deterioration.
+
+  Preserve distinct-ID counting after active-row filtering, or explicitly distinguish the new event count so before/after acceptance remains comparable.
+
+  Evidence: livewire_scripts/membership_sync.py:156,408,417; livewire_scripts/status.py:343–346.
+
+  ### N8 — LOW: currency tie behavior is misstated
+
+  Spec:204–205 says whichever row was appended last wins. The resolver updates only for strictly greater known_at. Equal timestamps retain the first row
+  encountered—relevant when one fetch creates multiple identity rows.
+
+  Correct the statement and include equal timestamps in the already-planned caller test. No interval-aware resolver redesign is requested.
+
+  Evidence: livewire_scripts/sync_corporate_actions.py:688–693.
+
+  ### Unverified assumptions
+
+  - Production counts remain unverified, as permitted by this assignment.
+  - Frozen provider responses are an implementation prerequisite at spec:29–31; their contents were not verified here.
+  - Initial rate/backoff values remain unspecified at spec:46–52. The declarations must exist before declared() can pace the first run. Evidence: clients/
+    constants.py:111–123.
+
+  - “None is scheduled tonight” at spec:255 is an operational assertion not established by this source review.
+  - New verified rows are not automatically consumed by every subsequent run: Shepherd/PIT Silver support explicitly pinned membership prefixes. Evidence:
+    livewire_scripts/shepherd_daily.py:55–59; clients/pit_silver_revision.py:249–252.
+
+  ## Counterexamples
+
+  Hypothetical states derived from source:
+
+  1. Valid removal blocked: migrate add at T1; process remove at T2. The resolved identity has an open verified membership at T2. Step 2 skips the remove. This
+     contradicts the acceptance test at spec:279–280.
+
+  2. Crash retry blocked: resolved add commits; process stops before placeholder rejection. Retry reaches step 2, sees that add, and records conflict instead of
+     completing rejection.
+
+  3. Historical insertion before later add: store already contains resolved add at T2. Placeholder add has effective time T1, where T1 < T2. No membership is
+     open at T1, so the guard passes. PIT Silver later raises at T2.
+
+  4. Invalid candidate: provider record has a past delisting time, no list_date, and an empty historical probe. Fetch occurs later. The proposed candidate has
+     effective_to < effective_from and is rejected by the master.
+
+  5. Later coverage skipped: existing verified interval covers T1 but ends before T2. Unresolved events need both dates. Earliest-date coverage skips the fetch;
+     the T2 event remains unresolved on every retry.
+
+  6. Currency tie: two verified rows for the same symbol share known_at and carry different currencies. Appending the second does not replace the resolver’s
+     first selection.
+
+  ## Missing related paths
+
+  The revision names most related paths. Two acceptance checks still need explicit coverage:
+
+  - Actual PIT Silver replay, including a historical add before a later add and a valid removal—not only set membership, which hides duplicate adds. clients/
+    pit_silver_revision.py:261–271.
+
+  - Retry plus operator replay: ensure the interrupted pair completes before _current_members/members_at retains both placeholder and resolved membership.
+    livewire_scripts/membership_sync.py:240–297.
+
+  ## Unrelated pre-existing issues
+
+  Correction to my round-1 report: I withdraw the claimed existing import timestamp-idempotency defect. Import checks event_id in seen_ids and skips before
+  append, so changing known_at does not demonstrate that failure. Evidence: livewire_scripts/membership_sync.py:166–169.
+
+  The spec inherited that incorrect claim at :309–310; remove it. The strict row-content rule remains relevant to a newly implemented reresolve retry.
+
+  The currency resolver’s lack of interval/supersession filtering remains pre-existing and explicitly outside this bounded change.
+
+  ## Verdict (PASS/FIX/ESCALATE) with reasons
+
+  FIX. Evidence batching, job separation, confidence handling, and shared backlog filtering are substantially improved. Remaining blockers are the conflict
+  guard’s action/time/recovery semantics and invalid missing-start delisted intervals. Identity conflict handling and measurement comparability also need
+  correction.
+
+  Static review only; no implementation tests or production acceptance checks were run.
+
+  END_REVIEW r2 8bb783ccf568

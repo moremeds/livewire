@@ -1,0 +1,20 @@
+• BEGIN_REVIEW r5-codex 2498be4d41aa
+
+  VERIFIED FIXED. security_master_sync.py:503–526 returns only unresolved dates without an exact empty-probe record, deduplicated and sorted. Lines 665–670 skip
+  an empty tuple and pass that same tuple directly to the fetch.
+
+  In-memory verification confirmed:
+
+  - Resolved and recorded-empty dates produce no fetch.
+  - Adding 2000-01-03 reopens the ticker and requests only that date.
+  - Unprobed dates remain eligible; another ticker’s negative record cannot suppress them.
+  - The actual sync path forwards exactly the filtered dates.
+
+  NEW ISSUES: none
+
+  OVER-ENGINEERING SWEEP: clean
+
+  Verified HEAD a88215a4b97e00d6821277e3bdeba3633a88219b. Read the extended regression test; filesystem tests and full pytest were not executed under the read-
+  only assignment. No files changed; unrelated herd.toml changes preserved. No blocker remains in this reviewed delta.
+
+  END_REVIEW r5-codex 2498be4d41aa
