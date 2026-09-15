@@ -82,6 +82,15 @@ DECLARED: dict[str, tuple[float, str]] = {
     "coverage_alert_threshold": (0.95, "ratio"),
     # Free space a flat-file plan requires before it starts.
     "flatfile_min_free_gb": (25, "GB"),
+    # FRED transport retry. api.stlouisfed.org answered one DGS5 request with a
+    # 502 on 2026-09-14 and read-timed-out twice in July; each cost a page and
+    # the three series after the failing one
+    # (pm:2026-09-14-fred-502-aborted-remaining-series). Bounded on purpose:
+    # rates are four requests, so a real outage must still fail the phase fast:
+    # worst case 4 series x 3 attempts x 30s httpx timeout + 4 x (2+4)s backoff
+    # = 384s, against the 6h sync_runner.phase_timeout_seconds budget.
+    "fred_retry_attempts": (3, "count"),
+    "fred_retry_backoff_s": (2, "s"),
 }
 
 

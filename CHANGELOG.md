@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A transient FRED failure no longer skips the rates series after it. One
+  `502 Bad Gateway` on `DGS5` (2026-09-14, intraday-catchup phase 2) left the
+  loop, so `DGS10` and `DGS30` were never requested and two watchdogs paged
+  over an outage that was gone by the next request.
+  `clients/fred_client.py` now retries a 5xx or an `httpx.TransportError`
+  `fred_retry_attempts` times with an `fred_retry_backoff_s` linear backoff
+  and never retries a 4xx; `livewire_scripts/fetch_fred_rates.py` catches
+  `httpx.HTTPError` per series, continues, and returns 1 if any series is
+  still unfetched — a total outage reads as failed, never as `inserted 0`,
+  exit 0. A malformed payload still raises. Both `LW_DECLARED_FRED_RETRY_*`
+  overrides are floored (attempts ≥ 1, backoff ≥ 0) so a typo cannot skip the
+  request or turn the retry into a `ValueError` the per-series catch does not absorb.
+  (pm:2026-09-14-fred-502-aborted-remaining-series)
 - The raw-date staging validator no longer decodes macOS AppleDouble
   sidecars. The staging directory is created inside the raw root on the
   exFAT lake, so `glob("*.parquet")` also matched `._bucket=000.parquet`,

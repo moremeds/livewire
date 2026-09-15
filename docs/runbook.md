@@ -325,6 +325,13 @@ Uses `FRED_API_KEY`. Default series `DGS3`, `DGS5`, `DGS10`, `DGS30`; writes
 python scripts/livewire_ingest.py fred-rates    # DGS3/DGS5/DGS10/DGS30
 ```
 
+A 5xx or a read timeout is retried `fred_retry_attempts` times with an
+`fred_retry_backoff_s` linear backoff (`clients/constants.py`, overridable for
+one run with `LW_DECLARED_FRED_RETRY_ATTEMPTS` / `LW_DECLARED_FRED_RETRY_BACKOFF_S`);
+a 4xx is raised on the first attempt. One series failing does not skip the
+others, and the command exits 1 if any series is still unfetched — so a
+nonzero exit can still mean some series were written.
+
 ### FX and DXY
 
 `scripts/livewire_ingest.py fx` is the only writer of `asset_class=fx`. It is not

@@ -8,6 +8,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+import httpx
 from rich.console import Console
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -96,15 +97,25 @@ def run(argv: Sequence[str] | None = None, *, client: FredClient | None = None) 
     bronze_dir = args.warehouse / "data-lake" / "bronze" / f"asset_class={ASSET_CLASS}"
 
     console.print(f"\n[bold]Fetching FRED Treasury rates: {args.series}[/bold]\n")
+    unfetched: list[str] = []
     with BronzeClient(bronze_dir=bronze_dir, asset_class=ASSET_CLASS) as bronze:
         for series_id in args.series:
-            observations = fred.fetch_observations(
-                series_id,
-                observation_start=args.observation_start,
-                observation_end=args.observation_end,
-                frequency=args.frequency,
-                aggregation_method=args.aggregation_method,
-            )
+            # One series' transport failure must not cost the others: a 502 on
+            # DGS5 used to skip DGS10 and DGS30 entirely. A series that is still
+            # unfetched after the client's bounded retry fails the phase below —
+            # a total outage reads as failed, never as inserted 0, exit 0.
+            try:
+                observations = fred.fetch_observations(
+                    series_id,
+                    observation_start=args.observation_start,
+                    observation_end=args.observation_end,
+                    frequency=args.frequency,
+                    aggregation_method=args.aggregation_method,
+                )
+            except httpx.HTTPError as exc:
+                unfetched.append(series_id)
+                console.print(f"  [red]{series_id}: fetch failed: {exc}[/red]")
+                continue
             if not observations:
                 console.print(f"  [yellow]{series_id}: no observations returned[/yellow]")
                 continue
@@ -115,6 +126,10 @@ def run(argv: Sequence[str] | None = None, *, client: FredClient | None = None) 
                 f"  {series_id}: fetched {len(rows)} rows, inserted {inserted}, "
                 f"{rows[0]['trade_date']} -> {rows[-1]['trade_date']}"
             )
+
+    if unfetched:
+        console.print(f"[bold red]Unfetched after retries: {', '.join(unfetched)}[/bold red]")
+        return 1
 
     console.print("[bold green]Done.[/bold green]")
     return 0

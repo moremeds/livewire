@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+
+from clients.constants import declared
 
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
 FRED_FREQUENCIES = {
@@ -54,6 +57,39 @@ class FredClient:
         self._http = http_client or httpx
         self._base_url = base_url
 
+    def _get_with_retry(self, params: dict) -> Any:
+        """GET *params*, retrying a 5xx or a transport error a bounded number of times.
+
+        FRED answers a well-formed request with a 502 often enough that a single
+        attempt pages the operator over an outage that is gone a second later
+        (pm:2026-09-14-fred-502-aborted-remaining-series). A 4xx is a request
+        problem — a bad key, a retired series — and is raised on the first try.
+        """
+        # max(1, ...): an override of 0 or a negative would otherwise skip the
+        # request entirely and raise `None` instead of a transport error.
+        attempts = max(1, int(declared("fred_retry_attempts")))
+        # Same floor for the twin key: time.sleep(-2.0) raises ValueError, which is
+        # not an httpx error and would escape the per-series catch in run().
+        backoff = max(0.0, float(declared("fred_retry_backoff_s")))
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                resp = self._http.get(self._base_url, params=params, timeout=30)
+            except httpx.TransportError as exc:  # timeouts, connection resets
+                last_error = exc
+            else:
+                try:
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code < 500:
+                        raise
+                    last_error = exc
+                else:
+                    return resp
+            if attempt < attempts:
+                time.sleep(backoff * attempt)
+        raise last_error  # type: ignore[misc]
+
     def fetch_observations(
         self,
         series_id: str,
@@ -87,9 +123,7 @@ class FredClient:
             params["frequency"] = frequency
             params["aggregation_method"] = aggregation_method
 
-        resp = self._http.get(self._base_url, params=params, timeout=30)
-        resp.raise_for_status()
-        payload = resp.json()
+        payload = self._get_with_retry(params).json()
 
         observations: list[FredObservation] = []
         for item in payload.get("observations", []):
