@@ -251,6 +251,22 @@ def test_read_symbols_raises_when_nothing_resolves(lake: Path, silver: Path) -> 
         con.close()
 
 
+def test_build_coverage_publishes_a_readable_snapshot_onto_the_lake(tmp_path: Path, lake: Path, silver: Path) -> None:
+    """apex reads the catalog from the lake volume, read-only, per request; the
+    writer's own file under the warehouse dir is invisible to its container."""
+    dest = tmp_path / "analytics.duckdb"
+    build_coverage(dest, lake_root=lake, silver_root=silver)
+
+    snapshot = lake / "catalog" / "analytics.duckdb"
+    assert snapshot.read_bytes() == dest.read_bytes()
+    assert not (snapshot.parent / "analytics.duckdb.publishing").exists()
+    con = connect(snapshot, read_only=True)
+    try:
+        assert con.execute("SELECT count(*) FROM coverage").fetchone()[0] == 3
+    finally:
+        con.close()
+
+
 def test_build_coverage_publishes_expected_rows(tmp_path: Path, lake: Path, silver: Path) -> None:
     dest = tmp_path / "analytics.duckdb"
     counts = build_coverage(dest, lake_root=lake, silver_root=silver)
