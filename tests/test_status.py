@@ -45,6 +45,10 @@ def root(tmp_path, monkeypatch):
     # tests decide which destinations exist.
     monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
     monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+    # Independently configured, so it must be isolated independently: an
+    # inherited MDW_SILVER_DIR would point every section at the operator's real
+    # silver root instead of the fixture's.
+    monkeypatch.setenv("MDW_SILVER_DIR", str(tmp_path / "lake" / "silver"))
     monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
     monkeypatch.setenv("MDW_CURSOR_DIR", str(tmp_path / "cursors"))
     for name in ("ledger", "warehouse", "lake", "logs", "cursors"):
@@ -813,6 +817,7 @@ class TestTheDiskCheckWatchesBothVolumes:
             path.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("MDW_LOG_DIR", str(shared / "logs"))
         monkeypatch.setenv("MDW_CURSOR_DIR", str(shared / "cursors"))
+        monkeypatch.setenv("MDW_SILVER_DIR", str(lake / "silver"))
         monkeypatch.setenv("LW_LEDGER_ROOT", str(shared / "ledger"))
         monkeypatch.setenv("MDW_DUCKDB_PATH", str(shared / "analytics.duckdb"))
         monkeypatch.setattr(status.shutil, "disk_usage", lambda path: _Usage(228 * _GIB, 100 * _GIB, 128 * _GIB))

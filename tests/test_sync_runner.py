@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import signal
 import subprocess
 from datetime import UTC
@@ -733,6 +734,28 @@ class TestProcessAttemptReceipt:
         assert self._receipts() == []
 
 
+_ARCHIVE_SHA = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
+
+
+def _expected_executing_sha(root: Path) -> str:
+    """The identity the run row must carry, derived without the subject under test.
+
+    In a real checkout the executing identity is `git rev-parse HEAD`. In a
+    release archive there is no `.git`; the pinned sha is the
+    `releases/<sha>` directory name — read from the layout itself.
+    """
+    resolved = Path(root).resolve()
+    if resolved.parent.name == "releases" and _ARCHIVE_SHA.fullmatch(resolved.name):
+        return resolved.name
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=resolved,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
 class TestMainRecordsExecutingIdentity:
     """The run row names the code actually executing, not what `current` selects."""
 
@@ -752,13 +775,7 @@ class TestMainRecordsExecutingIdentity:
         with patch("livewire_scripts.sync_runner.run_sync", return_value=0):
             assert main([]) == 0
 
-        expected = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=sync_runner._PROJECT_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+        expected = _expected_executing_sha(sync_runner._PROJECT_ROOT)
         rows = ledger.query("select distinct release_sha, presets_sha, registry_sha from runs")
         assert rows == [
             {

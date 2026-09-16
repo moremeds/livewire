@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -2006,6 +2007,28 @@ class TestProcessAttemptReceipt:
         ]
 
 
+_ARCHIVE_SHA = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
+
+
+def _expected_executing_sha(root: Path) -> str:
+    """The identity the run row must carry, derived without the subject under test.
+
+    In a real checkout the executing identity is `git rev-parse HEAD`. In a
+    release archive there is no `.git`; the pinned sha is the
+    `releases/<sha>` directory name — read from the layout itself.
+    """
+    resolved = Path(root).resolve()
+    if resolved.parent.name == "releases" and _ARCHIVE_SHA.fullmatch(resolved.name):
+        return resolved.name
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=resolved,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
 class TestRunIdentity:
     """release_sha is the executing code, presets_sha the selected input files.
 
@@ -2044,13 +2067,7 @@ class TestRunIdentity:
                 stack.enter_context(patcher)
             assert main([]) == 0
 
-        expected = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=daily_runner.REPO_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+        expected = _expected_executing_sha(daily_runner.REPO_ROOT)
         assert expected != "0" * 40
         assert ledger.query("select distinct release_sha, presets_sha, registry_sha from runs") == [
             {
