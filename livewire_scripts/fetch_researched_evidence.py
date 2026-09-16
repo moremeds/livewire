@@ -18,6 +18,7 @@ import argparse
 import os
 import socket
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -35,6 +36,13 @@ from livewire_scripts.paths import data_lake_dir
 _TIMEOUT = 30
 _RETRY_ATTEMPTS = 3
 _RETRY_BACKOFF_S = 1.0
+# The same handful of large Wikipedia pages (List_of_S&P_500_companies,
+# Historical_components_of_..., big single-company articles) 429 on every
+# run regardless of elapsed time since the last one — not a short burst
+# window, so `MediaWikiClient` (no retry of its own) needs one here. It
+# raises a plain string, not a typed status, so this checks the message.
+_MEDIAWIKI_RETRY_ATTEMPTS = 3
+_MEDIAWIKI_RETRY_BACKOFF_S = 10.0
 # SEC EDGAR's Fair Access policy rejects any User-Agent with no contact
 # email (403, verified against https://www.sec.gov/cgi-bin/browse-edgar on
 # 2026-09-16) — the exact format it documents at
@@ -47,6 +55,16 @@ def _wikipedia_title(url: str) -> str | None:
     if not parsed.netloc.endswith("wikipedia.org") or "/wiki/" not in parsed.path:
         return None
     return unquote(parsed.path.split("/wiki/", 1)[1])
+
+
+def _snapshot_with_retry(mediawiki: MediaWikiClient, title: str):
+    for attempt in range(1, _MEDIAWIKI_RETRY_ATTEMPTS + 1):
+        try:
+            return mediawiki.snapshot(title)
+        except MediaWikiFetchError as exc:
+            if "429" not in str(exc) or attempt == _MEDIAWIKI_RETRY_ATTEMPTS:
+                raise
+            time.sleep(_MEDIAWIKI_RETRY_BACKOFF_S * attempt)
 
 
 def _fetch_generic(url: str, store: SourceEvidenceStore, now: datetime) -> None:
@@ -124,7 +142,7 @@ def run(*, round1_path: Path, round2_path: Path, data_lake_root: Path, now: date
                 try:
                     title = _wikipedia_title(url)
                     if title is not None:
-                        mediawiki.snapshot(title)
+                        _snapshot_with_retry(mediawiki, title)
                     else:
                         _fetch_generic(url, store, now)
                     fetched += 1
