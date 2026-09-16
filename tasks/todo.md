@@ -2,6 +2,18 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Existing-ledger diagnostics and runner consistency (2026-09-17)
+
+Plan: [ops diagnostics](../docs/plans/2026-09-17-ops-diagnostics.md).
+Graph: `O0 -> O1 -> O2 -> O3 -> O4 -> O5`.
+
+- [x] O0 (`depends_on: []`): Baseline and Grok plan review; six pins clarified, APPROVE; 362 relevant baseline tests pass.
+- [ ] O1 (`depends_on: [O0]`): Accurate execution facts and reuse common process mechanics.
+- [ ] O2 (`depends_on: [O1]`): Existing-ledger Silver/catalog publication and failure evidence.
+- [ ] O3 (`depends_on: [O2]`): Shared diagnostic projection and actual-volume checks.
+- [ ] O4 (`depends_on: [O3]`): Lead/Grok review, simplification, configured tests and PR.
+- [ ] O5 (`depends_on: [O4]`): Exact candidate run on actual Mini; distinguish promotion/full-cycle gates.
+
 ## Resend SMTP from livewire@rsiarc.com (2026-09-13)
 
 Keep Nodemailer SMTP; retarget at Resend. No HTTP client.
