@@ -1033,3 +1033,35 @@ def test_membership_sync_index_flag_is_also_repeatable(monkeypatch) -> None:
 
     assert membership_sync.main(["--index", "sp500", "--index", "djia", "ndx100"]) == 0
     assert sorted(seen["indexes"]) == ["djia", "ndx100", "sp500"]
+
+
+def test_cboe_vol_propagates_a_failure_exit_code_to_its_caller(tmp_path, monkeypatch) -> None:
+    """The seam the bug actually lived on. `fetch_cboe_volatility.main()`
+    returned None, `_dispatch_module` turned that into 0, and
+    `sync_runner`'s `if rc != 0` could therefore never fire — the phase could
+    not fail however many symbols were missing. Exercising the real entrypoint
+    is the only thing that proves the exit code survives the dispatch.
+    pm:2026-09-16-cboe-could-not-fail
+    """
+    import httpx
+
+    monkeypatch.setattr("clients.http_retry.time.sleep", lambda _seconds: None)
+    request = httpx.Request("GET", "https://cdn.cboe.com/api/global/delayed_quotes/charts/historical/_VXHYG.json")
+    outage = httpx.Response(503, request=request)
+    monkeypatch.setattr("livewire_scripts.fetch_cboe_volatility.httpx.get", lambda *a, **k: outage)
+
+    assert livewire_ingest.main(["cboe-vol", "--symbols", "VXHYG", "--warehouse", str(tmp_path)]) == 1
+
+
+def test_cboe_vol_still_exits_zero_when_cboe_has_retired_the_index(tmp_path, monkeypatch) -> None:
+    """A 404 is CBOE's claim about the index, surfaced by `Stale non-equity`;
+    failing the phase for it would page nightly for a retired symbol
+    (pm:2026-09-07-retired-cboe-index-alerted-forever)."""
+    import httpx
+
+    monkeypatch.setattr("clients.http_retry.time.sleep", lambda _seconds: None)
+    request = httpx.Request("GET", "https://cdn.cboe.com/api/global/delayed_quotes/charts/historical/_VIXTLT.json")
+    gone = httpx.Response(404, request=request)
+    monkeypatch.setattr("livewire_scripts.fetch_cboe_volatility.httpx.get", lambda *a, **k: gone)
+
+    assert livewire_ingest.main(["cboe-vol", "--symbols", "VIXTLT", "--warehouse", str(tmp_path)]) == 0

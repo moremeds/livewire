@@ -128,3 +128,95 @@ def test_main_runs_the_watchdog_for_the_parsed_date(tmp_path, monkeypatch):
 
     assert watchdog.main(["--run-date", "2026-09-02"]) == 0
     assert seen["run_date"] == date(2026, 9, 2)
+
+
+class TestTheWatchdogDoesNotRestateALanesOwnPage:
+    """A lane pages the moment it fails; the watchdog reads that same failure out
+    of the ledger an hour later and paged again, because the two build their
+    fingerprints in unrelated namespaces. One outage, two emails.
+    pm:2026-09-16-one-failure-paged-twice
+    """
+
+    @pytest.fixture(autouse=True)
+    def root(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
+        monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+
+    def _lane_pages(self, monkeypatch, sent, run_id: str) -> None:
+        """The lane runner's own page, sent while `run_id` was executing."""
+        monkeypatch.setenv("LW_RUN_ID", run_id)
+        notice = notify.page_for_lane(date(2026, 9, 2), "intraday_catchup", 1, "boom", "tail")
+        assert notify.send(notice, runner=_send_runner(sent)) == 0
+
+    def test_the_watchdog_stays_quiet_about_a_run_that_already_paged(self, monkeypatch):
+        run_id = "intraday-catchup-20260902T100002Z-96742"
+        sent: list = []
+        self._lane_pages(monkeypatch, sent, run_id)
+
+        monkeypatch.setenv("LW_RUN_ID", "watchdog-20260902T120000Z-1")
+        monkeypatch.setattr(
+            watchdog,
+            "collect",
+            lambda *a, **k: [Section("Intraday catch-up ran", Verdict.BAD, ["boom"], run_id=run_id)],
+        )
+        assert (
+            watchdog.run_watchdog(
+                date(2026, 9, 2), now=datetime(2026, 9, 2, 12, 0, tzinfo=UTC), runner=_send_runner(sent)
+            )
+            == 0
+        )
+
+        assert len(sent) == 1, "the lane's page is the only one"
+
+    def test_a_failed_lane_page_leaves_the_watchdog_as_the_safety_net(self, monkeypatch):
+        """A send that never left the machine must not silence the watchdog."""
+        run_id = "intraday-catchup-20260902T100002Z-96742"
+        sent: list = []
+        monkeypatch.setenv("LW_RUN_ID", run_id)
+        notice = notify.page_for_lane(date(2026, 9, 2), "intraday_catchup", 1, "boom", "tail")
+        assert notify.send(notice, runner=_send_runner(sent, returncode=1)) != 0
+
+        monkeypatch.setenv("LW_RUN_ID", "watchdog-20260902T120000Z-1")
+        monkeypatch.setattr(
+            watchdog,
+            "collect",
+            lambda *a, **k: [Section("Intraday catch-up ran", Verdict.BAD, ["boom"], run_id=run_id)],
+        )
+        watchdog.run_watchdog(date(2026, 9, 2), now=datetime(2026, 9, 2, 12, 0, tzinfo=UTC), runner=_send_runner(sent))
+
+        assert len(sent) == 2, "the watchdog still pages when the lane's page failed"
+
+    def test_a_bad_section_belonging_to_no_run_still_pages(self, monkeypatch):
+        """Coverage, disk, a stale catalog: nothing paged for these, so the
+        watchdog is the only surface that will."""
+        sent: list = []
+        monkeypatch.setenv("LW_RUN_ID", "watchdog-20260902T120000Z-1")
+        monkeypatch.setattr(watchdog, "collect", lambda *a, **k: [_section(Verdict.BAD, "Coverage")])
+
+        assert (
+            watchdog.run_watchdog(
+                date(2026, 9, 2), now=datetime(2026, 9, 2, 12, 0, tzinfo=UTC), runner=_send_runner(sent)
+            )
+            == 0
+        )
+        assert len(sent) == 1
+
+    def test_one_suppressed_section_does_not_suppress_the_others(self, monkeypatch):
+        run_id = "intraday-catchup-20260902T100002Z-96742"
+        sent: list = []
+        self._lane_pages(monkeypatch, sent, run_id)
+
+        monkeypatch.setenv("LW_RUN_ID", "watchdog-20260902T120000Z-1")
+        monkeypatch.setattr(
+            watchdog,
+            "collect",
+            lambda *a, **k: [
+                Section("Intraday catch-up ran", Verdict.BAD, ["boom"], run_id=run_id),
+                Section("Coverage", Verdict.BAD, ["26.5%"]),
+            ],
+        )
+        watchdog.run_watchdog(date(2026, 9, 2), now=datetime(2026, 9, 2, 12, 0, tzinfo=UTC), runner=_send_runner(sent))
+
+        assert len(sent) == 2
+        subject = next(token for token in sent[1] if token.startswith("--subject="))
+        assert "Coverage" in subject and "Intraday catch-up ran" not in subject

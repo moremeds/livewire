@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -497,3 +498,91 @@ class TestMain:
             patch("livewire_scripts.fetch_cboe_volatility.httpx.get", side_effect=Exception("network error")),
         ):
             main()  # Should not raise
+
+
+_REQUEST = httpx.Request("GET", "https://cdn.cboe.com/api/global/delayed_quotes/charts/historical/_VXHYG.json")
+
+
+def _bars_response(bars: list[dict]) -> httpx.Response:
+    return httpx.Response(200, request=_REQUEST, json={"data": bars})
+
+
+def _status_response(status_code: int) -> httpx.Response:
+    return httpx.Response(status_code, request=_REQUEST)
+
+
+class TestFetchCboeHistoricalRetry:
+    """`fetch_cboe_historical` now routes through `clients.http_retry`."""
+
+    def test_retries_a_502_and_returns_the_bars_from_the_successful_attempt(self, monkeypatch):
+        monkeypatch.setattr("clients.http_retry.time.sleep", lambda _seconds: None)
+        ok_bars = [
+            {"date": "2025-01-02", "open": "10.0", "high": "11.0", "low": "9.0", "close": "10.5", "volume": "0.0"}
+        ]
+        mock_get = MagicMock(side_effect=[_status_response(502), _bars_response(ok_bars)])
+
+        with patch("livewire_scripts.fetch_cboe_volatility.httpx.get", mock_get):
+            bars = fetch_cboe_historical("VXHYG")
+
+        assert bars == ok_bars
+        assert mock_get.call_count == 2
+
+    def test_raises_a_404_immediately_with_one_request_only(self, monkeypatch):
+        monkeypatch.setattr("clients.http_retry.time.sleep", lambda _seconds: None)
+        mock_get = MagicMock(return_value=_status_response(404))
+
+        with patch("livewire_scripts.fetch_cboe_volatility.httpx.get", mock_get):
+            with pytest.raises(httpx.HTTPStatusError) as excinfo:
+                fetch_cboe_historical("RETIRED")
+
+        assert excinfo.value.response.status_code == 404
+        mock_get.assert_called_once()
+
+
+class TestMainExitCode:
+    """Regression coverage for pm:2026-09-16-cboe-could-not-fail.
+
+    Before this change `main()` returned `None` and the phase exited 0
+    however much was missing.
+    """
+
+    def test_returns_0_when_every_symbol_fetches(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("clients.http_retry.time.sleep", lambda _seconds: None)
+        bars = [{"date": "2025-01-02", "open": "10.0", "high": "11.0", "low": "9.0", "close": "10.5", "volume": "0.0"}]
+
+        with (
+            patch("sys.argv", ["prog", "--symbols", "VXHYG", "--warehouse", str(tmp_path)]),
+            patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=_bars_response(bars)),
+        ):
+            assert main() == 0
+
+    def test_returns_1_when_a_symbol_is_still_unfetched_after_retries(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("clients.http_retry.time.sleep", lambda _seconds: None)
+
+        with (
+            patch("sys.argv", ["prog", "--symbols", "VXHYG", "--warehouse", str(tmp_path)]),
+            patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=_status_response(503)),
+        ):
+            assert main() == 1
+
+        assert "Unfetched after retries: VXHYG" in capsys.readouterr().out
+
+    def test_returns_0_when_a_symbol_404s_and_names_it_in_the_output(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("clients.http_retry.time.sleep", lambda _seconds: None)
+
+        with (
+            patch("sys.argv", ["prog", "--symbols", "VXTLT", "--warehouse", str(tmp_path)]),
+            patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=_status_response(404)),
+        ):
+            assert main() == 0
+
+        assert "Not offered by CBOE: VXTLT" in capsys.readouterr().out
+
+    def test_a_symbol_with_no_bars_does_not_fail_the_run(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("clients.http_retry.time.sleep", lambda _seconds: None)
+
+        with (
+            patch("sys.argv", ["prog", "--symbols", "NODATA", "--warehouse", str(tmp_path)]),
+            patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=_bars_response([])),
+        ):
+            assert main() == 0

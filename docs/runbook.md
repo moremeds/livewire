@@ -52,16 +52,16 @@ still resolves the right warehouse paths and SMTP credentials.
 
 ### Reliability foundation
 
-| Variable                            | Default                                               | Meaning                                                                                            |
-| ----------------------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `MDW_TELEMETRY_PATH`                | `~/market-warehouse/logs/telemetry.jsonl`             | Telemetry JSONL append path; set to `none` to disable telemetry                                    |
-| `MDW_QUALITY_AUDIT_PATH`            | `~/market-warehouse/logs/quality_audit.jsonl`         | Central quality-flag audit JSONL append path                                                       |
-| `MDW_ORCHESTRATOR_TIMEOUT_SECONDS`  | `300`                                                 | Per-ticker hard timeout for `livewire_ingest.py robust`                                            |
-| `MDW_ORCHESTRATOR_MAX_ATTEMPTS`     | `3`                                                   | Per-ticker retry budget for `livewire_ingest.py robust`                                            |
-| `MDW_ORCHESTRATOR_COOLDOWN_SECONDS` | `60`                                                  | Sleep between orchestrator retry attempts                                                          |
-| `MDW_LOG_LEVEL`                     | `INFO`                                                | Logger root level for reliability tooling                                                          |
-| `MDW_LOG_DIR`                       | `~/market-warehouse/logs/`                            | Runtime log directory                                                                               |
-| `MDW_SOURCE_EVIDENCE`               | `on`                                                  | Set to `off`/`0`/`false`/`no` to stop `corporate-actions` collecting exact provider response bytes |
+| Variable                            | Default                                       | Meaning                                                                                            |
+| ----------------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `MDW_TELEMETRY_PATH`                | `~/market-warehouse/logs/telemetry.jsonl`     | Telemetry JSONL append path; set to `none` to disable telemetry                                    |
+| `MDW_QUALITY_AUDIT_PATH`            | `~/market-warehouse/logs/quality_audit.jsonl` | Central quality-flag audit JSONL append path                                                       |
+| `MDW_ORCHESTRATOR_TIMEOUT_SECONDS`  | `300`                                         | Per-ticker hard timeout for `livewire_ingest.py robust`                                            |
+| `MDW_ORCHESTRATOR_MAX_ATTEMPTS`     | `3`                                           | Per-ticker retry budget for `livewire_ingest.py robust`                                            |
+| `MDW_ORCHESTRATOR_COOLDOWN_SECONDS` | `60`                                          | Sleep between orchestrator retry attempts                                                          |
+| `MDW_LOG_LEVEL`                     | `INFO`                                        | Logger root level for reliability tooling                                                          |
+| `MDW_LOG_DIR`                       | `~/market-warehouse/logs/`                    | Runtime log directory                                                                              |
+| `MDW_SOURCE_EVIDENCE`               | `on`                                          | Set to `off`/`0`/`false`/`no` to stop `corporate-actions` collecting exact provider response bytes |
 
 #### Lake I/O lock
 
@@ -91,28 +91,28 @@ you two lock domains and no serialization. There is no operator action that
 
 ### Massive S3 flat files
 
-| Variable                          | Default      | Meaning                                                                                                        |
-| --------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------- |
-| `MASSIVE_S3_ACCESS_KEY`           | — (required) | Massive S3 access key for equity intraday                                                                      |
-| `MASSIVE_S3_SECRET_KEY`           | — (required) | Massive S3 secret key for equity intraday                                                                      |
-| `MDW_FLATFILE_LOOKBACK_DAYS`      | `7`          | Direct `flatfile-ingest catch-up` lookback                                                                     |
-| `MDW_FLATFILE_BUCKETS`            | `256`        | Raw ticker buckets per trading day                                                                             |
-| `MDW_FLATFILE_STORAGE_MULTIPLIER` | `8`          | Capacity-planning multiplier for a full build                                                                  |
-| `MDW_FLATFILE_DAILY_WORKERS`      | `4`          | Process-pool size for the `flatfile-ingest-daily` publish phase (also `--workers`)                             |
-| `MDW_FLATFILE_DAILY_BUCKETS`      | `32`         | Ticker buckets per day for `flatfile-ingest-daily` (also `--buckets`)                                          |
+| Variable                          | Default      | Meaning                                                                            |
+| --------------------------------- | ------------ | ---------------------------------------------------------------------------------- |
+| `MASSIVE_S3_ACCESS_KEY`           | — (required) | Massive S3 access key for equity intraday                                          |
+| `MASSIVE_S3_SECRET_KEY`           | — (required) | Massive S3 secret key for equity intraday                                          |
+| `MDW_FLATFILE_LOOKBACK_DAYS`      | `7`          | Direct `flatfile-ingest catch-up` lookback                                         |
+| `MDW_FLATFILE_BUCKETS`            | `256`        | Raw ticker buckets per trading day                                                 |
+| `MDW_FLATFILE_STORAGE_MULTIPLIER` | `8`          | Capacity-planning multiplier for a full build                                      |
+| `MDW_FLATFILE_DAILY_WORKERS`      | `4`          | Process-pool size for the `flatfile-ingest-daily` publish phase (also `--workers`) |
+| `MDW_FLATFILE_DAILY_BUCKETS`      | `32`         | Ticker buckets per day for `flatfile-ingest-daily` (also `--buckets`)              |
 
 ### Orchestrator budgets
 
-| Variable                           | Default      | Meaning                                                                           |
-| ---------------------------------- | ------------ | --------------------------------------------------------------------------------- |
-| `MDW_SYNC_PHASE_TIMEOUT_SECONDS`   | `21600` (6h) | Hard per-phase budget in `daily-backfill`                                         |
-| `MDW_DAILY_BACKFILL_INTRADAY_DAYS` | `7`          | Whole-market flat-file catch-up window in `daily-backfill`                        |
-| `MDW_DAILY_BACKFILL_DAY_AGGS_DAYS` | `7`          | `flatfile-ingest-daily catch-up` window in `daily-backfill`                       |
+| Variable                           | Default      | Meaning                                                     |
+| ---------------------------------- | ------------ | ----------------------------------------------------------- |
+| `MDW_SYNC_PHASE_TIMEOUT_SECONDS`   | `21600` (6h) | Hard per-phase budget in `daily-backfill`                   |
+| `MDW_DAILY_BACKFILL_INTRADAY_DAYS` | `7`          | Whole-market flat-file catch-up window in `daily-backfill`  |
+| `MDW_DAILY_BACKFILL_DAY_AGGS_DAYS` | `7`          | `flatfile-ingest-daily catch-up` window in `daily-backfill` |
 
 ### Declared constants (`clients/constants.py`)
 
-| Variable            | Default                    | Meaning                                                                                                                                                                                                       |
-| ------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Variable            | Default                    | Meaning                                                                                                                                                                                                             |
+| ------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `LW_DECLARED_<KEY>` | see `clients/constants.py` | Overrides any declared constant for one run. `<KEY>` is the `DECLARED` key upper-cased with `/` and `-` as `_` — e.g. `LW_DECLARED_FAILURE_RATE_TOLERANCE=0.10`, `LW_DECLARED_LANE_BUDGET_S_CORPORATE_ACTIONS=7200` |
 
 Every key is emitted to the ledger as `measurements(source='declared')` at run
@@ -792,6 +792,31 @@ uv run python scripts/livewire_ops.py ledger emit --table evidence --json '{"evi
 # LW_LEDGER_ROOT overrides the root (default <lake>/ledger); LW_RUN_ID names the run.
 ```
 
+**Writing the SQL.** It reaches DuckDB unchanged. `ledger query --help` prints
+these two rules; both are worth knowing before the first typo:
+
+- SQL string literals are single-quoted, so wrap the whole query in double
+  quotes: `ledger query "select * from runs where job = 'daily-update'"`.
+- DuckDB reserves more words than you expect. `first`, `last`, `end`, `filter`
+  and `order` are parse errors as a bare column alias — write `min(started) as
+"first"`, or rename it. A bad query now exits 2 with one line and a hint
+  instead of a traceback.
+
+**Which runs are in flight.** A run writes an entry row and, later, a terminal
+row with the same `run_id`, so `where ended is null` returns every entry row
+ever written. Group instead:
+
+```bash
+uv run python scripts/livewire_ops.py ledger query \
+  "select job, run_id, min(started) as since from runs group by job, run_id having max(ended) is null"
+```
+
+**`verdict = 'ABANDONED'`** means a run never wrote its own terminal row — a
+SIGKILL, a power loss, an operator's Ctrl-C — and the next start of that job on
+that host closed it. It is not a failure and does not page; `status` grades it
+WARN. If the process was in fact still alive, its own terminal row lands later
+and wins, because every reader takes the latest `ended`.
+
 ### Weekly quality summary
 
 Pure parser over the seven daily coverage logs from the previous ISO week.
@@ -875,22 +900,22 @@ SMTP transport is `livewire_node/send_mail.mjs`, pointed at Resend
 mini — a release carries no `.env`. `rsiarc.com` must be verified in the
 Resend dashboard before the first send.
 
-| Variable                          | Default          | Meaning                                                        |
-| --------------------------------- | ---------------- | -------------------------------------------------------------- |
-| `MDW_ALERT_EMAIL_FROM`            | — (required)     | Sender; production `Livewire <livewire@rsiarc.com>`            |
-| `MDW_ALERT_EMAIL_TO`              | — (required)     | Recipient address                                              |
-| `MDW_ALERT_EMAIL_CC`              | unset            | Cc address                                                     |
-| `MDW_ALERT_EMAIL_BCC`             | unset            | Bcc address                                                    |
-| `MDW_ALERT_EMAIL_REPLY_TO`        | unset            | Reply-To address                                               |
-| `MDW_ALERT_EMAIL_SUBJECT_PREFIX`  | `[Livewire]`     | Subject prefix                                                 |
-| `MDW_ALERT_SMTP_URL`              | unset            | Full `smtps://resend:<API_KEY>@smtp.resend.com:465` URL        |
-| `MDW_ALERT_SMTP_HOST`             | unset            | SMTP host; production `smtp.resend.com`                        |
-| `MDW_ALERT_SMTP_PORT`             | unset            | SMTP port; production `465`                                    |
-| `MDW_ALERT_SMTP_SECURE`           | `false`          | TLS from connect; production `true` (SMTPS 465)                |
-| `MDW_ALERT_SMTP_USER`             | unset            | SMTP auth user; production `resend`                            |
-| `MDW_ALERT_SMTP_PASS`             | unset            | SMTP auth password; production = Resend API key                |
-| `MDW_ALERT_TRANSPORT`             | unset            | `stream` prints the mail to stdout instead of sending (tests)  |
-| `MDW_NODE_BIN`                    | resolved         | node binary; falls back to `which node` then `/opt/homebrew/bin/node` |
+| Variable                         | Default      | Meaning                                                               |
+| -------------------------------- | ------------ | --------------------------------------------------------------------- |
+| `MDW_ALERT_EMAIL_FROM`           | — (required) | Sender; production `Livewire <livewire@rsiarc.com>`                   |
+| `MDW_ALERT_EMAIL_TO`             | — (required) | Recipient address                                                     |
+| `MDW_ALERT_EMAIL_CC`             | unset        | Cc address                                                            |
+| `MDW_ALERT_EMAIL_BCC`            | unset        | Bcc address                                                           |
+| `MDW_ALERT_EMAIL_REPLY_TO`       | unset        | Reply-To address                                                      |
+| `MDW_ALERT_EMAIL_SUBJECT_PREFIX` | `[Livewire]` | Subject prefix                                                        |
+| `MDW_ALERT_SMTP_URL`             | unset        | Full `smtps://resend:<API_KEY>@smtp.resend.com:465` URL               |
+| `MDW_ALERT_SMTP_HOST`            | unset        | SMTP host; production `smtp.resend.com`                               |
+| `MDW_ALERT_SMTP_PORT`            | unset        | SMTP port; production `465`                                           |
+| `MDW_ALERT_SMTP_SECURE`          | `false`      | TLS from connect; production `true` (SMTPS 465)                       |
+| `MDW_ALERT_SMTP_USER`            | unset        | SMTP auth user; production `resend`                                   |
+| `MDW_ALERT_SMTP_PASS`            | unset        | SMTP auth password; production = Resend API key                       |
+| `MDW_ALERT_TRANSPORT`            | unset        | `stream` prints the mail to stdout instead of sending (tests)         |
+| `MDW_NODE_BIN`                   | resolved     | node binary; falls back to `which node` then `/opt/homebrew/bin/node` |
 
 ### Daily-run outcome categories
 
@@ -1037,15 +1062,15 @@ conversion table to other Mac timezones.
 
 ### Schedule (UTC)
 
-| Job                                  | UTC time            | Entrypoint                                                                                  |
-| ------------------------------------ | ------------------- | ------------------------------------------------------------------------------------------- |
-| `com.livewire.release-promote`       | 04:30 daily         | `livewire_ops.py release promote` (reads the repo)                                          |
-| `com.livewire.daily-update`          | 05:00 daily         | `livewire_ops.py run-daily-job`                                                             |
-| `com.livewire.intraday-catchup`      | 10:00 daily         | `livewire_ops.py run-intraday-catchup-job`                                                  |
-| `com.livewire.daily-update-watchdog` | 10:30 + 12:00 daily | `livewire_quality.py watchdog`                                                              |
+| Job                                  | UTC time            | Entrypoint                                                                                      |
+| ------------------------------------ | ------------------- | ----------------------------------------------------------------------------------------------- |
+| `com.livewire.release-promote`       | 04:30 daily         | `livewire_ops.py release promote` (reads the repo)                                              |
+| `com.livewire.daily-update`          | 05:00 daily         | `livewire_ops.py run-daily-job`                                                                 |
+| `com.livewire.intraday-catchup`      | 10:00 daily         | `livewire_ops.py run-intraday-catchup-job`                                                      |
+| `com.livewire.daily-update-watchdog` | 10:30 + 12:00 daily | `livewire_quality.py watchdog`                                                                  |
 | `com.livewire.coverage`              | 15:05 daily         | `livewire_quality.py coverage` (waits on upstreams + session due, then runs the gap classifier) |
-| `com.livewire.digest`                | 15:45 daily         | `livewire_ops.py digest --email` (waits ≤4h for today's coverage fact)                     |
-| `com.livewire.universe-refresh`      | Sunday 13:00 weekly | `livewire_ingest.py universe-sync && livewire_ingest.py shepherd-universe` (reads the repo) |
+| `com.livewire.digest`                | 15:45 daily         | `livewire_ops.py digest --email` (waits ≤4h for today's coverage fact)                          |
+| `com.livewire.universe-refresh`      | Sunday 13:00 weekly | `livewire_ingest.py universe-sync && livewire_ingest.py shepherd-universe` (reads the repo)     |
 
 > The two lake writers are ordered by the code, not by these times: every lane
 > holds `<warehouse>/locks/lake-io.lock` while it runs, `daily-update` polls for
@@ -1093,7 +1118,7 @@ python scripts/livewire_ingest.py security-master sync [--index sp500 ndx100 dji
 python scripts/livewire_ingest.py security-master sync --tickers AAPL YHOO      # repair subset
 ```
 
-- **Idempotent**: a ticker whose *verified* intervals already cover every date
+- **Idempotent**: a ticker whose _verified_ intervals already cover every date
   its memberships need is skipped without a fetch. A membership date past the
   end of an existing interval does trigger a fetch — that is how the widening
   rule runs. A ticker that only ever derives a `candidate` row is therefore
@@ -1103,12 +1128,14 @@ python scripts/livewire_ingest.py security-master sync --tickers AAPL YHOO      
   for every ticker and `effective_from` comes from the probe date or from
   nothing (`identity_no_start`). The probe sends only `ticker` and `date`;
   adding `active=false` to it returns an empty envelope (F3).
-- **Pacing**: `massive_requests_per_minute/reference` (5/min declared) before
+- **Pacing**: `massive_requests_per_minute/reference` (600/min declared) before
   every request (a ticker is 2-3 requests); one 429 backs off `massive_backoff_s/reference` (60 s) and retries
-  once, then counts a fetch failure. The 5/min is provisional — carried over
-  from the FX scope, not measured on `/reference`. Measure it with the sample
-  run below and pass it back as
-  `LW_DECLARED_MASSIVE_REQUESTS_PER_MINUTE_REFERENCE`.
+  once, then counts a fetch failure. Massive documents no per-minute cap on a
+  paid plan and asks callers to stay under 100 req/s, so 600/min is a tenth of
+  the documented ceiling. At that pace the sleep is 0.1 s against a ~0.6 s
+  round-trip, so the run is latency-bound: it moves about 24 tickers/min
+  single-threaded, and raising the declared rate further changes nothing.
+  Override for one run with `LW_DECLARED_MASSIVE_REQUESTS_PER_MINUTE_REFERENCE`.
 - **Evidence**: every response body goes to the CAS; one `record_many` per
   chunk of 50 tickers (`FLUSH_EVERY_TICKERS`), committed before that chunk's
   identities are appended. A crash mid-run keeps every earlier chunk; if a
@@ -1117,7 +1144,10 @@ python scripts/livewire_ingest.py security-master sync --tickers AAPL YHOO      
   `all` (or `subset` under `--tickers`): `identity_tickers_requested`,
   `identity_events_appended`, `identity_candidate`, `identity_no_start`,
   `identity_conflict`, `identity_unknown_to_provider`, `identity_collisions`,
-  `identity_fetch_failed` (any > 0 → exit 1).
+  `identity_fetch_failed` (any > 0 → exit 1). Each failure also files its own
+  `identity_fetch_failed_ticker` row, scope `<ticker>:<http status>`, unit
+  `first_attempt` or `after_429_retry`, so a rerun can name its targets:
+  `ledger query "select scope, unit from measurements where name = 'identity_fetch_failed_ticker' and run_id = '<run>'"`.
   `identity_probe_empty` rows (scope `<ticker>:<date>`, one per `date=` probe
   that returned nothing) are the persisted record that a date was asked, so
   the next run skips a ticker whose remaining dates were all probed empty.
@@ -1135,24 +1165,22 @@ source ~/market-warehouse/.venv/bin/activate
 cd ~/market-warehouse/current
 set -a; source ~/market-warehouse/.env; set +a
 
-# 0. check the ledger for an in-flight run before starting
+# 0. check the ledger for an in-flight run before starting. Group, never filter
+#    on `ended is null`: a run emits an entry row and a terminal row, so that
+#    filter returns every entry row ever written, in flight or not.
 python scripts/livewire_ops.py ledger query \
-  "select job, started, verdict from runs where ended is null"
+  "select job, run_id, min(started) as since from runs group by job, run_id having max(ended) is null"
 
-# 1. sample first: measure the endpoint's real rate before pacing the full run
-time python scripts/livewire_ingest.py security-master sync --tickers AAPL MSFT NVDA AMD INTC
+# 1. the full run
+python scripts/livewire_ingest.py security-master sync
 
-# 2. full run, paced by what step 1 measured (requests / elapsed minutes)
-LW_DECLARED_MASSIVE_REQUESTS_PER_MINUTE_REFERENCE=<measured> \
-  python scripts/livewire_ingest.py security-master sync
-
-# 3. reresolve each index, one at a time; r2k-proxy is candidate whatever is passed
+# 2. reresolve each index, one at a time; r2k-proxy is candidate whatever is passed
 for IDX in sp500 ndx100 djia; do
   python scripts/livewire_ingest.py membership-sync reresolve --index $IDX --confidence B
 done
 python scripts/livewire_ingest.py membership-sync reresolve --index r2k-proxy --confidence C
 
-# 4. the acceptance signal
+# 3. the acceptance signal
 python scripts/livewire_ops.py status | grep -A2 "Unresolved memberships"
 # apex re-verifies its verified reading itself (its /v1/membership/indices and
 # /history endpoints, apex v0.1.7 on the mini); message the apex session when
@@ -1225,7 +1253,7 @@ python scripts/livewire_ingest.py membership-sync reresolve --index sp500 --conf
   `Unresolved memberships` (latest per-index `membership_unresolved` backlog;
   any >0 → WARN, never measured → UNKNOWN).
 - **Read:** `python scripts/livewire_ops.py membership --index sp500
-  --effective-at YYYY-MM-DD [--as-of YYYY-MM-DD]` — sorted members on stdout
+--effective-at YYYY-MM-DD [--as-of YYYY-MM-DD]` — sorted members on stdout
   (`?<security_id>` for unresolved), count on stderr, exit 0 always.
 
 ### Log file names

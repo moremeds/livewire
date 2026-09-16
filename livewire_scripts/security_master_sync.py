@@ -500,6 +500,27 @@ def needed_dates(store: IndexMembershipStore, indexes: list[str]) -> dict[str, s
     return wanted
 
 
+def _failure_row(run_id: str, ticker: str, exc: UniverseFetchError, measured_at: datetime, *, retried: bool) -> dict:
+    """One `identity_fetch_failed_ticker` row naming what could not be fetched.
+
+    The aggregate `identity_fetch_failed` count says a rerun is needed but not
+    of what, so the only recovery was to rerun the whole universe and rely on
+    idempotence. `scope` is `<ticker>:<http status>`, matching the
+    `<ticker>:<date>` shape `identity_probe_empty` already uses; `unit` carries
+    whether this was the retry after a 429 backoff or a first attempt.
+    """
+    status = exc.status_code if exc.status_code is not None else "none"
+    return {
+        "name": "identity_fetch_failed_ticker",
+        "scope": f"{ticker}:{status}",
+        "measured_at": measured_at,
+        "value": 1.0,
+        "unit": "after_429_retry" if retried else "first_attempt",
+        "source": "measured",
+        "run_id": run_id,
+    }
+
+
 def _open_dates(
     master: SecurityMaster, ticker: str, dates: set[datetime], now: datetime, empty_probes: set[tuple[str, str]]
 ) -> tuple[str, ...]:
@@ -594,7 +615,9 @@ def sync(
         "exit_code": None,
         "verdict": None,
     }
-    ledger.emit("runs", [run_row], run_id=run_id)
+    abandoned = ledger.open_run(run_row)
+    if abandoned:
+        print(f"abandoned {len(abandoned)} open run(s) of security-master-sync: {', '.join(abandoned)}")
 
     def close(exit_code: int) -> int:
         ledger.emit(
@@ -625,6 +648,7 @@ def sync(
         pending: list[tuple[list[IdentityRecord], tuple[tuple[str, str], ...], datetime]] = []
         manifest: list[SourceEvidence] = []
         probe_rows: list[dict] = []
+        failure_rows: list[dict] = []
         writer = reader if dry_run else SecurityMaster(root, evidence_verifier=_evidence_verifier(evidence))
 
         def flush() -> None:
@@ -671,12 +695,14 @@ def sync(
             except UniverseFetchError as exc:
                 if exc.status_code != 429:
                     counts["identity_fetch_failed"] += 1
+                    failure_rows.append(_failure_row(run_id, ticker, exc, clock(), retried=False))
                     continue
                 sleep(backoff_s)
                 try:
                     result = fetch(ticker, probe_dates=probe_dates)
-                except UniverseFetchError:
+                except UniverseFetchError as retry_exc:
                     counts["identity_fetch_failed"] += 1
+                    failure_rows.append(_failure_row(run_id, ticker, retry_exc, clock(), retried=True))
                     continue
             fetched_at = clock()
             refs: list[tuple[str, str]] = []
@@ -713,11 +739,20 @@ def sync(
                 flush()
         flush()
 
+        if failure_rows and not dry_run:
+            # Named per ticker, not folded into the aggregate: a count tells the
+            # operator to rerun the whole universe and hope idempotence covers
+            # it (pm:2026-09-16-fetch-failures-had-no-subject).
+            ledger.emit("measurements", failure_rows, run_id=run_id)
         _measure(run_id, scope, now, counts)
         print(json.dumps({"scope": scope, "run_id": run_id, "dry_run": dry_run} | counts, sort_keys=True))
     except _CommitFailed:
         return close(1)
-    except Exception:
+    except BaseException:
+        # BaseException, not Exception: Ctrl-C is a KeyboardInterrupt, and this
+        # run is the one an operator interrupts — four times on 2026-09-16, each
+        # leaving an entry row nothing would ever close
+        # (pm:2026-09-16-interrupted-runs-never-closed).
         close(1)
         raise
     return close(1 if counts["identity_fetch_failed"] else 0)

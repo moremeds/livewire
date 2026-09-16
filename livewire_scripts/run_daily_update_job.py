@@ -847,7 +847,9 @@ def _run_main(argv: Sequence[str] | None = None) -> int:
         "exit_code": None,
         "verdict": None,
     }
-    ledger.emit("runs", [run_row], run_id=run_id())
+    abandoned = ledger.open_run(run_row)
+    if abandoned:
+        print(f"abandoned {len(abandoned)} open run(s) of {job_name}: {', '.join(abandoned)}")
     ledger.emit(
         "measurements",
         [

@@ -138,9 +138,15 @@ def test_the_fred_retry_keys_carry_a_working_env_override(monkeypatch):
 def test_the_reference_endpoint_rate_limit_is_scoped_like_the_fx_one():
     """Every rate-limit number in this repo carries a scope
     (pm:2026-07-27-fx-dxy-provider-floors). The /v3/reference/tickers limit is
-    not the FX one and must not be read off the FX key."""
-    assert constants.DECLARED["massive_requests_per_minute/reference"] == (5, "per_min")
+    not the FX one and must not be read off the FX key — the reference scope is
+    a paid Stocks plan, the FX 5/min is the free Currencies tier
+    (pm:2026-09-16-reference-rate-inherited-the-free-fx-tier)."""
+    assert constants.DECLARED["massive_requests_per_minute/reference"] == (600, "per_min")
     assert constants.DECLARED["massive_backoff_s/reference"] == (60, "s")
+    # the two scopes must not drift back into the same number
+    assert constants.declared("massive_requests_per_minute/reference") != constants.declared(
+        "massive_requests_per_minute/fx"
+    )
     assert constants.split_scope("massive_requests_per_minute/reference") == (
         "massive_requests_per_minute",
         "reference",

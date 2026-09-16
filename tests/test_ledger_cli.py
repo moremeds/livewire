@@ -75,3 +75,55 @@ def test_the_ops_entrypoint_dispatches_ledger() -> None:
 
     assert ops.COMMANDS["ledger"] == "livewire_scripts.ledger_cli"
     assert ops.main(["ledger", "query", "select 1 as one"]) == 0
+
+
+def test_a_malformed_query_exits_2_and_prints_the_duckdb_message_with_no_traceback(capsys) -> None:
+    assert ledger_cli.main(["query", "select * frm evidence"]) == 2
+    err = capsys.readouterr().err
+    assert "ledger query failed:" in err
+    assert "Parser Error" in err
+    assert "Traceback (most recent call last)" not in err
+
+
+def test_a_reserved_word_as_a_bare_column_alias_exits_2_and_names_the_word(capsys) -> None:
+    ledger_cli.main(["emit", "--table", "evidence", "--json", json.dumps(_evidence())])
+    capsys.readouterr()
+
+    assert ledger_cli.main(["query", "select subject first from evidence"]) == 2
+
+    err = capsys.readouterr().err
+    assert "`first` is a DuckDB reserved word" in err
+    assert 'double-quoted (as "first")' in err
+
+
+def test_a_query_naming_a_nonexistent_column_exits_2_with_the_candidate_bindings(capsys) -> None:
+    ledger_cli.main(["emit", "--table", "evidence", "--json", json.dumps(_evidence())])
+    capsys.readouterr()
+
+    assert ledger_cli.main(["query", "select nonexistent_col from evidence"]) == 2
+
+    err = capsys.readouterr().err
+    assert "Referenced column" in err
+    assert "candidate bindings printed above are the table's real columns" in err
+
+
+def test_a_valid_query_still_returns_0_and_prints_one_json_object_per_line(capsys) -> None:
+    """No regression on the happy path once errors are caught."""
+    ledger_cli.main(["emit", "--table", "evidence", "--json", json.dumps(_evidence(evidence_hash="h1"))])
+    ledger_cli.main(["emit", "--table", "evidence", "--json", json.dumps(_evidence(evidence_hash="h2"))])
+    capsys.readouterr()
+
+    assert ledger_cli.main(["query", "select evidence_hash from evidence order by evidence_hash"]) == 0
+
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert [json.loads(line) for line in lines] == [{"evidence_hash": "h1"}, {"evidence_hash": "h2"}]
+
+
+def test_query_help_contains_the_quoting_and_reserved_word_guidance(capsys) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        ledger_cli.main(["query", "--help"])
+
+    assert excinfo.value.code == 0
+    out = capsys.readouterr().out
+    assert "reserves more words than you expect" in out
+    assert "double-quote the alias or rename it" in out

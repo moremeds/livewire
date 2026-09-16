@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from clients import constants, ledger
-from livewire_scripts import status
+from livewire_scripts import notify, status
 from livewire_scripts.status import (
     _LAUNCHD_JOBS,
     Section,
@@ -1242,3 +1242,57 @@ def test_the_unresolved_memberships_hint_names_commands_that_exist():
     assert "security-master sync" in hint
     assert "reresolve" in hint
     assert "livewire_ops.py membership --index" not in hint
+
+
+def test_a_run_closed_as_abandoned_reads_warn_not_failed_and_not_unknown():
+    """A run whose process died without writing its own terminal row is closed
+    ABANDONED by the next start of that job. It is an interruption, not a
+    failure — WARN, so the watchdog never pages for it, and never UNKNOWN,
+    because there is evidence: we know exactly what happened to it.
+    pm:2026-09-16-interrupted-runs-never-closed
+
+    `status.Verdict`, not the imported `Verdict`: an earlier test in this file
+    reloads the module, so the top-level name is a different enum class.
+    """
+    _run(verdict=ledger.ABANDONED, exit_code=None)
+
+    assert _section("Daily update ran").verdict is status.Verdict.WARN
+
+
+def test_an_abandoned_intraday_run_reads_warn_too():
+    """Fix the twin: both run-level checks carry the same CASE expression."""
+    _run(job="intraday-catchup", verdict=ledger.ABANDONED, exit_code=None)
+
+    assert _section("Intraday catch-up ran").verdict is status.Verdict.WARN
+
+
+def test_a_section_carries_the_single_run_its_rows_name():
+    """The watchdog suppresses a BAD section whose run already paged, so a
+    section has to know which run it is a statement about."""
+    _run(verdict="FAILED", exit_code=1)
+
+    assert _section("Daily update ran").run_id == RUN
+
+
+def test_the_real_status_and_the_real_pager_agree_on_which_run_a_section_names():
+    """The two halves of the watchdog fix, joined with nothing mocked between
+    them: `status.collect` puts the run id on the section, `notify` looks that
+    id up in `executions.run_id`, and the page is suppressed. Every watchdog
+    test mocks `collect`, so without this one nothing proves the real check
+    produces an id the real pager can match.
+    pm:2026-09-16-one-failure-paged-twice
+    """
+    _run(job="intraday-catchup", verdict="FAILED", exit_code=1)
+    section = _section("Intraday catch-up ran")
+    assert section.verdict is status.Verdict.BAD
+    assert section.run_id == RUN, "the check must name the run it graded"
+
+    # nothing has paged yet, so the watchdog is the only surface that will
+    assert notify.page_from_sections([section], NOW.date()) is not None
+
+    # the lane's own page, recorded the way notify.send records every send
+    # `skipped: false` matters: a send that deduped or failed must not silence
+    # the watchdog, so the receipt shape is part of the contract here.
+    _execution("notify", 0, receipt={"kind": "page", "subject": "PAGE: lane intraday_catchup", "skipped": False})
+
+    assert notify.page_from_sections([section], NOW.date()) is None

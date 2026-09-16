@@ -18,6 +18,42 @@ import pyarrow as pa
 
 from clients import ledger
 
+_QUERY_EPILOG = """\
+The SQL goes to DuckDB unchanged. Two things bite every time:
+
+  strings    SQL string literals are single-quoted, so wrap the whole query in
+             double quotes:
+               ledger query "select * from runs where job = 'daily-update'"
+
+  aliases    DuckDB reserves more words than you expect. `first`, `last`, `end`,
+             `filter` and `order` are all parse errors as a bare column alias —
+             double-quote the alias or rename it:
+               select min(started) as "first"     -- or: as earliest
+
+An open run is one whose rows have no `ended`; group first, never filter:
+  select job, run_id from runs group by job, run_id having max(ended) is null
+"""
+
+#: Reserved words this repo has actually tripped over, lowercase.
+_RESERVED_HINTS = ("first", "last", "end", "filter", "order", "all", "table", "column")
+
+
+def _hint_for(message: str) -> str:
+    """One actionable line for the two mistakes this CLI collects."""
+    lowered = message.lower()
+    if "syntax error at or near" in lowered:
+        for word in _RESERVED_HINTS:
+            if f'near "{word}"' in lowered:
+                return (
+                    f"hint: `{word}` is a DuckDB reserved word. As a column alias it must be "
+                    f'double-quoted (as "{word}") or renamed.'
+                )
+        if 'near ":"' in lowered or 'near "@"' in lowered:
+            return "hint: SQL string literals take single quotes; wrap the whole query in double quotes."
+    if "referenced column" in lowered and "not found" in lowered:
+        return "hint: the candidate bindings printed above are the table's real columns."
+    return "hint: run `ledger query --help` for the quoting and reserved-word rules."
+
 
 def _coerce(table: str, row: dict) -> dict:
     """Turn JSON timestamp strings into the declared schema's types."""
@@ -38,7 +74,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     emit_parser = sub.add_parser("emit", help="Append rows to one ledger table")
     emit_parser.add_argument("--table", required=True, choices=sorted(ledger.LEDGER_TABLES))
     emit_parser.add_argument("--json", required=True, help="One row object, or a JSON array of rows")
-    query_parser = sub.add_parser("query", help="Run SQL; print one JSON object per line")
+    query_parser = sub.add_parser(
+        "query",
+        help="Run SQL; print one JSON object per line",
+        epilog=_QUERY_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     query_parser.add_argument("sql")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -54,7 +95,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(str(path))
         return 0
 
-    for row in ledger.query(args.sql):
+    try:
+        rows = ledger.query(args.sql)
+    except Exception as exc:
+        # Caught broadly on purpose: DuckDB's exception classes live behind the
+        # catalog's import boundary (tests/test_duckdb_containment.py), and an
+        # operator typo deserves one line, not a twenty-frame traceback.
+        print(f"ledger query failed: {exc}", file=sys.stderr)
+        print(_hint_for(str(exc)), file=sys.stderr)
+        return 2
+
+    for row in rows:
         print(json.dumps(row, default=str))
     return 0
 

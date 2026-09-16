@@ -66,6 +66,9 @@ class Section:
     lines: list[str] = field(default_factory=list)
     fix: str | None = None
     notification_key: str | None = None
+    #: The run this check is a statement about, when its rows name exactly one.
+    #: Lets a pager tell "the lane already reported this" from "nobody has".
+    run_id: str | None = None
 
 
 def _lane_values(lanes: tuple[str, ...]) -> str:
@@ -78,6 +81,7 @@ CHECKS: list[tuple[str, str]] = [
     (
         "Daily update ran",
         "select case verdict when 'FAILED' then 'BAD' when 'DEGRADED' then 'WARN' "
+        "when 'ABANDONED' then 'WARN' "
         "when 'OK' then 'OK' else 'UNKNOWN' end as verdict, run_id, started "
         "from runs where job = 'daily-update' and date(started) = date '$today' "
         "and ended is not null "
@@ -97,6 +101,7 @@ CHECKS: list[tuple[str, str]] = [
     (
         "Intraday catch-up ran",
         "select case verdict when 'FAILED' then 'BAD' when 'DEGRADED' then 'WARN' "
+        "when 'ABANDONED' then 'WARN' "
         "when 'OK' then 'OK' else 'UNKNOWN' end as verdict, run_id, started "
         "from runs where job = 'intraday-catchup' and date(started) = date '$today' "
         "and ended is not null order by started desc limit 1",
@@ -544,7 +549,14 @@ def run_check(name: str, sql: str, params: dict[str, str]) -> Section:
         lines,
         fix=fix if verdict is not Verdict.OK else None,
         notification_key=_notification_key(name, verdict, rows),
+        run_id=_single_run_id(rows),
     )
+
+
+def _single_run_id(rows: list[dict]) -> str | None:
+    """The one run these rows describe, or None when they describe several."""
+    ids = {str(row["run_id"]) for row in rows if row.get("run_id")}
+    return ids.pop() if len(ids) == 1 else None
 
 
 def _last_run_id(today: str, *, closed: bool, job: str = "daily-update") -> str:

@@ -757,7 +757,9 @@ def convert_dividend_currency(
         "exit_code": None,
         "verdict": None,
     }
-    ledger.emit("runs", [run_row], run_id=run_id)
+    abandoned = ledger.open_run(run_row)
+    if abandoned:
+        print(f"abandoned {len(abandoned)} open run(s) of dividend-fx: {', '.join(abandoned)}")
 
     applied: list[dict] = []
     skipped: list[dict] = []

@@ -115,7 +115,7 @@ def _response(status_code: int, payload: dict | None = None) -> httpx.Response:
 
 def test_a_502_is_retried_and_the_next_attempt_is_used(monkeypatch):
     """2026-09-14: one 502 on DGS5 failed the phase and skipped DGS10/DGS30."""
-    monkeypatch.setattr("clients.fred_client.time.sleep", lambda _s: None)
+    monkeypatch.setattr("clients.http_retry.time.sleep", lambda _s: None)
     http = _FakeHttp(
         [
             _response(502),
@@ -131,7 +131,7 @@ def test_a_502_is_retried_and_the_next_attempt_is_used(monkeypatch):
 
 
 def test_a_read_timeout_is_retried_and_gives_up_after_the_declared_attempts(monkeypatch):
-    monkeypatch.setattr("clients.fred_client.time.sleep", lambda _s: None)
+    monkeypatch.setattr("clients.http_retry.time.sleep", lambda _s: None)
     http = _FakeHttp([httpx.ReadTimeout("The read operation timed out")])
 
     client = FredClient(api_key="test-key", http_client=http)
@@ -143,7 +143,7 @@ def test_a_read_timeout_is_retried_and_gives_up_after_the_declared_attempts(monk
 
 def test_a_4xx_is_never_retried(monkeypatch):
     """A bad key or a retired series is a request problem; retrying only burns time."""
-    monkeypatch.setattr("clients.fred_client.time.sleep", lambda _s: None)
+    monkeypatch.setattr("clients.http_retry.time.sleep", lambda _s: None)
     http = _FakeHttp([_response(400)])
 
     client = FredClient(api_key="bad-key", http_client=http)
@@ -155,7 +155,7 @@ def test_a_4xx_is_never_retried(monkeypatch):
 
 def test_the_retry_backs_off_between_attempts(monkeypatch):
     slept: list[float] = []
-    monkeypatch.setattr("clients.fred_client.time.sleep", slept.append)
+    monkeypatch.setattr("clients.http_retry.time.sleep", slept.append)
     http = _FakeHttp([_response(503)])
 
     client = FredClient(api_key="test-key", http_client=http)
@@ -169,7 +169,7 @@ def test_the_retry_backs_off_between_attempts(monkeypatch):
 def test_an_attempts_override_below_one_still_makes_exactly_one_request(monkeypatch):
     """A typo'd override must not skip the request and raise `None` instead."""
     monkeypatch.setenv("LW_DECLARED_FRED_RETRY_ATTEMPTS", "0")
-    monkeypatch.setattr("clients.fred_client.time.sleep", lambda _s: None)
+    monkeypatch.setattr("clients.http_retry.time.sleep", lambda _s: None)
     http = _FakeHttp([_response(503)])
 
     client = FredClient(api_key="test-key", http_client=http)
@@ -181,7 +181,7 @@ def test_an_attempts_override_below_one_still_makes_exactly_one_request(monkeypa
 
 def test_a_malformed_payload_still_crashes_loudly_after_the_retry(monkeypatch):
     """A changed FRED schema is a bug, not a transient outage: it must not be retried."""
-    monkeypatch.setattr("clients.fred_client.time.sleep", lambda _s: None)
+    monkeypatch.setattr("clients.http_retry.time.sleep", lambda _s: None)
     http = _FakeHttp([_response(200, {"observations": [{"value": "4.95"}]})])
 
     client = FredClient(api_key="test-key", http_client=http)
@@ -196,7 +196,7 @@ def test_a_negative_backoff_override_still_raises_the_http_error_not_value_error
     run()'s per-series catch would not absorb, and DGS10/DGS30 would be skipped again."""
     monkeypatch.setenv("LW_DECLARED_FRED_RETRY_BACKOFF_S", "-2")
     slept: list[float] = []
-    monkeypatch.setattr("clients.fred_client.time.sleep", slept.append)
+    monkeypatch.setattr("clients.http_retry.time.sleep", slept.append)
     http = _FakeHttp([_response(503)])
     client = FredClient(api_key="test-key", http_client=http)
     with pytest.raises(httpx.HTTPStatusError):

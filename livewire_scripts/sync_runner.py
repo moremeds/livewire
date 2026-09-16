@@ -489,7 +489,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "exit_code": None,
         "verdict": None,
     }
-    _emit_ledger("runs", [run_row], run)
+    try:
+        abandoned = ledger.open_run(run_row)
+    except Exception as exc:  # pragma: no cover - observable, but non-fatal
+        logger.error("could not write runs ledger row: %s", exc)
+    else:
+        if abandoned:
+            logger.warning("abandoned %d open run(s) of intraday-catchup: %s", len(abandoned), ", ".join(abandoned))
     try:
         code = run_sync(config)
     except BaseException:
