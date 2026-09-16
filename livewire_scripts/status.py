@@ -5,10 +5,14 @@ from __future__ import annotations
 
 import argparse
 import enum
+import hashlib
 import json
+import os
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -21,7 +25,7 @@ if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from clients import constants, ledger
-from livewire_scripts.paths import data_lake_dir
+from livewire_scripts.paths import cursor_dir, data_lake_dir, resolve_capacity_target, warehouse_dir
 from livewire_scripts.paths import log_dir as default_log_dir
 
 _GIB = 1024**3
@@ -580,7 +584,7 @@ def _silver_publication_section(data_lake: Path) -> Section:
     """
     from clients.silver_revision import SilverRevisionPublisher
 
-    pointer = data_lake / "silver"
+    pointer = _configured_silver_path(data_lake)
     try:
         committed = SilverRevisionPublisher(pointer).read_current()
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -617,6 +621,53 @@ def _silver_publication_section(data_lake: Path) -> Section:
             notification_key="silver-publication:pointer-missing",
         )
 
+    # Verified attempt linkage: a decoded receipt that names THIS revision and
+    # whose immutable manifest hash/identity verifies against silver_path. A
+    # matching revision alone is insufficient — roots, hash and manifest
+    # payload must all agree.
+    lake_root = str(data_lake.expanduser().resolve())
+    silver_root = str(pointer.resolve())
+    receipts, receipts_malformed = _silver_receipts(lake_root, silver_root, pointer)
+    linked = next(
+        (
+            receipt
+            for receipt in reversed(receipts)
+            if receipt["result"] in ("committed", "noop")
+            and receipt.get("published_revision") == committed.revision
+            and receipt["manifest"] is not None
+        ),
+        None,
+    )
+    linkage = (
+        f"  Attempt linkage: verified — receipt run={linked['run_id']} names revision={committed.revision} "
+        "with a matching immutable manifest."
+        if linked is not None
+        else "  Attempt linkage: unknown; no verified publication receipt ties an attempt to the current reference."
+    )
+    # The newest DECODED receipt is reported on its own — a standalone
+    # rebuild-silver run produces one without any terminal lane_results row, and
+    # an undecodable newer row must not let an older decoded one pose as latest.
+    latest_receipt = receipts[-1] if receipts else None
+    receipt_line = (
+        "  Latest decoded rebuild receipt: "
+        + (
+            f"{latest_receipt['result']} ended={latest_receipt['ended']} "
+            f"selected={len(latest_receipt['selected_symbols'])} "
+            f"validated={len(latest_receipt['validated_symbols'])} "
+            f"failed={len(latest_receipt['failed_symbols'])} withheld={len(latest_receipt['withheld_symbols'])}"
+        )
+        if latest_receipt is not None
+        else "  Latest decoded rebuild receipt: none on record for these roots"
+    )
+    receipt_notes = (
+        [
+            f"  Receipt coverage: {receipts_malformed} rebuild-silver row(s) could not be decoded — "
+            "the latest decoded receipt may not be the actual latest."
+        ]
+        if receipts_malformed
+        else []
+    )
+
     rows = ledger.query(
         "select run_id, outcome, blocker, exit_code, started, ended from lane_results "
         "where lane = 'silver' and outcome is not null "
@@ -640,12 +691,14 @@ def _silver_publication_section(data_lake: Path) -> Section:
             "Silver publication",
             Verdict.UNKNOWN,
             [
-                f"Silver publication: committed revision={committed.revision}; no rebuild attempt is recorded.",
+                f"Silver publication: committed revision={committed.revision}; no terminal lane attempt is recorded.",
                 "  Impact: readers may select the committed snapshot, but its current freshness is unmeasured.",
                 f"  Evidence: {pointer / 'revisions/current.json'} matches immutable revision={committed.revision}.json.",
                 committed_line,
+                receipt_line,
                 "  Last valid: data snapshot unknown; a matching manifest reference does not establish artifact validity.",
                 "  Automatic handling: no later candidate is inferred from files on disk.",
+                linkage,
                 "  Next action: run the normal daily rebuild; do not adopt uncommitted artifacts.",
                 "  Clear condition: a terminal rebuild fact and committed manifest agree.",
             ],
@@ -659,6 +712,47 @@ def _silver_publication_section(data_lake: Path) -> Section:
         f"blocker={latest['blocker']} ended={latest['ended']}"
     )
     if outcome == "done":
+        lane_time = latest["ended"] or latest["started"]
+        receipt_time = (latest_receipt["ended"] or latest_receipt["started"]) if latest_receipt is not None else None
+        if receipt_time is not None and (lane_time is None or receipt_time > lane_time):
+            # A standalone rebuild-silver attempt is NEWER than the terminal
+            # lane row: the receipt's own result — not the lane's — describes
+            # the latest attempt. The receipt stays a receipt; nothing here
+            # pretends it is a lane row, and the committed manifest remains a
+            # separate fact.
+            if latest_receipt["result"] == "attempt_only" or (
+                latest_receipt["failed_symbols"] or latest_receipt["withheld_symbols"]
+            ):
+                degraded = latest_receipt["result"] == "attempt_only"
+                headline = (
+                    "the latest rebuild attempt's outcome is unknown (attempt-only receipt)"
+                    if degraded
+                    else "the latest rebuild receipt lists failed/withheld symbols after the last lane record"
+                )
+                return Section(
+                    "Silver publication",
+                    Verdict.UNKNOWN if degraded else Verdict.BAD,
+                    [
+                        f"Silver publication: committed revision={committed.revision}; {headline}.",
+                        f"  Impact: the newest attempt did not prove a clean rebuild; "
+                        f"revision={committed.revision} remains the served reference.",
+                        f"  Evidence: {attempt}; receipt run={latest_receipt['run_id']} "
+                        f"result={latest_receipt['result']} ended={latest_receipt['ended']}.",
+                        committed_line,
+                        receipt_line,
+                        *receipt_notes,
+                        "  Last valid: data snapshot unknown; a matching manifest reference does not establish artifact validity.",
+                        linkage,
+                        "  Next action: inspect the recorded failure, repair the named input through its normal publisher, then rerun rebuild-silver.",
+                        "  Clear condition: a later rebuild completes and commits a valid manifest; a retry alone is not evidence.",
+                    ],
+                    fix=_SILVER_FIX,
+                    notification_key=(
+                        "silver-publication:receipt-attempt-unknown"
+                        if degraded
+                        else "silver-publication:receipt-attempt-failed"
+                    ),
+                )
         recovery = []
         if incident:
             recovery.append(
@@ -666,18 +760,30 @@ def _silver_publication_section(data_lake: Path) -> Section:
                 f"{incident['attempts']} prior non-success attempt(s), first_seen={incident['first_seen']} "
                 f"last_seen={incident['last_seen']}."
             )
+        lines = [
+            f"Silver publication: committed revision={committed.revision}; latest terminal lane rebuild completed.",
+            f"  Evidence: {attempt}; pointer={pointer / 'revisions/current.json'}.",
+            committed_line,
+            receipt_line,
+            *receipt_notes,
+            "  Last valid: data snapshot unknown; artifact hashes were not checked by status.",
+            "  Reader state: this is a committed publication fact, not proof that a consumer has run on it.",
+            linkage,
+            *recovery,
+        ]
+        if receipts_malformed:
+            # UNKNOWN floor: an undecodable row may hide a newer failed attempt.
+            return Section(
+                "Silver publication",
+                Verdict.UNKNOWN,
+                lines,
+                fix=_SILVER_FIX,
+                notification_key="silver-publication:receipts-undecodable",
+            )
         return Section(
             "Silver publication",
             Verdict.OK,
-            [
-                f"Silver publication: committed revision={committed.revision}; latest rebuild completed.",
-                f"  Evidence: {attempt}; pointer={pointer / 'revisions/current.json'}.",
-                committed_line,
-                "  Last valid: data snapshot unknown; artifact hashes were not checked by status.",
-                "  Reader state: this is a committed publication fact, not proof that a consumer has run on it.",
-                "  Attempt linkage: unknown; no publication receipt ties this attempt to the current reference.",
-                *recovery,
-            ],
+            lines,
             notification_key="silver-publication:healthy",
         )
 
@@ -699,7 +805,7 @@ def _silver_publication_section(data_lake: Path) -> Section:
         "Silver publication",
         Verdict.BAD,
         [
-            f"Silver publication: committed revision={committed.revision}; latest rebuild attempt {outcome}.",
+            f"Silver publication: committed revision={committed.revision}; latest terminal lane attempt {outcome}.",
             f"  Impact: {impact} (revision={committed.revision}).",
             f"  Evidence: {attempt}; pointer={pointer / 'revisions/current.json'}.",
             "  Measured impact: "
@@ -707,6 +813,7 @@ def _silver_publication_section(data_lake: Path) -> Section:
                 ", ".join(f"{key}={value}" for key, value in sorted(impact_counts.items()))
                 or "unknown; no counts for this run"
             ),
+            receipt_line,
             (
                 "  Sustained incident: "
                 f"attempts={incident['attempts']} first_seen={incident['first_seen']} last_seen={incident['last_seen']}."
@@ -716,7 +823,7 @@ def _silver_publication_section(data_lake: Path) -> Section:
             committed_line,
             "  Last valid: data snapshot unknown; a matching manifest reference does not establish artifact validity.",
             "  Automatic handling: normal publication may commit a healthy subset; this status check changes nothing.",
-            "  Attempt linkage: unknown; no publication receipt ties this attempt to the current reference.",
+            linkage,
             "  Next action: inspect the recorded failure, repair the named input through its normal publisher, then rerun rebuild-silver.",
             "  Clear condition: a later rebuild completes and commits a valid manifest; a retry alone is not evidence.",
         ],
@@ -727,6 +834,510 @@ def _silver_publication_section(data_lake: Path) -> Section:
     )
 
 
+def _is_int(value) -> bool:
+    """Strict int — ``True`` is an int in Python and must not pass a version field."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _opt_str(value) -> bool:
+    return value is None or isinstance(value, str)
+
+
+def _opt_int(value) -> bool:
+    return value is None or _is_int(value)
+
+
+def _decode_silver_fault(payload_text) -> dict | None:
+    """Validate one evidence payload; None when it is not a usable v1 fault fact."""
+    try:
+        payload = json.loads(payload_text)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("kind") != "silver_symbol_failure":
+        return None
+    if not _is_int(payload.get("schema_version")) or payload["schema_version"] != 1:
+        return None
+    if payload.get("stage") not in ("staging", "withheld_window_regression"):
+        return None
+    if not isinstance(payload.get("symbol"), str):
+        return None
+    if not isinstance(payload.get("data_lake_root"), str) or not isinstance(payload.get("silver_root"), str):
+        return None
+    if not _is_int(payload.get("baseline_revision")):
+        return None
+    for key in ("error", "error_type", "reason"):
+        if not _opt_str(payload.get(key)):
+            return None
+    bounds = payload.get("input_date_bounds")
+    if bounds is not None:
+        if not isinstance(bounds, dict) or not (_opt_str(bounds.get("earliest")) and _opt_str(bounds.get("latest"))):
+            return None
+    source = payload.get("input")
+    if source is not None:
+        if not isinstance(source, dict) or not (_opt_str(source.get("path")) and _opt_str(source.get("sha256"))):
+            return None
+    artifacts = payload.get("baseline_artifacts")
+    if artifacts is not None and not (
+        isinstance(artifacts, list)
+        and all(
+            isinstance(item, dict) and _opt_str(item.get("path")) and _opt_str(item.get("sha256")) for item in artifacts
+        )
+    ):
+        return None
+    return payload
+
+
+def _decode_executions_receipt(row: dict, *, script: str, kind: str) -> dict | None:
+    """Validate one executions receipt; None when absent/malformed/old-version."""
+    if row.get("script") != script:
+        return None
+    try:
+        receipt = json.loads(row.get("receipt_json"))
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(receipt, dict) or receipt.get("kind") != kind:
+        return None
+    if not _is_int(receipt.get("schema_version")) or receipt["schema_version"] != 1:
+        return None
+    return receipt
+
+
+def _decode_silver_receipt(row: dict) -> dict | None:
+    receipt = _decode_executions_receipt(row, script="rebuild-silver", kind="silver_publication")
+    if receipt is None or receipt.get("result") not in ("committed", "noop", "attempt_only"):
+        return None
+    for key in ("selected_symbols", "staged_symbols", "validated_symbols", "failed_symbols", "withheld_symbols"):
+        value = receipt.get(key)
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            return None
+    if not isinstance(receipt.get("data_lake_root"), str) or not isinstance(receipt.get("silver_root"), str):
+        return None
+    for key in ("manifest_ref", "manifest_sha256", "generation_id", "attempt_reason", "error"):
+        if not _opt_str(receipt.get(key)):
+            return None
+    if not _opt_int(receipt.get("baseline_revision")) or not _opt_int(receipt.get("published_revision")):
+        return None
+    return receipt
+
+
+def _verified_manifest(receipt: dict, silver_path: Path) -> set[str] | None:
+    """Verify the immutable manifest a committed/noop receipt names.
+
+    Returns the manifest's affected-symbol set: a closer must then name the
+    symbol in BOTH the receipt's ``validated_symbols`` and the manifest it
+    claims. The filename is rebuilt from a positive int ``published_revision``
+    (never trusted verbatim), the resolved path must stay under ``silver_path``,
+    and the payload's schema/revision/generation must match the receipt — so an
+    arbitrary file with a lucky hash, a traversal, or a foreign manifest cannot
+    close a fault.
+    """
+    revision = receipt.get("published_revision")
+    if receipt.get("result") not in ("committed", "noop") or not _is_int(revision) or revision <= 0:
+        return None
+    ref = f"revisions/revision={revision}.json"
+    if receipt.get("manifest_ref") != ref or not isinstance(receipt.get("manifest_sha256"), str):
+        return None
+    try:
+        resolved = (silver_path / ref).resolve()
+        resolved.relative_to(silver_path.resolve())
+        body = resolved.read_bytes()
+    except (OSError, ValueError):
+        return None
+    if hashlib.sha256(body).hexdigest() != receipt["manifest_sha256"]:
+        return None
+    try:
+        manifest = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    if (
+        not isinstance(manifest, dict)
+        or not _is_int(manifest.get("schema_version"))
+        or manifest["schema_version"] != 1
+        or not _is_int(manifest.get("revision"))
+        or manifest["revision"] != revision
+    ):
+        return None
+    generation = receipt.get("generation_id")
+    if not (isinstance(generation, str) and generation and manifest.get("generation_id") == generation):
+        return None  # a receipt without a nonempty matching generation proves nothing
+    affected = manifest.get("affected")
+    if not isinstance(affected, list):
+        return None
+    return {item["symbol"] for item in affected if isinstance(item, dict) and isinstance(item.get("symbol"), str)}
+
+
+def _silver_receipts(lake_root: str, silver_root: str, silver_path: Path) -> tuple[list[dict], int]:
+    """Decoded rebuild-silver receipts for THESE roots, manifests verified once.
+
+    ``_verified_manifest`` runs once per unique (manifest_ref, sha, generation)
+    — a run of noop receipts all naming the same immutable file must not
+    re-read and re-hash a multi-MB manifest N times. ``cache`` is a plain local
+    dict for this projection call only — no persistent or query cache. The
+    affected-symbol set rides on each receipt under ``manifest`` (None when
+    unverifiable).
+    """
+    receipts: list[dict] = []
+    malformed = 0
+    cache: dict[tuple, set | None] = {}
+    for row in ledger.query(
+        "select run_id, script, started, ended, receipt_json "
+        # Completion order, not start order: overlapping invocations let an
+        # earlier-started attempt finish last, and that one is the latest fact.
+        # coalesce keeps a missing ended conservative (falls back to started).
+        "from executions where script = 'rebuild-silver' "
+        "order by coalesce(ended, started), started"
+    ):
+        receipt = _decode_silver_receipt(row)
+        if receipt is None:
+            malformed += 1
+            continue
+        if receipt["data_lake_root"] != lake_root or receipt["silver_root"] != silver_root:
+            continue  # another deployment's attempt; roots gate matching AND closure
+        # Every input _verified_manifest consumes — a contradictory revision or
+        # result must never inherit another receipt's verified set.
+        cache_key = (
+            receipt.get("result"),
+            receipt.get("published_revision"),
+            receipt.get("manifest_ref"),
+            receipt.get("manifest_sha256"),
+            receipt.get("generation_id"),
+        )
+        if cache_key not in cache:
+            cache[cache_key] = _verified_manifest(receipt, silver_path)
+        receipt["manifest"] = cache[cache_key]
+        receipt["run_id"] = row["run_id"]
+        receipt["started"] = row["started"]
+        receipt["ended"] = row["ended"]
+        receipts.append(receipt)
+    return receipts, malformed
+
+
+def _seen_key(value) -> datetime:
+    return value if value is not None else datetime.min.replace(tzinfo=UTC)
+
+
+def _observe_receipt_fault(issues: dict, symbol: str, stage: str, receipt: dict) -> None:
+    """Fold a receipt's failed/withheld scope into the projection.
+
+    Every failed/withheld receipt is its own observation — inherited run ids
+    cannot tell invocations apart, so nothing dedupes by run. The observation
+    lands on the most recent same-symbol+stage issue (detail-bearing evidence
+    or a prior receipt-only entry), advancing ``receipt_failures`` and
+    ``last_seen`` at the receipt's ``ended`` — which is also what lets a
+    post-recovery failure sharing an old run id reopen the issue.
+    """
+    observed = receipt["ended"] or receipt["started"]
+    issue = None
+    for candidate in issues.values():
+        if candidate["symbol"] == symbol and candidate["stage"] == stage:
+            if issue is None or _seen_key(candidate["last_seen"]) > _seen_key(issue["last_seen"]):
+                issue = candidate
+    if issue is None:
+        issue = issues[symbol, stage, "receipt_scope", "UNKNOWN"] = {
+            "symbol": symbol,
+            "stage": stage,
+            "classification": "receipt_scope",
+            "scope": "UNKNOWN",
+            "evidence_facts": 0,
+            "receipt_failures": 0,
+            "last_seen": None,
+            "evidence_refs": [],
+            "baseline_revision": receipt.get("baseline_revision"),
+            "baseline_artifacts": None,
+            "detail": "",
+            "input": None,
+            "bounds": None,
+            "run": None,
+        }
+    issue["receipt_failures"] += 1
+    issue["run"] = receipt["run_id"]
+    issue["detail"] = issue["detail"] or f"listed in {receipt['result']} receipt {receipt['run_id']}"
+    if observed is not None:
+        issue["last_seen"] = observed if issue["last_seen"] is None else max(issue["last_seen"], observed)
+
+
+def _configured_silver_path(data_lake: Path) -> Path:
+    """The silver root the publisher resolves for this lake — MDW_SILVER_DIR wins."""
+    return Path(os.environ.get("MDW_SILVER_DIR", data_lake / "silver")).expanduser()
+
+
+_SILVER_FAULTS_LIMIT = 8
+_SILVER_FAULTS_QUERY = (
+    'python scripts/livewire_ops.py ledger query "select subject, payload_json, fetched_at, run_id '
+    "from evidence where kind = 'silver_symbol_failure' order by fetched_at\""
+)
+
+
+def _silver_faults_section(data_lake: Path) -> Section:
+    """Project per-symbol Silver faults from evidence rows and publication receipts.
+
+    Committed manifest, latest attempt and consumer observation stay distinct —
+    this section claims the first two only. A fault closes only when a later
+    ``committed``/``noop`` receipt on the SAME resolved lake+silver roots lists
+    the symbol in ``validated_symbols`` AND in the verified manifest it names —
+    never on a bare exit 0, a ``--tickers`` run over other symbols, an
+    ``attempt_only`` row, or an unscoped ``silver_failed=0``. The closer must
+    start at/after the fault's latest observation (``ended`` for receipt-only
+    facts), so a delayed older success cannot erase a later failure. Malformed
+    or wrong-version rows are counted, never erased and never fatal; input date
+    bounds are context — the exact failing session was never recorded.
+    """
+    lake_root = str(data_lake.expanduser().resolve())
+    silver_path = _configured_silver_path(data_lake)
+    silver_root = str(silver_path.resolve())
+
+    rows = ledger.query(
+        "select evidence_hash, subject, payload_json, fetched_at, run_id "
+        "from evidence where kind = 'silver_symbol_failure' order by fetched_at"
+    )
+    facts: list[tuple[dict, dict]] = []
+    malformed = foreign = 0
+    for row in rows:
+        payload = _decode_silver_fault(row["payload_json"])
+        if payload is None:
+            malformed += 1
+            continue
+        if payload["data_lake_root"] != lake_root or payload["silver_root"] != silver_root:
+            foreign += 1
+            continue
+        facts.append((row, payload))
+
+    receipts, receipts_malformed = _silver_receipts(lake_root, silver_root, silver_path)
+
+    # Group recurring facts: symbol + stage + classification + KNOWN scope is
+    # one issue. Input bounds stay context-only — they widen daily and would
+    # relabel the same fault as new; failing sessions were never recorded.
+    issues: dict[tuple, dict] = {}
+    for row, payload in facts:
+        if payload["stage"] == "staging":
+            classification = payload.get("error_type") or "unknown"
+            scope = "UNKNOWN"
+        else:
+            classification = f"window_regression:{payload.get('reason') or 'unknown'}"
+            scope = (
+                f"{payload['previous_start']}->{payload['new_start']}"
+                if isinstance(payload.get("previous_start"), str) and isinstance(payload.get("new_start"), str)
+                else "UNKNOWN"
+            )
+        key = (payload["symbol"], payload["stage"], classification, scope)
+        issue = issues.setdefault(
+            key,
+            {
+                "symbol": payload["symbol"],
+                "stage": payload["stage"],
+                "classification": classification,
+                "scope": scope,
+                "evidence_facts": 0,
+                "receipt_failures": 0,
+                "last_seen": None,
+                "evidence_refs": [],
+                "baseline_revision": payload["baseline_revision"],
+                "baseline_artifacts": payload.get("baseline_artifacts"),
+                "detail": "",
+                "input": None,
+                "bounds": None,
+                "run": None,
+            },
+        )
+        issue["evidence_facts"] += 1
+        seen = row["fetched_at"]
+        if seen is not None:
+            issue["last_seen"] = seen if issue["last_seen"] is None else max(issue["last_seen"], seen)
+        if isinstance(row["evidence_hash"], str):
+            issue["evidence_refs"].append(row["evidence_hash"])
+        issue["run"] = row["run_id"]
+        issue["detail"] = payload.get("error") or payload.get("reason") or issue["detail"]
+        issue["input"] = payload.get("input") or issue["input"]
+        issue["bounds"] = payload.get("input_date_bounds") or issue["bounds"]
+
+    # A receipt's own failed/withheld scope is a fault fact even when its
+    # evidence row never landed (the guarded emit may have failed).
+    for receipt in receipts:
+        for symbol in receipt["failed_symbols"]:
+            _observe_receipt_fault(issues, symbol, "staging", receipt)
+        for symbol in receipt["withheld_symbols"]:
+            _observe_receipt_fault(issues, symbol, "withheld_window_regression", receipt)
+
+    open_issues: list[dict] = []
+    closed = 0
+    for issue in issues.values():
+        symbol = issue["symbol"]
+        closer = None
+        for receipt in receipts:
+            if receipt["result"] not in ("committed", "noop"):
+                continue
+            if (
+                symbol not in receipt["validated_symbols"]
+                or symbol in receipt["failed_symbols"]
+                or symbol in receipt["withheld_symbols"]
+            ):
+                continue  # not validated, or a contradictory scope — never a closer
+            if receipt["manifest"] is None or symbol not in receipt["manifest"]:
+                continue  # unverified manifest, or it does not carry the symbol
+            if receipt["started"] is None or issue["last_seen"] is None:
+                continue
+            if receipt["started"] < issue["last_seen"]:
+                continue  # a delayed older success cannot erase a later-seen failure
+            closer = receipt
+            break
+        if closer is None:
+            open_issues.append(issue)
+        else:
+            closed += 1
+
+    # Legacy unscoped counters stay visible as UNKNOWN forever: the counter has
+    # no symbol scope and no later run — full or targeted — can establish which
+    # symbols it meant. Nothing here ever clears one; a same-run id match would
+    # only pretend to (run ids are inherited, not invocation-unique).
+    legacy_positives = ledger.query(
+        "select name, value, measured_at from measurements "
+        "where name in ('silver_failed', 'silver_window_regressions') and value > 0 "
+        "qualify row_number() over (partition by name order by measured_at desc) = 1"
+    )
+    uncleared_legacy = []
+    for row in legacy_positives:
+        try:
+            count = int(row["value"])
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            uncleared_legacy.append(row)
+
+    proven = any(receipt["result"] in ("committed", "noop") and receipt["manifest"] is not None for receipt in receipts)
+    if open_issues:
+        verdict = Verdict.WARN
+    elif uncleared_legacy or malformed or receipts_malformed or not proven:
+        # UNKNOWN, not proof healthy: an unscoped positive can never be proven
+        # cleared, undecodable rows can hide a fault, and without one VERIFIED
+        # committed/noop receipt nothing shows a symbol ever got healthy —
+        # attempt_only rows and unverifiable manifests prove nothing.
+        verdict = Verdict.UNKNOWN
+    else:
+        verdict = Verdict.OK
+
+    receipt_failures = sum(issue["receipt_failures"] for issue in issues.values())
+    counts = (
+        f"{len(open_issues)} unresolved, {closed} resolved by verified receipt, "
+        f"{len(facts)} evidence facts, {receipt_failures} receipt-listed failures"
+    )
+    if foreign:
+        counts += f", {foreign} for other roots"
+    if malformed or receipts_malformed:
+        counts += f", {malformed + receipts_malformed} undecodable"
+    lines = [f"Silver symbol faults: {counts}"]
+    if not issues and not receipts:
+        lines.append("  no symbol-level fault evidence or rebuild receipts on record for these roots")
+    for row in sorted(uncleared_legacy, key=lambda item: item["name"]):
+        lines.append(
+            f"  legacy unscoped {row['name']}={int(row['value'])} last positive {row['measured_at']} —"
+            " symbol scope unknown; never auto-cleared by a later run"
+        )
+    for issue in sorted(open_issues, key=lambda i: (i["symbol"], i["stage"], i["classification"]))[
+        :_SILVER_FAULTS_LIMIT
+    ]:
+        lines.append(
+            f"  {issue['symbol']} {issue['stage']} {issue['classification']} scope={issue['scope']}"
+            f" facts={issue['evidence_facts']} receipt_failures={issue['receipt_failures']}"
+            f" last_seen={issue['last_seen']}"
+        )
+        context = []
+        bounds = issue["bounds"]
+        if isinstance(bounds, dict) and bounds.get("earliest") and bounds.get("latest"):
+            context.append(f"input_bounds={bounds['earliest']}..{bounds['latest']} (context, not failing sessions)")
+        source = issue["input"]
+        if isinstance(source, dict) and isinstance(source.get("path"), str):
+            sha = source.get("sha256")
+            context.append(f"input={source['path']}" + (f"@{sha[:12]}" if isinstance(sha, str) else ""))
+        if issue["evidence_refs"]:
+            extra = f"+{len(issue['evidence_refs']) - 1}" if len(issue["evidence_refs"]) > 1 else ""
+            context.append(f"evidence={issue['evidence_refs'][-1][:12]}{extra}")
+        if issue["run"]:
+            context.append(f"run={issue['run']}")
+        if context:
+            lines.append("    " + " ".join(context))
+        if issue["detail"]:
+            lines.append(f"    detail: {issue['detail'][:200]}")
+        artifacts = issue["baseline_artifacts"]
+        if isinstance(artifacts, list) and artifacts:
+            refs = ", ".join(
+                f"{item['path']}@{str(item.get('sha256'))[:8]}"
+                for item in artifacts[:3]
+                if isinstance(item, dict) and isinstance(item.get("path"), str)
+            )
+            lines.append(
+                f"    baseline rev={issue['baseline_revision']} artifacts=[{refs}] (references, not proof bytes exist)"
+            )
+        elif _is_int(issue["baseline_revision"]):
+            lines.append(f"    baseline rev={issue['baseline_revision']} (artifact references unavailable)")
+        else:
+            lines.append("    last-valid baseline: UNKNOWN")
+        if issue["stage"] == "withheld_window_regression":
+            action = (
+                "review the withheld regression against the baseline above; repair the input and rerun — "
+                "--allow-window-regression adopts the shortening and needs separate evidence/authorization"
+            )
+        else:
+            action = (
+                "repair the staged input, then python scripts/livewire_store.py rebuild-silver "
+                f"--tickers {shlex.quote(issue['symbol'])}"
+            )
+        lines.append(f"    next: {action}")
+        lines.append(
+            "    closes: a rebuild-silver receipt on these roots lists "
+            f"{issue['symbol']} in validated_symbols and its verified manifest"
+        )
+    if len(open_issues) > _SILVER_FAULTS_LIMIT:
+        lines.append(f"  …and {len(open_issues) - _SILVER_FAULTS_LIMIT} more — full detail: {_SILVER_FAULTS_QUERY}")
+
+    # The page key carries issue identity only — timestamps, run ids and
+    # malformed counts change daily and would re-page an unchanged fault.
+    if open_issues or uncleared_legacy:
+        key = "silver-symbol-faults:" + "|".join(
+            sorted(f"{i['symbol']}|{i['stage']}|{i['classification']}|{i['scope']}" for i in open_issues)
+        )
+        key += "".join(
+            f"|legacy:{row['name']}={int(row['value'])}" for row in sorted(uncleared_legacy, key=lambda r: r["name"])
+        )
+    else:
+        key = "silver-symbol-faults:" + ("uncertain" if verdict is Verdict.UNKNOWN else "none")
+    return Section("Silver symbol faults", verdict, lines, fix=_SILVER_FIX, notification_key=key)
+
+
+def _filesystem_id(path: Path) -> int:
+    """st_dev of the filesystem holding an existing, already-resolved path."""
+    return path.stat().st_dev
+
+
+def _disk_targets(data_lake: Path, warehouse: Path | None) -> list[tuple[str, Path]]:
+    """Every configured write destination, one entry per logical target.
+
+    Resolved against the env the same way the writers do — MDW_SILVER_DIR,
+    log/cursor dirs, LW_LEDGER_ROOT, the local catalog path and the temp dir
+    are all independent destinations, not children of whatever the caller's
+    log_dir.parent happens to be. Nothing here may create a path.
+    """
+    from clients.duckdb_catalog import default_database
+
+    targets = [
+        ("lake", data_lake),
+        ("bronze", data_lake / "bronze"),
+        ("lake-catalog", data_lake / "catalog"),
+        ("silver", _configured_silver_path(data_lake)),
+        ("logs", default_log_dir()),
+        ("cursors", cursor_dir()),
+        ("ledger", ledger.ledger_root()),
+        ("local-catalog", default_database().parent),
+        ("staging-tmp", Path(tempfile.gettempdir())),
+    ]
+    if warehouse is not None:
+        # Internal disk: releases and anything the env resolvers did not cover.
+        targets.append(("warehouse", warehouse))
+        # The flat-file writers root at <warehouse>/data-lake regardless of the
+        # configured lake, and raw/massive may itself be a child symlink.
+        targets.append(("raw-massive", warehouse / "data-lake" / "raw" / "massive"))
+    return targets
+
+
 def _disk_section(data_lake: Path, warehouse: Path | None = None) -> Section:
     """Report every distinct volume the warehouse depends on.
 
@@ -735,39 +1346,49 @@ def _disk_section(data_lake: Path, warehouse: Path | None = None) -> Section:
     logs, cursors and the venv sat below its own reserve, unreported. One
     symlink silently swapped the monitored object.
 
-    Deduplicated on the usage triple, not on st_dev: when both paths live on
-    one filesystem — any deployment without the external drive — disk_usage
-    returns identical numbers and this prints a single line. Read field by
-    field rather than `tuple(usage)` so any object exposing total/used/free
-    works, which is what the existing tripwire test patches in.
-
-    # ponytail: two genuinely distinct volumes with byte-identical
-    # total/used/free would collapse to one line. Cosmetic, astronomically
-    # unlikely, and it keeps the dedup to data this function already has.
+    Every real destination is resolved first — a lake child like `raw/massive`
+    or `silver` may itself be a symlink onto a third volume — and targets are
+    deduplicated on st_dev, the physical filesystem, not the usage triple: two
+    targets on one disk collapse to one line; the same numbers on two disks do
+    not. A missing destination (or a dangling configured link) is UNKNOWN, not
+    its ancestor's free space — the parent may live on the wrong disk. Read
+    field by field rather than `tuple(usage)` so any object exposing
+    total/used/free works, which is what the existing tripwire test patches in.
     """
-    paths = [("lake", data_lake)]
-    if warehouse is not None:
-        paths.append(("warehouse", warehouse))
+    try:
+        targets = _disk_targets(data_lake, warehouse)
+    except Exception as exc:  # a resolver must never kill the section
+        return Section("Disk", Verdict.UNKNOWN, [f"Disk: could not resolve destinations — {exc}"], fix="df -h")
 
-    volumes: list[tuple[str, tuple[int, int, int]]] = []
-    seen: set[tuple[int, int, int]] = set()
-    for label, path in paths:
+    volumes: dict[int, dict] = {}
+    unknown: list[str] = []
+    for label, path in targets:
         try:
-            usage = shutil.disk_usage(path)
+            # Resolution itself can raise OSError on a hostile filesystem — it
+            # belongs inside the guard with the two calls that follow.
+            resolved = resolve_capacity_target(path, allow_missing=False)
+            if resolved is None:
+                unknown.append(label)
+                continue
+            usage = shutil.disk_usage(resolved)
+            fs = _filesystem_id(resolved)
         except OSError:
+            # A volume that vanished or rejected resolution is UNKNOWN for that
+            # target only — other destinations still report their own.
+            unknown.append(label)
             continue
         # A filesystem reporting total=0 tells us nothing, and dividing by it
         # would raise out of _disk_section — killing the WHOLE digest, which
         # this module's docstring promises never happens on a missing input.
         if not usage.total:
+            unknown.append(label)
             continue
-        key = (usage.total, usage.used, usage.free)
-        if key in seen:
-            continue
-        seen.add(key)
-        volumes.append((label, key))
+        if fs in volumes:
+            volumes[fs]["labels"].append(label)
+        else:
+            volumes[fs] = {"labels": [label], "usage": usage}
 
-    if not volumes:
+    if not volumes and not unknown:
         return Section("Disk", Verdict.UNKNOWN, ["Disk: (unavailable)"], fix="df -h")
 
     # Label only once there is something to distinguish. A single-filesystem
@@ -778,22 +1399,30 @@ def _disk_section(data_lake: Path, warehouse: Path | None = None) -> Section:
     # life of the process, so an operator's one-run LW_DECLARED_ override (and
     # any test that sets it after importing this module) is silently ignored.
     min_free_gb = constants.declared("flatfile_min_free_gb")
-    for label, (total, used, free) in volumes:
+    for entry in sorted(volumes.values(), key=lambda item: item["usage"].free):
+        total, used, free = entry["usage"].total, entry["usage"].used, entry["usage"].free
         free_gib = free / _GIB
         tightest = free_gib if tightest is None else min(tightest, free_gib)
-        suffix = "" if len(volumes) == 1 else f" [{label}]"
+        suffix = "" if len(volumes) == 1 and not unknown else f" [{'+'.join(entry['labels'])}]"
         line = f"Disk{suffix}: {free_gib:.1f} GiB free ({100.0 * used / total:.0f}% used)"
         if free_gib < 2 * min_free_gb:
             line += f"  ⚠ raw retention deferred — free space under {2 * min_free_gb:.0f} GiB"
         lines.append(line)
+    for label in unknown:
+        lines.append(f"Disk [{label}]: UNKNOWN — destination missing or dangling; not its parent's free space")
     # The existing numbers, newly graded. Today the digest prints a ⚠ below 2×
     # the reserve and says nothing at all below 1× — the more serious state was
-    # the quieter one.
+    # the quieter one. An unmeasurable destination can never green the check.
     if tightest is not None and tightest < min_free_gb:
-        return Section("Disk", Verdict.BAD, lines, fix="python scripts/livewire_ops.py housekeeping")
-    if tightest is not None and tightest < 2 * min_free_gb:
-        return Section("Disk", Verdict.WARN, lines, fix="python scripts/livewire_ops.py housekeeping")
-    return Section("Disk", Verdict.OK, lines)
+        verdict, fix = Verdict.BAD, "python scripts/livewire_ops.py housekeeping"
+    elif tightest is not None and tightest < 2 * min_free_gb:
+        verdict, fix = Verdict.WARN, "python scripts/livewire_ops.py housekeeping"
+    else:
+        verdict, fix = Verdict.OK, None
+    if unknown:
+        verdict = max(verdict, Verdict.UNKNOWN)
+        fix = fix or "df -h   # then check the named destination's mount or symlink"
+    return Section("Disk", verdict, lines, fix=fix)
 
 
 #: Every plist under launchd/. A job that is absent cannot run and cannot
@@ -875,6 +1504,66 @@ def _coverage_headline(database: Path | None):
     return coverage_headline(database)
 
 
+def _latest_catalog_receipt(lake_root: str, database: Path | None) -> dict | None:
+    """The newest duckdb-build receipt, only when it verifiably describes THIS catalog.
+
+    The newest executions row is the latest — scanning past an undecodable or
+    foreign row would present an older success as the latest state. A receipt
+    attaches to this section only when its resolved ``data_lake_root`` equals
+    this lake AND its local/lake destinations equal this deployment's actual
+    configured paths; a receipt from another warehouse cannot describe this
+    database. Both ``committed`` and ``copy_failed`` mean the local file
+    committed — the receipt carries no ``local.result``.
+    """
+    from clients.duckdb_catalog import default_database, lake_snapshot_path
+
+    rows = ledger.query(
+        # Completion order: an earlier-started build that finishes last is the
+        # latest fact, and a missing ended falls back to started, never zero.
+        "select script, receipt_json from executions where script = 'duckdb-build' "
+        "order by coalesce(ended, started) desc, started desc limit 1"
+    )
+    if not rows:
+        return None
+    receipt = _decode_executions_receipt(rows[0], script="duckdb-build", kind="catalog_publication")
+    if receipt is None or receipt.get("result") not in ("committed", "copy_failed"):
+        return None
+    if not isinstance(receipt.get("data_lake_root"), str) or receipt["data_lake_root"] != lake_root:
+        return None
+    local, lake = receipt.get("local"), receipt.get("lake")
+    if not isinstance(local, dict) or not isinstance(lake, dict):
+        return None
+    if not isinstance(local.get("path"), str) or not isinstance(lake.get("path"), str):
+        return None
+    if not (_opt_str(local.get("sha256")) and _opt_str(lake.get("expected_sha256"))):
+        return None
+    if not (_opt_str(lake.get("result")) and _opt_str(lake.get("error"))):
+        return None
+    if local["path"] != str((database or default_database()).expanduser().resolve()):
+        return None
+    if lake["path"] != str(lake_snapshot_path(Path(lake_root)).expanduser().resolve()):
+        return None
+    return receipt
+
+
+def _catalog_receipt_summary(receipt: dict | None) -> str:
+    """One line of local-vs-lake outcome — never a claim Apex consumed the target."""
+    if receipt is None:
+        return "none describing this catalog — publication linkage UNKNOWN"
+    local, lake = receipt["local"], receipt["lake"]
+    sha = local.get("sha256")
+    expected = lake.get("expected_sha256")
+    line = (
+        f"{receipt['result']}: local committed {local['path']}"
+        + (f" sha={sha[:12]}" if isinstance(sha, str) else "")
+        + f"; lake copy {lake.get('result', 'unknown')} → {lake['path']}"
+        + (f" expected_sha={expected[:12]}" if isinstance(expected, str) else "")
+    )
+    if lake.get("error"):
+        line += f" ({lake['error']})"
+    return line + " — records the local commit and copy outcome, not Apex consumption"
+
+
 #: Deliberately the same NUMBER as _COVERAGE_STALE_DAYS and deliberately a
 #: separate constant: that one counts calendar days, this one counts trading
 #: sessions. Sharing the name would make a future edit to one silently change
@@ -915,13 +1604,16 @@ def _sessions_behind(newest: date, target: date, limit: int = 10) -> int:
     return count
 
 
-def _duckdb_section(target: date, database: Path | None = None) -> Section:
+def _duckdb_section(target: date, database: Path | None = None, data_lake: Path | None = None) -> Section:
     """Grade the DuckDB coverage table's own staleness.
 
     The table is refreshed by the last phase of `daily-backfill`. When that
     orchestrator stopped running, the table quietly froze — on 2026-08-10 it
     still read 2026-08-07 — and nothing anywhere said so. Catalog staleness is
-    a symptom of an upstream lane, which is exactly why it belongs here.
+    a symptom of an upstream lane, which is exactly why it belongs here. The
+    publication receipt line is separate from freshness: it reports the local
+    commit and lake copy outcome of the latest build, never whether Apex read
+    the current target.
     """
     try:
         headline = _coverage_headline(database)
@@ -943,6 +1635,13 @@ def _duckdb_section(target: date, database: Path | None = None) -> Section:
     # which already degrades an unexpected crash to UNKNOWN. The two caught
     # above are caught because each has a SPECIFIC, actionable message.
 
+    lake_root = str((data_lake or data_lake_dir()).expanduser().resolve())
+    receipt = _latest_catalog_receipt(lake_root, database)
+    receipt_line = f"  latest build receipt: {_catalog_receipt_summary(receipt)}"
+    # A copy_failed receipt is a failed publication of THIS catalog — freshness
+    # of the local table cannot green a copy that never reached the lake.
+    copy_failed = receipt is not None and receipt["result"] == "copy_failed"
+
     missing = sorted(name for name in _CATALOG_LANE_FIX if name not in headline)
     empty = sorted(name for name, (count, last) in headline.items() if count <= 0 or last is None)
     if headline and (missing or empty):
@@ -953,6 +1652,7 @@ def _duckdb_section(target: date, database: Path | None = None) -> Section:
                 "DuckDB catalog: incomplete",
                 f"  missing views: {', '.join(missing) or 'none'}",
                 f"  empty or undated views: {', '.join(empty) or 'none'}",
+                receipt_line,
             ],
             fix="python scripts/livewire_store.py duckdb build   # repair any reported source error before retrying",
         )
@@ -978,6 +1678,7 @@ def _duckdb_section(target: date, database: Path | None = None) -> Section:
     ]
     for view_name, (count, last) in sorted(headline.items()):
         lines.append(f"  {view_name:<24} {count:>7,} symbols  last={last}")
+    lines.append(receipt_line)
     # The fix must name the lane that OWNS the laggard, not the catalog. This
     # docstring already says catalog staleness is a symptom of an upstream lane,
     # and then every branch prescribed `duckdb build` — which on 2026-08-16
@@ -987,6 +1688,13 @@ def _duckdb_section(target: date, database: Path | None = None) -> Section:
     # lies. `duckdb build` stays the fallback: when the owner is unknown, a
     # stale table really is the only thing we can name.
     fix = _CATALOG_LANE_FIX.get(laggard, "python scripts/livewire_store.py duckdb build")
+    if copy_failed:
+        return Section(
+            "DuckDB catalog",
+            Verdict.BAD,
+            lines,
+            fix="python scripts/livewire_store.py duckdb build   # local commit already landed; rerun retries the lake copy",
+        )
     if behind > _CATALOG_STALE_SESSIONS:
         return Section("DuckDB catalog", Verdict.BAD, lines, fix=fix)
     if behind > 1:
@@ -1047,8 +1755,11 @@ def collect(
         _safe("launchd jobs", lambda: _launchd_section(runner=runner)),
         *[_safe(name, lambda n=name, sql=sql: run_check(n, sql, params)) for name, sql in CHECKS],
         _safe("Silver publication", lambda: _silver_publication_section(data_lake)),
-        _safe("DuckDB catalog", lambda: _duckdb_section(run_date, database)),
-        _safe("Disk", lambda: _disk_section(data_lake, log_dir.parent)),
+        _safe("Silver symbol faults", lambda: _silver_faults_section(data_lake)),
+        _safe("DuckDB catalog", lambda: _duckdb_section(run_date, database, data_lake)),
+        # The internal volume is the resolved warehouse root — not
+        # log_dir.parent, which points wherever an overridden log dir lives.
+        _safe("Disk", lambda: _disk_section(data_lake, warehouse_dir())),
     ]
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import hashlib
 import importlib
 import json
 import os
@@ -38,6 +39,16 @@ EPOCH = date(1970, 1, 1)
 def root(tmp_path, monkeypatch):
     monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
     monkeypatch.setenv("MDW_DUCKDB_PATH", str(tmp_path / "analytics.duckdb"))
+    # The Disk check resolves every configured destination through env, so the
+    # resolvers must land under tmp_path — otherwise tests read the operator's
+    # real warehouse paths. Only the roots are created; children stay absent so
+    # tests decide which destinations exist.
+    monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
+    monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+    monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv("MDW_CURSOR_DIR", str(tmp_path / "cursors"))
+    for name in ("ledger", "warehouse", "lake", "logs", "cursors"):
+        (tmp_path / name).mkdir(exist_ok=True)
     return tmp_path / "ledger"
 
 
@@ -222,7 +233,11 @@ def test_silver_publication_keeps_the_committed_revision_separate_from_a_failed_
     body = "\n".join(section.lines)
     for field in ("Impact:", "Evidence:", "Last valid:", "Automatic handling:", "Next action:", "Clear condition:"):
         assert field in body
-    assert "revision=7" in body and "latest rebuild attempt failed" in body and "Sustained incident: attempts=1" in body
+    assert (
+        "revision=7" in body
+        and "latest terminal lane attempt failed" in body
+        and "Sustained incident: attempts=1" in body
+    )
     assert "RJF/1d validation" in section.notification_key
     assert "healthy subset may have advanced current.json" in body
     assert "failed attempt did not replace" not in body
@@ -727,21 +742,43 @@ _GIB = 1024**3
 class TestTheDiskCheckWatchesBothVolumes:
     @staticmethod
     def _dirs(tmp_path):
+        """A lake+warehouse layout where every configured destination exists."""
         lake = tmp_path / "lake"
         warehouse = tmp_path / "warehouse"
-        lake.mkdir()
-        warehouse.mkdir()
+        for path in (
+            lake,
+            lake / "bronze",
+            lake / "catalog",
+            lake / "silver",
+            warehouse,
+            warehouse / "data-lake" / "raw" / "massive",
+        ):
+            path.mkdir(parents=True, exist_ok=True)
         return lake, warehouse
 
-    def test_a_full_warehouse_volume_warns_even_when_the_lake_is_empty(self, tmp_path, monkeypatch):
-        lake, warehouse = self._dirs(tmp_path)
+    @staticmethod
+    def _fake_two_volumes(monkeypatch, lake, warehouse):
+        """Two physical filesystems: the lake tree vs everything internal.
+
+        Dedup runs on st_dev, not the usage triple — the fake devices must
+        differ or the two volumes collapse onto one line and the test proves
+        nothing.
+        """
+
+        def fake_fs_id(path):
+            return 1 if Path(path).is_relative_to(lake) else 2
 
         def fake_usage(path):
-            if Path(path) == lake:
+            if fake_fs_id(Path(path)) == 1:
                 return _Usage(13_000 * _GIB, 6_400 * _GIB, 6_600 * _GIB)
             return _Usage(228 * _GIB, 214 * _GIB, 14 * _GIB)
 
+        monkeypatch.setattr(status, "_filesystem_id", fake_fs_id)
         monkeypatch.setattr(status.shutil, "disk_usage", fake_usage)
+
+    def test_a_full_warehouse_volume_warns_even_when_the_lake_is_empty(self, tmp_path, monkeypatch):
+        lake, warehouse = self._dirs(tmp_path)
+        self._fake_two_volumes(monkeypatch, lake, warehouse)
         section = _disk_section(lake, warehouse)
         text = "\n".join(section.lines)
         assert "6600.0 GiB" in text and "14.0 GiB" in text and "⚠" in text
@@ -759,10 +796,27 @@ class TestTheDiskCheckWatchesBothVolumes:
         assert section.verdict is Verdict.OK
 
     def test_one_volume_reports_once_when_both_paths_share_it(self, tmp_path, monkeypatch):
+        # One root, everything configured under it: many logical targets, one disk.
         shared = tmp_path / "everything"
-        shared.mkdir()
+        lake = shared / "lake"
+        warehouse = shared / "warehouse"
+        for path in (
+            lake,
+            lake / "bronze",
+            lake / "catalog",
+            lake / "silver",
+            warehouse / "data-lake" / "raw" / "massive",
+            shared / "logs",
+            shared / "cursors",
+            shared / "ledger",
+        ):
+            path.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("MDW_LOG_DIR", str(shared / "logs"))
+        monkeypatch.setenv("MDW_CURSOR_DIR", str(shared / "cursors"))
+        monkeypatch.setenv("LW_LEDGER_ROOT", str(shared / "ledger"))
+        monkeypatch.setenv("MDW_DUCKDB_PATH", str(shared / "analytics.duckdb"))
         monkeypatch.setattr(status.shutil, "disk_usage", lambda path: _Usage(228 * _GIB, 100 * _GIB, 128 * _GIB))
-        assert len([line for line in _disk_section(shared, shared).lines if line.startswith("Disk")]) == 1
+        assert len([line for line in _disk_section(lake, warehouse).lines if line.startswith("Disk")]) == 1
 
     def test_an_unreadable_path_is_skipped_not_fatal(self, tmp_path, monkeypatch):
         lake, warehouse = self._dirs(tmp_path)
@@ -774,8 +828,53 @@ class TestTheDiskCheckWatchesBothVolumes:
 
         monkeypatch.setattr(status.shutil, "disk_usage", fake_usage)
         lines = _disk_section(lake, warehouse).lines
-        assert len([line for line in lines if line.startswith("Disk")]) == 1
-        assert "128.0 GiB" in lines[0]
+        measured = [line for line in lines if "GiB free" in line]
+        assert len(measured) == 1
+        assert "128.0 GiB" in measured[0]
+        assert "[lake]" in "\n".join(lines)  # the unmounted volume stays visible as UNKNOWN
+
+    def test_a_missing_destination_is_unknown_not_its_parents_free_space(self, tmp_path, monkeypatch):
+        # raw/massive is a child symlink to an unmounted external volume — the
+        # internal raw/ parent must NOT stand in for it.
+        lake, warehouse = self._dirs(tmp_path)
+        (warehouse / "data-lake" / "raw" / "massive").rmdir()
+        (warehouse / "data-lake" / "raw" / "massive").symlink_to(tmp_path / "gone")
+        monkeypatch.setattr(
+            status.shutil,
+            "disk_usage",
+            lambda path: _Usage(228 * _GIB, 100 * _GIB, 128 * _GIB),
+        )
+        section = _disk_section(lake, warehouse)
+        text = "\n".join(section.lines)
+        assert "[raw-massive]" in text
+        assert section.verdict is Verdict.UNKNOWN  # UNKNOWN outranks OK
+
+
+def test_disk_reports_the_raw_writer_destination_separately_from_the_configured_lake(tmp_path, monkeypatch):
+    # The writers root at <warehouse>/data-lake regardless of MDW_DATA_LAKE;
+    # when the configured lake lives elsewhere the raw volume is its own line.
+    lake = tmp_path / "lake"
+    warehouse = tmp_path / "warehouse"
+    external = tmp_path / "external-massive"
+    for path in (lake, lake / "bronze", lake / "catalog", lake / "silver", external):
+        path.mkdir(parents=True, exist_ok=True)
+    (warehouse / "data-lake" / "raw").mkdir(parents=True)
+    (warehouse / "data-lake" / "raw" / "massive").symlink_to(external)
+
+    def fake_fs_id(path):
+        p = Path(path)
+        if p == external:
+            return 3
+        if p.is_relative_to(lake):
+            return 1
+        return 2
+
+    monkeypatch.setattr(status, "_filesystem_id", fake_fs_id)
+    monkeypatch.setattr(status.shutil, "disk_usage", lambda path: _Usage(228 * _GIB, 100 * _GIB, 128 * _GIB))
+    section = _disk_section(lake, warehouse)
+    text = "\n".join(section.lines)
+    assert "[raw-massive]" in text and "[lake" in text
+    assert section.verdict is Verdict.OK  # every destination resolved and measured
 
 
 def test_render_shows_the_fix_for_anything_not_ok() -> None:
@@ -1296,3 +1395,615 @@ def test_the_real_status_and_the_real_pager_agree_on_which_run_a_section_names()
     _execution("notify", 0, receipt={"kind": "page", "subject": "PAGE: lane intraday_catchup", "skipped": False})
 
     assert notify.page_from_sections([section], NOW.date()) is None
+
+
+def _silver_revision(data_lake: Path, revision: int, symbols: tuple = (), *, generation: str | None = None) -> dict:
+    """Write immutable + current manifests whose affected scope lists `symbols`."""
+    revisions = data_lake / "silver" / "revisions"
+    revisions.mkdir(parents=True, exist_ok=True)
+    generation = generation or f"gen-{revision}"
+    payload = {
+        "schema_version": 1,
+        "revision": revision,
+        "generation_id": generation,
+        "published_at": "2026-09-02T06:00:00Z",
+        "corporate_actions_as_of": "2026-09-02T05:00:00Z",
+        "affected": [{"symbol": s, "earliest_date": "2026-08-01", "timeframes": ["1d"]} for s in symbols],
+        "artifacts": [],
+    }
+    encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    (revisions / f"revision={revision}.json").write_bytes(encoded)
+    (revisions / "current.json").write_bytes(encoded)
+    return {
+        "ref": f"revisions/revision={revision}.json",
+        "sha": hashlib.sha256(encoded).hexdigest(),
+        "generation": generation,
+        "revision": revision,
+    }
+
+
+def _faults_roots(lake: Path) -> dict:
+    return {
+        "data_lake_root": str(lake.resolve()),
+        "silver_root": str((lake / "silver").resolve()),
+    }
+
+
+def _fault_evidence(lake: Path, symbol: str, *, stage="staging", run_id=RUN, fetched_at=None, **over):
+    payload = (
+        {
+            "kind": "silver_symbol_failure",
+            "schema_version": 1,
+            "stage": stage,
+            "symbol": symbol,
+            "baseline_revision": 3,
+        }
+        | _faults_roots(lake)
+        | over
+    )
+    ledger.emit(
+        "evidence",
+        [
+            {
+                "evidence_hash": f"ev-{symbol}-{stage}-{fetched_at or NOW}",
+                "kind": "silver_symbol_failure",
+                "subject": symbol,
+                "payload_json": json.dumps(payload),
+                "source_url": None,
+                "fetched_at": fetched_at or NOW,
+                "proposer": "rebuild-silver",
+                "run_id": run_id,
+            }
+        ],
+        run_id=run_id,
+    )
+
+
+_ENDED_UNSET = object()
+
+
+def _silver_receipt(
+    lake: Path,
+    *,
+    result="committed",
+    manifest: dict | None = None,
+    validated=(),
+    failed=(),
+    withheld=(),
+    started=NOW,
+    ended=_ENDED_UNSET,
+    run_id=RUN,
+    **over,
+):
+    receipt = {
+        "kind": "silver_publication",
+        "schema_version": 1,
+        "result": result,
+        "selected_symbols": sorted(set(validated) | set(failed) | set(withheld)),
+        "staged_symbols": sorted(set(validated) | set(failed)),
+        "validated_symbols": list(validated),
+        "failed_symbols": list(failed),
+        "withheld_symbols": list(withheld),
+        "baseline_revision": 3,
+    } | _faults_roots(lake)
+    if manifest is not None:
+        receipt |= {
+            "manifest_ref": manifest["ref"],
+            "manifest_sha256": manifest["sha"],
+            "generation_id": manifest["generation"],
+            "published_revision": manifest["revision"],
+        }
+    receipt |= over
+    ledger.emit(
+        "executions",
+        [
+            {
+                "evidence_hash": None,
+                "script": "rebuild-silver",
+                "attempt": 1,
+                "args_json": "{}",
+                "release_sha": "deadbeef",
+                "started": started,
+                # _ENDED_UNSET defaults ended to started; an explicit None
+                # writes a real NULL so missing-ended paths get tested.
+                "ended": started if ended is _ENDED_UNSET else ended,
+                "exit_code": 0 if result != "attempt_only" else 1,
+                "receipt_json": json.dumps(receipt),
+                "run_id": run_id,
+            }
+        ],
+        run_id=run_id,
+    )
+
+
+def _faults(tmp_path):
+    """A lake the fault section can root-match, and its section."""
+    lake = tmp_path / "lake"
+    lake.mkdir(exist_ok=True)
+    return lake, status._silver_faults_section(lake)
+
+
+class TestSilverSymbolFaults:
+    def test_receipt_only_failure_with_an_inherited_run_id_reopens_the_issue(self, tmp_path):
+        # Evidence fault F1, a verified recovery R, then a later failed receipt F2
+        # that inherited F1's LW_RUN_ID. The shared run id must NOT dedupe F2:
+        # it is its own observation and the issue stays unresolved with F2's
+        # ended as last_seen.
+        lake, _ = _faults(tmp_path)
+        t1, t2, t3 = NOW, NOW + timedelta(hours=1), NOW + timedelta(hours=2)
+        _fault_evidence(lake, "AAPL", run_id="run-shared", fetched_at=t1, error="parquet unreadable")
+        manifest = _silver_revision(lake, 8, ("AAPL",))
+        _silver_receipt(
+            lake, result="noop", manifest=manifest, validated=("AAPL",), started=t2, ended=t2, run_id="run-recovery"
+        )
+        _silver_receipt(lake, result="committed", failed=("AAPL",), started=t3, ended=t3, run_id="run-shared")
+        section = status._silver_faults_section(lake)
+        text = "\n".join(section.lines)
+        assert section.verdict is status.Verdict.WARN
+        assert "AAPL" in text and "1 unresolved" in text
+        assert f"last_seen={t3}" in text
+
+    def test_repeated_receipt_failures_count_as_receipt_failures_not_distinct_attempts(self, tmp_path):
+        lake, _ = _faults(tmp_path)
+        for offset in (1, 2):
+            _silver_receipt(
+                lake,
+                result="committed",
+                failed=("BTX",),
+                started=NOW + timedelta(hours=offset),
+                ended=NOW + timedelta(hours=offset),
+                run_id=f"run-{offset}",
+            )
+        section = status._silver_faults_section(lake)
+        text = "\n".join(section.lines)
+        assert "receipt_failures=2" in text
+        assert "2 receipt-listed failures" in text
+        # honest wording: evidence facts and receipt scope are separate counts
+        assert "0 evidence facts" in text
+
+    def test_verified_manifest_is_read_once_across_receipts(self, tmp_path, monkeypatch):
+        lake, _ = _faults(tmp_path)
+        manifest = _silver_revision(lake, 8, ("AAPL",))
+        for offset in range(4):
+            _silver_receipt(
+                lake,
+                result="noop",
+                manifest=manifest,
+                validated=("AAPL",),
+                started=NOW + timedelta(minutes=offset),
+                run_id=f"run-{offset}",
+            )
+        reads = []
+        real_read = Path.read_bytes
+
+        def counting(self):
+            reads.append(self)
+            return real_read(self)
+
+        monkeypatch.setattr(Path, "read_bytes", counting)
+        status._silver_faults_section(lake)
+        assert len(reads) == 1  # one immutable manifest, four receipts
+
+    def test_a_contradictory_receipt_never_inherits_another_receipts_verified_manifest(self, tmp_path):
+        # The manifest cache keys on every validator input. A committed receipt
+        # naming published_revision=9 but the revision=8 ref/sha/generation must
+        # be verified on its own — it fails the ref check and cannot close AAPL.
+        lake, _ = _faults(tmp_path)
+        manifest = _silver_revision(lake, 8, ("AAPL",))
+        _silver_receipt(lake, result="noop", manifest=manifest, validated=("AAPL",), started=NOW, run_id="run-good")
+        _fault_evidence(lake, "AAPL", fetched_at=NOW + timedelta(hours=1), error="bad rows")
+        _silver_receipt(
+            lake,
+            result="committed",
+            manifest=manifest,
+            published_revision=9,  # contradictory: ref still says revision=8
+            validated=("AAPL",),
+            started=NOW + timedelta(hours=2),
+            run_id="run-lying",
+        )
+        section = status._silver_faults_section(lake)
+        assert section.verdict is status.Verdict.WARN
+        assert "1 unresolved" in "\n".join(section.lines)
+
+    def test_strict_manifest_fields_reject_bool_and_foreign_generation(self, tmp_path):
+        lake, _ = _faults(tmp_path)
+        _fault_evidence(lake, "AAPL", fetched_at=NOW, error="x")
+        # bool published_revision: True is an int subclass and must not pass
+        manifest = _silver_revision(lake, 8, ("AAPL",))
+        _silver_receipt(
+            lake,
+            result="noop",
+            manifest=manifest,
+            published_revision=True,
+            validated=("AAPL",),
+            started=NOW + timedelta(hours=1),
+            run_id="run-bool",
+        )
+        # matching ref/sha but the receipt claims a different generation
+        _silver_receipt(
+            lake,
+            result="noop",
+            manifest=manifest,
+            generation_id="somebody-else",
+            validated=("AAPL",),
+            started=NOW + timedelta(hours=2),
+            run_id="run-foreign-gen",
+        )
+        # manifest payload with a bool schema_version
+        revisions = lake / "silver" / "revisions"
+        bad = json.loads((revisions / "revision=8.json").read_text())
+        bad["schema_version"] = True
+        (revisions / "revision=9.json").write_text(json.dumps(bad))
+        _silver_receipt(
+            lake,
+            result="noop",
+            manifest={
+                "ref": "revisions/revision=9.json",
+                "sha": hashlib.sha256(json.dumps(bad).encode()).hexdigest(),
+                "generation": "gen-8",
+                "revision": 9,
+            },
+            validated=("AAPL",),
+            started=NOW + timedelta(hours=3),
+            run_id="run-bool-schema",
+        )
+        section = status._silver_faults_section(lake)
+        assert "1 unresolved" in "\n".join(section.lines)
+
+    def test_a_receipt_listing_the_symbol_as_failed_cannot_close_it(self, tmp_path):
+        lake, _ = _faults(tmp_path)
+        _fault_evidence(lake, "AAPL", fetched_at=NOW, error="x")
+        manifest = _silver_revision(lake, 8, ("AAPL",))
+        # contradictory scope: validated AND failed — never a closer
+        _silver_receipt(
+            lake,
+            result="committed",
+            manifest=manifest,
+            validated=("AAPL",),
+            failed=("AAPL",),
+            started=NOW + timedelta(hours=1),
+        )
+        section = status._silver_faults_section(lake)
+        assert "1 unresolved" in "\n".join(section.lines)
+
+    def test_attempt_only_and_unverifiable_receipts_are_unknown_not_ok(self, tmp_path):
+        lake, _ = _faults(tmp_path)
+        assert status._silver_faults_section(lake).verdict is status.Verdict.UNKNOWN  # nothing on record
+
+        _silver_receipt(lake, result="attempt_only", manifest=None, run_id="run-1")
+        assert status._silver_faults_section(lake).verdict is status.Verdict.UNKNOWN
+
+        # a committed receipt whose manifest does not verify still proves nothing
+        _silver_receipt(
+            lake,
+            result="committed",
+            manifest={"ref": "revisions/revision=99.json", "sha": "0" * 64, "generation": "g", "revision": 99},
+            validated=("AAPL",),
+            started=NOW + timedelta(hours=1),
+            run_id="run-2",
+        )
+        assert status._silver_faults_section(lake).verdict is status.Verdict.UNKNOWN
+
+        # one verified noop over these roots is actual coverage proof
+        manifest = _silver_revision(lake, 8, ("AAPL",))
+        _silver_receipt(lake, result="noop", manifest=manifest, validated=("AAPL",), started=NOW + timedelta(hours=2))
+        assert status._silver_faults_section(lake).verdict is status.Verdict.OK
+
+    def test_legacy_unscoped_positives_stay_unknown_even_after_a_full_verified_run(self, tmp_path):
+        lake, _ = _faults(tmp_path)
+        _measurement("silver_failed", "silver", 2, measured_at=NOW - timedelta(days=3))
+        manifest = _silver_revision(lake, 8, ("AAPL", "BTX", "MSFT"))
+        _silver_receipt(lake, result="committed", manifest=manifest, validated=("AAPL", "BTX", "MSFT"))
+        section = status._silver_faults_section(lake)
+        text = "\n".join(section.lines)
+        # A --full receipt cannot establish WHICH symbols the unscoped counter
+        # meant — the legacy positive is never auto-cleared.
+        assert section.verdict is status.Verdict.UNKNOWN
+        assert "legacy unscoped silver_failed=2" in text
+        assert "legacy:silver_failed=2" in section.notification_key
+
+    def test_faults_survive_a_missing_pointer_and_render_the_full_input_path(self, tmp_path):
+        lake, _ = _faults(tmp_path)
+        # no manifest at all — the section must still surface the symbol fault
+        _fault_evidence(
+            lake,
+            "AAPL",
+            fetched_at=NOW,
+            error="hash mismatch",
+            input={"path": str(lake / "raw" / "deep" / "nested" / "1d.parquet"), "sha256": "ab" * 32},
+            input_date_bounds={"earliest": "2026-08-01", "latest": "2026-09-02"},
+        )
+        section = status._silver_faults_section(lake)
+        text = "\n".join(section.lines)
+        assert section.verdict is status.Verdict.WARN
+        assert str(lake / "raw" / "deep" / "nested" / "1d.parquet") in text  # full path, not basename
+        assert "input_bounds=2026-08-01..2026-09-02 (context, not failing sessions)" in text
+        assert "scope=UNKNOWN" in text  # staging faults never invent a failing session
+
+    def test_malformed_rows_are_counted_without_erasing_valid_faults(self, tmp_path):
+        lake, _ = _faults(tmp_path)
+        _fault_evidence(lake, "AAPL", fetched_at=NOW, error="x")
+        # undecodable payload, valid row
+        ledger.emit(
+            "evidence",
+            [
+                {
+                    "evidence_hash": "ev-broken",
+                    "kind": "silver_symbol_failure",
+                    "subject": "ZZZ",
+                    "payload_json": "{not json",
+                    "source_url": None,
+                    "fetched_at": NOW,
+                    "proposer": "rebuild-silver",
+                    "run_id": RUN,
+                }
+            ],
+            run_id=RUN,
+        )
+        # decodable but invalid shape: bounds as a list
+        _fault_evidence(lake, "ZZZ", input_date_bounds=["2026-08-01"])
+        # a receipt whose receipt_json is not a receipt at all
+        ledger.emit(
+            "executions",
+            [
+                {
+                    "evidence_hash": None,
+                    "script": "rebuild-silver",
+                    "attempt": 1,
+                    "args_json": "{}",
+                    "release_sha": "deadbeef",
+                    "started": NOW,
+                    "ended": NOW,
+                    "exit_code": 1,
+                    "receipt_json": "{broken",
+                    "run_id": "run-broken",
+                }
+            ],
+            run_id="run-broken",
+        )
+        section = status._silver_faults_section(lake)
+        text = "\n".join(section.lines)
+        assert "AAPL" in text
+        assert "undecodable" in text
+        # malformed rows must not churn the page key
+        assert "ev-broken" not in section.notification_key
+
+    def test_wrong_roots_with_the_same_revision_cannot_close_a_fault(self, tmp_path):
+        lake, _ = _faults(tmp_path)
+        _fault_evidence(lake, "AAPL", fetched_at=NOW, error="x")
+        manifest = _silver_revision(lake, 8, ("AAPL",))
+        # another deployment's receipt for the same symbol+revision: roots gate
+        # it out before it can match or close anything here
+        _silver_receipt(
+            tmp_path / "other-lake",
+            result="committed",
+            manifest=manifest,
+            validated=("AAPL",),
+            started=NOW + timedelta(hours=2),
+            run_id="run-foreign",
+        )
+        section = status._silver_faults_section(lake)
+        assert "1 unresolved" in "\n".join(section.lines)
+
+    def test_a_targeted_success_clears_only_the_named_symbol(self, tmp_path):
+        lake, _ = _faults(tmp_path)
+        _fault_evidence(lake, "AAPL", fetched_at=NOW, error="x")
+        _fault_evidence(lake, "BTX", fetched_at=NOW, error="x")
+        manifest = _silver_revision(lake, 8, ("AAPL",))
+        _silver_receipt(lake, result="noop", manifest=manifest, validated=("AAPL",), started=NOW + timedelta(hours=1))
+        section = status._silver_faults_section(lake)
+        text = "\n".join(section.lines)
+        assert "1 unresolved" in text
+        assert "BTX" in text and "resolved by verified receipt" in text
+
+    def test_a_delayed_older_success_cannot_clear_a_newer_failure(self, tmp_path):
+        lake, _ = _faults(tmp_path)
+        manifest = _silver_revision(lake, 8, ("AAPL",))
+        # the recovery receipt STARTED before the fault was last observed
+        _silver_receipt(lake, result="noop", manifest=manifest, validated=("AAPL",), started=NOW, ended=NOW)
+        _fault_evidence(lake, "AAPL", fetched_at=NOW + timedelta(hours=6), error="x")
+        assert "1 unresolved" in "\n".join(status._silver_faults_section(lake).lines)
+
+    def test_the_notification_key_is_stable_across_reobservation(self, tmp_path):
+        lake, _ = _faults(tmp_path)
+        _fault_evidence(lake, "AAPL", fetched_at=NOW, error="x", run_id="run-1")
+        key_one = status._silver_faults_section(lake).notification_key
+        _fault_evidence(lake, "AAPL", fetched_at=NOW + timedelta(days=1), error="x", run_id="run-2")
+        key_two = status._silver_faults_section(lake).notification_key
+        assert key_one == key_two  # same issue, new timestamp/run: no re-page
+
+    def test_withheld_regressions_keep_their_known_scope_and_repair_guidance(self, tmp_path):
+        lake, _ = _faults(tmp_path)
+        _fault_evidence(
+            lake,
+            "AAPL",
+            stage="withheld_window_regression",
+            fetched_at=NOW,
+            reason="window shortened",
+            previous_start="2020-01-02",
+            new_start="2024-06-01",
+        )
+        section = status._silver_faults_section(lake)
+        text = "\n".join(section.lines)
+        assert "scope=2020-01-02->2024-06-01" in text
+        assert "--allow-window-regression adopts the shortening" in text  # review, not routine recovery
+        assert "rebuild-silver --tickers" not in text.split("next:")[-1]
+
+
+def _catalog_build_receipt(
+    lake: Path, local_db: Path, *, result="committed", started=NOW, ended=None, run_id="duckdb-run"
+):
+    lake_target = lake / "catalog" / "analytics.duckdb"
+    receipt = {
+        "schema_version": 1,
+        "kind": "catalog_publication",
+        "result": result,
+        "data_lake_root": str(lake.expanduser().resolve()),
+        "local": {"path": str(local_db.expanduser().resolve()), "sha256": "ab" * 32},
+        "lake": {
+            "path": str(lake_target.expanduser().resolve()),
+            "expected_sha256": "ab" * 32,
+            "result": "failed" if result == "copy_failed" else "copied",
+            "error": "OSError: read-only file system" if result == "copy_failed" else None,
+        },
+        "coverage_rows": {},
+        "deployment_sha": "deadbeef",
+    }
+    ledger.emit(
+        "executions",
+        [
+            {
+                "evidence_hash": None,
+                "script": "duckdb-build",
+                "attempt": 1,
+                "args_json": "{}",
+                "release_sha": "deadbeef",
+                "started": started,
+                "ended": started if ended is None else ended,
+                "exit_code": 1 if result == "copy_failed" else 0,
+                "receipt_json": json.dumps(receipt),
+                "run_id": run_id,
+            }
+        ],
+        run_id=run_id,
+    )
+
+
+def test_a_copy_failed_build_receipt_is_bad_even_when_the_catalog_is_fresh(tmp_path, monkeypatch):
+    # Grok finding: a same-root copy_failed receipt used to sit on one
+    # information line while freshness graded the section OK.
+    lake = tmp_path / "lake"
+    lake.mkdir(exist_ok=True)
+    local_db = tmp_path / "analytics.duckdb"  # MDW_DUCKDB_PATH via the root fixture
+    headline = {name: (100, NOW.date()) for name in status._CATALOG_LANE_FIX}
+    monkeypatch.setattr(status, "_coverage_headline", lambda _db: headline)
+    _catalog_build_receipt(lake, local_db, result="copy_failed")
+
+    section = status._duckdb_section(NOW.date())
+    text = "\n".join(section.lines)
+    assert section.verdict is status.Verdict.BAD
+    assert "copy_failed" in text and "oldest view" in text  # freshness stays visible
+    assert "retries the lake copy" in (section.fix or "")
+
+
+def test_a_newer_failed_or_attempt_only_receipt_keeps_an_old_done_lane_from_reading_green(tmp_path):
+    # Grok finding: lane done at T1 + standalone rebuild-silver receipt at T2
+    # used to render OK with the healthy page key.
+    lake = tmp_path / "lake"
+    _committed_silver(lake)
+    _lane("silver", started=NOW, ended=NOW)
+    _silver_receipt(
+        lake,
+        result="committed",
+        failed=("AAPL",),
+        started=NOW + timedelta(hours=2),
+        ended=NOW + timedelta(hours=2),
+        run_id="run-late-fail",
+    )
+    section = status._silver_publication_section(lake)
+    assert section.verdict is status.Verdict.BAD
+    assert "Latest decoded rebuild receipt" in "\n".join(section.lines)
+    assert section.notification_key == "silver-publication:receipt-attempt-failed"
+
+    # a still-newer attempt_only receipt: the attempt's outcome is unknown, not
+    # bad — and still not green
+    _silver_receipt(
+        lake,
+        result="attempt_only",
+        started=NOW + timedelta(hours=3),
+        ended=None,
+        run_id="run-later-attempt",
+    )
+    section = status._silver_publication_section(lake)
+    assert section.verdict is status.Verdict.UNKNOWN
+    assert section.notification_key == "silver-publication:receipt-attempt-unknown"
+
+
+def test_an_undecodable_receipt_row_floors_a_done_lane_at_unknown(tmp_path):
+    # Grok finding: a malformed newer row must not let an older decoded receipt
+    # pose as the latest — UNKNOWN floor, and the label says "decoded".
+    lake = tmp_path / "lake"
+    _committed_silver(lake)
+    _lane("silver", started=NOW, ended=NOW)
+    ledger.emit(
+        "executions",
+        [
+            {
+                "evidence_hash": None,
+                "script": "rebuild-silver",
+                "attempt": 1,
+                "args_json": "{}",
+                "release_sha": "deadbeef",
+                "started": NOW + timedelta(hours=1),
+                "ended": NOW + timedelta(hours=1),
+                "exit_code": 1,
+                "receipt_json": "{broken",
+                "run_id": "run-broken",
+            }
+        ],
+        run_id="run-broken",
+    )
+    section = status._silver_publication_section(lake)
+    text = "\n".join(section.lines)
+    assert section.verdict is status.Verdict.UNKNOWN
+    assert "Latest decoded rebuild receipt" in text
+    assert "could not be decoded" in text
+    assert section.notification_key == "silver-publication:receipts-undecodable"
+
+
+def test_the_latest_receipt_is_chosen_by_completion_not_start(tmp_path, monkeypatch):
+    # Lead probe o3-completion-order-probe.json: an earlier-started failure that
+    # ends AFTER a later-started success is the latest fact. Ordering by
+    # started put the success last and the section read OK.
+    lake = tmp_path / "lake"
+    _committed_silver(lake)
+    _lane("silver", started=NOW, ended=NOW)
+    # the slow attempt starts first, fails last
+    _silver_receipt(
+        lake,
+        result="committed",
+        failed=("AAPL",),
+        started=NOW + timedelta(hours=1),
+        ended=NOW + timedelta(hours=3),
+        run_id="run-slow-fail",
+    )
+    # the quick clean noop starts second but finishes earlier — verified, real,
+    # and still not the latest attempt
+    manifest = _silver_revision(lake, 8, ("AAPL",))
+    _silver_receipt(
+        lake,
+        result="noop",
+        manifest=manifest,
+        validated=("AAPL",),
+        started=NOW + timedelta(hours=2),
+        ended=NOW + timedelta(hours=2),
+        run_id="run-quick-ok",
+    )
+    section = status._silver_publication_section(lake)
+    assert section.verdict is status.Verdict.BAD
+    assert "run-slow-fail" in "\n".join(section.lines)
+
+    # same overlap for the catalog build receipt: the copy_failed build that
+    # started first but finished last is the latest fact
+    local_db = tmp_path / "analytics.duckdb"
+    headline = {name: (100, NOW.date()) for name in status._CATALOG_LANE_FIX}
+    monkeypatch.setattr(status, "_coverage_headline", lambda _db: headline)
+    _catalog_build_receipt(
+        lake,
+        local_db,
+        result="copy_failed",
+        started=NOW + timedelta(hours=1),
+        ended=NOW + timedelta(hours=3),
+        run_id="build-slow-fail",
+    )
+    _catalog_build_receipt(
+        lake,
+        local_db,
+        result="committed",
+        started=NOW + timedelta(hours=2),
+        ended=NOW + timedelta(hours=2),
+        run_id="build-quick-ok",
+    )
+    section = status._duckdb_section(NOW.date())
+    assert section.verdict is status.Verdict.BAD
+    assert "copy_failed" in "\n".join(section.lines)

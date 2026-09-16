@@ -202,3 +202,109 @@ references, not an exact failing session or an input checksum. Exceptions before
 the publication transaction may have only the outer process-attempt record (or no
 record for a standalone invocation); absent linkage must remain UNKNOWN. These
 receipts are not a transaction with the lake and do not prove consumer reads.
+
+## O3 — status/path diagnostics and capacity planner
+
+Files: `livewire_scripts/status.py`, `livewire_scripts/paths.py`,
+`livewire_scripts/flatfile_planner.py` + matching tests. No notify/digest edits
+— both render `collect()` output unchanged; `Section.notification_key` is the
+existing shared contract.
+
+### Capacity paths
+
+- `paths.resolve_capacity_target(path, allow_missing)` resolves symlinks
+  component-wise and creates nothing. `allow_missing=False` (status): a missing
+  or dangling destination → `None`, never the ancestor's free space.
+  `allow_missing=True` (planner): a missing leaf resolves to its nearest
+  existing resolved ancestor on the intended filesystem; a dangling link in the
+  chain is still `None` — falling past it would measure the internal disk.
+- `flatfile_planner.capacity_path` targets the actual writer destination,
+  `<warehouse>/data-lake/raw/massive` (both raw stores root there; they do not
+  honor `MDW_DATA_LAKE`). `discover_plan` raises `RuntimeError` on an
+  unreachable destination instead of measuring a substitute.
+- Regressions: internal `raw/` + external `raw/massive` symlink measures the
+  child target; an unrelated `MDW_DATA_LAKE` override does not redirect it;
+  dangling link → planner failure; nothing is created.
+
+### Disk section
+
+- `_disk_targets` lists every configured destination resolved the way writers
+  resolve it: lake, bronze, lake catalog, Silver (`MDW_SILVER_DIR`), logs,
+  cursors, `LW_LEDGER_ROOT`, local catalog parent, temp dir, warehouse, and the
+  raw writer's `raw/massive`. `collect` passes `warehouse_dir()` — not
+  `log_dir.parent`, which follows `MDW_LOG_DIR` elsewhere.
+- Resolution, `disk_usage` and `st_dev` lookup are inside the per-target
+  `OSError` guard: one vanished volume is UNKNOWN for that label only. Dedup is
+  on `st_dev` (physical filesystem), not the usage triple. Missing/dangling →
+  `UNKNOWN` floor; thresholds unchanged.
+
+### Silver symbol faults section
+
+- Projects `evidence` rows (`kind='silver_symbol_failure'`) + `executions`
+  `rebuild-silver` receipts for THESE resolved `data_lake_root`/`silver_root`
+  only. Malformed/foreign/unknown-version rows are counted, never fatal, never
+  erased (`undecodable`, `for other roots`).
+- Issues group by symbol + stage + classification + known scope; staging scope
+  is `UNKNOWN` (failing session was never recorded — input date bounds render
+  as context, not identity). Withheld regressions keep
+  `previous_start->new_start` + reason. Detail lines: bounded error/reason,
+  full input path + hash, evidence ref, run id (context), baseline revision and
+  artifact references (explicitly not proof the bytes exist), evidence-fact and
+  receipt-failure counts, last observation.
+- Every failed/withheld receipt contributes `receipt_failures += 1` and
+  advances `last_seen` at its own `ended` (or `started`) — an inherited
+  `LW_RUN_ID` never dedupes observations and receipt-only failures reopen a
+  closed issue. Counts are honest: evidence facts and receipt-listed failures
+  are separate; no distinct-attempt claim.
+- Closure requires a later `committed`/`noop` receipt on the same roots naming
+  the symbol in `validated_symbols` (never `failed`/`withheld`), with
+  `started >= last_seen`, AND the symbol present in the receipt's VERIFIED
+  immutable manifest: strict positive-int `published_revision`, rebuilt
+  `revisions/revision=N.json` filename, contained resolved path, SHA-256,
+  `schema_version=1`, matching `revision` and nonempty matching
+  `generation_id`. `attempt_only` never closes. Manifest verification is
+  cached per unique (result, revision, ref, sha, generation) within one
+  projection call — a local dict, no persistent cache — so N noop receipts
+  read the manifest once, and a contradictory revision/result cannot inherit a
+  verified set.
+- Legacy unscoped positives (`silver_failed>0`, `silver_window_regressions>0`)
+  stay visible as UNKNOWN forever — no later run, full or targeted, can
+  establish which symbols the counter meant. Verdict: open issues → WARN; any
+  legacy/malformed/undecodable uncertainty or absence of a verified
+  committed/noop receipt → UNKNOWN; else OK. `notification_key` carries issue
+  identity + legacy name only — timestamps, run ids and malformed counts do
+  not re-page an unchanged fault.
+
+### Silver publication / catalog receipt lines
+
+- Publication section resolves the pointer via `MDW_SILVER_DIR`-aware
+  `_configured_silver_path`, reports the committed manifest as its own fact,
+  the latest terminal lane row, the latest decoded receipt (completion-ordered
+  `coalesce(ended, started)` — overlapping invocations sort by finish), and
+  verified-receipt linkage separately. A newer same-root receipt than the lane
+  drives the attempt verdict: `attempt_only` → UNKNOWN, failed/withheld scope
+  → BAD. Undecodable receipt rows floor a healthy lane at UNKNOWN
+  (`receipts-undecodable` key) without demoting BAD. Headlines say "terminal
+  lane" — lane facts and receipt facts are never conflated.
+- `_latest_catalog_receipt` attaches the newest `duckdb-build` receipt only
+  when its resolved lake root and both destination paths match THIS
+  deployment's configured paths; undecodable or foreign newest row → UNKNOWN
+  linkage line, not a scan to an older success. A same-root `copy_failed`
+  receipt grades the section BAD with a copy-retry fix; the receipt line
+  reports local commit + copy outcome, never Apex consumption.
+
+### Checks run
+
+- `.venv/bin/python -m pytest tests/test_status.py tests/test_paths.py
+  tests/test_flatfile_planner.py -q -W error::RuntimeWarning` →
+  **168 passed**
+- `ruff check` + `ruff format` on the six owned files → clean.
+
+### Deviations
+
+- `staging-tmp` uses `tempfile.gettempdir()` (honors `TMPDIR`); the local
+  catalog target is the configured database's parent dir.
+- `_observe_receipt_fault` merges a receipt-only failure into the latest
+  same-symbol+stage issue (conservative coarseness — no execution-id
+  framework); distinct classifications still key separately.
+- No production/Mac mini validation claimed; O4/O5 remain lead-owned.

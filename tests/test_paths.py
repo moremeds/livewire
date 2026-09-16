@@ -123,3 +123,51 @@ def test_the_lake_lock_follows_the_warehouse_override(paths, monkeypatch: pytest
 
     assert paths.lake_lock_path() == tmp_path / "warehouse" / "locks" / "lake-io.lock"
     assert not paths.lake_lock_path().is_relative_to(paths.data_lake_dir())
+
+
+def test_resolve_capacity_target_resolves_an_existing_path(paths, tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+
+    assert paths.resolve_capacity_target(real) == real.resolve()
+
+
+def test_resolve_capacity_target_follows_a_symlink(paths, tmp_path: Path) -> None:
+    dest = tmp_path / "external"
+    dest.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(dest)
+
+    assert paths.resolve_capacity_target(link) == dest.resolve()
+
+
+def test_resolve_capacity_target_missing_is_unknown_unless_planning(paths, tmp_path: Path) -> None:
+    target = tmp_path / "a" / "b" / "c"
+
+    assert paths.resolve_capacity_target(target) is None
+    # allow_missing=True answers the nearest existing resolved ancestor — the
+    # intended filesystem a genuinely new directory would land on.
+    assert paths.resolve_capacity_target(target, allow_missing=True) == tmp_path.resolve()
+    assert not (tmp_path / "a").exists()  # resolution must never create
+
+
+def test_resolve_capacity_target_dangling_link_is_never_an_ancestor_fallback(paths, tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    link = raw / "massive"
+    link.symlink_to(tmp_path / "gone")
+
+    assert paths.resolve_capacity_target(link) is None
+    # Even for planning: falling back to raw/ would measure the internal disk.
+    assert paths.resolve_capacity_target(link, allow_missing=True) is None
+    # A dangling link mid-chain is a miss too.
+    assert paths.resolve_capacity_target(link / "child", allow_missing=True) is None
+
+
+def test_resolve_capacity_target_missing_child_of_a_symlink_uses_its_volume(paths, tmp_path: Path) -> None:
+    dest = tmp_path / "external"
+    dest.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(dest)
+
+    assert paths.resolve_capacity_target(link / "new", allow_missing=True) == dest.resolve()
