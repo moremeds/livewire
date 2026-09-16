@@ -8,7 +8,7 @@ Plan: [ops diagnostics](../docs/plans/2026-09-17-ops-diagnostics.md).
 Graph: `O0 -> O1 -> O2 -> O3 -> O4 -> O5`.
 
 - [x] O0 (`depends_on: []`): Baseline and Grok plan review; six pins clarified, APPROVE; 362 relevant baseline tests pass.
-- [ ] O1 (`depends_on: [O0]`): Accurate execution facts and reuse common process mechanics.
+- [x] O1 (`depends_on: [O0]`): Accepted `89e5bde`; lead reviewed the diff and verified 249 tests, including the UTC fixture correction. Nested-group regression removed; unknown source identity stays UNKNOWN.
 - [ ] O2 (`depends_on: [O1]`): Existing-ledger Silver/catalog publication and failure evidence.
 - [ ] O3 (`depends_on: [O2]`): Shared diagnostic projection and actual-volume checks.
 - [ ] O4 (`depends_on: [O3]`): Lead/Grok review, simplification, configured tests and PR.
