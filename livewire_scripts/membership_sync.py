@@ -46,7 +46,13 @@ Confidence = Literal["B", "C", "D"]
 # across all four rather than assume one venue. The Russell list carries 44
 # NYSE American names (measured from the TradingView scanner 2026-09-15) and
 # the master holds them under XASE.
-_RESOLVE_PROVIDER = "massive"
+#
+# `wikipedia_sec_research` is the 2026-09-16 one-off backfill of pre-2003
+# delistings Massive has no record of at all; it is a second, distinct
+# provider (never `massive`, so a Massive full-reconcile never touches it —
+# pm:2026-07-19-cancellation-inference-provider-scoped) that reresolve must
+# also check, or the whole import would sit unused in the master.
+_RESOLVE_PROVIDERS = ("massive", "wikipedia_sec_research")
 _RESOLVE_MICS = ("XNAS", "XNYS", "ARCX", "XASE")
 
 _CONFIDENCE_STATUS = {"B": "verified", "C": "candidate", "D": "candidate"}
@@ -77,12 +83,13 @@ def _evidence_verifier(store: SourceEvidenceStore):
 def _resolve(master: SecurityMaster, ticker: str, effective_at: datetime, as_of: datetime) -> str | None:
     matches = {
         security_id
+        for provider in _RESOLVE_PROVIDERS
         for mic in _RESOLVE_MICS
-        if (security_id := master.resolve_symbol(_RESOLVE_PROVIDER, ticker, mic, effective_at, as_of)) is not None
+        if (security_id := master.resolve_symbol(provider, ticker, mic, effective_at, as_of)) is not None
     }
     if len(matches) == 1:
         return next(iter(matches))
-    return None  # no identity, or the same ticker verified on two venues
+    return None  # no identity, the same ticker verified on two venues, or two providers disagree
 
 
 def _event_id(index_id: str, key: str, action: str, effective_date: str, source_hashes: tuple[str, ...]) -> str:
