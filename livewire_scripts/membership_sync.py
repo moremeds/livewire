@@ -156,7 +156,9 @@ def import_events(
         "exit_code": None,
         "verdict": None,
     }
-    ledger.emit("runs", [run_row], run_id=run_id)
+    abandoned = ledger.open_run(run_row)
+    if abandoned:
+        print(f"abandoned {len(abandoned)} open run(s) of membership-sync: {', '.join(abandoned)}")
     try:
         resolved_status = "candidate" if index_id == "r2k-proxy" else _CONFIDENCE_STATUS[confidence]
         existing = store.events(index_id)
@@ -227,7 +229,7 @@ def import_events(
             ],
             run_id=run_id,
         )
-    except Exception:
+    except BaseException:  # noqa: BLE001 - pm:2026-09-16-interrupted-runs-never-closed: still close the run on SystemExit/KeyboardInterrupt
         ledger.emit(
             "runs",
             [run_row | {"ended": datetime.now(UTC), "exit_code": 1, "verdict": "FAILED"}],
@@ -409,7 +411,9 @@ def sync(
         "exit_code": None,
         "verdict": None,
     }
-    ledger.emit("runs", [run_row], run_id=run_id)
+    abandoned = ledger.open_run(run_row)
+    if abandoned:
+        print(f"abandoned {len(abandoned)} open run(s) of membership-sync: {', '.join(abandoned)}")
     failures: dict[str, Exception] = {}
     try:
         for index_id in indexes:
@@ -490,7 +494,7 @@ def sync(
                     sort_keys=True,
                 )
             )
-    except Exception:
+    except BaseException:  # noqa: BLE001 - pm:2026-09-16-interrupted-runs-never-closed: still close the run on SystemExit/KeyboardInterrupt
         ledger.emit(
             "runs",
             [run_row | {"ended": datetime.now(UTC), "exit_code": 1, "verdict": "FAILED"}],
@@ -628,7 +632,9 @@ def reresolve(
         "exit_code": None,
         "verdict": None,
     }
-    ledger.emit("runs", [run_row], run_id=run_id)
+    abandoned = ledger.open_run(run_row)
+    if abandoned:
+        print(f"abandoned {len(abandoned)} open run(s) of membership-reresolve: {', '.join(abandoned)}")
     try:
         resolved_status = "candidate" if index_id == "r2k-proxy" else _CONFIDENCE_STATUS[confidence]
         events = store.events(index_id)
@@ -718,7 +724,7 @@ def reresolve(
             now,
             {"membership_reresolve_conflict": conflicts, "membership_unresolved": backlog},
         )
-    except Exception:
+    except BaseException:  # noqa: BLE001 - pm:2026-09-16-interrupted-runs-never-closed: still close the run on SystemExit/KeyboardInterrupt
         ledger.emit(
             "runs",
             [run_row | {"ended": datetime.now(UTC), "exit_code": 1, "verdict": "FAILED"}],

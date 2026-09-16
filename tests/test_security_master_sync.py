@@ -826,7 +826,7 @@ def test_the_default_fetch_paces_every_request_at_the_declared_rate(tmp_path, mo
         indexes=["sp500"], data_lake_root=lake, now=NOW, clock_fn=lambda: NOW, sleep_fn=slept.append, dry_run=True
     )
 
-    assert slept == [12.0, 12.0, 12.0]  # 60 / massive_requests_per_minute/reference
+    assert slept == [0.1, 0.1, 0.1]  # 60 / massive_requests_per_minute/reference
 
 
 def test_an_empty_probe_is_recorded_and_not_repeated_on_the_next_run(tmp_path):
@@ -960,3 +960,104 @@ def test_an_unexpected_failure_still_closes_the_run_row(tmp_path, monkeypatch):
         "select verdict, exit_code from runs where job='security-master-sync' and ended is not null"
     )
     assert [(row["verdict"], row["exit_code"]) for row in terminal] == [("FAILED", 1)]
+
+
+# --- a failure names what failed ------------------------------------------
+# `identity_fetch_failed` is a count. It told the operator to rerun without
+# saying what to rerun, so the only recovery was the whole universe again.
+# pm:2026-09-16-fetch-failures-had-no-subject
+
+
+def _failure_rows() -> dict[str, str]:
+    """scope -> unit, for every per-ticker fetch-failure row."""
+    rows = ledger.query("select scope, unit from measurements where name = 'identity_fetch_failed_ticker'")
+    return {row["scope"]: row["unit"] for row in rows}
+
+
+def test_a_fetch_failure_names_the_ticker_and_its_http_status(tmp_path):
+    lake = _placeholder_lake(tmp_path, [("AAPL", "2010-01-04")])
+
+    def fetch(ticker: str, *, probe_dates: tuple[str, ...] = ()):
+        raise UniverseFetchError("Massive reference lookup failed for AAPL: boom", status_code=503)
+
+    security_master_sync.sync(
+        indexes=["sp500"],
+        data_lake_root=lake,
+        now=NOW,
+        clock_fn=lambda: NOW,
+        fetch_fn=fetch,
+        sleep_fn=lambda _s: None,
+    )
+
+    assert _failure_rows() == {"AAPL:503": "first_attempt"}
+    # the aggregate stays exactly where every existing reader expects it
+    assert _measurements()[("identity_fetch_failed", "all")] == 1
+
+
+def test_a_failure_after_the_429_backoff_says_so(tmp_path):
+    """The retry's own status used to be discarded — the exception was caught
+    without being bound, so nothing recorded what the second attempt saw."""
+    lake = _placeholder_lake(tmp_path, [("AAPL", "2010-01-04")])
+    statuses = iter([429, 500])
+
+    def fetch(ticker: str, *, probe_dates: tuple[str, ...] = ()):
+        raise UniverseFetchError("rate limited", status_code=next(statuses))
+
+    security_master_sync.sync(
+        indexes=["sp500"],
+        data_lake_root=lake,
+        now=NOW,
+        clock_fn=lambda: NOW,
+        fetch_fn=fetch,
+        sleep_fn=lambda _s: None,
+    )
+
+    assert _failure_rows() == {"AAPL:500": "after_429_retry"}
+
+
+def test_a_failure_with_no_http_status_is_still_named(tmp_path):
+    lake = _placeholder_lake(tmp_path, [("AAPL", "2010-01-04")])
+
+    def fetch(ticker: str, *, probe_dates: tuple[str, ...] = ()):
+        raise UniverseFetchError("connection reset", status_code=None)
+
+    security_master_sync.sync(
+        indexes=["sp500"],
+        data_lake_root=lake,
+        now=NOW,
+        clock_fn=lambda: NOW,
+        fetch_fn=fetch,
+        sleep_fn=lambda _s: None,
+    )
+
+    assert _failure_rows() == {"AAPL:none": "first_attempt"}
+
+
+def test_a_dry_run_names_nothing_because_it_appends_nothing(tmp_path):
+    lake = _placeholder_lake(tmp_path, [("AAPL", "2010-01-04")])
+
+    def fetch(ticker: str, *, probe_dates: tuple[str, ...] = ()):
+        raise UniverseFetchError("boom", status_code=503)
+
+    security_master_sync.sync(
+        indexes=["sp500"],
+        data_lake_root=lake,
+        now=NOW,
+        clock_fn=lambda: NOW,
+        fetch_fn=fetch,
+        sleep_fn=lambda _s: None,
+        dry_run=True,
+    )
+
+    assert _failure_rows() == {}
+
+
+def test_a_successful_run_names_no_failures(tmp_path):
+    lake = _placeholder_lake(tmp_path, [("AAPL", "2010-01-04")])
+    fetch = _fetcher({"AAPL": ["aapl-active-2026-09-15.json"]}, [])
+
+    security_master_sync.sync(
+        indexes=["sp500"], data_lake_root=lake, now=NOW, clock_fn=lambda: NOW, fetch_fn=fetch, sleep_fn=lambda _s: None
+    )
+
+    assert _failure_rows() == {}

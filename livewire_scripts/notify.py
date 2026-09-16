@@ -54,6 +54,30 @@ def already_sent(fp: str, *, within_hours: int = 24) -> bool:
     return bool(rows)
 
 
+def paged_for_run(run_id: str, *, within_hours: int = 24) -> bool:
+    """True when a page was already delivered while `run_id` was executing.
+
+    The lane runner pages the moment a lane fails; the watchdog reads the same
+    failure out of the ledger an hour later and pages again, because the two
+    build their dedup fingerprints in unrelated namespaces
+    (pm:2026-09-16-one-failure-paged-twice). Every send records the run it ran
+    under in `executions.run_id`, so that column is the one thing both surfaces
+    already share.
+
+    A send that failed or was itself skipped does not count: the watchdog stays
+    the safety net for a page that never left the machine.
+    """
+    if not run_id:
+        return False
+    rows = ledger.query(
+        "select 1 as hit from executions where script='notify' and exit_code=0 "
+        f"and run_id = '{run_id}' and started >= now() - interval {int(within_hours)} hour "
+        "and json_extract_string(receipt_json,'$.kind') = 'page' "
+        "and json_extract_string(receipt_json,'$.skipped') = 'false' limit 1"
+    )
+    return bool(rows)
+
+
 def sent_within(hours: int = 24) -> list[dict]:
     """Every notify row in the window — the digest's 'SENT to you' block."""
     return ledger.query(
@@ -69,6 +93,8 @@ def sent_within(hours: int = 24) -> list[dict]:
 def page_from_sections(sections: list[Section], run_date: date) -> Notice | None:
     """A page for the current BAD state, or None when nothing is BAD."""
     bad = [s for s in sections if s.verdict == Verdict.BAD]
+    # A section whose own run already paged is that page restated an hour later.
+    bad = [s for s in bad if not (s.run_id and paged_for_run(s.run_id))]
     if not bad:
         return None
     keys = sorted(s.notification_key or f"{s.name}:{s.verdict.name}" for s in bad)

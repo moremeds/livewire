@@ -183,6 +183,64 @@ def query(sql: str) -> list[dict]:
     return ledger_query(sql, root=ledger_root(), tables=LEDGER_TABLES)
 
 
+ABANDONED = "ABANDONED"
+#: Verdict for a run whose process died without writing its own terminal row.
+
+
+def _abandon_stale(job: str, host: str, now: datetime) -> list[str]:
+    """Close every still-open run of `job` on `host` with ``ABANDONED``.
+
+    A terminal row is only ever written by the process that owns the run, so a
+    SIGKILL — or a SIGINT an entrypoint's ``except Exception`` does not catch —
+    leaves the entry row open forever, and every reader has to infer "no close
+    row and no process" by hand (pm:2026-09-16-interrupted-runs-never-closed).
+    The next start of the same job on the same host is the first moment anything
+    can state that the earlier run is over, so it states it here.
+
+    Self-healing by construction: if the abandoned process was in fact alive and
+    writes its own terminal row later, that row carries the later ``ended`` and
+    wins every reader's ``max(ended)`` / ``order by ended desc``.
+    """
+    stale = query(
+        f"select run_id, min(started) as started from runs where job = '{job}' and host = '{host}' "
+        "group by run_id having max(ended) is null"
+    )
+    for row in stale:
+        run_id = str(row["run_id"])
+        emit(
+            "runs",
+            [
+                {
+                    # `started` is the abandoned run's own, never the closer's:
+                    # readers order terminal rows by `started`, so a row stamped
+                    # now would sort ahead of a genuine close row.
+                    "run_id": run_id,
+                    "job": job,
+                    "host": host,
+                    "release_sha": None,
+                    "presets_sha": None,
+                    "registry_sha": None,
+                    "started": row["started"],
+                    "ended": now,
+                    "exit_code": None,
+                    "verdict": ABANDONED,
+                }
+            ],
+            run_id=run_id,
+        )
+    return [str(row["run_id"]) for row in stale]
+
+
+def open_run(run_row: dict) -> list[str]:
+    """Emit `run_row` as a job's entry row, abandoning its predecessors first.
+
+    Returns the run ids that were abandoned, for the caller to log.
+    """
+    abandoned = _abandon_stale(str(run_row["job"]), str(run_row["host"]), datetime.now(UTC))
+    emit("runs", [run_row], run_id=str(run_row["run_id"]))
+    return abandoned
+
+
 def open_runs(jobs: tuple[str, ...], day: date) -> list[str]:
     """Job names among `jobs` that have a run started on `day` with ended IS NULL.
 

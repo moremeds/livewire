@@ -178,7 +178,7 @@ def test_the_real_client_failing_at_the_transport_seam_is_caught_per_series(tmp_
     DGS5 502s on every attempt; the other three answer. run() must publish the
     three, request all four, and still return 1.
     """
-    monkeypatch.setattr("clients.fred_client.time.sleep", lambda _s: None)
+    monkeypatch.setattr("clients.http_retry.time.sleep", lambda _s: None)
     request = httpx.Request("GET", FRED_OBSERVATIONS_URL)
     payload = {"observations": [{"date": "2026-09-10", "value": "4.95"}]}
 

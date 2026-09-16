@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `clients/http_retry.py`: the repo's one definition of a transient HTTP
+  failure. A 5xx or a transport error retries with a bounded linear backoff; a
+  4xx raises on the first attempt. FRED's local copy was replaced by it and
+  CBOE now uses it too (`cboe_retry_attempts`, `cboe_retry_backoff_s`).
+- `ledger.open_run()` closes a job's still-open predecessors on the same host
+  with `verdict = 'ABANDONED'` before opening a new run, so a run killed by
+  SIGKILL or Ctrl-C no longer reads as in flight forever. `status` grades
+  `ABANDONED` as WARN.
+- `identity_fetch_failed_ticker` measurements name each failed security-master
+  fetch as `<ticker>:<http status>`, so a rerun can target those tickers
+  instead of re-walking the whole universe.
+- `ledger query` prints the quoting and reserved-word rules in `--help`, and a
+  bad query exits 2 with one line and a hint instead of a traceback.
+
 - `duckdb build` now also publishes a read-only snapshot of the coverage
   catalog to `<lake>/catalog/analytics.duckdb` (temp + `os.replace`), so a
   consumer bound to the lake volume can open it while the writer keeps its
@@ -118,6 +132,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   committed`; the watchdog paged 4.5h later and Silver never rebuilt.
 
 ### Changed
+
+- `massive_requests_per_minute/reference` is 600/min, not the 5/min inherited
+  from the free Currencies FX tier. Massive documents no cap on a paid plan and
+  advises staying under 100 req/s; the backfill is latency-bound well below it.
+- The watchdog no longer pages for a failure whose run already paged. A lane
+  failure used to send two emails: the lane's own page, then the watchdog's an
+  hour later, because the two fingerprint in unrelated namespaces.
+- `cboe-vol` returns 1 when a symbol is still unfetched after retries. It
+  returned `None` — exit 0 — however many symbols failed, so the phase could
+  not fail. A 4xx still exits 0: a retired index is CBOE's fact, surfaced by
+  the `Stale non-equity` check.
+- Entrypoints that open a ledger run catch `BaseException` around the body, so
+  a Ctrl-C writes the terminal row before re-raising.
 
 - `rebuild-silver` now publishes the successfully staged symbols instead of
   aborting the whole revision when some symbols fail to stage (e.g. unresolved

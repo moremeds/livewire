@@ -76,12 +76,17 @@ DECLARED: dict[str, tuple[float, str]] = {
     "massive_window_days": (1827, "days"),
     # Massive REST FX plan: 5 succeed, the 6th 429s, no Retry-After. FX-scoped.
     "massive_requests_per_minute/fx": (5, "per_min"),
-    # Massive REST /v3/reference/tickers. Its published limit is unknown; 5/min
-    # is the only Massive REST rate this repo has measured, and it is FX-scoped,
-    # so this scope starts at the same number and is re-measured by the first
-    # `--tickers` sample run on the mini (spec §2). Pace the full backfill with
-    # LW_DECLARED_MASSIVE_REQUESTS_PER_MINUTE_REFERENCE set to what that run saw.
-    "massive_requests_per_minute/reference": (5, "per_min"),
+    # Massive REST /v3/reference/tickers. Massive's own knowledge base says paid
+    # plans have no request-per-minute cap and asks callers to stay under 100
+    # req/s; the 5/min above is the FREE Currencies tier and must never be
+    # copied to a Stocks-plan endpoint. This scope was seeded from it anyway and
+    # paced the first backfill at 12 s/request — 40+ hours of pure sleep for a
+    # job whose requests cost 0.6 s each
+    # (pm:2026-09-16-reference-rate-inherited-the-free-fx-tier). 600/min is a
+    # tenth of the documented ceiling and the rate the 2026-09-16 backfill ran
+    # at; at that pace the sleep (0.1 s) is below the round-trip, so the run is
+    # latency-bound and raising this further buys nothing.
+    "massive_requests_per_minute/reference": (600, "per_min"),
     # The single 429 backoff for that endpoint; a second 429 is a fetch failure,
     # not a longer wait.
     "massive_backoff_s/reference": (60, "s"),
@@ -100,6 +105,11 @@ DECLARED: dict[str, tuple[float, str]] = {
     # = 384s, against the 6h sync_runner.phase_timeout_seconds budget.
     "fred_retry_attempts": (3, "count"),
     "fred_retry_backoff_s": (2, "s"),
+    # CBOE transport retry, the same shape and the same reasoning as FRED's
+    # above. The index list is short (a preset of ~10 symbols), so the worst
+    # case is bounded the same way: symbols x 3 attempts x 30s timeout.
+    "cboe_retry_attempts": (3, "count"),
+    "cboe_retry_backoff_s": (2, "s"),
 }
 
 
