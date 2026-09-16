@@ -31,7 +31,11 @@ from livewire_scripts.import_researched_identities import evidence_by_url, load_
 from livewire_scripts.paths import data_lake_dir
 
 _TIMEOUT = 30
-_USER_AGENT = "livewire/1.0 (market-data-warehouse)"
+# SEC EDGAR's Fair Access policy rejects any User-Agent with no contact
+# email (403, verified against https://www.sec.gov/cgi-bin/browse-edgar on
+# 2026-09-16) — the exact format it documents at
+# https://www.sec.gov/os/webmaster-faq#developers.
+_USER_AGENT = "livewire-research lcxxcllcx@gmail.com"
 
 
 def _wikipedia_title(url: str) -> str | None:
