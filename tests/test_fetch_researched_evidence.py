@@ -188,3 +188,65 @@ def test_run_retries_a_transient_503_and_commits_on_the_successful_attempt(csvs,
     store = SourceEvidenceStore(lake)
     committed = {item.source_url for item in store.list_verified()}
     assert _EDGAR_URL in committed
+
+
+def test_snapshot_with_retry_retries_a_429_and_succeeds(monkeypatch, tmp_path):
+    from clients.source_evidence import SourceEvidenceStore as _Store
+
+    monkeypatch.setattr(fetch.time, "sleep", lambda _seconds: None)
+    calls = {"n": 0}
+
+    def flaky_snapshot(self, title):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            from clients.mediawiki_client import MediaWikiFetchError
+
+            raise MediaWikiFetchError(f"MediaWiki fetch failed for {title}: HTTP 429")
+        return _fake_snapshot(self, title)
+
+    monkeypatch.setattr(MediaWikiClient, "snapshot", flaky_snapshot)
+    store = _Store(tmp_path / "lake")
+    mediawiki = MediaWikiClient(store, timeout=30, now=lambda: NOW)
+
+    evidence = fetch._snapshot_with_retry(mediawiki, "Alcoa")
+    assert evidence.source_url == "https://en.wikipedia.org/wiki/Alcoa"
+    assert calls["n"] == 2
+
+
+def test_snapshot_with_retry_gives_up_after_exhausting_attempts(monkeypatch, tmp_path):
+    from clients.mediawiki_client import MediaWikiFetchError
+    from clients.source_evidence import SourceEvidenceStore as _Store
+
+    monkeypatch.setattr(fetch.time, "sleep", lambda _seconds: None)
+    calls = {"n": 0}
+
+    def always_429(self, title):
+        calls["n"] += 1
+        raise MediaWikiFetchError(f"MediaWiki fetch failed for {title}: HTTP 429")
+
+    monkeypatch.setattr(MediaWikiClient, "snapshot", always_429)
+    store = _Store(tmp_path / "lake")
+    mediawiki = MediaWikiClient(store, timeout=30, now=lambda: NOW)
+
+    with pytest.raises(MediaWikiFetchError):
+        fetch._snapshot_with_retry(mediawiki, "Alcoa")
+    assert calls["n"] == fetch._MEDIAWIKI_RETRY_ATTEMPTS
+
+
+def test_snapshot_with_retry_does_not_retry_a_non_429_failure(monkeypatch, tmp_path):
+    from clients.mediawiki_client import MediaWikiFetchError
+    from clients.source_evidence import SourceEvidenceStore as _Store
+
+    calls = {"n": 0}
+
+    def not_found(self, title):
+        calls["n"] += 1
+        raise MediaWikiFetchError(f"MediaWiki fetch failed for {title}: HTTP 404")
+
+    monkeypatch.setattr(MediaWikiClient, "snapshot", not_found)
+    store = _Store(tmp_path / "lake")
+    mediawiki = MediaWikiClient(store, timeout=30, now=lambda: NOW)
+
+    with pytest.raises(MediaWikiFetchError):
+        fetch._snapshot_with_retry(mediawiki, "Alcoa")
+    assert calls["n"] == 1
