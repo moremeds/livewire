@@ -41,6 +41,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -614,7 +615,34 @@ def _build_coverage_locked(dest, sources, lake_root, silver_root, shepherd_rows)
         os.fsync(handle.fileno())
     os.replace(staging, dest)
     fsync_directory(dest.parent)
+    publish_lake_snapshot(dest, lake_root=lake_root)
     return counts
+
+
+def lake_snapshot_path(lake_root: Path | None = None) -> Path:
+    """Where readers on the lake find the catalog: `<lake>/catalog/analytics.duckdb`."""
+    lake = Path(lake_root) if lake_root is not None else data_lake_dir()
+    return lake / "catalog" / "analytics.duckdb"
+
+
+def publish_lake_snapshot(source: Path, *, lake_root: Path | None = None) -> Path:
+    """Copy the just-published catalog onto the lake, whole-old-or-whole-new.
+
+    The writer's working copy stays on local disk (`default_database`), which a
+    container bound to the lake volume cannot see. A symlink would not do: a
+    DuckDB file held open by this writer refuses `read_only=True` opens from
+    another process, so readers would fail during every build. The lake copy is
+    a snapshot swapped in with `os.replace`, the same contract as the parquet.
+    """
+    target = lake_snapshot_path(lake_root)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.with_name(f"{target.name}.publishing")
+    shutil.copyfile(source, staging)
+    with staging.open("rb") as handle:
+        os.fsync(handle.fileno())
+    os.replace(staging, target)
+    fsync_directory(target.parent)
+    return target
 
 
 def coverage_headline(database: Path | str | None = None) -> dict[str, tuple[int, date | None]]:
