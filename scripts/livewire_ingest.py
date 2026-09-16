@@ -32,6 +32,7 @@ COMMANDS = {
     "membership-sync": "livewire_scripts.membership_sync",
     "security-master": "livewire_scripts.security_master_sync",
     "import-researched-identities": "livewire_scripts.import_researched_identities",
+    "fetch-researched-evidence": "livewire_scripts.fetch_researched_evidence",
 }
 
 # Commands that talk to IB Gateway. cboe-vol uses CBOE's public API; fx uses
