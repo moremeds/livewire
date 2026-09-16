@@ -326,3 +326,73 @@ lead added an explicit non-null guard and annotated the existing integer predica
 as a type guard. Pyright then reported **0 errors, 29 warnings** in unchanged
 files, and Ruff passed. Final-candidate verification and Mini evidence follow;
 these local results do not establish production promotion or whole-lake health.
+
+At `9e28725`, the configured full suite again passed **3033 tests, 95.02%
+coverage**; GitHub CI passed. Grok approved the bounded type-guard correction.
+No dependency, service, runtime module, storage schema or second fact store was
+added. Shared process mechanics retain job-specific completion policies, and
+status/watchdog/digest continue to use the existing collector.
+
+## O5 — actual Mac mini candidate validation
+
+The first exact candidate was `9e28725f8a7097547ea7d2577cb97a8cd4d5be39`.
+Its Git archive was hash-verified before extraction into a task-owned validation
+release. All write destinations were pinned to isolated validation trees, with
+Bronze/Silver/catalog/raw children on the existing external HDD and metadata on
+the internal disk. Six real AAPL/SPY/BTX daily/action files (566,414 bytes) were
+copied; source-before, source-after and copy hashes agreed. No provider calls,
+mail, production writes, Gateway restart or release promotion were performed.
+
+The actual shared runner executed four commands: initial AAPL/SPY Silver publish,
+AAPL/SPY/BTX rebuild, targeted AAPL no-op, and catalog build. All raw/effective
+process codes were zero. The second rebuild nevertheless retained a real BTX
+staging failure: `unknown price_basis for split-affected row 2021-06-11`.
+The diagnostic preserved that failure after AAPL's later success. The error
+contains a row date; the captured input bounds are context, not an assertion
+that every session in that range failed. No BTX last-valid artifact was invented.
+
+The probe checked exact loaded source paths and receipt release identity,
+three Silver receipts, four process receipts, one catalog receipt, unchanged
+targeted no-op manifest, all four retained snapshot artifact hashes, unchanged
+copied inputs, and equal source/expected/copied catalog hashes. Disk diagnosis
+correctly separated internal and external filesystems. This establishes a bounded
+real-input candidate run, not whole-universe correctness or Apex adoption.
+
+Separately, candidate read-only status ran against production roots in 5.68 s
+(baseline sample 7.55 s; these single samples are not a speed benchmark). Existing
+23 Silver failures and 91 window regressions stayed visible. Legacy rows without
+symbol receipts remained explicitly unscoped/UNKNOWN. Other pre-existing warnings
+included stale non-equity data, dividend currency mismatches, unresolved
+memberships, catalog freshness and internal free space. No repairs were attempted.
+
+After the probe, production `current` still selected `8471041`; Apex health was
+OK, watcher observed/applied revision 72, pending/failed empty, and the AAPL
+adjusted-return canary for September 14–15 succeeded with no missing symbols.
+That is a scoped consumer check against production, not the isolated candidate.
+
+The first Mini regression pass reported **451 passed, 21 failed**: 19 status
+tests inherited the probe's explicit Silver override, and two expected `.git`
+inside a release archive. These fixture portability failures are retained in
+the evidence. Devin corrected only the three affected test files at `784eac2`:
+the Silver fixture pins its own destination, and expected identity is derived
+independently from the checkout/release layout. Assertions and runtime source
+were preserved. Devin's local checks passed 298 tests both normally and with
+an unrelated inherited Silver override.
+
+Lead then shipped the exact `784eac2ccb72c179a270286f874c74904f4be8f9` archive
+to a new isolated Mini tree. The real-input probe passed again, including the
+BTX fault remaining open after AAPL success and all artifact/receipt checks.
+The same ten-file regression command passed **472 tests in 36.61 s**, including
+the controlled process timeout/cleanup and publication failure cases. These
+controlled failures are test injections; the BTX price-basis error came from
+copied real inputs.
+
+Grok approved the frozen `9e28725..784eac2` fixture-only diff, checking independent
+identity expectations, unchanged assertions and destinations under test-owned
+temporary paths. Lead accepted it after the successful actual Mini rerun.
+
+Raw source archive hashes, setup/input hash manifests, stdout, probe result JSON,
+test logs and production before/after checks are retained in the lead's private
+task evidence directory. No full nightly/provider run or production deployment
+was performed. The operational changes are validated; pre-existing data faults
+remain separate unresolved work.
