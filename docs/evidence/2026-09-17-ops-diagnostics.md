@@ -242,8 +242,9 @@ existing shared contract.
 
 - Projects `evidence` rows (`kind='silver_symbol_failure'`) + `executions`
   `rebuild-silver` receipts for THESE resolved `data_lake_root`/`silver_root`
-  only. Malformed/foreign/unknown-version rows are counted, never fatal, never
-  erased (`undecodable`, `for other roots`).
+  only. Malformed/unknown-version rows are counted as undecodable. Foreign
+  evidence is counted (`for other roots`); foreign receipts are excluded before
+  matching. Neither can close an issue on this lake.
 - Issues group by symbol + stage + classification + known scope; staging scope
   is `UNKNOWN` (failing session was never recorded — input date bounds render
   as context, not identity). Withheld regressions keep
@@ -272,7 +273,7 @@ existing shared contract.
   establish which symbols the counter meant. Verdict: open issues → WARN; any
   legacy/malformed/undecodable uncertainty or absence of a verified
   committed/noop receipt → UNKNOWN; else OK. `notification_key` carries issue
-  identity + legacy name only — timestamps, run ids and malformed counts do
+  identity + legacy counter name/value — timestamps, run ids and malformed counts do
   not re-page an unchanged fault.
 
 ### Silver publication / catalog receipt lines
@@ -308,3 +309,20 @@ existing shared contract.
   same-symbol+stage issue (conservative coarseness — no execution-id
   framework); distinct classifications still key separately.
 - No production/Mac mini validation claimed; O4/O5 remain lead-owned.
+
+## O4 — independent review and configured checks
+
+Grok approved the O1/O2 slice, then requested three O3 corrections: a failed
+catalog copy must not read OK, a newer standalone Silver failure must not be
+hidden by an older successful lane, and undecodable receipts must not make an
+older record appear current. Lead reproduced the first two and a completion-order
+variant with controlled metadata. Devin corrected them; Grok approved the frozen
+source and tests at `36a1c2d` after rechecking the regression fixtures.
+
+Lead independently ran the 168 O3 tests and the configured full suite at that
+commit: **3033 passed, 95.02% coverage**. Ruff, format, lock and alerts checks
+passed. Pyright identified seven optional-subscript errors in one new branch;
+lead added an explicit non-null guard and annotated the existing integer predicate
+as a type guard. Pyright then reported **0 errors, 29 warnings** in unchanged
+files, and Ruff passed. Final-candidate verification and Mini evidence follow;
+these local results do not establish production promotion or whole-lake health.

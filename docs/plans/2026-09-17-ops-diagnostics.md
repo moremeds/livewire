@@ -10,6 +10,12 @@ Baseline: execution branch `fix/ops-diagnostics`, base
 Mini checkout/current were `a9965e016508c697ef62a25566ebf40dc0eb7150`; no matching
 Livewire/backfill process was returned. Refresh before any remote run.
 
+Integration update after O2: upstream advanced independently through `9fca408`
+to `84710411383c7240e7f386811efd899f986af456` (security-master evidence retry
+fixes, separate source/test files). Lead integrated that commit at the idle-worker
+milestone without conflicts. Original execution base above remains unchanged;
+final task diff/review is against this newer integration base.
+
 ## Boundaries
 
 - Keep six ledger schemas and existing `receipt_json`/`payload_json` extension

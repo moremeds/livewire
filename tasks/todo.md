@@ -10,8 +10,8 @@ Graph: `O0 -> O1 -> O2 -> O3 -> O4 -> O5`.
 - [x] O0 (`depends_on: []`): Baseline and Grok plan review; six pins clarified, APPROVE; 362 relevant baseline tests pass.
 - [x] O1 (`depends_on: [O0]`): Accepted `89e5bde`; lead reviewed the diff and verified 249 tests, including the UTC fixture correction. Nested-group regression removed; unknown source identity stays UNKNOWN.
 - [x] O2 (`depends_on: [O1]`): Accepted `1612fd2`; lead verified 244 tests and publication boundaries, then folded duplicate concurrency coverage into the existing test.
-- [ ] O3 (`depends_on: [O2]`): Shared diagnostic projection and actual-volume checks.
-- [ ] O4 (`depends_on: [O3]`): Integrate upstream `9fca408` (security-master retry, separate files), lead/Grok review, simplification, configured tests and PR.
+- [x] O3 (`depends_on: [O2]`): Delivered `36a1c2d`; lead independently verified 168 relevant tests. Grok findings corrected; final O4 review remains open.
+- [ ] O4 (`depends_on: [O3]`, in progress): Upstream `8471041` integrated; full suite 3033 passed / 95.02% at `36a1c2d`. Resolve type-check findings, finish Grok review and PR.
 - [ ] O5 (`depends_on: [O4]`): Exact candidate run on actual Mini; distinguish promotion/full-cycle gates.
 
 ## Resend SMTP from livewire@rsiarc.com (2026-09-13)

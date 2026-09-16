@@ -16,6 +16,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import TypeGuard
 
 from rich.console import Console
 from rich.markup import escape
@@ -714,7 +715,7 @@ def _silver_publication_section(data_lake: Path) -> Section:
     if outcome == "done":
         lane_time = latest["ended"] or latest["started"]
         receipt_time = (latest_receipt["ended"] or latest_receipt["started"]) if latest_receipt is not None else None
-        if receipt_time is not None and (lane_time is None or receipt_time > lane_time):
+        if latest_receipt is not None and receipt_time is not None and (lane_time is None or receipt_time > lane_time):
             # A standalone rebuild-silver attempt is NEWER than the terminal
             # lane row: the receipt's own result — not the lane's — describes
             # the latest attempt. The receipt stays a receipt; nothing here
@@ -834,7 +835,7 @@ def _silver_publication_section(data_lake: Path) -> Section:
     )
 
 
-def _is_int(value) -> bool:
+def _is_int(value) -> TypeGuard[int]:
     """Strict int — ``True`` is an int in Python and must not pass a version field."""
     return isinstance(value, int) and not isinstance(value, bool)
 
