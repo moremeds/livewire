@@ -18,19 +18,31 @@ import argparse
 import os
 import socket
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+import httpx
 import requests
 
 from clients import ledger
+from clients.http_retry import get_with_retry
 from clients.mediawiki_client import MediaWikiClient, MediaWikiFetchError
 from clients.source_evidence import SourceEvidence, SourceEvidenceStore
 from livewire_scripts.import_researched_identities import evidence_by_url, load_rows
 from livewire_scripts.paths import data_lake_dir
 
 _TIMEOUT = 30
+_RETRY_ATTEMPTS = 3
+_RETRY_BACKOFF_S = 1.0
+# The same handful of large Wikipedia pages (List_of_S&P_500_companies,
+# Historical_components_of_..., big single-company articles) 429 on every
+# run regardless of elapsed time since the last one — not a short burst
+# window, so `MediaWikiClient` (no retry of its own) needs one here. It
+# raises a plain string, not a typed status, so this checks the message.
+_MEDIAWIKI_RETRY_ATTEMPTS = 3
+_MEDIAWIKI_RETRY_BACKOFF_S = 10.0
 # SEC EDGAR's Fair Access policy rejects any User-Agent with no contact
 # email (403, verified against https://www.sec.gov/cgi-bin/browse-edgar on
 # 2026-09-16) — the exact format it documents at
@@ -45,9 +57,25 @@ def _wikipedia_title(url: str) -> str | None:
     return unquote(parsed.path.split("/wiki/", 1)[1])
 
 
-def _fetch_generic(url: str, store: SourceEvidenceStore, now: datetime, session: requests.Session) -> None:
-    response = session.get(url, headers={"User-Agent": _USER_AGENT}, timeout=_TIMEOUT)
-    response.raise_for_status()
+def _snapshot_with_retry(mediawiki: MediaWikiClient, title: str):
+    for attempt in range(1, _MEDIAWIKI_RETRY_ATTEMPTS + 1):
+        try:
+            return mediawiki.snapshot(title)
+        except MediaWikiFetchError as exc:
+            if "429" not in str(exc) or attempt == _MEDIAWIKI_RETRY_ATTEMPTS:
+                raise
+            time.sleep(_MEDIAWIKI_RETRY_BACKOFF_S * attempt)
+
+
+def _fetch_generic(url: str, store: SourceEvidenceStore, now: datetime) -> None:
+    # SEC EDGAR 503s transiently under load (verified: a manual retry of a
+    # failed URL succeeds immediately) — clients/http_retry.py is the repo's
+    # one definition of a transient HTTP failure, never a private retry loop.
+    response = get_with_retry(
+        lambda: httpx.get(url, headers={"User-Agent": _USER_AGENT}, timeout=_TIMEOUT),
+        attempts=_RETRY_ATTEMPTS,
+        backoff_s=_RETRY_BACKOFF_S,
+    )
     artifact = store.persist_raw(bytes(response.content))
     store.record(
         SourceEvidence(
@@ -66,8 +94,7 @@ def _fetch_generic(url: str, store: SourceEvidenceStore, now: datetime, session:
 def run(*, round1_path: Path, round2_path: Path, data_lake_root: Path, now: datetime, dry_run: bool = False) -> int:
     root = Path(data_lake_root)
     store = SourceEvidenceStore(root)
-    session = requests.Session()
-    mediawiki = MediaWikiClient(store, timeout=_TIMEOUT, now=lambda: now, session=session)
+    mediawiki = MediaWikiClient(store, timeout=_TIMEOUT, now=lambda: now, session=requests.Session())
 
     rows = load_rows(round1_path, round2_path)
     urls = sorted(
@@ -115,11 +142,11 @@ def run(*, round1_path: Path, round2_path: Path, data_lake_root: Path, now: date
                 try:
                     title = _wikipedia_title(url)
                     if title is not None:
-                        mediawiki.snapshot(title)
+                        _snapshot_with_retry(mediawiki, title)
                     else:
-                        _fetch_generic(url, store, now, session)
+                        _fetch_generic(url, store, now)
                     fetched += 1
-                except (MediaWikiFetchError, requests.RequestException, OSError) as exc:
+                except (MediaWikiFetchError, requests.RequestException, httpx.HTTPError, OSError) as exc:
                     failed += 1
                     print(f"failed: {url}: {exc}", file=sys.stderr)
 

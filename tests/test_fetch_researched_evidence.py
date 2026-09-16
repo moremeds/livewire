@@ -5,11 +5,13 @@ from __future__ import annotations
 import csv
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
-import requests
 
-from clients.source_evidence import SourceEvidenceStore
+from clients.mediawiki_client import MediaWikiClient
+from clients.source_evidence import SourceEvidence, SourceEvidenceStore
 from livewire_scripts import fetch_researched_evidence as fetch
 
 NOW = datetime(2026, 9, 17, 0, 0, tzinfo=UTC)
@@ -70,6 +72,9 @@ ROUND2_ROWS = [
     },
 ]
 
+_EDGAR_URL = "https://www.sec.gov/cgi-bin/browse-edgar?CIK=0000004281"
+_REQUEST = httpx.Request("GET", _EDGAR_URL)
+
 
 def _write_csv(path: Path, fields: list[str], rows: list[dict]) -> Path:
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -89,59 +94,46 @@ def csvs(tmp_path):
 
 def test_wikipedia_title_extracts_from_wiki_url():
     assert fetch._wikipedia_title("https://en.wikipedia.org/wiki/Alcoa") == "Alcoa"
-    assert fetch._wikipedia_title("https://www.sec.gov/cgi-bin/browse-edgar?CIK=1") is None
+    assert fetch._wikipedia_title(_EDGAR_URL) is None
 
 
-class _FakeResponse:
-    def __init__(self, content: bytes, content_type: str = "text/html") -> None:
-        self.content = content
-        self.headers = {"Content-Type": content_type}
-        self.url = "https://www.sec.gov/cgi-bin/browse-edgar?CIK=0000004281"
+def _edgar_response(status_code: int = 200, content_type: str = "text/html") -> httpx.Response:
+    return httpx.Response(
+        status_code,
+        request=_REQUEST,
+        content=b"edgar company page",
+        headers={"Content-Type": content_type},
+    )
 
-    def raise_for_status(self) -> None:
-        pass
 
-
-class _FakeSession:
-    def get(self, url, headers=None, timeout=None):
-        return _FakeResponse(f"page for {url}".encode())
+def _fake_snapshot(self, title):
+    artifact = self.store.persist_raw(f"wiki page for {title}".encode())
+    evidence = SourceEvidence(
+        ref=artifact.ref,
+        sha256=artifact.sha256,
+        source_url=f"https://en.wikipedia.org/wiki/{title}",
+        retrieved_at=NOW,
+        publication_time=NOW,
+        mediawiki_revision_id=1,
+        mediawiki_revision_time=NOW,
+        content_type="text/html",
+    )
+    self.store.record(evidence)
+    return evidence
 
 
 def test_run_fetches_wikipedia_via_mediawiki_and_edgar_via_generic_get(csvs, tmp_path, monkeypatch):
     round1, round2 = csvs
     lake = tmp_path / "lake"
 
-    def fake_snapshot(self, title):
-        from clients.source_evidence import SourceEvidence
-
-        artifact = self.store.persist_raw(f"wiki page for {title}".encode())
-        evidence = SourceEvidence(
-            ref=artifact.ref,
-            sha256=artifact.sha256,
-            source_url=f"https://en.wikipedia.org/wiki/{title}",
-            retrieved_at=NOW,
-            publication_time=NOW,
-            mediawiki_revision_id=1,
-            mediawiki_revision_time=NOW,
-            content_type="text/html",
-        )
-        self.store.record(evidence)
-        return evidence
-
-    from clients.mediawiki_client import MediaWikiClient
-
-    monkeypatch.setattr(MediaWikiClient, "snapshot", fake_snapshot)
-    monkeypatch.setattr(requests, "Session", lambda: _FakeSession())
-
-    exit_code = fetch.run(round1_path=round1, round2_path=round2, data_lake_root=lake, now=NOW)
+    monkeypatch.setattr(MediaWikiClient, "snapshot", _fake_snapshot)
+    with patch("livewire_scripts.fetch_researched_evidence.httpx.get", return_value=_edgar_response()):
+        exit_code = fetch.run(round1_path=round1, round2_path=round2, data_lake_root=lake, now=NOW)
     assert exit_code == 0
 
     store = SourceEvidenceStore(lake)
     committed = {item.source_url for item in store.list_verified()}
-    assert committed == {
-        "https://en.wikipedia.org/wiki/Alcoa",
-        "https://www.sec.gov/cgi-bin/browse-edgar?CIK=0000004281",
-    }
+    assert committed == {"https://en.wikipedia.org/wiki/Alcoa", _EDGAR_URL}
 
 
 def test_run_skips_already_committed_urls(csvs, tmp_path, monkeypatch):
@@ -149,8 +141,6 @@ def test_run_skips_already_committed_urls(csvs, tmp_path, monkeypatch):
     lake = tmp_path / "lake"
     store = SourceEvidenceStore(lake)
     artifact = store.persist_raw(b"already fetched")
-    from clients.source_evidence import SourceEvidence
-
     store.record(
         SourceEvidence(
             ref=artifact.ref,
@@ -170,14 +160,93 @@ def test_run_skips_already_committed_urls(csvs, tmp_path, monkeypatch):
         calls.append(title)
         raise AssertionError("should not refetch an already-committed URL")
 
-    from clients.mediawiki_client import MediaWikiClient
-
     monkeypatch.setattr(MediaWikiClient, "snapshot", fail_snapshot)
-    monkeypatch.setattr(requests, "Session", lambda: _FakeSession())
-
-    exit_code = fetch.run(round1_path=round1, round2_path=round2, data_lake_root=lake, now=NOW)
+    with patch("livewire_scripts.fetch_researched_evidence.httpx.get", return_value=_edgar_response()):
+        exit_code = fetch.run(round1_path=round1, round2_path=round2, data_lake_root=lake, now=NOW)
     assert exit_code == 0
     assert calls == []
     store = SourceEvidenceStore(lake)
     committed = {item.source_url for item in store.list_verified()}
-    assert "https://www.sec.gov/cgi-bin/browse-edgar?CIK=0000004281" in committed
+    assert _EDGAR_URL in committed
+
+
+def test_run_retries_a_transient_503_and_commits_on_the_successful_attempt(csvs, tmp_path, monkeypatch):
+    """SEC EDGAR 503s transiently under load; the retry lives in
+    `clients.http_retry`, not a private loop in this script."""
+    round1, round2 = csvs
+    lake = tmp_path / "lake"
+
+    monkeypatch.setattr("clients.http_retry.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(MediaWikiClient, "snapshot", _fake_snapshot)
+    mock_get = MagicMock(side_effect=[_edgar_response(503), _edgar_response(200)])
+
+    with patch("livewire_scripts.fetch_researched_evidence.httpx.get", mock_get):
+        exit_code = fetch.run(round1_path=round1, round2_path=round2, data_lake_root=lake, now=NOW)
+
+    assert exit_code == 0
+    assert mock_get.call_count == 2
+    store = SourceEvidenceStore(lake)
+    committed = {item.source_url for item in store.list_verified()}
+    assert _EDGAR_URL in committed
+
+
+def test_snapshot_with_retry_retries_a_429_and_succeeds(monkeypatch, tmp_path):
+    from clients.source_evidence import SourceEvidenceStore as _Store
+
+    monkeypatch.setattr(fetch.time, "sleep", lambda _seconds: None)
+    calls = {"n": 0}
+
+    def flaky_snapshot(self, title):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            from clients.mediawiki_client import MediaWikiFetchError
+
+            raise MediaWikiFetchError(f"MediaWiki fetch failed for {title}: HTTP 429")
+        return _fake_snapshot(self, title)
+
+    monkeypatch.setattr(MediaWikiClient, "snapshot", flaky_snapshot)
+    store = _Store(tmp_path / "lake")
+    mediawiki = MediaWikiClient(store, timeout=30, now=lambda: NOW)
+
+    evidence = fetch._snapshot_with_retry(mediawiki, "Alcoa")
+    assert evidence.source_url == "https://en.wikipedia.org/wiki/Alcoa"
+    assert calls["n"] == 2
+
+
+def test_snapshot_with_retry_gives_up_after_exhausting_attempts(monkeypatch, tmp_path):
+    from clients.mediawiki_client import MediaWikiFetchError
+    from clients.source_evidence import SourceEvidenceStore as _Store
+
+    monkeypatch.setattr(fetch.time, "sleep", lambda _seconds: None)
+    calls = {"n": 0}
+
+    def always_429(self, title):
+        calls["n"] += 1
+        raise MediaWikiFetchError(f"MediaWiki fetch failed for {title}: HTTP 429")
+
+    monkeypatch.setattr(MediaWikiClient, "snapshot", always_429)
+    store = _Store(tmp_path / "lake")
+    mediawiki = MediaWikiClient(store, timeout=30, now=lambda: NOW)
+
+    with pytest.raises(MediaWikiFetchError):
+        fetch._snapshot_with_retry(mediawiki, "Alcoa")
+    assert calls["n"] == fetch._MEDIAWIKI_RETRY_ATTEMPTS
+
+
+def test_snapshot_with_retry_does_not_retry_a_non_429_failure(monkeypatch, tmp_path):
+    from clients.mediawiki_client import MediaWikiFetchError
+    from clients.source_evidence import SourceEvidenceStore as _Store
+
+    calls = {"n": 0}
+
+    def not_found(self, title):
+        calls["n"] += 1
+        raise MediaWikiFetchError(f"MediaWiki fetch failed for {title}: HTTP 404")
+
+    monkeypatch.setattr(MediaWikiClient, "snapshot", not_found)
+    store = _Store(tmp_path / "lake")
+    mediawiki = MediaWikiClient(store, timeout=30, now=lambda: NOW)
+
+    with pytest.raises(MediaWikiFetchError):
+        fetch._snapshot_with_retry(mediawiki, "Alcoa")
+    assert calls["n"] == 1
