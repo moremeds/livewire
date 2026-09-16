@@ -181,3 +181,24 @@ them.
   unset (standalone CLI use); under the daily runner they attach to the parent
   run id.
 - Broad CI / Mac mini validation remain pending O4/O5, unchanged.
+
+### Lead O2 acceptance
+
+Accepted `1612fd2cf422f59520bc517f0217a2c58f9e077f` after inspecting the runtime
+diff and tests. Lead repeated the five-file suite with `uv run pytest ... -q
+--no-cov -W error::RuntimeWarning`: **244 passed in 6.11s**, exit 0. A separate
+owned-empty-lake probe first reproduced a false revision-0 no-op receipt; after
+correction it preserves exit 1 with `attempt_only`, no publication reference and
+no validated symbols. Telemetry preparation is guarded, and catalog receipts
+identify the protected source hash instead of re-hashing the mutable lake target.
+
+Simplification: the added concurrent-publication test duplicated the existing
+fault setup. Lead moved its receipt assertions into that existing test and removed
+the duplicate setup. Existing publication/data-policy behavior remains unchanged.
+
+Evidence limits for O3: staging failures carry input path/hash/date bounds;
+withheld regressions carry previous/new window starts, reason and baseline artifact
+references, not an exact failing session or an input checksum. Exceptions before
+the publication transaction may have only the outer process-attempt record (or no
+record for a standalone invocation); absent linkage must remain UNKNOWN. These
+receipts are not a transaction with the lake and do not prove consumer reads.
