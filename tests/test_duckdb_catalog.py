@@ -16,6 +16,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from clients import ledger
 from clients.duckdb_catalog import (
     COVERAGE_SOURCES,
     ShepherdCoverageRow,
@@ -847,3 +848,85 @@ def test_ledger_query_treats_a_shadow_only_directory_as_empty(tmp_path):
     )
 
     assert rows == []
+
+
+def _catalog_receipts() -> list[dict]:
+    return ledger.query(
+        "select script, run_id, exit_code, receipt_json from executions where script = 'duckdb-build' order by started"
+    )
+
+
+def test_build_coverage_writes_a_catalog_publication_receipt(
+    tmp_path: Path, lake: Path, silver: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-test")
+    dest = tmp_path / "catalog.duckdb"
+
+    counts = build_coverage(dest, lake_root=lake, silver_root=silver)
+
+    rows = _catalog_receipts()
+    assert len(rows) == 1
+    assert rows[0]["run_id"] == "daily-update-test"
+    assert rows[0]["exit_code"] == 0
+    receipt = json.loads(rows[0]["receipt_json"])
+    assert receipt["schema_version"] == 1
+    assert receipt["kind"] == "catalog_publication"
+    assert receipt["result"] == "committed"
+    local_sha = hashlib.sha256(dest.read_bytes()).hexdigest()
+    assert receipt["local"] == {"path": str(dest.resolve()), "sha256": local_sha}
+    # The copy is recorded by intent, not by re-hashing the mutable shared target.
+    assert receipt["lake"]["path"] == str((lake / "catalog" / "analytics.duckdb").resolve())
+    assert receipt["lake"]["expected_sha256"] == local_sha
+    assert receipt["lake"]["result"] == "copied"
+    assert receipt["lake"]["error"] is None
+    assert receipt["coverage_rows"] == counts
+    assert receipt["data_lake_root"] == str(lake.resolve())
+
+
+def test_lake_copy_failure_still_raises_and_records_copy_failed(
+    tmp_path: Path, lake: Path, silver: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-test")
+    dest = tmp_path / "catalog.duckdb"
+
+    def _denied(source: Path, *, lake_root: Path | None = None) -> Path:
+        raise OSError("lake volume read-only")
+
+    monkeypatch.setattr("clients.duckdb_catalog.publish_lake_snapshot", _denied)
+    with pytest.raises(OSError, match="lake volume read-only"):
+        build_coverage(dest, lake_root=lake, silver_root=silver)
+
+    # The lane still fails — but the committed local artifact is on record.
+    assert dest.exists()
+    rows = _catalog_receipts()
+    assert len(rows) == 1
+    assert rows[0]["exit_code"] == 1
+    receipt = json.loads(rows[0]["receipt_json"])
+    assert receipt["result"] == "copy_failed"
+    local_sha = hashlib.sha256(dest.read_bytes()).hexdigest()
+    assert receipt["local"]["sha256"] == local_sha
+    assert receipt["lake"]["result"] == "failed"
+    assert receipt["lake"]["expected_sha256"] == local_sha
+    assert "lake volume read-only" in receipt["lake"]["error"]
+
+
+def test_catalog_receipt_failure_keeps_committed_bytes_and_copy(
+    tmp_path: Path, lake: Path, silver: Path, monkeypatch, capsys
+) -> None:
+    """A broken ledger cannot roll back the publication or skip the copy."""
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-test")
+    dest = tmp_path / "catalog.duckdb"
+    target = lake / "catalog" / "analytics.duckdb"
+
+    def _broken_emit(*args, **kwargs):
+        raise RuntimeError("ledger readonly")
+
+    monkeypatch.setattr(ledger, "emit", _broken_emit)
+    counts = build_coverage(dest, lake_root=lake, silver_root=silver)
+
+    assert counts  # the build itself succeeded
+    assert dest.exists()
+    assert target.exists()
+    assert target.read_bytes() == dest.read_bytes()
+    assert ledger.query("select * from executions") == []
+    assert "WARNING: could not write executions row for duckdb-build" in capsys.readouterr().err

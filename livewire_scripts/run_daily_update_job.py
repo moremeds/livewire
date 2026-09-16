@@ -984,7 +984,9 @@ def _run_main(argv: Sequence[str] | None = None) -> int:
         except FileNotFoundError:
             summaries = []
         silver_summaries = [summary for summary in summaries if "window_regressions" in summary]
-        if silver_summaries:
+        # A dry-run summary is a preview, not a fact about the lake — its counts
+        # must not land as measurements.
+        if silver_summaries and not dry_run:
             summary = silver_summaries[-1]
             ledger.emit(
                 "measurements",

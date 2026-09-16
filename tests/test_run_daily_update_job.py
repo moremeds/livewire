@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import socket
 import subprocess
@@ -1189,10 +1190,22 @@ class TestMain:
             assert main(["--asset-class", "futures"]) == GATEWAY_DOWN_EXIT_CODE
         assert ledger.query("select verdict from runs where verdict is not null") == [{"verdict": "DEGRADED"}]
 
-    def _main_with(self, *, lane_codes=None, action=0, cboe=0, fx=0, catalog=0, gateway_down=()):
+    def _main_with(
+        self, *, lane_codes=None, action=0, cboe=0, fx=0, catalog=0, gateway_down=(), argv=(), silver_summary=None
+    ):
         """Run main() with each lane's exit code stubbed. Returns (rc, silver_mock)."""
         config = _config(Path("/tmp/test"))
         codes = dict(lane_codes or {})
+
+        def _silver(*args, **kwargs):
+            if silver_summary is not None:
+                from livewire_scripts.daily_outcomes import SUMMARY_PREFIX
+
+                log_file = build_log_file(config.log_dir, _utc_now())
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                with log_file.open("a", encoding="utf-8") as handle:
+                    handle.write(SUMMARY_PREFIX + json.dumps(silver_summary) + "\n")
+            return 0
 
         def _emit(scope, code):
             from clients import ledger
@@ -1235,11 +1248,11 @@ class TestMain:
             patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=_run),
             patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=cboe),
             patch("livewire_scripts.run_daily_update_job.run_fx_sync", return_value=fx),
-            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", return_value=0) as silver,
+            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", side_effect=_silver) as silver,
             patch("livewire_scripts.run_daily_update_job.run_duckdb_catalog_build", return_value=catalog),
             patch("livewire_scripts.run_daily_update_job.append_log"),
         ):
-            return main([]), silver
+            return main(list(argv)), silver
 
     def test_main_returns_nonzero_if_any_asset_class_fails(self):
         rc, _ = self._main_with(lane_codes={"futures": 1})
@@ -2073,3 +2086,25 @@ class TestRunIdentity:
             assert main(["--preset", str(tmp_path / "missing.json")]) == 0
 
         assert ledger.query("select distinct presets_sha from runs") == [{"presets_sha": None}]
+
+
+class TestDryRunSilverCounts:
+    """A dry-run Silver summary is a preview: its counts never land as facts."""
+
+    _SUMMARY = {"failed": 3, "window_regressions": 2, "rebuilt": 10, "revision": 5}
+
+    def _silver_measurements(self):
+        from clients import ledger
+
+        return ledger.query("select name, value from measurements where name like 'silver_%'")
+
+    def test_dry_run_silver_summary_writes_no_measurements(self, no_real_quality_spawn):
+        rc, _ = TestMain()._main_with(argv=["--dry-run"], silver_summary=self._SUMMARY)
+        assert rc == 0
+        assert self._silver_measurements() == []
+
+    def test_real_run_lands_silver_counts_as_measurements(self, no_real_quality_spawn):
+        rc, _ = TestMain()._main_with(silver_summary=self._SUMMARY)
+        assert rc == 0
+        rows = {row["name"]: row["value"] for row in self._silver_measurements()}
+        assert rows == {"silver_failed": 3.0, "silver_window_regressions": 2.0}

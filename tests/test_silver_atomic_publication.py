@@ -17,6 +17,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
+from clients import ledger
 from clients.silver_client import PublishedArtifact, SilverClient
 from clients.silver_revision import AffectedSymbol, SilverRevisionPublisher
 from clients.silver_snapshot import SilverSnapshot
@@ -582,3 +583,61 @@ rebuild_silver.run(["--full"], data_lake_root=Path(root), silver_root=Path(silve
     assert retried.revision == 2
     retried_aapl = pq.ParquetFile(retried.files("1d", {"AAPL"})[0]).read().to_pylist()
     assert [str(row["trade_date"]) for row in retried_aapl] == ["2024-01-02", "2024-01-03", "2024-01-04"]
+
+
+def test_stale_attempt_records_attempt_only_receipt_not_a_publication(tmp_path, monkeypatch, capsys):
+    """A precommit rejection after a concurrent commit is attempt-only evidence:
+    it names the failed attempt, claims no published revision, and the manifest
+    stays the authority on what actually shipped."""
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-test")
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    _seed_bronze(root, "AAPL", [("2024-01-02", 10.0), ("2024-01-03", 11.0)])
+    rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 9, 8))
+    _seed_bronze(root, "AAPL", [("2024-01-02", 10.0), ("2024-01-03", 11.0), ("2024-01-04", 12.0)])
+    real_adjust = rebuild_silver.adjust_daily_rows
+    committed = False
+
+    def commit_during_adjustment(*args, **kwargs):
+        nonlocal committed
+        if not committed:
+            committed = True
+            current = _manifest(silver)
+            artifacts = []
+            for entry in current["artifacts"]:
+                source = silver / entry["path"]
+                destination = silver / "generations" / "concurrent" / Path(*Path(entry["path"]).parts[2:])
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+                artifacts.append(
+                    PublishedArtifact(destination, hashlib.sha256(destination.read_bytes()).hexdigest(), 0)
+                )
+            SilverRevisionPublisher(silver).publish(
+                artifacts,
+                [AffectedSymbol("AAPL", date(2024, 1, 2), ("1d", "1m", "5m", "30m", "1h"))],
+                datetime.now(UTC),
+                generation_id="concurrent",
+            )
+        return real_adjust(*args, **kwargs)
+
+    monkeypatch.setattr(rebuild_silver, "adjust_daily_rows", commit_during_adjustment)
+    with pytest.raises(RuntimeError, match="stale attempt published nothing"):
+        rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 9, 8))
+
+    rows = ledger.query(
+        "select script, run_id, exit_code, receipt_json from executions where script = 'rebuild-silver' order by started"
+    )
+    assert len(rows) == 2
+    receipt = json.loads(rows[1]["receipt_json"])
+    assert receipt["schema_version"] == 1
+    assert receipt["kind"] == "silver_publication"
+    assert receipt["result"] == "attempt_only"
+    assert receipt["attempt_reason"] == "RuntimeError"
+    assert receipt["published_revision"] is None
+    assert receipt["manifest_ref"] is None
+    assert receipt["generation_id"] is None
+    assert rows[1]["exit_code"] is None  # died mid-attempt: no effective code exists
+    assert receipt["baseline_revision"] == 1
+    # The manifest — not the receipt — is the authority: revision 2 belongs to
+    # the concurrent publisher, and this attempt claims nothing about it.
+    assert _manifest(silver)["revision"] == 2
+    capsys.readouterr()

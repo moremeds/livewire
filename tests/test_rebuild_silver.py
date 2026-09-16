@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pyarrow.parquet as pq
 import pytest
@@ -868,3 +869,220 @@ def test_full_rebuild_heartbeats_progress_to_the_ledger(tmp_path, monkeypatch):
     assert {row["value"] for row in rows if row["name"] == "progress_total"} == {3.0}
     assert {row["unit"] for row in rows} == {"symbols"}
     assert {row["run_id"] for row in rows} == {"daily-update-20260907T060000Z-1"}
+
+
+def _executions_receipts() -> list[dict]:
+    return ledger.query(
+        "select script, run_id, exit_code, cast(json_extract_string(receipt_json, '$.result') as varchar) as result, "
+        "receipt_json from executions order by started"
+    )
+
+
+def _evidence_rows() -> list[dict]:
+    return ledger.query("select kind, subject, payload_json as payload from evidence order by seq")
+
+
+def test_committed_rebuild_writes_a_silver_publication_receipt(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-test")
+    _bronze(tmp_path, "NVDA")
+    _split(tmp_path)
+    silver = tmp_path / "silver"
+
+    assert rebuild_silver.run(["--full"], data_lake_root=tmp_path, silver_root=silver) == 0
+
+    rows = _executions_receipts()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["script"] == "rebuild-silver"
+    assert row["run_id"] == "daily-update-test"
+    assert row["exit_code"] == 0
+    receipt = json.loads(row["receipt_json"])
+    assert receipt["schema_version"] == 1
+    assert receipt["kind"] == "silver_publication"
+    assert receipt["result"] == "committed"
+    assert receipt["baseline_revision"] == 0
+    assert receipt["published_revision"] == 1
+    assert receipt["generation_id"]
+    assert receipt["manifest_ref"] == "revisions/revision=1.json"
+    assert receipt["manifest_sha256"] == hashlib.sha256((silver / "revisions/revision=1.json").read_bytes()).hexdigest()
+    assert receipt["selected_symbols"] == ["NVDA"]
+    assert receipt["staged_symbols"] == ["NVDA"]
+    assert receipt["validated_symbols"] == ["NVDA"]
+    assert receipt["failed_symbols"] == []
+    assert receipt["withheld_symbols"] == []
+    assert receipt["data_lake_root"] == str(tmp_path.resolve())
+    assert receipt["silver_root"] == str(silver.resolve())
+    # Bounded: the receipt references the manifest rather than copying artifacts.
+    assert "artifacts" not in json.dumps(receipt)
+    assert _evidence_rows() == []
+
+
+def test_noop_rebuild_receipt_names_the_existing_revision_and_only_what_it_validated(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-test")
+    _bronze(tmp_path, "NVDA")
+    _split(tmp_path)
+    silver = tmp_path / "silver"
+    assert rebuild_silver.run(["--full"], data_lake_root=tmp_path, silver_root=silver) == 0
+
+    assert rebuild_silver.run(["--full"], data_lake_root=tmp_path, silver_root=silver) == 0
+
+    rows = _executions_receipts()
+    assert [r["result"] for r in rows] == ["committed", "noop"]
+    receipt = json.loads(rows[1]["receipt_json"])
+    assert receipt["published_revision"] == 1
+    assert receipt["manifest_ref"] == "revisions/revision=1.json"
+    # A validated noop names the generation it resolved against, not None.
+    first = json.loads(rows[0]["receipt_json"])
+    assert receipt["generation_id"] == first["generation_id"]
+    assert receipt["validated_symbols"] == ["NVDA"]
+    assert receipt["failed_symbols"] == []
+
+
+def test_missing_input_writes_attempt_only_evidence_not_a_published_noop(tmp_path, monkeypatch, capsys):
+    """An all-failed first run has no committed revision: attempt-only, no reference."""
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-test")
+    silver = tmp_path / "silver"
+
+    assert rebuild_silver.run(["--tickers", "TEST-NODATA"], data_lake_root=tmp_path, silver_root=silver) == 1
+    assert not (silver / "revisions/current.json").exists()
+
+    rows = _executions_receipts()
+    assert len(rows) == 1
+    receipt = json.loads(rows[0]["receipt_json"])
+    assert receipt["result"] == "attempt_only"
+    assert receipt["attempt_reason"] == "no_committed_revision"
+    assert receipt["published_revision"] is None
+    assert receipt["manifest_ref"] is None
+    assert receipt["manifest_sha256"] is None
+    assert receipt["generation_id"] is None
+    assert receipt["validated_symbols"] == []
+    assert receipt["failed_symbols"] == ["TEST-NODATA"]
+    capsys.readouterr()
+
+
+def test_partial_failure_emits_staging_evidence_and_a_bounded_receipt(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-test")
+    _bronze(tmp_path, "NVDA")
+    _bronze(tmp_path, "BAD")
+    _split(tmp_path)
+    _bad_action(tmp_path, "BAD")
+    silver = tmp_path / "silver"
+
+    assert rebuild_silver.run(["--full"], data_lake_root=tmp_path, silver_root=silver) == 0
+
+    evidence = _evidence_rows()
+    assert len(evidence) == 1
+    assert evidence[0]["kind"] == "silver_symbol_failure"
+    assert evidence[0]["subject"] == "BAD"
+    payload = json.loads(evidence[0]["payload"])
+    assert payload["schema_version"] == 1
+    assert payload["kind"] == "silver_symbol_failure"
+    assert payload["stage"] == "staging"
+    assert payload["symbol"] == "BAD"
+    assert payload["error_type"]
+    assert payload["input"]["path"].endswith("symbol=BAD/1d.parquet")
+    assert payload["input"]["sha256"]
+    # Date bounds are context for the staged window, never exact failing sessions.
+    assert payload["input_date_bounds"]["earliest"] <= payload["input_date_bounds"]["latest"]
+    assert payload["baseline_artifacts"] == []
+    # Root/baseline context lets consumers match without a publication receipt.
+    assert payload["data_lake_root"] == str(tmp_path.resolve())
+    assert payload["silver_root"] == str(silver.resolve())
+    assert payload["baseline_revision"] == 0
+
+    receipt = json.loads(_executions_receipts()[0]["receipt_json"])
+    assert receipt["result"] == "committed"
+    assert receipt["validated_symbols"] == ["NVDA"]
+    assert receipt["failed_symbols"] == ["BAD"]
+    assert receipt["withheld_symbols"] == []
+
+
+def _regress_aapl_window(root, silver, extra_args=()):
+    """Publish a good window, then arrive a back-adjusted leak that shortens it."""
+    _seed_bronze(root, "AAPL", [("2024-01-02", 185.64), ("2024-01-03", 184.25), ("2024-01-04", 181.91)])
+    rebuild_silver.run(["--tickers", "AAPL"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 7, 17))
+    _seed_bronze(
+        root,
+        "AAPL",
+        [("2024-01-02", 185.64), ("2024-01-03", 184.25), ("2024-01-04", 181.91), ("2024-01-05", _BACK_ADJUSTED_LEAK)],
+    )
+    return rebuild_silver.run(
+        ["--tickers", "AAPL", *extra_args],
+        data_lake_root=root,
+        silver_root=silver,
+        as_of_date=date(2026, 7, 17),
+    )
+
+
+def test_withheld_window_regression_is_evidence_and_not_a_validated_symbol(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-test")
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    assert _regress_aapl_window(root, silver) == 0
+
+    evidence = _evidence_rows()
+    assert len(evidence) == 1
+    payload = json.loads(evidence[0]["payload"])
+    assert payload["stage"] == "withheld_window_regression"
+    assert payload["symbol"] == "AAPL"
+    assert payload["previous_start"] == "2024-01-02"
+    assert payload["new_start"] == "2024-01-05"
+    assert payload["baseline_revision"] == 1
+    assert payload["data_lake_root"] == str(root.resolve())
+    assert payload["silver_root"] == str(silver.resolve())
+    # Reference-only baseline context, not copied bytes.
+    assert payload["baseline_artifacts"]
+    assert all("symbol=AAPL" in a["path"] for a in payload["baseline_artifacts"])
+
+    receipts = _executions_receipts()
+    assert len(receipts) == 2
+    receipt = json.loads(receipts[1]["receipt_json"])
+    assert receipt["result"] == "noop"
+    assert receipt["published_revision"] == 1
+    assert receipt["withheld_symbols"] == ["AAPL"]
+    # Staged but withheld: never listed as a validated success.
+    assert receipt["validated_symbols"] == []
+    capsys.readouterr()
+
+
+def test_allow_window_regression_emits_no_failure_evidence(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-test")
+    root, silver = tmp_path / "lake", tmp_path / "silver"
+    assert _regress_aapl_window(root, silver, extra_args=["--allow-window-regression"]) == 0
+
+    assert _evidence_rows() == []
+    receipt = json.loads(_executions_receipts()[1]["receipt_json"])
+    assert receipt["result"] == "committed"
+    assert receipt["validated_symbols"] == ["AAPL"]
+    assert receipt["withheld_symbols"] == []
+    capsys.readouterr()
+
+
+def test_dry_run_writes_no_ledger_facts_or_receipts(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-test")
+    _bronze(tmp_path, "NVDA")
+
+    assert rebuild_silver.run(["--full", "--dry-run"], data_lake_root=tmp_path, silver_root=tmp_path / "silver") == 0
+
+    assert ledger.query("select * from executions") == []
+    assert ledger.query("select * from evidence") == []
+    assert ledger.query("select * from measurements") == []
+    capsys.readouterr()
+
+
+def test_manifest_hash_failure_still_commits_the_revision(tmp_path, monkeypatch, capsys):
+    """A telemetry-prep failure after commit cannot roll back published bytes."""
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-test")
+    _bronze(tmp_path, "NVDA")
+    silver = tmp_path / "silver"
+
+    def _broken_sha(path: Path) -> str:
+        raise OSError("sha failed")
+
+    monkeypatch.setattr(rebuild_silver, "_sha256", _broken_sha)
+    assert rebuild_silver.run(["--full"], data_lake_root=tmp_path, silver_root=silver) == 0
+
+    assert (silver / "revisions/current.json").exists()
+    assert (silver / "revisions/revision=1.json").exists()
+    # No receipt could be constructed: linkage stays UNKNOWN rather than failing the run.
+    assert ledger.query("select * from executions") == []
+    assert "WARNING: could not write executions row for rebuild-silver" in capsys.readouterr().err
