@@ -65,15 +65,15 @@ def verifies(ref: str, digest: str) -> bool:
     return ref == f"artifact://sha256/{digest}"
 
 
-def _verified_security(master: SecurityMaster, symbol: str, mic: str = "XNAS") -> str:
+def _verified_security(master: SecurityMaster, symbol: str, mic: str = "XNAS", provider: str = "massive") -> str:
     security_id = master.new_security_id()
     master.append(
         SecurityIdentityEvent(
-            event_id=f"identity-{symbol}-{mic}",
+            event_id=f"identity-{symbol}-{mic}-{provider}",
             security_id=security_id,
             revision=1,
             symbol=symbol,
-            provider="massive",
+            provider=provider,
             exchange_mic=mic,
             currency="USD",
             effective_from=dt("2000-01-01"),
@@ -869,6 +869,34 @@ def test_a_ticker_that_still_does_not_resolve_is_left_alone_and_counted(tmp_path
     result = _reresolve(tmp_path)
     assert result["resolved"] == 0
     assert result["unresolved"] == 1  # unresolved:AEOS
+
+
+def test_resolve_also_checks_the_wikipedia_provider(tmp_path):
+    """The 2026-09-16 one-off import writes `provider='wikipedia_sec_research'`,
+    never `massive` (pm:2026-07-19-cancellation-inference-provider-scoped) — so
+    `_resolve` must check both, or the import sits unused in the master."""
+    lake = tmp_path / "lake"
+    master = SecurityMaster(lake, evidence_verifier=verifies)
+    _verified_security(master, "AEOS", mic="XNAS", provider="wikipedia_sec_research")
+    assert membership_sync._resolve(master, "AEOS", dt("2000-06-01"), NOW) is not None
+
+
+def test_resolve_refuses_when_massive_and_wikipedia_disagree(tmp_path):
+    lake = tmp_path / "lake"
+    master = SecurityMaster(lake, evidence_verifier=verifies)
+    _verified_security(master, "DUPX", mic="XNAS", provider="massive")
+    _verified_security(master, "DUPX", mic="XNYS", provider="wikipedia_sec_research")
+    assert membership_sync._resolve(master, "DUPX", dt("2000-06-01"), NOW) is None
+
+
+def test_reresolve_clears_a_placeholder_identified_only_by_wikipedia_research(tmp_path):
+    _import(tmp_path)
+    lake = tmp_path / "lake"
+    master = SecurityMaster(lake, evidence_verifier=verifies)
+    _verified_security(master, "AEOS", mic="XNAS", provider="wikipedia_sec_research")
+    result = _reresolve(tmp_path)
+    assert result["resolved"] == 2  # the add and the remove both resolve
+    assert result["unresolved"] == 0
 
 
 def test_reresolve_cli_dispatches(tmp_path, monkeypatch):
