@@ -35,7 +35,12 @@ from livewire_scripts.backfill_runner import (
     load_tickers,
 )
 from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, parse_last_summary_json
-from livewire_scripts.job_runner_common import process_group_guard
+from livewire_scripts.job_runner_common import (
+    emit_process_attempt,
+    hash_files,
+    pin_executing_sha,
+    run_in_own_process_group,
+)
 
 logger = logging.getLogger("livewire.sync_runner")
 
@@ -132,21 +137,9 @@ def phase_timeout_seconds() -> int:
     return int(os.getenv("MDW_SYNC_PHASE_TIMEOUT_SECONDS", str(6 * 60 * 60)))
 
 
-def _run_in_own_process_group(command, *, stdout, stderr, text, check, timeout):
-    """Run one phase in its own session and clean up all descendants on timeout."""
-    with subprocess.Popen(
-        list(command),
-        stdout=stdout,
-        stderr=stderr,
-        text=text,
-        start_new_session=True,
-    ) as proc:
-        with process_group_guard(proc):
-            proc.communicate(timeout=timeout)
-        result = subprocess.CompletedProcess(list(command), proc.returncode)
-    if check and result.returncode:
-        raise subprocess.CalledProcessError(result.returncode, result.args)
-    return result
+# The Popen + process_group_guard body lives in job_runner_common with the
+# daily runner's copy; this name stays so runner seams and callers are stable.
+_run_in_own_process_group = run_in_own_process_group
 
 
 def run_phase(
@@ -185,6 +178,9 @@ def run_phase(
             run,
         )
     clock = time.monotonic()
+    raw_code: int | None
+    completion_reason = "exit"
+    summary_receipt: dict | None = None
     with log_file.open("a", encoding="utf-8") as fh:
         try:
             result = runner(
@@ -195,9 +191,12 @@ def run_phase(
                 check=False,
                 timeout=budget,
             )
+            raw_code = result.returncode
         except subprocess.TimeoutExpired:
             logger.error("%s exceeded its %ds budget and was killed", label, budget)
             result = subprocess.CompletedProcess(command, TIMEOUT_EXIT_CODE)
+            raw_code = None
+            completion_reason = "timeout"
     elapsed_s = time.monotonic() - clock
 
     if result.returncode not in (0, TIMEOUT_EXIT_CODE):
@@ -214,6 +213,14 @@ def run_phase(
                         result.returncode,
                     )
                     result = subprocess.CompletedProcess(command, 0)
+                    completion_reason = "summary_override"
+                    summary_receipt = {
+                        "summary": {
+                            "updated": int(summary.get("updated", 0)),
+                            "errors": int(summary.get("errors", 0)),
+                            "target_date": summary.get("target_date"),
+                        }
+                    }
             except FileNotFoundError:
                 pass
         if result.returncode != 0:
@@ -221,6 +228,7 @@ def run_phase(
 
     if run:
         code = result.returncode
+        ended = datetime.now(UTC)
         _emit_ledger(
             "lane_results",
             [
@@ -228,7 +236,7 @@ def run_phase(
                     "run_id": run,
                     "lane": label,
                     "started": started,
-                    "ended": datetime.now(UTC),
+                    "ended": ended,
                     "exit_code": code,
                     "budget_s": float(budget),
                     "elapsed_s": elapsed_s,
@@ -245,6 +253,17 @@ def run_phase(
                 }
             ],
             run,
+        )
+        emit_process_attempt(
+            script=label,
+            attempt=1,
+            command=command,
+            started=started,
+            ended=ended,
+            raw_exit_code=raw_code,
+            effective_exit_code=code,
+            completion_reason=completion_reason,
+            receipt_extra=summary_receipt,
         )
     return result.returncode
 
@@ -455,6 +474,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     import argparse
 
     os.environ.setdefault("LW_RUN_ID", ledger.new_run_id("intraday-catchup"))
+    identity = pin_executing_sha(_PROJECT_ROOT)
 
     parser = argparse.ArgumentParser(description="Daily sync runner — routine warehouse catch-up")
     parser.add_argument("--target-date", type=str, default=None)
@@ -481,9 +501,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "run_id": run,
         "job": "intraday-catchup",
         "host": socket.gethostname(),
-        "release_sha": os.environ.get("LW_RELEASE_SHA"),
-        "presets_sha": None,
-        "registry_sha": None,
+        "release_sha": identity,
+        "presets_sha": hash_files([*config.equity_presets, config.vol_preset, config.vol_daily_preset]),
+        "registry_sha": hash_files([_PROJECT_ROOT / "registry" / "gaps.json"]),
         "started": started,
         "ended": None,
         "exit_code": None,

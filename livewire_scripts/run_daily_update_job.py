@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import shutil
 import socket
@@ -19,7 +18,14 @@ from clients import constants, ledger
 from clients.constants import LANE_ORDER
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts import notify
-from livewire_scripts.job_runner_common import append_log, process_group_guard, tail_of
+from livewire_scripts.job_runner_common import (
+    append_log,
+    emit_process_attempt,
+    hash_files,
+    pin_executing_sha,
+    run_in_own_process_group,
+    tail_of,
+)
 from livewire_scripts.job_runner_common import build_log_file as _build_log_file
 from livewire_scripts.job_runner_common import utc_now as _utc_now
 from livewire_scripts.paths import warehouse_dir as resolve_warehouse_dir
@@ -104,20 +110,6 @@ def run_id() -> str:
     if not value:
         raise RuntimeError("LW_RUN_ID is not set; main() mints it")
     return value
-
-
-def _release_sha() -> str | None:
-    try:
-        return Path(os.readlink(resolve_warehouse_dir() / "current")).name
-    except OSError:
-        return None
-
-
-def _file_sha(paths) -> str:
-    digest = hashlib.sha256()
-    for path in sorted(paths):
-        digest.update(path.read_bytes())
-    return digest.hexdigest()
 
 
 def _emit_lane(
@@ -259,30 +251,9 @@ def build_duckdb_catalog_command(config: RunnerConfig) -> list[str]:
     return [config.python_bin, str(STORE_SCRIPT), "duckdb", "build"]
 
 
-def _run_in_own_process_group(command, *, stdout, env, timeout):
-    """Run `command` in its own session and kill the whole group on timeout.
-
-    `subprocess.run(timeout=...)` calls `process.kill()`, which signals only
-    the direct child. A lane that fans out (`corporate-actions --workers 4`)
-    would leave every worker orphaned — still running, still holding the
-    per-parquet `fcntl.flock`, still wedged — and launchd would start the next
-    instance into lock contention with processes it believes it killed.
-
-    Killing the group is safe: bronze publication is temp -> validate ->
-    os.replace(), so a killed writer leaves a temp file rather than a torn
-    parquet, and the kernel releases every flock when the fds close.
-    """
-    with subprocess.Popen(
-        list(command),
-        stdout=stdout,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env=env,
-        start_new_session=True,
-    ) as proc:
-        with process_group_guard(proc):
-            proc.communicate(timeout=timeout)
-        return subprocess.CompletedProcess(list(command), proc.returncode)
+# The Popen + process_group_guard body lives in job_runner_common, shared with
+# sync_runner's phases; this name stays so runner seams and callers are stable.
+_run_in_own_process_group = run_in_own_process_group
 
 
 def run_daily_update_attempt(
@@ -291,6 +262,9 @@ def run_daily_update_attempt(
     env: dict[str, str] | None = None,
     runner: callable = _run_in_own_process_group,
     timeout: float | None = None,
+    *,
+    scope: str | None = None,
+    attempt: int = 1,
 ) -> subprocess.CompletedProcess:
     # Every lane subprocess runs unbuffered. A lane over budget is SIGKILLed, so
     # anything Python still holds in its 8 KiB stdout block buffer dies with it:
@@ -298,13 +272,32 @@ def run_daily_update_attempt(
     # (2026-09-03/04/05) and left an empty log each time.
     lane_env = dict(os.environ if env is None else env)
     lane_env["PYTHONUNBUFFERED"] = "1"
+    started = _utc_now()
+    raw_code: int | None
+    completion_reason: str
     with log_file.open("a", encoding="utf-8") as handle:
         try:
-            return runner(list(command), stdout=handle, env=lane_env, timeout=timeout)
+            result = runner(list(command), stdout=handle, env=lane_env, timeout=timeout)
+            raw_code = result.returncode
+            completion_reason = "exit"
         except subprocess.TimeoutExpired:
             spent = "no budget" if timeout is None else f"{timeout:.0f}s"
             append_log(log_file, f"=== Timed out after {spent} (process group killed) ===")
-            return subprocess.CompletedProcess(list(command), TIMEOUT_EXIT_CODE)
+            result = subprocess.CompletedProcess(list(command), TIMEOUT_EXIT_CODE)
+            raw_code = None
+            completion_reason = "timeout"
+    if scope is not None:
+        emit_process_attempt(
+            script=scope,
+            attempt=attempt,
+            command=command,
+            started=started,
+            ended=_utc_now(),
+            raw_exit_code=raw_code,
+            effective_exit_code=result.returncode,
+            completion_reason=completion_reason,
+        )
+    return result
 
 
 def extract_error_summary(log_file: Path) -> str:
@@ -373,6 +366,31 @@ def _completion_scope_from_args(args: Sequence[str]) -> str:
         return args[index + 1]
     except IndexError:
         return "daily"
+
+
+def _selected_preset_paths(args: Sequence[str]) -> list[Path]:
+    """The preset inputs this run is configured against — a fingerprint,
+    not a claim of bar coverage.
+
+    The shipped bundle (presets/*.json) is always included: it is the
+    default input set existing run rows record, and auxiliary lanes
+    (cboe-vol, the backfill phases) keep their own configured presets
+    regardless of the operator's filter. `--preset <file>` /
+    `--preset=<file>` is forwarded to the daily lanes, so an explicitly
+    selected file is added even when it lives outside the repo; the lane
+    opens it relative to our cwd, so it is resolved the same way here.
+    An unreadable input hashes to None (UNKNOWN).
+    """
+    paths = set((REPO_ROOT / "presets").glob("*.json"))
+    for index, arg in enumerate(args):
+        value = None
+        if arg == "--preset" and index + 1 < len(args):
+            value = args[index + 1]
+        elif arg.startswith("--preset="):
+            value = arg.split("=", 1)[1]
+        if value:
+            paths.add(Path(value).expanduser().resolve())
+    return sorted(paths)
 
 
 def silver_is_blocked() -> str | None:
@@ -497,7 +515,9 @@ def run_with_retries(
         if remaining == 0:
             result = subprocess.CompletedProcess(list(command), TIMEOUT_EXIT_CODE)
         else:
-            result = run_daily_update_attempt(command, log_file, env=env, runner=runner, timeout=remaining)
+            result = run_daily_update_attempt(
+                command, log_file, env=env, runner=runner, timeout=remaining, scope=done_scope, attempt=attempt
+            )
         final_exit_code = result.returncode
 
         if result.returncode == GATEWAY_DOWN_EXIT_CODE:
@@ -682,7 +702,9 @@ def _run_scheduled_lane(
     budget = LANE_BUDGET_S.get(done_scope, DEFAULT_LANE_BUDGET_S)
     clock = time.monotonic()
     lane_log_offset = log_file.stat().st_size
-    result = run_daily_update_attempt(command, log_file, env=env, runner=runner, timeout=budget)
+    result = run_daily_update_attempt(
+        command, log_file, env=env, runner=runner, timeout=budget, scope=done_scope, attempt=1
+    )
     ended_at = now_fn()
     _emit_lane(
         done_scope,
@@ -830,6 +852,7 @@ def _without_flag(args: Sequence[str], flag: str) -> list[str]:
 
 def _run_main(argv: Sequence[str] | None = None) -> int:
     os.environ.setdefault("LW_RUN_ID", ledger.new_run_id("daily-update"))
+    identity = pin_executing_sha(REPO_ROOT)
     config = build_config()
     args = list(argv or sys.argv[1:])
     env = os.environ.copy()
@@ -839,9 +862,9 @@ def _run_main(argv: Sequence[str] | None = None) -> int:
         "run_id": run_id(),
         "job": job_name,
         "host": socket.gethostname(),
-        "release_sha": _release_sha(),
-        "presets_sha": _file_sha((REPO_ROOT / "presets").glob("*.json")),
-        "registry_sha": _file_sha([REPO_ROOT / "registry" / "gaps.json"]),
+        "release_sha": identity,
+        "presets_sha": hash_files(_selected_preset_paths(args)),
+        "registry_sha": hash_files([REPO_ROOT / "registry" / "gaps.json"]),
         "started": started_at,
         "ended": None,
         "exit_code": None,
