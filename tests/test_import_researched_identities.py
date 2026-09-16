@@ -153,12 +153,20 @@ def test_load_rows_keeps_only_resolved_cik_backed_mic_backed_rows(csvs):
 
 
 def _seed_evidence(store: SourceEvidenceStore, url: str) -> None:
+    """Seed evidence under the key it would *really* be stored under.
+
+    `MediaWikiClient` records `source_url` as the REST endpoint it fetched,
+    never the `/wiki/` page a row cites (`imp._evidence_key` is the
+    translation) — seeding under the raw `url` would hide exactly the bug
+    this file exists to catch.
+    """
+    stored_url = imp._evidence_key(url)
     artifact = store.persist_raw(f"evidence for {url}".encode())
     store.record(
         SourceEvidence(
             ref=artifact.ref,
             sha256=artifact.sha256,
-            source_url=url,
+            source_url=stored_url,
             retrieved_at=NOW,
             publication_time=None,
             mediawiki_revision_id=None,
@@ -171,11 +179,12 @@ def _seed_evidence(store: SourceEvidenceStore, url: str) -> None:
 def test_derive_events_groups_by_cik_under_one_security_id(csvs):
     round1, round2 = csvs
     rows = imp.load_rows(round1, round2)
+    wiki_key = imp._evidence_key("https://en.wikipedia.org/wiki/Alcoa")
     evidence = {
-        "https://en.wikipedia.org/wiki/Alcoa": SourceEvidence(
+        wiki_key: SourceEvidence(
             ref="artifact://sha256/" + "a" * 64,
             sha256="a" * 64,
-            source_url="https://en.wikipedia.org/wiki/Alcoa",
+            source_url=wiki_key,
             retrieved_at=NOW,
             publication_time=None,
             mediawiki_revision_id=None,
@@ -217,11 +226,12 @@ def test_derive_events_reuses_the_security_id_of_an_earlier_import(csvs):
     """A rerun for the same CIK must not open a second identity."""
     round1, round2 = csvs
     rows = imp.load_rows(round1, round2)[:1]  # just the "add" row
+    wiki_key = imp._evidence_key("https://en.wikipedia.org/wiki/Alcoa")
     evidence = {
-        "https://en.wikipedia.org/wiki/Alcoa": SourceEvidence(
+        wiki_key: SourceEvidence(
             ref="artifact://sha256/" + "a" * 64,
             sha256="a" * 64,
-            source_url="https://en.wikipedia.org/wiki/Alcoa",
+            source_url=wiki_key,
             retrieved_at=NOW,
             publication_time=None,
             mediawiki_revision_id=None,
@@ -288,3 +298,52 @@ def test_event_id_is_deterministic_across_runs():
     second = imp._event_id("sec_x", 1, row, refs)
     assert first == second
     assert len(first) == 64 and all(c in "0123456789abcdef" for c in first)
+
+
+def test_evidence_key_translates_a_wiki_url_to_the_mediawiki_rest_endpoint():
+    assert imp._evidence_key("https://en.wikipedia.org/wiki/Alcoa") == (
+        "https://en.wikipedia.org/w/rest.php/v1/page/Alcoa/html"
+    )
+    # A space in the title becomes an underscore, then percent-encoded punctuation.
+    assert imp._evidence_key("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies") == (
+        "https://en.wikipedia.org/w/rest.php/v1/page/List_of_S%26P_500_companies/html"
+    )
+
+
+def test_evidence_key_leaves_non_wikipedia_urls_untouched():
+    edgar_url = "https://www.sec.gov/cgi-bin/browse-edgar?CIK=0000004281"
+    assert imp._evidence_key(edgar_url) == edgar_url
+
+
+def test_evidence_key_matches_what_mediawikiclient_actually_fetches():
+    """Fix the twin: this must track MediaWikiClient's own URL construction,
+    not just agree with a second copy of the same hardcoded string."""
+    from clients import mediawiki_client
+
+    title = "Historical_components_of_the_S&P_500"
+    encoded_title = mediawiki_client.quote(title.replace(" ", "_"), safe="")
+    expected = f"{mediawiki_client._REST_ROOT}/{encoded_title}/html"
+    assert imp._evidence_key(f"https://en.wikipedia.org/wiki/{title}") == expected
+
+
+def test_derive_events_matches_wiki_evidence_seeded_under_the_rest_endpoint_key(csvs, tmp_path):
+    """Reproduces the real bug: evidence committed by the real fetch script
+    (keyed by the REST endpoint) must still resolve a row citing the plain
+    /wiki/ page — this is the exact mismatch found on 2026-09-17 production
+    data (312/759 rows silently unmatched despite evidence existing)."""
+    round1, round2 = csvs
+    rows = imp.load_rows(round1, round2)
+    lake = tmp_path / "lake"
+    store = SourceEvidenceStore(lake)
+    _seed_evidence(store, "https://en.wikipedia.org/wiki/Alcoa")
+    _seed_evidence(store, "https://www.sec.gov/cgi-bin/browse-edgar?CIK=0000004281")
+
+    evidence = imp.evidence_by_url(store)
+    # Confirm the store really did key this under the REST endpoint, not the
+    # plain wiki URL — otherwise this test would pass for the wrong reason.
+    assert "https://en.wikipedia.org/wiki/Alcoa" not in evidence
+    assert imp._evidence_key("https://en.wikipedia.org/wiki/Alcoa") in evidence
+
+    events, skipped = imp.derive_events(rows, existing=[], evidence=evidence, now=NOW)
+    assert skipped == []
+    assert len(events) == 2
