@@ -257,6 +257,10 @@ class TestMain:
                 side_effect=fake_runner,
             ),
             patch(
+                "livewire_scripts.job_runner_common.executing_code_sha",
+                return_value=None,
+            ),
+            patch(
                 "livewire_scripts.run_intraday_catchup_job.shutil.which",
                 return_value="/usr/local/bin/node",
             ),
@@ -362,3 +366,143 @@ class TestRunnersLeaveLockingToWriters:
 
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
         assert not lake_lock_path().is_relative_to(data_lake_dir())
+
+
+class TestProcessAttemptReceipt:
+    """The wrapper's single subprocess attempt leaves an executions receipt."""
+
+    def test_the_attempt_receipt_joins_the_run(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LW_RUN_ID", "intraday-catchup-test")
+        config = _config(tmp_path)
+        config.log_dir.mkdir(parents=True)
+
+        rc = run_intraday_catchup(
+            config,
+            env=None,
+            runner=lambda cmd, **kw: CompletedProcess(args=cmd, returncode=0),
+            now_fn=lambda: datetime(2026, 6, 5, 23, 0, tzinfo=UTC),
+        )
+
+        assert rc == 0
+        from clients import ledger
+
+        rows = ledger.query(
+            "select script, attempt, exit_code, run_id, "
+            "json_extract_string(receipt_json,'$.kind') as kind, "
+            "cast(json_extract_string(receipt_json,'$.raw_exit_code') as integer) as raw, "
+            "json_extract_string(receipt_json,'$.completion_reason') as reason "
+            "from executions"
+        )
+        assert rows == [
+            {
+                "script": "intraday_catchup",
+                "attempt": 1,
+                "exit_code": 0,
+                "run_id": "intraday-catchup-test",
+                "kind": "process_attempt",
+                "raw": 0,
+                "reason": "exit",
+            }
+        ]
+
+    def test_main_mints_a_run_id_the_child_inherits(self, tmp_path, monkeypatch):
+        """The child's daily-backfill run row and this receipt share one run."""
+        monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
+        monkeypatch.setenv("MDW_INTRADAY_CATCHUP_LOG_DIR", str(tmp_path / "warehouse" / "logs"))
+        monkeypatch.delenv("LW_RUN_ID", raising=False)
+        captured: dict[str, object] = {}
+
+        def fake_run(cfg, env=None, runner=None, now_fn=None):
+            captured["env"] = dict(env or {})
+            return 0
+
+        monkeypatch.setattr("livewire_scripts.run_intraday_catchup_job.run_intraday_catchup", fake_run)
+        assert main([]) == 0
+        run = captured["env"]["LW_RUN_ID"]
+        assert run.startswith("intraday-catchup-")
+
+
+class TestOuterDispatchStaysInTheGroup:
+    def test_a_group_sigterm_reaches_the_inner_phase_guard(self, tmp_path):
+        """subprocess.run keeps the daily-backfill child in the wrapper's group.
+
+        A detached outer session would make the outer guard SIGKILL the child
+        before its own per-phase process_group_guard could reap the leaf —
+        the leaf keeps its write lock. Lead reproduction:
+        probe-nested-interrupt.py / o1-nested-sigterm.json (old outer dispatch
+        releases the leaf lock; the new detached one does not). SIGINT failing
+        under both variants is a pre-existing gap this task does not claim.
+        """
+        import fcntl
+        import json
+        import os
+        import signal
+        import subprocess
+        import time
+
+        ready = tmp_path / "ready.json"
+        lock = tmp_path / "leaf.lock"
+        leaf = tmp_path / "leaf.py"
+        leaf.write_text(
+            "import fcntl,json,os,pathlib,time\n"
+            f"with open({str(lock)!r},'w') as handle:\n"
+            "    fcntl.flock(handle,fcntl.LOCK_EX)\n"
+            f"    pathlib.Path({str(ready)!r}).write_text(json.dumps({{'pgid':os.getpgrp()}}))\n"
+            "    time.sleep(120)\n",
+            encoding="utf-8",
+        )
+        inner = tmp_path / "inner.py"
+        inner.write_text(
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from livewire_scripts.sync_runner import run_phase\n"
+            f"run_phase('owned-leaf',[sys.executable,{str(leaf)!r}],Path({str(tmp_path / 'logs')!r}),timeout=60)\n",
+            encoding="utf-8",
+        )
+        outer = tmp_path / "outer.py"
+        outer.write_text(
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from livewire_scripts.run_intraday_catchup_job import IntradayCatchupConfig,run_intraday_catchup\n"
+            f"scratch=Path({str(tmp_path)!r})\n"
+            "run_intraday_catchup(IntradayCatchupConfig(scratch,scratch/'logs',"
+            f"Path({str(inner)!r}),scratch/'unused',sys.executable,'unused'))\n",
+            encoding="utf-8",
+        )
+        env = dict(
+            os.environ,
+            PYTHONPATH=str(Path(__file__).resolve().parents[1]),
+            PYTHONDONTWRITEBYTECODE="1",
+            LW_LEDGER_ROOT=str(tmp_path / "ledger"),
+            MDW_WAREHOUSE_DIR=str(tmp_path),
+        )
+        env.pop("LW_RUN_ID", None)
+        proc = subprocess.Popen([sys.executable, str(outer)], env=env, start_new_session=True)
+        leaf_pgid = None
+        try:
+            deadline = time.monotonic() + 15
+            while not ready.exists() and proc.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert ready.exists(), f"leaf did not acquire its lock (outer exit {proc.poll()})"
+            leaf_pgid = json.loads(ready.read_text())["pgid"]
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=10)
+            deadline = time.monotonic() + 5
+            with lock.open("a") as handle:
+                while True:
+                    try:
+                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        assert time.monotonic() < deadline, "the leaf kept its lock after the group SIGTERM"
+                        time.sleep(0.02)
+                    else:
+                        fcntl.flock(handle, fcntl.LOCK_UN)
+                        break
+        finally:
+            for group in (proc.pid, leaf_pgid):
+                if group:
+                    try:
+                        os.killpg(group, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+            proc.wait(timeout=10)

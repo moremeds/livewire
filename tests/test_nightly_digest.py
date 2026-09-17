@@ -287,8 +287,8 @@ class _Clock:
 class TestWaitForCoverageFact:
     def test_digest_waits_for_todays_coverage_fact(self, tmp_path, monkeypatch):
         """Polls until a coverage_scan_ok OR coverage_skipped row dated today exists."""
-        today = date.today()
-        clock = _Clock(datetime.now(UTC))
+        clock = _Clock(datetime(2026, 9, 17, 12, tzinfo=UTC))
+        today = clock.now().date()
         emitted = {"done": False}
 
         def sleep_then_emit(seconds: float) -> None:

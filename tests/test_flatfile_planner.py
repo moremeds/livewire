@@ -24,7 +24,7 @@ def test_capacity_is_measured_on_the_volume_that_receives_the_raw_files(tmp_path
     # data-lake is a symlink to the external volume in production, so measuring the
     # warehouse root reports a filesystem the raw files never land on.
     lake = tmp_path / "lake"
-    (lake / "raw").mkdir(parents=True)
+    (lake / "raw" / "massive").mkdir(parents=True)
     (tmp_path / "warehouse").mkdir()
     (tmp_path / "warehouse" / "data-lake").symlink_to(lake)
     client = MagicMock()
@@ -34,12 +34,49 @@ def test_capacity_is_measured_on_the_volume_that_receives_the_raw_files(tmp_path
         discover_plan(client, tmp_path / "warehouse")
 
     measured = Path(usage.call_args.args[0]).resolve()
-    assert measured == (lake / "raw").resolve()
+    assert measured == (lake / "raw" / "massive").resolve()
+
+
+def test_capacity_follows_the_child_symlink_not_its_parent(tmp_path, monkeypatch):
+    # The real child-symlink bug: raw/ is internal while raw/massive links to an
+    # external volume — measuring raw reports a disk the files never touch.
+    # The writers root at <warehouse>/data-lake and ignore MDW_DATA_LAKE, so an
+    # unrelated override must not redirect the measurement either.
+    warehouse = tmp_path / "warehouse"
+    raw = warehouse / "data-lake" / "raw"
+    raw.mkdir(parents=True)
+    external = tmp_path / "external-massive"
+    external.mkdir()
+    (raw / "massive").symlink_to(external)
+    monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "unrelated-lake"))
+    client = MagicMock()
+    client.list_objects.return_value = [{"Key": "us_stocks_sip/minute_aggs_v1/2026/06/2026-06-05.csv.gz", "Size": 10}]
+
+    with patch("livewire_scripts.flatfile_planner.shutil.disk_usage", return_value=MagicMock(free=1000)) as usage:
+        discover_plan(client, warehouse)
+
+    measured = Path(usage.call_args.args[0]).resolve()
+    assert measured == external.resolve()
 
 
 def test_capacity_path_falls_back_to_an_existing_ancestor(tmp_path):
     # A warehouse with no data-lake yet must still resolve to something disk_usage accepts.
     assert capacity_path(tmp_path).exists()
+
+
+def test_capacity_path_rejects_a_dangling_configured_link(tmp_path):
+    # Falling back to raw/'s internal disk would measure a filesystem the
+    # configured external destination does not use — a miss, not a fallback.
+    raw = tmp_path / "warehouse" / "data-lake" / "raw"
+    raw.mkdir(parents=True)
+    (raw / "massive").symlink_to(tmp_path / "gone")
+
+    assert capacity_path(tmp_path / "warehouse") is None
+
+    client = MagicMock()
+    client.list_objects.return_value = [{"Key": "us_stocks_sip/minute_aggs_v1/2026/06/2026-06-05.csv.gz", "Size": 10}]
+    with pytest.raises(RuntimeError, match="destination unreachable"):
+        discover_plan(client, tmp_path / "warehouse")
 
 
 def test_capacity_gate_rejects_plan_that_would_cross_minimum_free_space():

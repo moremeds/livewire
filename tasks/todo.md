@@ -2,6 +2,18 @@
 
 Active task lists live here. Completed sections move to [archive.md](archive.md).
 
+## Existing-ledger diagnostics and runner consistency (2026-09-17)
+
+Plan: [ops diagnostics](../docs/plans/2026-09-17-ops-diagnostics.md).
+Graph: `O0 -> O1 -> O2 -> O3 -> O4 -> O5`.
+
+- [x] O0 (`depends_on: []`): Baseline and Grok plan review; six pins clarified, APPROVE; 362 relevant baseline tests pass.
+- [x] O1 (`depends_on: [O0]`): Accepted `89e5bde`; lead reviewed the diff and verified 249 tests, including the UTC fixture correction. Nested-group regression removed; unknown source identity stays UNKNOWN.
+- [x] O2 (`depends_on: [O1]`): Accepted `1612fd2`; lead verified 244 tests and publication boundaries, then folded duplicate concurrency coverage into the existing test.
+- [x] O3 (`depends_on: [O2]`): Delivered `36a1c2d`; lead independently verified 168 relevant tests. Grok findings corrected and approved.
+- [x] O4 (`depends_on: [O3]`): Upstream `8471041` integrated; full suite 3033 passed / 95.02% at `9e28725`, CI passed, Pyright 0 errors. Grok approved final runtime and fixture diffs. Delivery: PR #141.
+- [x] O5 (`depends_on: [O4]`): Exact `784eac2` candidate real-input probe and 472 regression tests passed on the actual Mini after fixture isolation corrections. Read-only production status and Apex canary verified. Production promotion/full nightly run and existing data repairs remain outside this acceptance.
+
 ## Resend SMTP from livewire@rsiarc.com (2026-09-13)
 
 Keep Nodemailer SMTP; retarget at Resend. No HTTP client.

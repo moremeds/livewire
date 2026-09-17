@@ -17,6 +17,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
+from clients import ledger
 from clients.silver_client import PublishedArtifact, SilverClient
 from clients.silver_revision import AffectedSymbol, SilverRevisionPublisher
 from clients.silver_snapshot import SilverSnapshot
@@ -327,6 +328,8 @@ def test_snapshot_enospc_aborts_before_publishing_a_partial_input_set(tmp_path, 
 
 
 def test_stale_attempt_writes_no_generation_after_a_concurrent_commit(tmp_path, monkeypatch):
+    """Synthetic concurrency fault: reject stale work and record no publication."""
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-test")
     root, silver = tmp_path / "lake", tmp_path / "silver"
     _seed_bronze(root, "AAPL", [("2024-01-02", 10.0), ("2024-01-03", 11.0)])
     rebuild_silver.run(["--full"], data_lake_root=root, silver_root=silver, as_of_date=date(2026, 9, 8))
@@ -363,6 +366,20 @@ def test_stale_attempt_writes_no_generation_after_a_concurrent_commit(tmp_path, 
 
     assert _manifest(silver)["revision"] == 2
     assert {path.name for path in (silver / "generations").iterdir()} == generations_before | {"concurrent"}
+    rows = ledger.query(
+        "select exit_code, receipt_json from executions where script = 'rebuild-silver' order by started"
+    )
+    assert len(rows) == 2
+    receipt = json.loads(rows[1]["receipt_json"])
+    assert receipt["schema_version"] == 1
+    assert receipt["kind"] == "silver_publication"
+    assert receipt["result"] == "attempt_only"
+    assert receipt["attempt_reason"] == "RuntimeError"
+    assert receipt["published_revision"] is None
+    assert receipt["manifest_ref"] is None
+    assert receipt["generation_id"] is None
+    assert rows[1]["exit_code"] is None
+    assert receipt["baseline_revision"] == 1
 
 
 def test_failed_in_scope_symbol_is_omitted_while_healthy_change_advances(tmp_path):

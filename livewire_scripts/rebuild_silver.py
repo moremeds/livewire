@@ -32,9 +32,10 @@ from clients.silver_revision import AffectedSymbol, ManifestArtifact, SilverRevi
 from clients.silver_window import resolve_window
 from clients.symbol_paths import canonical_symbol, encode_symbol
 from livewire_scripts.daily_outcomes import SUMMARY_PREFIX, resolve_exit_code
-from livewire_scripts.job_runner_common import emit_progress
+from livewire_scripts.job_runner_common import deployment_sha, emit_progress, executing_code_sha
 from livewire_scripts.paths import data_lake_dir
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 TIMEFRAMES = ("1d", "1m", "5m", "30m", "1h")
 NEW_YORK = ZoneInfo("America/New_York")
 CONTINUITY_THRESHOLD = 6.0
@@ -383,6 +384,184 @@ def _failure(
     }
 
 
+def _baseline_artifacts(artifact_index: dict[str, list[ManifestArtifact]], symbol: str) -> list[dict]:
+    """Committed manifest refs for one symbol — context, never the fix."""
+    return [{"path": artifact.path, "sha256": artifact.sha256} for artifact in artifact_index.get(symbol, [])]
+
+
+def _emit_symbol_evidence(
+    *,
+    run_id: str,
+    failures: list[dict],
+    regressions: list[dict],
+    artifact_index: dict[str, list[ManifestArtifact]],
+    root: Path,
+    silver_path: Path,
+    baseline_revision: int,
+) -> None:
+    """Batch this attempt's per-symbol faults into ``evidence`` rows.
+
+    A versioned ``silver_symbol_failure`` envelope carries the same fields the
+    ``--failure-output`` v2 file writes, plus the stage that produced them:
+    ``staging`` for a symbol that never reached the publisher,
+    ``withheld_window_regression`` for one staged cleanly but held back. Each
+    envelope carries the resolved roots and baseline revision so a fault still
+    root-matches when its publication receipt is absent. Input date bounds are
+    the frozen input's range — context, not an exact failing session. The
+    whole preparation sits inside the guard: telemetry must never fail a run,
+    and a failed emit is stderr, not a retry.
+    """
+    if not failures and not regressions:
+        return
+    try:
+        now = datetime.now(UTC)
+        context = {
+            "data_lake_root": str(root.expanduser().resolve()),
+            "silver_root": str(silver_path.expanduser().resolve()),
+            "baseline_revision": baseline_revision,
+        }
+        rows = []
+        for item in failures:
+            payload = {
+                "schema_version": 1,
+                "kind": "silver_symbol_failure",
+                "stage": "staging",
+                "symbol": item["symbol"],
+                "error_type": item["error_type"],
+                "error": item["error"],
+                "input": {"path": item["bronze_path"], "sha256": item["source_sha256"]},
+                "input_date_bounds": {
+                    "earliest": item["earliest_trade_date"],
+                    "latest": item["latest_trade_date"],
+                },
+                "active_actions": item["active_actions"],
+                "baseline_artifacts": _baseline_artifacts(artifact_index, item["symbol"]),
+                **context,
+            }
+            rows.append(
+                {
+                    "evidence_hash": hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest(),
+                    "kind": "silver_symbol_failure",
+                    "subject": item["symbol"],
+                    "payload_json": json.dumps(payload, sort_keys=True),
+                    "source_url": f"bronze://equity/{item['symbol']}/1d.parquet",
+                    "fetched_at": now,
+                    "proposer": "rebuild-silver",
+                    "run_id": run_id,
+                }
+            )
+        for item in regressions:
+            payload = {
+                "schema_version": 1,
+                "kind": "silver_symbol_failure",
+                "stage": "withheld_window_regression",
+                "symbol": item["symbol"],
+                "previous_start": item["previous_start"],
+                "new_start": item["new_start"],
+                "reason": item["reason"],
+                "baseline_artifacts": _baseline_artifacts(artifact_index, item["symbol"]),
+                **context,
+            }
+            rows.append(
+                {
+                    "evidence_hash": hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest(),
+                    "kind": "silver_symbol_failure",
+                    "subject": item["symbol"],
+                    "payload_json": json.dumps(payload, sort_keys=True),
+                    "source_url": None,
+                    "fetched_at": now,
+                    "proposer": "rebuild-silver",
+                    "run_id": run_id,
+                }
+            )
+        ledger.emit("evidence", rows, run_id=run_id)
+    except Exception as exc:  # pragma: no cover - telemetry must not fail a run
+        print(f"WARNING: could not write evidence rows for silver: {exc}", file=sys.stderr)
+
+
+def _emit_silver_publication(
+    *,
+    run_id: str,
+    argv: Sequence[str],
+    started: datetime,
+    result: str,
+    root: Path,
+    silver_path: Path,
+    baseline_revision: int,
+    published_revision: int | None,
+    generation_id: str | None,
+    selected: list[str],
+    staged: list[str],
+    validated: list[str],
+    failed: list[str],
+    withheld: list[str],
+    omitted: list[str],
+    exit_code: int | None,
+    attempt_reason: str | None = None,
+    error: str | None = None,
+) -> None:
+    """One ``executions`` receipt per publication attempt, outside the transaction.
+
+    ``result`` is ``committed`` when the revision advanced, ``noop`` when a
+    validated attempt left the manifest unchanged, and ``attempt_only`` when the
+    attempt raised before a publication outcome could be recorded — an
+    exception can land on either side of the pointer swap, so attempt-only
+    evidence never claims the manifest did or did not move; readers resolve
+    that UNKNOWN from the manifest itself. ``validated_symbols`` is the
+    explicit resolvable scope: a validated no-op closes only symbols it
+    actually validated, and a bare zero exit resolves nothing. Bounded: the
+    manifest is referenced by path+hash, never copied into the row. The whole
+    preparation sits inside the guard — hashing or path resolution failing
+    must not fail a run whose bytes are already committed.
+    """
+    try:
+        manifest_ref = None if published_revision is None else f"revisions/revision={published_revision}.json"
+        argv = [str(part) for part in argv]
+        receipt = {
+            "schema_version": 1,
+            "kind": "silver_publication",
+            "result": result,
+            "attempt_reason": attempt_reason,
+            "error": error,
+            "data_lake_root": str(root.expanduser().resolve()),
+            "silver_root": str(silver_path.expanduser().resolve()),
+            "baseline_revision": baseline_revision,
+            "published_revision": published_revision,
+            "generation_id": generation_id,
+            "manifest_ref": manifest_ref,
+            "manifest_sha256": (
+                None if manifest_ref is None else _sha256(silver_path.expanduser().resolve() / manifest_ref)
+            ),
+            "selected_symbols": selected,
+            "staged_symbols": staged,
+            "validated_symbols": validated,
+            "failed_symbols": failed,
+            "withheld_symbols": withheld,
+            "omitted_symbols": omitted,
+            "deployment_sha": deployment_sha(),
+        }
+        ledger.emit(
+            "executions",
+            [
+                {
+                    "evidence_hash": None,
+                    "script": "rebuild-silver",
+                    "attempt": 1,
+                    "args_json": json.dumps({"argv": argv[:24], "truncated_args": max(0, len(argv) - 24)}),
+                    "release_sha": executing_code_sha(REPO_ROOT),
+                    "started": started,
+                    "ended": datetime.now(UTC),
+                    "exit_code": exit_code,
+                    "receipt_json": json.dumps(receipt, sort_keys=True),
+                    "run_id": run_id,
+                }
+            ],
+            run_id=run_id,
+        )
+    except Exception as exc:  # pragma: no cover - telemetry must not fail a run
+        print(f"WARNING: could not write executions row for rebuild-silver: {exc}", file=sys.stderr)
+
+
 def _run_snapshot(
     args: argparse.Namespace,
     *,
@@ -390,13 +569,16 @@ def _run_snapshot(
     silver_path: Path,
     as_of_date: date | None,
     scratch_root: Path,
+    argv: Sequence[str],
 ) -> int:
+    attempt_started = datetime.now(UTC)
     bronze = BronzeClient(root / "bronze" / "asset_class=equity", "equity")
     action_store = CorporateActionStore(root)
     client = SilverClient(silver_path)
     publisher = SilverRevisionPublisher(silver_path)
     baseline = publisher.read_current()
     baseline_revision = 0 if baseline is None else baseline.revision
+    baseline_index = _artifact_index(baseline)
     input_errors: dict[str, Exception] = {}
     snapshot_root = scratch_root / "inputs"
     snapshot_bronze = BronzeClient(snapshot_root / "bronze" / "asset_class=equity", "equity")
@@ -507,11 +689,23 @@ def _run_snapshot(
         except Exception as exc:
             failures.append(_failure(symbol, exc, bronze, rows, actions, snapshot_path))
             print(f"{symbol}: {exc}", file=sys.stderr)
-        if position % _PROGRESS_EVERY == 0:
+        if not args.dry_run and position % _PROGRESS_EVERY == 0:
             emit_progress(scope="silver", completed=position, total=len(symbols), run_id=run_id)
     # The loop is the hours-long part; a final beat so the last partial batch is
     # counted and `status` reads N of N rather than the previous multiple of 500.
-    emit_progress(scope="silver", completed=len(symbols), total=len(symbols), run_id=run_id)
+    # A dry run writes no ledger facts at all — its counts are a preview, not a
+    # claim about the lake.
+    if not args.dry_run:
+        emit_progress(scope="silver", completed=len(symbols), total=len(symbols), run_id=run_id)
+        _emit_symbol_evidence(
+            run_id=run_id,
+            failures=failures,
+            regressions=[],
+            artifact_index=baseline_index,
+            root=root,
+            silver_path=silver_path,
+            baseline_revision=baseline_revision,
+        )
 
     action_count = sum(len(item.actions) for item in staged)
     effective_action_count = sum(action.ex_date <= effective_as_of for item in staged for action in item.actions)
@@ -590,60 +784,141 @@ def _run_snapshot(
         )
         return exit_code
 
-    with publisher.transaction() as transaction:
-        current_revision = 0 if transaction.current is None else transaction.current.revision
-        if current_revision != baseline_revision:
-            raise RuntimeError(
-                f"Silver advanced from revision {baseline_revision} to {current_revision} while inputs were processed; "
-                "this stale attempt published nothing; retry from fresh inputs"
-            )
-        regressions, publishable, changed, scope, omitted, artifact_index = publication_state(transaction.current)
-        write_failure_output(regressions)
-        if not changed and not omitted:
-            revision = 0 if transaction.current is None else transaction.current.revision
-            rebuilt = 0
-            unchanged = len(staged)
-        else:
-            revision = transaction.revision
-            attempt_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S.%fZ')}-{uuid.uuid4().hex}"
-            generation_client = client.for_generation(attempt_id)
-            artifacts: list[PublishedArtifact] = []
-            affected: list[AffectedSymbol] = []
-            actions_as_of = input_actions_as_of
-            for item in changed:
-                daily_rows = adjust_daily_rows(item.rows, item.intervals, revision=revision)
-                intervals = [replace(interval, adjustment_revision=revision) for interval in item.intervals]
-                artifacts.append(generation_client.publish_daily(item.symbol, daily_rows))
-                artifacts.append(generation_client.publish_factors(item.symbol, intervals))
-                affected.append(AffectedSymbol(item.symbol, item.earliest_date, TIMEFRAMES))
-                if item.actions:
-                    actions_as_of = max(actions_as_of, *(action.fetched_at for action in item.actions))
-            # The publisher writes exactly what it is handed and never merges the
-            # previous revision, so a targeted rebuild would manifest only its own
-            # symbols and drop the rest of the universe.
-            carried_artifacts, carried_affected = _carry_forward(
-                client,
-                transaction.current,
-                staged,
-                {item.symbol for item in changed},
-                scope,
-                artifact_index,
-                generation_client,
-            )
-            artifacts.extend(carried_artifacts)
-            affected.extend(carried_affected)
-            if not artifacts:
-                # Every in-scope symbol is quarantined. Keep the prior commit intact;
-                # schema 1 deliberately has no representation for an empty revision.
-                raise SystemExit("every in-scope symbol failed staging: refusing to publish an empty revision")
-            revision = transaction.commit(
-                artifacts,
-                affected,
-                actions_as_of,
-                generation_id=attempt_id,
-            ).revision
-            rebuilt = len(changed)
-            unchanged = len(staged) - rebuilt
+    committed: SilverRevision | None = None
+    preexisting: SilverRevision | None = None
+    regressions: list[dict] = []
+    publishable: list[StagedSymbol] = []
+    omitted: set[str] = set()
+    selected = sorted({canonical_symbol(symbol) for symbol in symbols})
+    try:
+        with publisher.transaction() as transaction:
+            preexisting = transaction.current
+            current_revision = 0 if preexisting is None else preexisting.revision
+            if current_revision != baseline_revision:
+                raise RuntimeError(
+                    f"Silver advanced from revision {baseline_revision} to {current_revision} while inputs were processed; "
+                    "this stale attempt published nothing; retry from fresh inputs"
+                )
+            regressions, publishable, changed, scope, omitted, artifact_index = publication_state(transaction.current)
+            write_failure_output(regressions)
+            if not changed and not omitted:
+                revision = 0 if transaction.current is None else transaction.current.revision
+                rebuilt = 0
+                unchanged = len(staged)
+            else:
+                revision = transaction.revision
+                attempt_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S.%fZ')}-{uuid.uuid4().hex}"
+                generation_client = client.for_generation(attempt_id)
+                artifacts: list[PublishedArtifact] = []
+                affected: list[AffectedSymbol] = []
+                actions_as_of = input_actions_as_of
+                for item in changed:
+                    daily_rows = adjust_daily_rows(item.rows, item.intervals, revision=revision)
+                    intervals = [replace(interval, adjustment_revision=revision) for interval in item.intervals]
+                    artifacts.append(generation_client.publish_daily(item.symbol, daily_rows))
+                    artifacts.append(generation_client.publish_factors(item.symbol, intervals))
+                    affected.append(AffectedSymbol(item.symbol, item.earliest_date, TIMEFRAMES))
+                    if item.actions:
+                        actions_as_of = max(actions_as_of, *(action.fetched_at for action in item.actions))
+                # The publisher writes exactly what it is handed and never merges the
+                # previous revision, so a targeted rebuild would manifest only its own
+                # symbols and drop the rest of the universe.
+                carried_artifacts, carried_affected = _carry_forward(
+                    client,
+                    transaction.current,
+                    staged,
+                    {item.symbol for item in changed},
+                    scope,
+                    artifact_index,
+                    generation_client,
+                )
+                artifacts.extend(carried_artifacts)
+                affected.extend(carried_affected)
+                if not artifacts:
+                    # Every in-scope symbol is quarantined. Keep the prior commit intact;
+                    # schema 1 deliberately has no representation for an empty revision.
+                    raise SystemExit("every in-scope symbol failed staging: refusing to publish an empty revision")
+                committed = transaction.commit(
+                    artifacts,
+                    affected,
+                    actions_as_of,
+                    generation_id=attempt_id,
+                )
+                revision = committed.revision
+                rebuilt = len(changed)
+                unchanged = len(staged) - rebuilt
+    except BaseException as exc:
+        # The publication outcome is UNKNOWN here — the exception may have
+        # landed on either side of the pointer swap. The receipt records the
+        # attempt and its scope; the manifest itself is the arbiter.
+        _emit_silver_publication(
+            run_id=run_id,
+            argv=argv,
+            started=attempt_started,
+            result="attempt_only",
+            attempt_reason=type(exc).__name__,
+            error=str(exc)[:400],
+            root=root,
+            silver_path=silver_path,
+            baseline_revision=baseline_revision,
+            published_revision=None,
+            generation_id=None,
+            selected=selected,
+            staged=sorted(item.symbol for item in staged),
+            validated=[],
+            failed=sorted(item["symbol"] for item in failures),
+            withheld=[],
+            omitted=[],
+            exit_code=None,
+        )
+        raise
+
+    withheld = set() if args.allow_window_regression else {item["symbol"] for item in regressions}
+    _emit_symbol_evidence(
+        run_id=run_id,
+        failures=[],
+        regressions=[item for item in regressions if item["symbol"] in withheld],
+        artifact_index=baseline_index,
+        root=root,
+        silver_path=silver_path,
+        baseline_revision=baseline_revision,
+    )
+    if committed is not None and revision != baseline_revision:
+        result, published_revision, generation_id = "committed", revision, committed.generation_id
+        validated = sorted(item.symbol for item in publishable)
+        attempt_reason = None
+    elif preexisting is not None:
+        # A validated no-op: the attempt resolved against an existing manifest,
+        # validated its publishable set, and left that manifest unchanged —
+        # the receipt names its generation, not None.
+        result, published_revision, generation_id = "noop", revision, preexisting.generation_id
+        validated = sorted(item.symbol for item in publishable)
+        attempt_reason = None
+    else:
+        # No committed revision exists and nothing published — revision 0 is not
+        # a real manifest, so this is attempt-only evidence with no reference.
+        result, published_revision, generation_id = "attempt_only", None, None
+        validated = []
+        attempt_reason = "no_committed_revision"
+    _emit_silver_publication(
+        run_id=run_id,
+        argv=argv,
+        started=attempt_started,
+        result=result,
+        attempt_reason=attempt_reason,
+        root=root,
+        silver_path=silver_path,
+        baseline_revision=baseline_revision,
+        published_revision=published_revision,
+        generation_id=generation_id,
+        selected=selected,
+        staged=sorted(item.symbol for item in staged),
+        validated=validated,
+        failed=sorted(item["symbol"] for item in failures),
+        withheld=sorted(withheld),
+        omitted=sorted(omitted),
+        exit_code=exit_code,
+    )
 
     _summary(
         action_count=action_count,
@@ -677,7 +952,12 @@ def run(
     # Its lifetime owns every input and staged artifact, including dry runs and failures.
     with tempfile.TemporaryDirectory(prefix="livewire-silver-") as scratch:
         return _run_snapshot(
-            args, root=root, silver_path=silver_path, as_of_date=as_of_date, scratch_root=Path(scratch)
+            args,
+            root=root,
+            silver_path=silver_path,
+            as_of_date=as_of_date,
+            scratch_root=Path(scratch),
+            argv=list(sys.argv[1:] if argv is None else argv),
         )
 
 

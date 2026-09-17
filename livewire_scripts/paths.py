@@ -31,6 +31,33 @@ def cursor_dir() -> Path:
     return Path(os.environ.get("MDW_CURSOR_DIR", warehouse_dir() / "cursors")).expanduser()
 
 
+def resolve_capacity_target(path: Path, *, allow_missing: bool = False) -> Path | None:
+    """Resolve ``path`` to the filesystem object whose capacity is relevant.
+
+    Follows symlinks component by component and never creates anything. With
+    ``allow_missing=False`` (a read-only status check) the resolved path must
+    exist — a missing or dangling destination is UNKNOWN, never its ancestor's
+    free space. With ``allow_missing=True`` (capacity planning for a directory
+    that does not exist yet) the nearest existing resolved ancestor answers,
+    but a dangling symlink in the chain is still a miss: falling past it would
+    measure an internal volume the files never touch.
+    """
+    probe = Path(path).expanduser()
+    missing = False
+    while not probe.exists():
+        if probe.is_symlink():
+            return None
+        missing = True
+        parent = probe.parent
+        if parent == probe:
+            return None
+        probe = parent
+    if missing and not allow_missing:
+        return None
+    resolved = probe.resolve()
+    return resolved if resolved.exists() else None
+
+
 def lake_lock_path() -> Path:
     """The one lock every lane that touches the lake holds while it runs.
 

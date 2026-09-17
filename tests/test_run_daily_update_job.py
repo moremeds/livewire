@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -1189,10 +1191,22 @@ class TestMain:
             assert main(["--asset-class", "futures"]) == GATEWAY_DOWN_EXIT_CODE
         assert ledger.query("select verdict from runs where verdict is not null") == [{"verdict": "DEGRADED"}]
 
-    def _main_with(self, *, lane_codes=None, action=0, cboe=0, fx=0, catalog=0, gateway_down=()):
+    def _main_with(
+        self, *, lane_codes=None, action=0, cboe=0, fx=0, catalog=0, gateway_down=(), argv=(), silver_summary=None
+    ):
         """Run main() with each lane's exit code stubbed. Returns (rc, silver_mock)."""
         config = _config(Path("/tmp/test"))
         codes = dict(lane_codes or {})
+
+        def _silver(*args, **kwargs):
+            if silver_summary is not None:
+                from livewire_scripts.daily_outcomes import SUMMARY_PREFIX
+
+                log_file = build_log_file(config.log_dir, _utc_now())
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                with log_file.open("a", encoding="utf-8") as handle:
+                    handle.write(SUMMARY_PREFIX + json.dumps(silver_summary) + "\n")
+            return 0
 
         def _emit(scope, code):
             from clients import ledger
@@ -1235,11 +1249,11 @@ class TestMain:
             patch("livewire_scripts.run_daily_update_job.run_with_retries", side_effect=_run),
             patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=cboe),
             patch("livewire_scripts.run_daily_update_job.run_fx_sync", return_value=fx),
-            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", return_value=0) as silver,
+            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", side_effect=_silver) as silver,
             patch("livewire_scripts.run_daily_update_job.run_duckdb_catalog_build", return_value=catalog),
             patch("livewire_scripts.run_daily_update_job.append_log"),
         ):
-            return main([]), silver
+            return main(list(argv)), silver
 
     def test_main_returns_nonzero_if_any_asset_class_fails(self):
         rc, _ = self._main_with(lane_codes={"futures": 1})
@@ -1896,3 +1910,218 @@ class TestTheSilverGateOnlyBlocksOnFailure:
         self._lane("equity", "done", 0)
 
         assert daily_runner.silver_is_blocked() is None
+
+
+class TestProcessAttemptReceipt:
+    """One executions receipt per subprocess attempt — raw and effective kept apart.
+
+    lane_results.exit_code remains the effective result; the receipt's
+    receipt_json carries raw_exit_code, effective_exit_code and why they
+    differ. script is the lane name so a receipt joins on (run_id, lane).
+    """
+
+    @pytest.fixture(autouse=True)
+    def ledger_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+        monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
+        monkeypatch.setenv("LW_RUN_ID", "daily-update-20260917T050000Z-1")
+
+    @staticmethod
+    def _receipts():
+        from clients import ledger
+
+        return ledger.query(
+            "select script, attempt, exit_code, "
+            "json_extract_string(receipt_json,'$.kind') as kind, "
+            "cast(json_extract_string(receipt_json,'$.raw_exit_code') as integer) as raw, "
+            "json_extract_string(receipt_json,'$.completion_reason') as reason "
+            "from executions order by attempt"
+        )
+
+    def test_each_retry_writes_its_own_attempt_receipt(self, tmp_path):
+        exits = iter([9, 0])
+
+        def flaky(command, **kwargs):
+            return CompletedProcess(command, next(exits))
+
+        code = run_with_retries(
+            _config(tmp_path),
+            ["--asset-class", "equity"],
+            sleep_fn=lambda _s: None,
+            runner=flaky,
+            now_fn=_utc_now,
+            completion_scope="equity",
+        )
+
+        assert code == 0
+        assert self._receipts() == [
+            {"script": "equity", "attempt": 1, "exit_code": 9, "kind": "process_attempt", "raw": 9, "reason": "exit"},
+            {"script": "equity", "attempt": 2, "exit_code": 0, "kind": "process_attempt", "raw": 0, "reason": "exit"},
+        ]
+
+    def test_a_timeout_attempt_has_no_raw_exit(self, tmp_path, monkeypatch):
+        sent = []
+        monkeypatch.setattr(notify, "send", lambda notice, **kw: sent.append(notice) or 0)
+
+        def hang(command, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs.get("timeout") or 1)
+
+        code = run_with_retries(
+            _config(tmp_path),
+            ["--asset-class", "equity"],
+            sleep_fn=lambda _s: None,
+            runner=hang,
+            now_fn=_utc_now,
+            completion_scope="equity",
+        )
+
+        assert code == 124
+        assert len(sent) == 1, "a timeout still pages"
+        assert self._receipts() == [
+            {
+                "script": "equity",
+                "attempt": 1,
+                "exit_code": 124,
+                "kind": "process_attempt",
+                "raw": None,
+                "reason": "timeout",
+            }
+        ]
+
+    def test_a_scheduled_lane_writes_one_attempt_receipt(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(notify, "send", lambda notice, **kw: 0)
+
+        code = daily_runner._run_scheduled_lane(
+            _config(tmp_path),
+            ["true"],
+            "CBOE Volatility Sync",
+            "cboe",
+            env=None,
+            runner=daily_runner._run_in_own_process_group,
+            now_fn=_utc_now,
+        )
+
+        assert code == 0
+        assert self._receipts() == [
+            {"script": "cboe", "attempt": 1, "exit_code": 0, "kind": "process_attempt", "raw": 0, "reason": "exit"}
+        ]
+
+
+_ARCHIVE_SHA = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
+
+
+def _expected_executing_sha(root: Path) -> str:
+    """The identity the run row must carry, derived without the subject under test.
+
+    In a real checkout the executing identity is `git rev-parse HEAD`. In a
+    release archive there is no `.git`; the pinned sha is the
+    `releases/<sha>` directory name — read from the layout itself.
+    """
+    resolved = Path(root).resolve()
+    if resolved.parent.name == "releases" and _ARCHIVE_SHA.fullmatch(resolved.name):
+        return resolved.name
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=resolved,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+class TestRunIdentity:
+    """release_sha is the executing code, presets_sha the selected input files.
+
+    The mutable `current` symlink is the deployment selection — it can move
+    mid-run and must never relabel the code this run is actually executing.
+    """
+
+    @pytest.fixture(autouse=True)
+    def ledger_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+        monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
+        monkeypatch.setenv("LW_RUN_ID", "daily-update-20260917T050000Z-1")
+
+    @staticmethod
+    def _stubbed_lanes():
+        return (
+            patch("livewire_scripts.run_daily_update_job.run_with_retries", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_cboe_volatility_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_fx_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_corporate_action_sync", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_silver_rebuild", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.silver_is_blocked", return_value=None),
+            patch("livewire_scripts.run_daily_update_job.run_duckdb_catalog_build", return_value=0),
+            patch("livewire_scripts.run_daily_update_job.run_post_success_quality", return_value=[]),
+        )
+
+    def test_the_run_row_names_the_executing_code_not_the_current_selection(self, tmp_path):
+        from clients import ledger
+
+        selected = tmp_path / "warehouse" / "releases" / ("0" * 40)
+        selected.mkdir(parents=True)
+        (tmp_path / "warehouse" / "current").symlink_to(selected)
+
+        with contextlib.ExitStack() as stack:
+            for patcher in self._stubbed_lanes():
+                stack.enter_context(patcher)
+            assert main([]) == 0
+
+        expected = _expected_executing_sha(daily_runner.REPO_ROOT)
+        assert expected != "0" * 40
+        assert ledger.query("select distinct release_sha, presets_sha, registry_sha from runs") == [
+            {
+                "release_sha": expected,
+                "presets_sha": daily_runner.hash_files(daily_runner._selected_preset_paths([])),
+                "registry_sha": daily_runner.hash_files([daily_runner.REPO_ROOT / "registry" / "gaps.json"]),
+            }
+        ]
+
+    def test_a_custom_preset_arg_is_included_in_the_input_hash(self, tmp_path):
+        from clients import ledger
+
+        custom = tmp_path / "custom-preset.json"
+        custom.write_text('{"name": "custom", "tickers": ["AAPL"]}', encoding="utf-8")
+        with contextlib.ExitStack() as stack:
+            for patcher in self._stubbed_lanes():
+                stack.enter_context(patcher)
+            assert main(["--preset", str(custom)]) == 0
+
+        bundle_only = daily_runner.hash_files(sorted((daily_runner.REPO_ROOT / "presets").glob("*.json")))
+        (row,) = ledger.query("select distinct presets_sha from runs")
+        assert row["presets_sha"] == daily_runner.hash_files(
+            sorted((daily_runner.REPO_ROOT / "presets").glob("*.json")) + [custom]
+        )
+        assert row["presets_sha"] != bundle_only, "the selected file must be inside the hash"
+
+    def test_an_unreadable_selected_preset_hashes_to_unknown(self, tmp_path):
+        from clients import ledger
+
+        with contextlib.ExitStack() as stack:
+            for patcher in self._stubbed_lanes():
+                stack.enter_context(patcher)
+            assert main(["--preset", str(tmp_path / "missing.json")]) == 0
+
+        assert ledger.query("select distinct presets_sha from runs") == [{"presets_sha": None}]
+
+
+class TestDryRunSilverCounts:
+    """A dry-run Silver summary is a preview: its counts never land as facts."""
+
+    _SUMMARY = {"failed": 3, "window_regressions": 2, "rebuilt": 10, "revision": 5}
+
+    def _silver_measurements(self):
+        from clients import ledger
+
+        return ledger.query("select name, value from measurements where name like 'silver_%'")
+
+    def test_dry_run_silver_summary_writes_no_measurements(self, no_real_quality_spawn):
+        rc, _ = TestMain()._main_with(argv=["--dry-run"], silver_summary=self._SUMMARY)
+        assert rc == 0
+        assert self._silver_measurements() == []
+
+    def test_real_run_lands_silver_counts_as_measurements(self, no_real_quality_spawn):
+        rc, _ = TestMain()._main_with(silver_summary=self._SUMMARY)
+        assert rc == 0
+        rows = {row["name"]: row["value"] for row in self._silver_measurements()}
+        assert rows == {"silver_failed": 3.0, "silver_window_regressions": 2.0}

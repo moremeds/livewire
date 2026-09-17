@@ -10,6 +10,7 @@ from pathlib import Path
 
 from clients import constants
 from clients.massive_flatfile_client import MassiveFlatfileClient
+from livewire_scripts.paths import resolve_capacity_target
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,7 @@ def date_from_key(key: str) -> date:
     return datetime.strptime(Path(key).name.removesuffix(".csv.gz"), "%Y-%m-%d").date()
 
 
-def capacity_path(warehouse_dir: Path) -> Path:
+def capacity_path(warehouse_dir: Path) -> Path | None:
     """The directory whose filesystem actually receives the raw flat files.
 
     `data-lake` is a symlink to the external volume in production
@@ -46,15 +47,13 @@ def capacity_path(warehouse_dir: Path) -> Path:
     warehouse root had 38 GiB free against the lake's 6.6 TiB, and the planner
     logged the former every night while writing to the latter.
 
-    Both stores put their raw tree under `data-lake/raw`, so one path covers
-    `minute_aggs_v1` and `day_aggs_v1` alike. Walks up to the nearest existing
-    ancestor because `disk_usage` needs a path that exists.
+    Both stores write under `data-lake/raw/massive/us_stocks_sip/...`, and
+    `raw/massive` itself may be a child symlink onto yet another volume — the
+    target is `raw/massive`, not `raw`. A genuinely new directory resolves to
+    its nearest existing ancestor on the intended filesystem; a dangling
+    configured link returns None rather than falling back to the internal disk.
     """
-    target = warehouse_dir / "data-lake" / "raw"
-    for candidate in (target, *target.parents):
-        if candidate.exists():
-            return candidate
-    return warehouse_dir
+    return resolve_capacity_target(warehouse_dir / "data-lake" / "raw" / "massive", allow_missing=True)
 
 
 def discover_plan(client: MassiveFlatfileClient, warehouse_dir: Path) -> FlatfilePlan:
@@ -62,7 +61,14 @@ def discover_plan(client: MassiveFlatfileClient, warehouse_dir: Path) -> Flatfil
     dated = sorted((date_from_key(obj["Key"]), int(obj["Size"])) for obj in objects if obj["Key"].endswith(".csv.gz"))
     if not dated:
         raise RuntimeError("Massive minute flat-file listing returned no objects")
-    usage = shutil.disk_usage(capacity_path(warehouse_dir))
+    target = capacity_path(warehouse_dir)
+    if target is None:
+        raise RuntimeError(
+            "Massive flat-file destination unreachable: "
+            f"{warehouse_dir / 'data-lake' / 'raw' / 'massive'} resolves through a missing "
+            "or dangling link — measure nothing rather than an internal volume"
+        )
+    usage = shutil.disk_usage(target)
     compressed_bytes = sum(size for _, size in dated)
     multiplier = float(os.getenv("MDW_FLATFILE_STORAGE_MULTIPLIER", "8"))
     minimum_free_bytes = int(constants.declared("flatfile_min_free_gb") * 1024**3)

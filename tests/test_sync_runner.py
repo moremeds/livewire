@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import signal
 import subprocess
 from datetime import UTC
@@ -653,6 +654,138 @@ class TestPhaseTimeout:
     def test_budget_is_env_tunable(self, monkeypatch):
         monkeypatch.setenv("MDW_SYNC_PHASE_TIMEOUT_SECONDS", "900")
         assert sync_runner.phase_timeout_seconds() == 900
+
+
+class TestProcessAttemptReceipt:
+    """Each phase attempt writes one executions receipt keeping the raw code.
+
+    lane_results.exit_code stays the *effective* result — the policy the
+    orchestrator acted on — while the receipt preserves what the process
+    actually did: raw exit, effective exit, and why they differ.
+    """
+
+    @staticmethod
+    def _receipts():
+        from clients import ledger
+
+        return ledger.query(
+            "select script, exit_code, "
+            "json_extract_string(receipt_json,'$.kind') as kind, "
+            "cast(json_extract_string(receipt_json,'$.raw_exit_code') as integer) as raw, "
+            "json_extract_string(receipt_json,'$.completion_reason') as reason "
+            "from executions"
+        )
+
+    def test_a_plain_attempt_records_raw_equal_to_effective(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LW_RUN_ID", "intraday-catchup-test")
+        assert run_phase("lane", ["cmd"], tmp_path, runner=lambda *a, **k: CompletedProcess(a[0], 5), timeout=10) == 5
+        assert self._receipts() == [
+            {"script": "lane", "exit_code": 5, "kind": "process_attempt", "raw": 5, "reason": "exit"}
+        ]
+
+    def test_a_summary_override_keeps_the_raw_exit_in_the_receipt(self, tmp_path, monkeypatch):
+        from clients import ledger
+
+        monkeypatch.setenv("LW_RUN_ID", "intraday-catchup-test")
+
+        def runner_with_summary(command, **kwargs):
+            stdout = kwargs.get("stdout")
+            if stdout is not None:
+                stdout.write(_summary_line(updated=2, errors=0))
+            return CompletedProcess(args=command, returncode=1)
+
+        assert (
+            run_phase(
+                "lane",
+                ["cmd"],
+                tmp_path,
+                allow_completed_summary=True,
+                runner=runner_with_summary,
+                timeout=10,
+            )
+            == 0
+        )
+        assert ledger.query("select exit_code from lane_results where ended is not null") == [{"exit_code": 0}]
+        receipts = self._receipts()
+        assert [(r["script"], r["exit_code"], r["kind"], r["raw"], r["reason"]) for r in receipts] == [
+            ("lane", 0, "process_attempt", 1, "summary_override")
+        ]
+
+    def test_a_timeout_attempt_has_no_raw_exit(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LW_RUN_ID", "intraday-catchup-test")
+
+        def hang(command, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs.get("timeout") or 1)
+
+        assert run_phase("lane", ["stuck"], tmp_path, runner=hang, timeout=10) == sync_runner.TIMEOUT_EXIT_CODE
+        assert self._receipts() == [
+            {
+                "script": "lane",
+                "exit_code": sync_runner.TIMEOUT_EXIT_CODE,
+                "kind": "process_attempt",
+                "raw": None,
+                "reason": "timeout",
+            }
+        ]
+
+    def test_a_phase_without_a_run_id_writes_no_receipt(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("LW_RUN_ID", raising=False)
+        assert run_phase("lane", ["cmd"], tmp_path, runner=lambda *a, **k: CompletedProcess(a[0], 0), timeout=10) == 0
+        assert self._receipts() == []
+
+
+_ARCHIVE_SHA = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
+
+
+def _expected_executing_sha(root: Path) -> str:
+    """The identity the run row must carry, derived without the subject under test.
+
+    In a real checkout the executing identity is `git rev-parse HEAD`. In a
+    release archive there is no `.git`; the pinned sha is the
+    `releases/<sha>` directory name — read from the layout itself.
+    """
+    resolved = Path(root).resolve()
+    if resolved.parent.name == "releases" and _ARCHIVE_SHA.fullmatch(resolved.name):
+        return resolved.name
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=resolved,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+class TestMainRecordsExecutingIdentity:
+    """The run row names the code actually executing, not what `current` selects."""
+
+    def test_release_and_input_hashes_come_from_the_resolved_root(self, tmp_path, monkeypatch):
+        from clients import ledger
+
+        monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path))
+        monkeypatch.setenv("LW_RUN_ID", "intraday-catchup-identity-test")
+        monkeypatch.delenv("MDW_DAILY_BACKFILL_TARGET_DATE", raising=False)
+        # A deployment pointer that disagrees must not relabel the run.
+        selected = tmp_path / "releases" / ("0" * 40)
+        selected.mkdir(parents=True)
+        (tmp_path / "current").symlink_to(selected)
+        # And a stale env claim is cross-checked against the physical root.
+        monkeypatch.setenv("LW_RELEASE_SHA", "f" * 40)
+
+        with patch("livewire_scripts.sync_runner.run_sync", return_value=0):
+            assert main([]) == 0
+
+        expected = _expected_executing_sha(sync_runner._PROJECT_ROOT)
+        rows = ledger.query("select distinct release_sha, presets_sha, registry_sha from runs")
+        assert rows == [
+            {
+                "release_sha": expected,
+                "presets_sha": sync_runner.hash_files(
+                    [*build_config().equity_presets, build_config().vol_preset, build_config().vol_daily_preset]
+                ),
+                "registry_sha": sync_runner.hash_files([sync_runner._PROJECT_ROOT / "registry" / "gaps.json"]),
+            }
+        ]
 
 
 class TestAGatewayOutageDegradesRatherThanFails:

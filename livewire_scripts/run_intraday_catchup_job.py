@@ -19,8 +19,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from clients import ledger
 from livewire_scripts import notify
-from livewire_scripts.job_runner_common import append_log, tail_of
+from livewire_scripts.job_runner_common import (
+    append_log,
+    emit_process_attempt,
+    pin_executing_sha,
+    tail_of,
+)
 from livewire_scripts.job_runner_common import build_log_file as _build_log_file
 from livewire_scripts.job_runner_common import utc_now as _utc_now
 from livewire_scripts.paths import warehouse_dir as resolve_warehouse_dir
@@ -141,6 +147,17 @@ def run_intraday_catchup(
             check=False,
         )
 
+    emit_process_attempt(
+        script="intraday_catchup",
+        attempt=1,
+        command=command,
+        started=started_at,
+        ended=_utc_now(),
+        raw_exit_code=result.returncode,
+        effective_exit_code=result.returncode,
+        completion_reason="exit",
+    )
+
     if result.returncode == 0:
         append_log(log_file, f"=== Done {now_fn():%Y-%m-%dT%H:%M:%SZ} ===")
         return 0
@@ -152,8 +169,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     # No positional args expected; all behavior is env-driven and the daily-backfill
     # subcommand has no required CLI flags.
     _ = list(argv or sys.argv[1:])  # accepted but ignored, for symmetry with run-daily-job
+    # The wrapper mints the run id so the child's daily-backfill inherits it —
+    # the wrapper's process_attempt receipt then joins to the run row the child
+    # opens under the same id. setdefault keeps an operator-supplied LW_RUN_ID.
+    os.environ.setdefault("LW_RUN_ID", ledger.new_run_id("intraday-catchup"))
+    pin_executing_sha(REPO_ROOT)
     config = build_config()
     env = os.environ.copy()
+    # Deliberately plain subprocess.run: the daily-backfill child stays in this
+    # process's group, so a group SIGTERM reaches it as a catchable signal and
+    # its own per-phase process_group_guard reaps the leaves. A detached outer
+    # group would make the guard kill the child with SIGKILL, before that inner
+    # guard could run — the leaf keeps its lock (probe-nested-interrupt).
     return run_intraday_catchup(config, env=env, runner=subprocess.run)
 
 

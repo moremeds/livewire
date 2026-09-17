@@ -42,19 +42,22 @@ import json
 import os
 import re
 import shutil
+import sys
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from weakref import WeakKeyDictionary
 
 import duckdb
 import pyarrow as pa
 
+from clients import ledger
 from clients.parquet_io import fsync_directory, path_lock
 from clients.silver_snapshot import SilverSnapshot
 from clients.symbol_paths import canonical_symbol, encode_symbol
+from livewire_scripts.job_runner_common import deployment_sha, executing_code_sha
 from livewire_scripts.paths import data_lake_dir, silver_dir, warehouse_dir
 
 # ponytail: TEMP views, not persisted ones. A read_only connection cannot
@@ -507,6 +510,82 @@ def _validate_shepherd_rows(rows: Iterable[ShepherdCoverageRow]) -> list[Shepher
     return values
 
 
+def _file_sha256(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _emit_catalog_publication(
+    *,
+    dest: Path,
+    lake_root: Path | None,
+    lake_target: Path,
+    copy_error: BaseException | None,
+    counts: dict[str, int],
+    started: datetime,
+) -> None:
+    """Record one catalog publication as an ``executions`` receipt.
+
+    Runs only after the local file is committed: the receipt describes what
+    already happened (local commit always true here; lake copy per its own
+    result), so a telemetry or hash failure must not invalidate committed
+    bytes, and a missing receipt reads as UNKNOWN linkage downstream — never a
+    reason to republish. The local file is hashed once: it sits under the
+    caller's publish lock, while the lake target is shared and another writer
+    could swap it before a re-hash — ``expected_sha256`` records what this
+    attempt copied, never what the mutable target happens to hold now.
+    ``result`` is ``committed`` when the lake copy also landed and
+    ``copy_failed`` when it did not; the copy failure itself still raises to
+    the caller after the receipt is written.
+    """
+    try:
+        local_sha = _file_sha256(dest)
+        receipt = {
+            "schema_version": 1,
+            "kind": "catalog_publication",
+            "result": "copy_failed" if copy_error is not None else "committed",
+            "data_lake_root": str(
+                (Path(lake_root) if lake_root is not None else data_lake_dir()).expanduser().resolve()
+            ),
+            "local": {"path": str(dest.expanduser().resolve()), "sha256": local_sha},
+            "lake": {
+                "path": str(lake_target.expanduser().resolve()),
+                "expected_sha256": local_sha,
+                "result": "failed" if copy_error is not None else "copied",
+                "error": None if copy_error is None else f"{type(copy_error).__name__}: {copy_error}",
+            },
+            "coverage_rows": counts,
+            "deployment_sha": deployment_sha(),
+        }
+        run = os.environ.get("LW_RUN_ID") or ledger.new_run_id("duckdb-build")
+        ledger.emit(
+            "executions",
+            [
+                {
+                    "evidence_hash": None,
+                    "script": "duckdb-build",
+                    "attempt": 1,
+                    "args_json": json.dumps({"database": str(dest)}),
+                    "release_sha": executing_code_sha(Path(__file__).resolve().parents[1]),
+                    "started": started,
+                    "ended": datetime.now(UTC),
+                    "exit_code": 1 if copy_error is not None else 0,
+                    "receipt_json": json.dumps(receipt, sort_keys=True),
+                    "run_id": run,
+                }
+            ],
+            run_id=run,
+        )
+    except Exception as exc:  # pragma: no cover - telemetry must not fail a publication
+        print(f"WARNING: could not write executions row for duckdb-build: {exc}", file=sys.stderr)
+
+
 def _coverage_insert(view_name: str, date_column: str) -> str:
     return f"""
     INSERT INTO coverage
@@ -613,9 +692,29 @@ def _build_coverage_locked(dest, sources, lake_root, silver_root, shepherd_rows)
 
     with staging.open("rb") as handle:
         os.fsync(handle.fileno())
+    publish_started = datetime.now(UTC)
     os.replace(staging, dest)
     fsync_directory(dest.parent)
-    publish_lake_snapshot(dest, lake_root=lake_root)
+    # The local file is committed here. The lake copy is a separate operation:
+    # its failure still raises (the lane fails), but the receipt records both
+    # halves so a reader can tell "committed locally, copy failed" from "never
+    # committed". Telemetry itself must not fail the publication.
+    copy_error: Exception | None = None
+    lake_target = lake_snapshot_path(lake_root)
+    try:
+        lake_target = publish_lake_snapshot(dest, lake_root=lake_root)
+    except Exception as exc:
+        copy_error = exc
+    _emit_catalog_publication(
+        dest=dest,
+        lake_root=lake_root,
+        lake_target=lake_target,
+        copy_error=copy_error,
+        counts=counts,
+        started=publish_started,
+    )
+    if copy_error is not None:
+        raise copy_error
     return counts
 
 
