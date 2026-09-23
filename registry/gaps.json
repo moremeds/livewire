@@ -113,7 +113,7 @@
     "asset_class": "futures",
     "timeframe": "1d",
     "universe": [
-      "futures-active"
+      "futures-rolling"
     ],
     "check": "denominator_diff",
     "params": {},

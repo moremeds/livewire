@@ -34,6 +34,7 @@ import asyncio
 import json  # noqa: F401
 import logging
 import os
+import subprocess
 import sys
 from collections import Counter
 from contextlib import ExitStack
@@ -59,7 +60,9 @@ from clients.ingestion_common import (
     bars_to_futures_rows,
     bars_to_midpoint_rows,
     bars_to_rows,
+    is_retired_futures_ticker,
     load_preset,
+    resolve_rolling_futures_preset,
 )
 from clients.ingestion_common import (
     is_inverted_fx_pair as _is_inverted_fx_pair,
@@ -587,6 +590,12 @@ def main():  # pragma: no cover — only exercised by integration tests
     if args.source is None:
         args.source = "massive" if args.asset_class == "equity" else "ib"
 
+    if args.asset_class == "futures" and args.tickers:
+        retired = [ticker for ticker in args.tickers if is_retired_futures_ticker(ticker)]
+        if retired:
+            console.print(f"[red]Retired futures contracts cannot be ingested: {', '.join(retired)}[/red]")
+            return 2
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(message)s",
@@ -607,6 +616,46 @@ def main():  # pragma: no cover — only exercised by integration tests
 
     bronze_dir = BRONZE_DIR or data_lake_dir() / "bronze" / f"asset_class={asset_class}"
 
+    # The scheduled futures lane follows the live IB-listed strip. Newly entering
+    # contracts are full-history seeded before the daily scan sees them.
+    rolling_preset: Path | None = None
+    if asset_class == "futures" and args.tickers is None:
+        if args.preset is None:
+            rolling_preset = PROJECT_ROOT / "presets" / "futures-rolling.json"
+        elif "rolling_contracts" in json.loads(Path(args.preset).read_text()):
+            rolling_preset = Path(args.preset)
+    if rolling_preset is not None:
+        with IBClient() as ib:
+            ib.connect(host=args.host, port=args.port)
+            preset_name, rolling_list, _ = resolve_rolling_futures_preset(rolling_preset, ib, today)
+        missing = [ticker for ticker in rolling_list if not (bronze_dir / f"symbol={ticker}" / "1d.parquet").exists()]
+        console.print(f"[bold]Rolling preset:[/bold] {preset_name} ({len(rolling_list)} contracts)")
+        if missing and not args.dry_run:
+            console.print(f"[bold]Seeding {len(missing)} newly listed futures contract(s) with full IB history.[/bold]")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(PROJECT_ROOT / "scripts" / "livewire_ingest.py"),
+                    "robust",
+                    "--tickers",
+                    *missing,
+                    "--mode",
+                    "seed",
+                    "--asset-class",
+                    "futures",
+                    "--source",
+                    "ib",
+                    "--bronze-dir",
+                    str(bronze_dir.parent),
+                ],
+                check=False,
+            )
+            if result.returncode:
+                console.print(
+                    f"[red]Rolling futures seed failed (exit {result.returncode}); aborting daily lane.[/red]"
+                )
+                return result.returncode
+
     console.print(
         f"\n[bold]Daily Update[/bold]  target_date={target}  force={args.force}  "
         f"asset_class={asset_class}  source={args.source}  host={args.host}  port={args.port}"
@@ -614,7 +663,7 @@ def main():  # pragma: no cover — only exercised by integration tests
 
     # ── Load preset filter (if any) ─────────────────────────────────
     preset_tickers: set[str] | None = None
-    if args.preset:
+    if args.preset and rolling_preset is None:
         preset_name, preset_list, _ = load_preset(args.preset)
         preset_tickers = set(preset_list)
         console.print(f"[bold]Preset:[/bold] {preset_name} ({len(preset_tickers)} tickers)")
@@ -623,7 +672,20 @@ def main():  # pragma: no cover — only exercised by integration tests
     with _storage_client()(bronze_dir=bronze_dir, asset_class=asset_class) as bronze:
         latest_dates = bronze.get_latest_dates()
 
+        if asset_class == "futures":
+            retired = [ticker for ticker in latest_dates if is_retired_futures_ticker(ticker)]
+            latest_dates = {
+                ticker: latest for ticker, latest in latest_dates.items() if not is_retired_futures_ticker(ticker)
+            }
+            if retired:
+                console.print(
+                    f"[dim]Skipped {len(retired)} retired BZ contract(s) from active futures ingestion.[/dim]"
+                )
+
         if not latest_dates and args.tickers is None:
+            if asset_class == "futures" and retired:
+                console.print("[green]No active futures contracts found.[/green]")
+                return 0
             # Nonzero, not a bare return. An empty universe on a scheduled run means
             # the bronze tree is unmounted, the data-lake root misresolved, or the
             # asset class renamed — never "nothing to do". Exiting 0 here made the

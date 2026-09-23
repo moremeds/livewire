@@ -44,6 +44,8 @@ from clients.gap_engine import (
     suppress_unresolved,
 )
 from clients.gap_registry import RegistryError, load_registry
+from clients.ib_client import IBClient
+from clients.ingestion_common import resolve_rolling_futures_preset
 from clients.intraday_bronze_client import INTRADAY_PARQUET_FILENAME
 from clients.parquet_io import path_lock
 from clients.symbol_paths import decode_symbol
@@ -669,7 +671,7 @@ def emit_recovery_measurements(results: dict[str, CoverageResult], outcomes: lis
 
 
 def emit_stale_non_equity(results: dict[str, CoverageResult]) -> None:
-    """Publish each asset class's stale-symbol count; a clean class emits 0 and clears."""
+    """Publish stale-symbol counts; UNKNOWN classes must not clear prior measurements."""
     now = datetime.now(UTC)
     run = os.environ["LW_RUN_ID"]
     rows = [
@@ -683,7 +685,10 @@ def emit_stale_non_equity(results: dict[str, CoverageResult]) -> None:
             "run_id": run,
         }
         for asset_class, result in sorted(results.items())
+        if result.total > 0
     ]
+    if not rows:
+        return
     try:
         ledger.emit("measurements", rows, run_id=run)
     except Exception as exc:  # pragma: no cover - reporting must not abort coverage
@@ -756,6 +761,7 @@ def scan_findings(
     presets_dir: Path | None = None,
     as_of: datetime | None = None,
     window_days: int = SCAN_WINDOW_DAYS,
+    rolling_futures_tickers: list[str] | None = None,
 ) -> list[Finding]:
     """Every registry row, diffed over a trailing window and classified.
 
@@ -785,6 +791,8 @@ def scan_findings(
 
     findings: list[Finding] = []
     for row in load_registry(registry_path or Path("registry/gaps.json")):
+        if row.asset_class == "futures" and not rolling_futures_tickers:
+            raise RegistryError("futures coverage requires the resolved rolling contract list")
         expected = build_denominator(
             [presets_dir / f"{name}.json" for name in row.universe],
             row.asset_class,
@@ -793,6 +801,7 @@ def scan_findings(
             target_date,
             as_of=as_of,
             lag_days=DUE_LAG_DAYS.get(row.asset_class, 1),
+            tickers_override=rolling_futures_tickers if row.asset_class == "futures" else None,
         )
         # A row that resolves to no symbols is a zero denominator: it reports
         # all-green for a reason that has nothing to do with the data. That is
@@ -876,6 +885,15 @@ def _non_equity_rows(registry_path: Path | None):
     return [r for r in rows if r.asset_class != "equity" and r.timeframe == "1d"]
 
 
+def _resolve_rolling_futures_tickers(as_of: date) -> list[str]:
+    with IBClient() as ib:
+        ib.connect()
+        _name, tickers, _exchange_map = resolve_rolling_futures_preset(
+            _REPO_ROOT / "presets" / "futures-rolling.json", ib, as_of
+        )
+    return tickers
+
+
 def _newest_due_session(target_date: date, lag_days: int, as_of: datetime) -> date | None:
     """Newest trading session at or before *target_date* whose filling job was due.
 
@@ -899,12 +917,13 @@ def compute_non_equity_coverage(
     registry_path: Path | None = None,
     presets_dir: Path | None = None,
     as_of: datetime | None = None,
+    rolling_futures_tickers: list[str] | None = None,
 ) -> dict[str, CoverageResult]:
     """Return per-asset-class 1d freshness for the non-equity universes.
 
-    The denominator is the registry universe, never the files on disk: a symbol
-    that never landed has to stay countable. No no-trade exemption -- these are
-    small universes and a stale one is a real gap.
+    The denominator is the registry universe, never the files on disk. Futures
+    uses the live IB rolling selection supplied by the caller. No no-trade
+    exemption -- these small universes should keep stale symbols countable.
 
     ponytail: the calendar is XNYS for every class here, which is WRONG for fx
     (~24/5), CME futures and FRED -- see gap_registry.XNYS_CALENDAR_ASSET_CLASSES.
@@ -927,6 +946,9 @@ def compute_non_equity_coverage(
         if session is None:
             results[row.asset_class] = CoverageResult(row.asset_class, 0, 0, [])
             continue
+        if row.asset_class == "futures" and not rolling_futures_tickers:
+            results[row.asset_class] = CoverageResult(row.asset_class, 0, 0, [], measured_session=session)
+            continue
         expected = build_denominator(
             [presets_dir / f"{name}.json" for name in row.universe],
             row.asset_class,
@@ -935,6 +957,7 @@ def compute_non_equity_coverage(
             session,
             as_of=as_of,
             lag_days=lag_days,
+            tickers_override=rolling_futures_tickers if row.asset_class == "futures" else None,
         )
         universe = {series.symbol for series in expected if series.sessions}
         present = set()
@@ -961,6 +984,9 @@ def format_non_equity_line(target_date: date, results: dict[str, CoverageResult]
     parts = []
     for ac in sorted(results):
         r = results[ac]
+        if r.total == 0:
+            parts.append(f"{ac}=UNKNOWN")
+            continue
         stamp = f"@{r.measured_session}" if r.measured_session and r.measured_session != target_date else ""
         parts.append(f"{ac}={r.present}/{r.total}{stamp}")
     return f"{target_date} non-equity 1d: " + " ".join(parts)
@@ -1192,7 +1218,7 @@ def _resolve_target_date(force: bool, override: date | None) -> date | None:
     return None
 
 
-def _scan_and_write_artifacts(target: date, as_of: datetime) -> str:
+def _scan_and_write_artifacts(target: date, as_of: datetime, rolling_futures_tickers: list[str] | None = None) -> str:
     """Run the windowed classifier and publish its two artifacts. Never raises.
 
     Returns the one log line describing the outcome. A scan failure degrades the
@@ -1202,7 +1228,12 @@ def _scan_and_write_artifacts(target: date, as_of: datetime) -> str:
     four weeks.
     """
     try:
-        findings = scan_findings(target, bronze_root=data_lake_dir() / "bronze", as_of=as_of)
+        findings = scan_findings(
+            target,
+            bronze_root=data_lake_dir() / "bronze",
+            as_of=as_of,
+            rolling_futures_tickers=rolling_futures_tickers,
+        )
         # Inside the boundary, not after it. A scan that succeeded and a WRITE
         # that failed (full disk, read-only release tree, a permission change)
         # escaped the "never raises" contract and aborted main() before
@@ -1273,6 +1304,15 @@ def main() -> None:
     # denominator, the non-equity denominator and the classifier must all agree
     # on whether the target session was due.
     as_of = datetime.now(UTC)
+    rolling_futures_tickers = None
+    futures_resolution_issue = None
+    if any(row.asset_class == "futures" for row in _non_equity_rows(None)):
+        try:
+            rolling_futures_tickers = _resolve_rolling_futures_tickers(_et_today())
+        except Exception as exc:  # IB must not block unrelated coverage or recovery.
+            futures_resolution_issue = f"futures rolling selection unavailable: {type(exc).__name__}: {exc}"
+            log.error(futures_resolution_issue, exc_info=True)
+            console.print(f"[yellow]{futures_resolution_issue}[/yellow]")
     # Cached across runs: an unchanged (mtime, size) cannot mean a later max
     # date, and the cold footer walk is what this job's runtime actually is.
     coverage_started = time.monotonic()
@@ -1289,7 +1329,7 @@ def main() -> None:
         console.print(block)
     # Non-equity was in no denominator at all: a stale VIX, a stale DGS10 or a
     # stale futures contract could never register as missing.
-    non_equity = compute_non_equity_coverage(target, as_of=as_of)
+    non_equity = compute_non_equity_coverage(target, as_of=as_of, rolling_futures_tickers=rolling_futures_tickers)
     non_equity_line = format_non_equity_line(target, non_equity)
     console.print(non_equity_line)
     stale_non_equity = {ac: r.missing_symbols for ac, r in non_equity.items() if r.missing_symbols}
@@ -1311,9 +1351,11 @@ def main() -> None:
     # -- new, and consumed by nothing yet -- would otherwise take down the coverage
     # log, the auto-recovery and the alert, and leave `status` and the digest
     # reading a frozen log. That is the four-week blindness in CLAUDE.md, rebuilt.
+    if futures_resolution_issue:
+        blocks.append(futures_resolution_issue)
     log_path = write_coverage_log(target, line, [*blocks, non_equity_line], results)
 
-    scan_line = _scan_and_write_artifacts(target, as_of)
+    scan_line = _scan_and_write_artifacts(target, as_of, rolling_futures_tickers)
     emit_coverage_scan_measurement("FAILED" not in scan_line)
     console.print(scan_line)
     with log_path.open("a", encoding="utf-8") as fh:
