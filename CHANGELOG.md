@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Failure emails, the watchdog page and the nightly digest now lead with the
+  real error. The daily extractor scopes itself to the section of the log that
+  actually failed (it used to quote the last `SUMMARY_JSON` in the file, which
+  on 2026-09-08 belonged to a lane that had succeeded), the intraday extractor
+  reads each failed phase's own `<log_dir>/<phase>.log`, the watchdog carries
+  every BAD check's evidence rows instead of their names, and non-OK status
+  checks join `lane_results` to name the failing lane and quote its exception.
+  The generic "Probable cause / Proposed solution / Recommended next steps"
+  blocks and the six-line ritual block per non-OK check are gone; passing checks
+  collapse to one line (`status --verbose` restores the old form). See
+  `docs/postmortems/2026-09-08-failure-email-named-the-lane-not-the-error.md`.
+
 - A Silver rebuild that produces a byte-identical manifest no longer crashes.
   The publisher dedupes an unchanged manifest by returning the current revision
   and writing nothing, which left the transaction's reservation unused and was

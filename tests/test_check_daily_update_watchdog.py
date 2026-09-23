@@ -114,3 +114,58 @@ def test_parse_args_and_path_builders(tmp_path):
     assert watchdog.parse_args(["--run-date", "2026-09-02"]).run_date == "2026-09-02"
     assert watchdog.build_daily_log_file(tmp_path, "2026-09-02") == tmp_path / "daily_update_2026-09-02.log"
     assert watchdog.build_watchdog_marker_file(tmp_path, "2026-09-02").name == "2026-09-02.alerted"
+
+
+def test_the_page_carries_every_bad_checks_evidence_not_just_its_name(tmp_path, monkeypatch):
+    """The 2026-09-08 watchdog page, rebuilt from that day's real status output.
+
+    What was sent: "launchd jobs:; Daily update ran:; Intraday catch-up ran:;
+    Catalog build:; DuckDB catalog: incomplete" — five headings, no values, and
+    the corrupt RJF parquet that caused all of it appeared nowhere.
+    → pm:2026-09-08-failure-email-named-the-lane-not-the-error
+    """
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    monkeypatch.setenv("LW_RUN_ID", "watchdog-20260908T103000Z-1")
+    sections = [
+        Section(
+            name="launchd jobs",
+            verdict=Verdict.BAD,
+            lines=[
+                "launchd jobs:",
+                "  com.livewire.release-promote           NOT LOADED",
+                "  missing: com.livewire.release-promote",
+            ],
+            fix="launchctl load /Users/moremeds/Library/LaunchAgents/com.livewire.release-promote.plist",
+        ),
+        Section(
+            name="Daily update ran",
+            verdict=Verdict.BAD,
+            lines=[
+                "Daily update ran:",
+                "  run_id=daily-update-20260908T050001Z-83253  started=2026-09-08 05:00:01.547337+00:00",
+                "  lane catalog failed exit=1: _duckdb.InvalidInputException: Invalid Input Error: No magic bytes "
+                "found at end of file '/Users/moremeds/market-warehouse/data-lake/bronze/"
+                "asset_class=equity/symbol=RJF/1d.parquet'",
+                "  log: /Users/moremeds/market-warehouse/logs/daily_update_2026-09-08.log",
+            ],
+        ),
+    ]
+    monkeypatch.setattr(watchdog, "collect", lambda *a, **k: sections)
+    sent: list = []
+
+    def _capture(config, request, log_file, **kwargs):
+        sent.append(request)
+        return _ok()
+
+    monkeypatch.setattr(watchdog, "send_failure_alert", _capture)
+    assert watchdog.run_watchdog(_config(tmp_path), "2026-09-08") == 0
+
+    summary = sent[0].error_summary
+    assert summary.splitlines()[0] == "launchd jobs:"
+    assert "com.livewire.release-promote           NOT LOADED" in summary
+    assert "run_id=daily-update-20260908T050001Z-83253" in summary
+    assert "No magic bytes found at end of file" in summary
+    assert "symbol=RJF/1d.parquet" in summary
+    assert "fix: launchctl load" in summary
+    # The old page was these names and nothing else.
+    assert summary != "launchd jobs:; Daily update ran:"

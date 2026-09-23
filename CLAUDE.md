@@ -128,6 +128,7 @@ gap      = expected − actual
 
 ### Alerts and the digest
 
+- Every failure surface leads with the error itself — failing lane/phase/check, exit code, the log that holds it, then the exception; the generic "Probable cause / Proposed solution / next steps" and the six ritual status lines are deleted. One extractor (`daily_outcomes.extract_error_lines`/`last_failed_section`) feeds both runners, the watchdog and `status`. → test: `tests/test_daily_outcomes.py::TestTheSharedErrorExtractor`, `tests/test_status.py::TestANonOkCheckCarriesItsCause`, `tests/test_nightly_digest.py::TestTheDigestSaysWhatWentWrong` · pm:2026-09-08-failure-email-named-the-lane-not-the-error
 - Never quoted-printable: every body is `key=value` telemetry and QP reads `=NN` as a byte. `textEncoding: "base64"`. → test: `tests/node/send_daily_update_failure_email.test.mjs` (`npm run test:alerts`, run by `ci.yml` since PR #98) · pm:2026-08-16-quoted-printable-corrupted-digest
 - Alert values are passed single-token (`--key=value`); a value beginning with `--` used to be unsendable. → test: same file, `"a value beginning with -- survives"` · pm:2026-08-08-alert-value-starting-with-dashes
 - A failed alert send is an `executions(script='send_alert', exit_code<>0)` row; `status` and the watchdog both grade it WARN. → test: `tests/test_status.py::test_any_undelivered_alert_is_a_warning`

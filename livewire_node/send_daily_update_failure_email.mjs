@@ -225,20 +225,21 @@ export function buildHumanReadableReportPath(logFile) {
   return path.join(parsed.dir, `${parsed.name}.human.md`);
 }
 
-export function buildStaticIncidentReport({ options, logTail }) {
+// The summary the runner passes is now the real error, several lines of it:
+// the failing lane/phase, its exit code, the log that holds the full text, and
+// the exception itself. There is nothing left to pad it with. "Probable cause:
+// see the raw error summary below", "Proposed solution: inspect the raw error
+// summary", and three generic next steps were what every failure email led
+// with on 2026-09-08 while the corrupt RJF parquet that caused it appeared
+// nowhere. pm:2026-09-08-failure-email-named-the-lane-not-the-error
+export function buildStaticIncidentReport({ options }) {
+  const summary =
+    options.errorSummary ||
+    "The scheduled job failed and the runner captured no error summary.";
   return {
-    summary:
-      options.errorSummary ||
-      "The scheduled job failed, but only the raw error summary is available.",
-    probableCause: "See the raw error summary and recent log tail below.",
-    proposedSolution:
-      "Inspect the raw error summary and recent log tail, then rerun the job after correcting the failing dependency or configuration.",
-    nextSteps: [
-      `Open the raw log at ${options.logFile || "(not provided)"}.`,
-      "Verify the failing dependency or upstream service is reachable and healthy.",
-      "Retry the scheduled job after addressing the root cause.",
-      logTail ? "Use the recent log tail below to confirm the exact failing step." : "",
-    ].filter(Boolean),
+    summary,
+    // The banner and the subject line get one line; the body gets all of it.
+    headline: summary.split("\n", 1)[0],
   };
 }
 
@@ -251,9 +252,6 @@ export function buildHumanReadableReport({
 }) {
   const attempts = options.attempts ?? "(unknown)";
   const exitCode = options.exitCode ?? "(unknown)";
-  const steps = incidentReport.nextSteps.length
-    ? incidentReport.nextSteps.map((step, index) => `${index + 1}. ${step}`).join("\n")
-    : "1. Review the raw log tail and retry after addressing the root cause.";
 
   return [
     `# ${options.jobName} failure report`,
@@ -266,20 +264,8 @@ export function buildHumanReadableReport({
     `Repository: ${options.repoRoot || process.cwd()}`,
     `Raw log file: ${options.logFile || "(not provided)"}`,
     "",
-    "## Human-readable summary",
+    "## What failed",
     incidentReport.summary,
-    "",
-    "## Probable cause",
-    incidentReport.probableCause,
-    "",
-    "## Proposed solution",
-    incidentReport.proposedSolution,
-    "",
-    "## Recommended next steps",
-    steps,
-    "",
-    "## Raw error summary",
-    options.errorSummary || "(not provided)",
     "",
     "## Recent log tail",
     "```text",
@@ -308,24 +294,12 @@ function buildFailureText({
 }) {
   const attempts = options.attempts ?? "(unknown)";
   const exitCode = options.exitCode ?? "(unknown)";
-  const nextSteps = incidentReport.nextSteps.length
-    ? incidentReport.nextSteps.map((step, index) => `${index + 1}. ${step}`).join("\n")
-    : "1. Review the raw log tail and retry after addressing the root cause.";
 
   return [
     `The scheduled ${options.jobName} job failed.`,
     "",
-    "Human-readable summary:",
+    "What failed:",
     incidentReport.summary,
-    "",
-    "Probable cause:",
-    incidentReport.probableCause,
-    "",
-    "Proposed solution:",
-    incidentReport.proposedSolution,
-    "",
-    "Recommended next steps:",
-    nextSteps,
     "",
     "Run details:",
     `Run date: ${options.runDate || "(unknown)"}`,
@@ -336,7 +310,6 @@ function buildFailureText({
     `Repository: ${options.repoRoot || process.cwd()}`,
     `Log file: ${options.logFile || "(not provided)"}`,
     `Human-readable report: ${humanReportPath || "(not written)"}`,
-    `Raw error summary: ${options.errorSummary || "(not provided)"}`,
     "",
     "Recent log tail:",
     logTail,
@@ -354,9 +327,6 @@ function buildFailureHtml({
 }) {
   const attempts = options.attempts ?? "(unknown)";
   const exitCode = options.exitCode ?? "(unknown)";
-  const nextSteps = incidentReport.nextSteps.length
-    ? incidentReport.nextSteps
-    : ["Review the raw log tail and retry after addressing the root cause."];
 
   const rows = [
     ["Run date", options.runDate || "(unknown)"],
@@ -377,13 +347,6 @@ function buildFailureHtml({
     )
     .join("");
 
-  const stepItems = nextSteps
-    .map(
-      (step) =>
-        `<li style="margin:0 0 8px 0; color:#0f172a;">${escapeHtml(step)}</li>`,
-    )
-    .join("");
-
   return `<!doctype html>
 <html>
   <body style="margin:0;padding:24px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#0f172a;">
@@ -392,40 +355,21 @@ function buildFailureHtml({
         <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;opacity:0.78;">Livewire Alert</div>
         <h1 style="margin:8px 0 0;font-size:28px;line-height:1.2;">${escapeHtml(options.jobName)} failed</h1>
         <p style="margin:10px 0 0;font-size:15px;line-height:1.5;opacity:0.92;">${escapeHtml(
-          incidentReport.summary,
+          incidentReport.headline || incidentReport.summary,
         )}</p>
       </div>
 
       <div style="padding:28px;">
         <div style="margin-bottom:24px;padding:20px;border-radius:14px;background:#fff7ed;border:1px solid #fdba74;">
-          <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#9a3412;font-weight:700;">Probable cause</div>
-          <p style="margin:10px 0 0;line-height:1.6;color:#7c2d12;">${escapeHtml(
-            incidentReport.probableCause,
-          )}</p>
-        </div>
-
-        <div style="margin-bottom:24px;padding:20px;border-radius:14px;background:#ecfdf5;border:1px solid #86efac;">
-          <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#166534;font-weight:700;">Proposed solution</div>
-          <p style="margin:10px 0 0;line-height:1.6;color:#166534;">${escapeHtml(
-            incidentReport.proposedSolution,
-          )}</p>
-        </div>
-
-        <div style="margin-bottom:24px;">
-          <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#475569;font-weight:700;margin-bottom:12px;">Recommended next steps</div>
-          <ol style="margin:0;padding-left:20px;">${stepItems}</ol>
+          <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#9a3412;font-weight:700;margin-bottom:10px;">What failed</div>
+          <pre style="margin:0;line-height:1.6;color:#7c2d12;white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;">${escapeHtml(
+            incidentReport.summary,
+          )}</pre>
         </div>
 
         <div style="margin-bottom:24px;">
           <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#475569;font-weight:700;margin-bottom:12px;">Run details</div>
           <table style="width:100%;border-collapse:collapse;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">${rows}</table>
-        </div>
-
-        <div style="margin-bottom:24px;">
-          <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#475569;font-weight:700;margin-bottom:12px;">Raw error summary</div>
-          <div style="padding:16px;border-radius:12px;background:#f8fafc;border:1px solid #e5e7eb;line-height:1.6;color:#0f172a;">${escapeHtml(
-            options.errorSummary || "(not provided)",
-          )}</div>
         </div>
 
         <div>
@@ -669,12 +613,11 @@ export async function runFailureAlert(argv, env = process.env, deps = {}) {
     writtenReportPath = await (deps.writeHumanReadableReport ||
       writeHumanReadableReport)(humanReportPath, humanReport);
   } catch (error) {
+    // The email still carries the error; say the sidecar is missing so nobody
+    // goes looking for a report that was never written.
     incidentReport = {
       ...incidentReport,
-      nextSteps: [
-        ...incidentReport.nextSteps,
-        `Human-readable report could not be written: ${error.message}`,
-      ],
+      summary: `${incidentReport.summary}\n(Human-readable report could not be written: ${error.message})`,
     };
   }
 

@@ -196,14 +196,17 @@ def test_silver_publication_keeps_the_committed_revision_separate_from_a_failed_
 
     assert section.verdict is Verdict.BAD
     body = "\n".join(section.lines)
-    for field in ("Impact:", "Evidence:", "Last valid:", "Automatic handling:", "Next action:", "Clear condition:"):
+    for field in ("Impact:", "Evidence:"):
         assert field in body
     assert "revision=7" in body and "latest rebuild attempt failed" in body and "Sustained incident: attempts=1" in body
     assert "RJF/1d validation" in section.notification_key
     assert "healthy subset may have advanced current.json" in body
     assert "failed attempt did not replace" not in body
-    assert "artifact hashes were not checked by status" in body
-    assert "Attempt linkage: unknown" in body
+    # Every line that only ever said "unknown" is gone: it padded the digest to
+    # 138 lines and told the reader nothing.
+    # pm:2026-09-08-failure-email-named-the-lane-not-the-error
+    for ritual in ("Last valid:", "Automatic handling:", "Attempt linkage:", "Clear condition:", "Next action:"):
+        assert ritual not in body
 
 
 def test_silver_publication_done_is_a_commit_fact_not_a_reader_run(tmp_path):
@@ -213,7 +216,12 @@ def test_silver_publication_done_is_a_commit_fact_not_a_reader_run(tmp_path):
     section = status._silver_publication_section(lake)
 
     assert section.verdict is Verdict.OK
-    assert "not proof that a consumer has run on it" in "\n".join(section.lines)
+    body = "\n".join(section.lines)
+    # The publication FACT stays; the three disclaimers that followed it every
+    # night, all of them "unknown", do not.
+    assert "committed revision=7" in body and "latest rebuild completed" in body
+    assert "not proof that a consumer has run on it" not in body
+    assert "Attempt linkage:" not in body
 
 
 @pytest.mark.parametrize("latest_done", [False, True])
@@ -243,8 +251,8 @@ def test_silver_manifest_reference_does_not_claim_artifact_hash_validation(tmp_p
     section = status._silver_publication_section(lake)
     body = "\n".join(section.lines)
     assert "Current manifest reference: revision=7" in body
-    assert "artifact hashes were not checked" in body
-    assert "data snapshot unknown" in body
+    assert "artifact hashes were not checked" not in body
+    assert "data snapshot unknown" not in body
 
 
 def test_silver_notification_tracks_measured_failure_scope_not_occurrence_count(tmp_path):
@@ -285,8 +293,10 @@ def test_generic_warning_identity_uses_scope_and_impact_not_run_chronology(monke
     assert scope_changed.notification_key != first.notification_key
     rows[0]["failed_now"] = 3
     assert status.run_check("Example", "select 1", {}).notification_key != scope_changed.notification_key
+    # No ritual block: a non-OK check carries evidence or nothing.
+    # pm:2026-09-08-failure-email-named-the-lane-not-the-error
     for label in ("Impact:", "Evidence:", "Last valid:", "Automatic handling:", "Next action:", "Clear condition:"):
-        assert label in "\n".join(first.lines)
+        assert label not in "\n".join(first.lines)
 
 
 def _seed_drift(name, scope, declared_value, measured_values, unit="s"):
@@ -956,3 +966,170 @@ def test_silver_progress_reports_the_heartbeat_and_is_unknown_without_one():
     assert section.verdict is status.Verdict.OK
     assert "symbols=500.0" in section.lines[1]
     assert "universe=13311.0" in section.lines[1]
+
+
+class TestANonOkCheckCarriesItsCause:
+    """A row saying a run failed is not a reason. Name the lane, quote the error.
+
+    → pm:2026-09-08-failure-email-named-the-lane-not-the-error
+    """
+
+    RJF_TRACEBACK = (
+        "Traceback (most recent call last):\n"
+        '  File "/Users/moremeds/market-warehouse/releases/59f18e38/clients/duckdb_catalog.py",'
+        " line 599, in _build_coverage_locked\n"
+        "    con.execute(_coverage_insert(view_name, date_column))\n"
+        "_duckdb.InvalidInputException: Invalid Input Error: No magic bytes found at end of file"
+        " '/Users/moremeds/market-warehouse/data-lake/bronze/asset_class=equity/symbol=RJF/1d.parquet'\n"
+    )
+
+    def test_a_failed_run_names_the_lane_and_quotes_the_error(self, tmp_path, monkeypatch):
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "daily_update_2026-09-08.log").write_text(
+            "=== DuckDB Catalog Build 2026-09-08T07:25:34Z ===\n"
+            + self.RJF_TRACEBACK
+            + "=== DuckDB Catalog Build Failed 2026-09-08T07:28:34Z (exit_code=1) ===\n",
+            encoding="utf-8",
+        )
+
+        def _query(sql):
+            if "lane_results" in sql:
+                return [{"lane": "catalog", "exit_code": 1, "outcome": "failed"}]
+            return [{"verdict": "BAD", "run_id": "daily-update-20260908T050001Z-83253", "started": "2026-09-08"}]
+
+        monkeypatch.setattr(ledger, "query", _query)
+        section = status.run_check("Daily update ran", "select 1", {"today": "2026-09-08"}, log_dir)
+
+        body = "\n".join(section.lines)
+        assert section.verdict is status.Verdict.BAD
+        assert "lane catalog failed exit=1" in body
+        assert "No magic bytes found at end of file" in body
+        assert "symbol=RJF/1d.parquet" in body
+        assert f"log: {log_dir / 'daily_update_2026-09-08.log'}" in body
+
+    def test_an_intraday_phase_is_quoted_from_its_own_phase_log(self, tmp_path, monkeypatch):
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "daily_backfill_duckdb_coverage.log").write_text(self.RJF_TRACEBACK, encoding="utf-8")
+
+        def _query(sql):
+            if "lane_results" in sql:
+                return [{"lane": "daily_backfill_duckdb_coverage", "exit_code": 1, "outcome": "failed"}]
+            return [{"verdict": "BAD", "run_id": "intraday-catchup-20260908T100001Z-7730"}]
+
+        monkeypatch.setattr(ledger, "query", _query)
+        section = status.run_check("Intraday catch-up ran", "select 1", {"today": "2026-09-08"}, log_dir)
+
+        body = "\n".join(section.lines)
+        assert "lane daily_backfill_duckdb_coverage failed exit=1" in body
+        assert "No magic bytes found at end of file" in body
+        assert f"log: {log_dir / 'daily_backfill_duckdb_coverage.log'}" in body
+
+    def test_a_missing_lane_log_says_so_rather_than_inventing_a_cause(self, tmp_path, monkeypatch):
+        def _query(sql):
+            if "lane_results" in sql:
+                return [{"lane": "catalog", "exit_code": 1, "outcome": "failed"}]
+            return [{"verdict": "BAD", "run_id": "daily-update-1"}]
+
+        monkeypatch.setattr(ledger, "query", _query)
+        section = status.run_check("Daily update ran", "select 1", {"today": "2026-09-08"}, tmp_path)
+
+        assert "no log found under" in "\n".join(section.lines)
+
+    def test_an_undelivered_alert_quotes_the_receipt(self, monkeypatch):
+        def _query(sql):
+            if "receipt_json" in sql:
+                return [{"receipt_json": "smtp connect ECONNREFUSED 127.0.0.1:587\nstack frame"}]
+            return [{"verdict": "WARN", "script": "send_alert", "failed_sends": 1}]
+
+        monkeypatch.setattr(ledger, "query", _query)
+        section = status.run_check("Undelivered alerts", "select 1", {})
+
+        assert "receipt: smtp connect ECONNREFUSED 127.0.0.1:587" in "\n".join(section.lines)
+
+    def test_a_ledger_that_cannot_answer_never_kills_the_check(self, tmp_path, monkeypatch):
+        calls = {"n": 0}
+
+        def _query(sql):
+            calls["n"] += 1
+            if "lane_results" in sql:
+                raise RuntimeError("ledger unreadable")
+            return [{"verdict": "BAD", "run_id": "daily-update-1"}]
+
+        monkeypatch.setattr(ledger, "query", _query)
+        section = status.run_check("Daily update ran", "select 1", {"today": "2026-09-08"}, tmp_path)
+
+        assert section.verdict is status.Verdict.BAD
+        assert calls["n"] == 2
+
+
+class TestTheSurfaceIsShortEnoughToRead:
+    def test_a_repeated_row_is_printed_once(self, monkeypatch):
+        row = {"verdict": "UNKNOWN", "release_sha": "23e1de28", "main_sha": "__missing__"}
+        monkeypatch.setattr(ledger, "query", lambda _sql: [dict(row), dict(row)])
+
+        section = status.run_check("Release matches main", "select 1", {})
+
+        assert section.lines.count("  release_sha=23e1de28  main_sha=__missing__") == 1
+
+    def test_passing_checks_collapse_to_one_line_that_keeps_their_numbers(self):
+        sections = [
+            status.Section("Coverage", status.Verdict.OK, ["Coverage:", "  worst_ratio=0.9993  timeframes=5"]),
+            status.Section("Disk", status.Verdict.OK, ["Disk: 58.7 GiB free (74% used)"]),
+            status.Section(
+                "Lanes terminal", status.Verdict.BAD, ["Lanes terminal:", "  unterminated=1"], fix="look here"
+            ),
+        ]
+
+        blocks = status.display_blocks(sections)
+
+        assert len(blocks) == 2
+        assert blocks[0] == (status.Verdict.BAD, ["Lanes terminal:", "unterminated=1", "fix: look here"])
+        verdict, (line,) = blocks[1]
+        assert verdict is status.Verdict.OK
+        assert line.startswith("2 checks OK · ")
+        assert "worst_ratio=0.9993" in line and "58.7 GiB free" in line
+
+    def test_verbose_restores_every_passing_check(self):
+        sections = [status.Section("Coverage", status.Verdict.OK, ["Coverage:", "  worst_ratio=0.9993"])]
+
+        assert status.display_blocks(sections, verbose=True) == [
+            (status.Verdict.OK, ["Coverage:", "worst_ratio=0.9993"])
+        ]
+
+    def test_render_still_escapes_hostile_text_after_collapsing(self):
+        out = status.render([status.Section("X", status.Verdict.OK, ["X: [/] [bold red]"])])
+
+        assert "\\[/]" in out or "[bold red]" not in out
+
+
+@pytest.mark.parametrize(
+    "receipt_rows",
+    [pytest.param([], id="no-receipt"), pytest.param([{"receipt_json": "  "}], id="blank-receipt")],
+)
+def test_an_undelivered_alert_without_a_readable_receipt_still_reports_the_count(monkeypatch, receipt_rows):
+    monkeypatch.setattr(
+        ledger,
+        "query",
+        lambda sql: (
+            receipt_rows if "receipt_json" in sql else [{"verdict": "WARN", "script": "send_alert", "failed_sends": 1}]
+        ),
+    )
+
+    section = status.run_check("Undelivered alerts", "select 1", {})
+
+    assert section.verdict is status.Verdict.WARN
+    assert "failed_sends=1" in "\n".join(section.lines)
+    assert "receipt:" not in "\n".join(section.lines)
+
+
+def test_an_unreadable_ledger_never_hides_the_undelivered_alert_itself(monkeypatch):
+    def _query(sql):
+        if "receipt_json" in sql:
+            raise RuntimeError("ledger unreadable")
+        return [{"verdict": "WARN", "script": "send_alert", "failed_sends": 1}]
+
+    monkeypatch.setattr(ledger, "query", _query)
+
+    assert status.run_check("Undelivered alerts", "select 1", {}).verdict is status.Verdict.WARN

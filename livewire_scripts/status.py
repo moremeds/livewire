@@ -297,7 +297,10 @@ _FIXES = {
         'python scripts/livewire_ops.py ledger query "select receipt_json from executions '
         "where script = 'send_alert' and exit_code <> 0\""
     ),
-    "Release matches main": "python scripts/livewire_ops.py release promote",
+    "Release matches main": (
+        "python scripts/livewire_ops.py release promote"
+        "   # main_sha=__missing__ means origin/main was not readable here — pass --main-sha"
+    ),
     "Lanes within budget": (
         "raise the lane's budget only after measuring it cold; see clients/constants.py (lane_budget_s/<lane>)"
     ),
@@ -363,19 +366,100 @@ def _notification_key(name: str, verdict: Verdict, rows: list[dict]) -> str:
     return f"{name}:{verdict.name}:" + "|".join(sorted(identities))
 
 
-def _warning_context(name: str, fix: str | None) -> list[str]:
-    return [
-        f"  Impact: {name} did not pass; affected scope and counts are limited to the ledger evidence above.",
-        "  Evidence: this named ledger check; absent fields remain unknown.",
-        "  Last valid: unknown; this check does not establish a previous valid result.",
-        "  Automatic handling: unknown; this status check is read-only and performs no recovery.",
-        f"  Next action: {fix or 'inspect the named check and its latest ledger evidence before changing data.'}",
-        "  Clear condition: the named check returns OK with sufficient current evidence.",
-    ]
+#: Run-level checks whose row names a run_id: the row alone says a run failed
+#: but never which lane, or why. These get the failing lane and the last real
+#: error line of that lane's log appended.
+#: pm:2026-09-08-failure-email-named-the-lane-not-the-error
+_CAUSE_CHECKS = frozenset(
+    {
+        "Daily update ran",
+        "Daily update finished",
+        "Intraday catch-up ran",
+        "Intraday catch-up finished",
+        "Lanes terminal",
+        "Lanes blocked",
+        "Silver lane completed",
+        "Catalog build",
+        "Post-success tail",
+    }
+)
+
+_MAX_CAUSE_LANES = 2
 
 
-def run_check(name: str, sql: str, params: dict[str, str]) -> Section:
-    """Execute one ledger check; missing evidence is never silently green."""
+def _lane_log(lane: str, run_id: str, log_dir: Path, today: str) -> Path | None:
+    """The log holding *lane*'s output: its own phase log, else the wrapper log."""
+    phase_log = log_dir / f"{lane}.log"
+    if phase_log.exists():
+        return phase_log
+    prefix = "intraday_catchup" if run_id.startswith("intraday") else "daily_update"
+    wrapper = log_dir / f"{prefix}_{today}.log"
+    return wrapper if wrapper.exists() else None
+
+
+def _failure_cause(run_id: str, log_dir: Path, today: str) -> list[str]:
+    """Name the failed lane(s) of *run_id* and quote the error that killed them.
+
+    "Daily update ran: run_id=... started=..." is a fact about a row, not about
+    the warehouse. The reader needs the lane and the exception; both are on
+    disk, one join and one log read away.
+    """
+    from livewire_scripts.daily_outcomes import extract_error_lines, last_failed_section, read_log_tail
+
+    try:
+        rows = ledger.query(
+            "select lane, exit_code, outcome from lane_results "
+            f"where run_id = '{run_id}' and outcome is not null and outcome <> 'done' "
+            "order by ended desc nulls last"
+        )
+    except Exception:  # a missing ledger must never kill the surface
+        return []
+
+    lines: list[str] = []
+    for row in rows[:_MAX_CAUSE_LANES]:
+        lane = str(row.get("lane") or "?")
+        detail = f"lane {lane} {row.get('outcome')} exit={row.get('exit_code')}"
+        log_file = _lane_log(lane, run_id, log_dir, today)
+        if log_file is None:
+            lines.append(f"  {detail}: no log found under {log_dir}")
+            continue
+        text = read_log_tail(log_file)
+        if log_file.name.startswith(("daily_update_", "intraday_catchup_")):
+            text = last_failed_section(text)[2]
+        errors = extract_error_lines(text, max_lines=2)
+        lines.append(f"  {detail}: " + (errors[-1] if errors else "no error line in its log"))
+        lines.append(f"  log: {log_file}")
+    return lines
+
+
+def _undelivered_alert_cause() -> list[str]:
+    """Quote the send failure itself, not just how many there were."""
+    from livewire_scripts.daily_outcomes import clamp_lines
+
+    try:
+        rows = ledger.query(
+            "select receipt_json from executions where script = 'send_alert' and exit_code <> 0 "
+            "order by started desc limit 1"
+        )
+    except Exception:
+        return []
+    if not rows:
+        return []
+    receipt = str(rows[0].get("receipt_json") or "").strip()
+    if not receipt:
+        return []
+    return [f"  receipt: {line}" for line in clamp_lines(receipt.splitlines(), max_lines=2)]
+
+
+def run_check(name: str, sql: str, params: dict[str, str], log_dir: Path | None = None) -> Section:
+    """Execute one ledger check; missing evidence is never silently green.
+
+    A non-OK check carries its CAUSE, never a ritual block. Six generic lines
+    per failing check ("Impact: ... limited to the ledger evidence above",
+    "Last valid: unknown", "Next action:" repeating `fix`) grew the nightly
+    digest to 138 lines on 2026-09-08 while never saying which lane failed or
+    why. → pm:2026-09-08-failure-email-named-the-lane-not-the-error
+    """
     rows = [row for row in ledger.query(_substitute(sql, params)) if any(value is not None for value in row.values())]
     fix = _substitute(_FIXES.get(name, ""), params) or None
     if not rows:
@@ -384,16 +468,24 @@ def run_check(name: str, sql: str, params: dict[str, str]) -> Section:
         return Section(
             name,
             Verdict.UNKNOWN,
-            [f"{name}: no rows — nothing measured", *_warning_context(name, fix)],
+            [f"{name}: no rows — nothing measured"],
             fix=fix,
             notification_key=_notification_key(name, Verdict.UNKNOWN, []),
         )
     verdict = max(Verdict[str(row["verdict"])] if row.get("verdict") else Verdict.OK for row in rows)
-    lines = [f"{name}:"] + [
+    # Deduplicated: two ledger rows that render identically are one fact, and
+    # "Release matches main" printed its single fact twice every night.
+    detail = dict.fromkeys(
         "  " + "  ".join(f"{key}={value}" for key, value in row.items() if key != "verdict") for row in rows
-    ]
+    )
+    lines = [f"{name}:", *detail]
     if verdict is not Verdict.OK:
-        lines.extend(_warning_context(name, fix))
+        if name == "Undelivered alerts":
+            lines.extend(_undelivered_alert_cause())
+        elif name in _CAUSE_CHECKS and log_dir is not None:
+            run_id = next((str(row["run_id"]) for row in rows if row.get("run_id")), "")
+            if run_id:
+                lines.extend(_failure_cause(run_id, log_dir, params.get("today", "")))
     return Section(
         name,
         verdict,
@@ -435,10 +527,6 @@ def _silver_publication_section(data_lake: Path) -> Section:
                 "Silver publication: committed pointer is not readable",
                 "  Impact: Silver readers cannot safely select this manifest reference.",
                 f"  Evidence: {pointer / 'revisions/current.json'} — {exc}",
-                "  Last valid: manifest reference unknown; artifact hashes have not been checked here.",
-                "  Automatic handling: no replacement pointer is selected.",
-                "  Next action: inspect the manifest and restore only through rebuild-silver publication.",
-                "  Clear condition: current.json matches a valid immutable manifest and the next rebuild completes.",
             ],
             fix=_SILVER_FIX,
             notification_key="silver-publication:pointer-invalid",
@@ -452,10 +540,6 @@ def _silver_publication_section(data_lake: Path) -> Section:
                 "Silver publication: no committed revision",
                 "  Impact: Silver readers have no snapshot to select.",
                 f"  Evidence: {pointer / 'revisions/current.json'} is absent.",
-                "  Last valid: manifest reference unknown; this is not a successful first publication.",
-                "  Automatic handling: no candidate is served.",
-                "  Next action: run the approved rebuild after its Bronze and corporate-action inputs are valid.",
-                "  Clear condition: a complete manifest is committed and readers can select it.",
             ],
             fix=_SILVER_FIX,
             notification_key="silver-publication:pointer-missing",
@@ -477,7 +561,7 @@ def _silver_publication_section(data_lake: Path) -> Section:
     incident = incidents[0] if incidents and incidents[0].get("attempts") else None
     committed_line = (
         f"  Current manifest reference: revision={committed.revision} published_at={committed.published_at.isoformat()} "
-        f"actions_as_of={committed.corporate_actions_as_of.isoformat()}; artifact hashes were not checked by status."
+        f"actions_as_of={committed.corporate_actions_as_of.isoformat()}."
     )
     if latest is None:
         return Section(
@@ -488,10 +572,6 @@ def _silver_publication_section(data_lake: Path) -> Section:
                 "  Impact: readers may select the committed snapshot, but its current freshness is unmeasured.",
                 f"  Evidence: {pointer / 'revisions/current.json'} matches immutable revision={committed.revision}.json.",
                 committed_line,
-                "  Last valid: data snapshot unknown; a matching manifest reference does not establish artifact validity.",
-                "  Automatic handling: no later candidate is inferred from files on disk.",
-                "  Next action: run the normal daily rebuild; do not adopt uncommitted artifacts.",
-                "  Clear condition: a terminal rebuild fact and committed manifest agree.",
             ],
             fix=_SILVER_FIX,
             notification_key="silver-publication:attempt-unmeasured",
@@ -517,9 +597,6 @@ def _silver_publication_section(data_lake: Path) -> Section:
                 f"Silver publication: committed revision={committed.revision}; latest rebuild completed.",
                 f"  Evidence: {attempt}; pointer={pointer / 'revisions/current.json'}.",
                 committed_line,
-                "  Last valid: data snapshot unknown; artifact hashes were not checked by status.",
-                "  Reader state: this is a committed publication fact, not proof that a consumer has run on it.",
-                "  Attempt linkage: unknown; no publication receipt ties this attempt to the current reference.",
                 *recovery,
             ],
             notification_key="silver-publication:healthy",
@@ -551,18 +628,16 @@ def _silver_publication_section(data_lake: Path) -> Section:
                 ", ".join(f"{key}={value}" for key, value in sorted(impact_counts.items()))
                 or "unknown; no counts for this run"
             ),
-            (
-                "  Sustained incident: "
-                f"attempts={incident['attempts']} first_seen={incident['first_seen']} last_seen={incident['last_seen']}."
+            *(
+                [
+                    "  Sustained incident: "
+                    f"attempts={incident['attempts']} first_seen={incident['first_seen']} "
+                    f"last_seen={incident['last_seen']}."
+                ]
                 if incident
-                else "  Sustained incident: unknown; no aggregate attempt evidence is available."
+                else []
             ),
             committed_line,
-            "  Last valid: data snapshot unknown; a matching manifest reference does not establish artifact validity.",
-            "  Automatic handling: normal publication may commit a healthy subset; this status check changes nothing.",
-            "  Attempt linkage: unknown; no publication receipt ties this attempt to the current reference.",
-            "  Next action: inspect the recorded failure, repair the named input through its normal publisher, then rerun rebuild-silver.",
-            "  Clear condition: a later rebuild completes and commits a valid manifest; a retry alone is not evidence.",
         ],
         fix=_SILVER_FIX,
         notification_key=_notification_key(
@@ -887,14 +962,53 @@ def collect(
     }
     return [
         _safe("launchd jobs", lambda: _launchd_section(runner=runner)),
-        *[_safe(name, lambda n=name, sql=sql: run_check(n, sql, params)) for name, sql in CHECKS],
+        *[_safe(name, lambda n=name, sql=sql: run_check(n, sql, params, log_dir)) for name, sql in CHECKS],
         _safe("Silver publication", lambda: _silver_publication_section(data_lake)),
         _safe("DuckDB catalog", lambda: _duckdb_section(run_date, database)),
         _safe("Disk", lambda: _disk_section(data_lake, log_dir.parent)),
     ]
 
 
-def render(sections: list[Section]) -> str:
+_COMPACT_FACT_CHARS = 90
+
+
+def _compact_fact(section: Section) -> str:
+    """One line for a passing check: its name plus its first row of numbers."""
+    detail = section.lines[1].strip() if len(section.lines) > 1 else ""
+    if not detail:
+        detail = section.lines[0].strip() if section.lines else section.name
+        fact = detail
+    else:
+        fact = f"{section.name} {detail}"
+    return fact if len(fact) <= _COMPACT_FACT_CHARS else fact[: _COMPACT_FACT_CHARS - 1] + "…"
+
+
+def display_blocks(sections: list[Section], *, verbose: bool = False) -> list[tuple[Verdict, list[str]]]:
+    """The one layout both surfaces use: full detail for what failed, one line for what passed.
+
+    The terminal and the digest rendered the same sections through two copies
+    of the same loop, and every passing check spent three lines saying it was
+    fine. Non-OK checks keep every line they have; the OK ones collapse into a
+    single trailing line that still carries their numbers. `--verbose` restores
+    the old per-section form.
+    """
+    blocks: list[tuple[Verdict, list[str]]] = []
+    compact: list[str] = []
+    for section in sections:
+        headline = section.lines[0] if section.lines else f"{section.name}: (no detail)"
+        if section.verdict is Verdict.OK and not verbose:
+            compact.append(_compact_fact(section))
+            continue
+        lines = [headline, *(line.strip() for line in section.lines[1:])]
+        if section.fix and section.verdict is not Verdict.OK:
+            lines.append(f"fix: {section.fix}")
+        blocks.append((section.verdict, lines))
+    if compact:
+        blocks.append((Verdict.OK, [f"{len(compact)} checks OK · " + " · ".join(compact)]))
+    return blocks
+
+
+def render(sections: list[Section], *, verbose: bool = False) -> str:
     """Render for a terminal. Returns rich markup; Console() applies it.
 
     EVERY line here may contain operator-controlled or external text and MUST
@@ -910,15 +1024,16 @@ def render(sections: list[Section]) -> str:
     identically; colour is added on top, not instead.
     """
     lines = ["Livewire status"]
-    for section in sections:
-        # `lines` defaults to [] on the dataclass and render() is the one path
-        # with no try/except above it — an empty-lines Section must not be the
-        # thing that kills the report it was added to.
-        headline = section.lines[0] if section.lines else f"{section.name}: (no detail)"
-        lines.append(f"[{section.verdict.style}][{section.verdict.glyph}][/] {escape(headline)}")
-        lines.extend(f"  {escape(line.lstrip())}" for line in section.lines[1:])
-        if section.fix and section.verdict is not Verdict.OK:
-            lines.append(f"  [dim]fix:[/] {escape(section.fix)}")
+    # `lines` defaults to [] on the dataclass and render() is the one path with
+    # no try/except above it — an empty-lines Section must not be the thing that
+    # kills the report it was added to; display_blocks() substitutes a headline.
+    for verdict, block in display_blocks(sections, verbose=verbose):
+        lines.append(f"[{verdict.style}][{verdict.glyph}][/] {escape(block[0])}")
+        for line in block[1:]:
+            if line.startswith("fix: "):
+                lines.append(f"  [dim]fix:[/] {escape(line[5:])}")
+            else:
+                lines.append(f"  {escape(line)}")
     return "\n".join(lines)
 
 
@@ -928,6 +1043,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--log-dir", type=Path, default=None)
     parser.add_argument("--data-lake", type=Path, default=None)
     parser.add_argument("--main-sha", default=None)
+    parser.add_argument("--verbose", action="store_true", help="print every passing check in full")
     args = parser.parse_args(argv)
     sections = collect(
         args.run_date,
@@ -941,7 +1057,7 @@ def main(argv: list[str] | None = None) -> int:
     # default word-wrap inserts real newlines at the console width, so
     # `rebuild-silver --full --dry-run --failure-output …` came back as two
     # lines and pasted as two commands. Let the terminal wrap visually instead.
-    Console(soft_wrap=True).print(render(sections))
+    Console(soft_wrap=True).print(render(sections, verbose=args.verbose))
     return 0
 
 

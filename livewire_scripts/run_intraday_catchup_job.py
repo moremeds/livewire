@@ -19,6 +19,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from livewire_scripts.daily_outcomes import (
+    extract_error_lines,
+    last_meaningful_line,
+    parse_last_summary_json,
+    read_log_tail,
+)
 from livewire_scripts.job_runner_common import AlertRequest, append_log
 from livewire_scripts.job_runner_common import build_alert_command as _build_alert_command
 from livewire_scripts.job_runner_common import build_log_file as _build_log_file
@@ -73,27 +79,54 @@ def _node_binary_exists(node_bin: str) -> bool:
     return shutil.which(node_bin) is not None
 
 
-def _extract_error_summary(log_file: Path) -> str:
-    """Summarize an intraday-catchup failure.
+MAX_REPORTED_PHASES = 3
 
-    Prefers the structured SUMMARY_JSON line emitted by daily-backfill (naming
-    the phases that failed); falls back to the last meaningful log line.
+
+def _phase_error_lines(phase: str, log_dir: Path) -> tuple[Path | None, list[str]]:
+    """The real error of one failed phase, read from that phase's own log.
+
+    `run_phase` streams each phase into `<log_dir>/<label>.log`, so the runner
+    log the email quotes says only "daily_backfill_equity_union exited with
+    code 1". The cause — a corrupt RJF parquet on 2026-09-08 — was one file
+    away and never reached the page.
+    """
+    phase_log = log_dir / f"{phase}.log"
+    try:
+        text = read_log_tail(phase_log)
+    except OSError:
+        return None, []
+    return phase_log, extract_error_lines(text)
+
+
+def _extract_error_summary(log_file: Path) -> str:
+    """Summarize an intraday-catchup failure, naming the phase AND its error.
+
+    → pm:2026-09-08-failure-email-named-the-lane-not-the-error
     """
     try:
-        text = log_file.read_text(encoding="utf-8")
+        text = read_log_tail(log_file)
     except FileNotFoundError:
         return "Intraday catchup failed, and the log file was not found."
 
-    from livewire_scripts.daily_outcomes import parse_last_summary_json
-
     summary = parse_last_summary_json(text)
-    if summary is not None and summary.get("failed"):
-        return "Intraday catchup failed — phases failed: " + ", ".join(summary["failed"])
+    failed = list((summary or {}).get("failed") or [])
+    if failed:
+        parts = ["Intraday catchup failed — phases failed: " + ", ".join(failed)]
+        for phase in failed[:MAX_REPORTED_PHASES]:
+            phase_log, lines = _phase_error_lines(phase, log_file.parent)
+            if phase_log is None:
+                parts.append(f"{phase}: no phase log under {log_file.parent}")
+                continue
+            parts.append(f"{phase} (log: {phase_log})")
+            parts.extend(f"  {line}" for line in lines or ["no error line in its log"])
+        return "\n".join(parts)
 
-    for line in reversed(text.splitlines()):
-        stripped = line.strip()
-        if stripped and not stripped.startswith("==="):
-            return stripped
+    lines = extract_error_lines(text)
+    if lines:
+        return "\n".join(["Intraday catchup failed — see " + str(log_file), *(f"  {line}" for line in lines)])
+    tail = last_meaningful_line(text)
+    if tail is not None:
+        return tail
     return "Intraday catchup failed with no error summary captured in the log."
 
 

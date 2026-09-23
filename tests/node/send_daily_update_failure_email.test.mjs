@@ -26,11 +26,19 @@ const baseAlertConfig = {
   subjectPrefix: "[MDW]",
 };
 
+// Shaped like what the runners now pass: the failing unit, the log that holds
+// the full error, and the error itself. Real text, from the 2026-09-08 daily
+// run on the mini. pm:2026-09-08-failure-email-named-the-lane-not-the-error
+const REAL_SUMMARY_2026_09_08 = [
+  "DuckDB Catalog Build failed (exit_code=1) — see /Users/moremeds/market-warehouse/logs/daily_update_2026-09-08.log",
+  '  File "/Users/moremeds/market-warehouse/releases/23e1de28/clients/duckdb_catalog.py", line 546, in build_coverage',
+  "  _duckdb.InvalidInputException: Invalid Input Error: No magic bytes found at end of file " +
+    "'/Users/moremeds/market-warehouse/data-lake/bronze/asset_class=equity/symbol=RJF/1d.parquet'",
+].join("\n");
+
 const baseIncidentReport = {
-  summary: "The job failed after exhausting retries.",
-  probableCause: "The upstream broker timed out.",
-  proposedSolution: "Restore broker connectivity and rerun the job.",
-  nextSteps: ["Check the broker service.", "Retry the sync."],
+  summary: REAL_SUMMARY_2026_09_08,
+  headline: REAL_SUMMARY_2026_09_08.split("\n", 1)[0],
 };
 
 test("parseArgs applies defaults and reads explicit values", () => {
@@ -129,9 +137,12 @@ test("build report helpers create readable output", async () => {
     },
     logTail: "timeout stack",
   });
-  assert.ok(!staticReport.probableCause.includes("AI summary"), "no AI noise in probableCause");
-  assert.match(staticReport.probableCause, /See the raw error summary/);
   assert.equal(staticReport.summary, "Gateway timed out");
+  assert.equal(staticReport.headline, "Gateway timed out");
+  // The boilerplate is gone: nothing here may reappear as generic prose.
+  assert.equal(staticReport.probableCause, undefined);
+  assert.equal(staticReport.proposedSolution, undefined);
+  assert.equal(staticReport.nextSteps, undefined);
 
   const reportBody = buildHumanReadableReport({
     options: {
@@ -149,8 +160,13 @@ test("build report helpers create readable output", async () => {
     generatedAt: "2026-03-11T20:05:48Z",
   });
 
-  assert.match(reportBody, /## Human-readable summary/);
-  assert.match(reportBody, /Restore broker connectivity/);
+  assert.match(reportBody, /## What failed/);
+  // The real error reaches the report, and the ritual sections do not.
+  assert.match(reportBody, /No magic bytes found at end of file/);
+  assert.match(reportBody, /symbol=RJF\/1d\.parquet/);
+  assert.ok(!/## Probable cause/.test(reportBody), "no boilerplate probable cause");
+  assert.ok(!/## Proposed solution/.test(reportBody), "no boilerplate proposed solution");
+  assert.ok(!/## Recommended next steps/.test(reportBody), "no boilerplate next steps");
 
   const tmpdir = await mkdtemp(path.join(os.tmpdir(), "mdw-human-report-"));
   const outPath = path.join(tmpdir, "incident.md");
@@ -173,7 +189,12 @@ test("buildFailureMessage includes rich text and html content", () => {
       logFile: "/tmp/daily.log",
       errorSummary: "Timed out <boom>",
     },
-    incidentReport: baseIncidentReport,
+    // The summary is log-derived text and reaches the HTML body verbatim, so
+    // it must still be escaped there.
+    incidentReport: {
+      summary: `Timed out <boom>\n${REAL_SUMMARY_2026_09_08}`,
+      headline: "Timed out <boom>",
+    },
     logTail: "Traceback...\nboom",
     humanReportPath: "/tmp/daily.human.md",
     hostname: "warehouse.local",
@@ -182,8 +203,13 @@ test("buildFailureMessage includes rich text and html content", () => {
 
   assert.equal(message.subject, "[MDW] daily_update failed on 2026-03-11");
   assert.match(message.text, /Human-readable report: \/tmp\/daily\.human\.md/);
-  assert.match(message.text, /Probable cause:/);
+  assert.match(message.text, /No magic bytes found at end of file/);
+  assert.ok(!/Probable cause:/.test(message.text), "no boilerplate probable cause");
+  assert.ok(!/Proposed solution:/.test(message.text), "no boilerplate proposed solution");
+  assert.ok(!/Recommended next steps:/.test(message.text), "no boilerplate next steps");
   assert.match(message.html, /Livewire Alert/);
+  assert.match(message.html, /symbol=equity|No magic bytes found at end of file/);
+  assert.ok(!/Probable cause/.test(message.html), "no boilerplate probable cause in html");
   assert.match(message.html, /Timed out &lt;boom&gt;/);
   assert.match(message.html, /ops@example\.com/);
 });
@@ -306,9 +332,9 @@ test("runFailureAlert wires static report, report writing, and send function tog
 
   assert.equal(result.info.messageId, "mid-123");
   assert.equal(reportWrite.reportPath, path.join(tmpdir, "daily.human.md"));
-  assert.match(reportWrite.reportBody, /Human-readable summary/);
+  assert.match(reportWrite.reportBody, /## What failed/);
   assert.equal(received.transportOptions, "smtp://user:pass@mail.example.com:587");
-  assert.match(received.message.html, /Restore broker connectivity/);
+  assert.match(received.message.html, /No magic bytes found at end of file/);
   assert.equal(result.humanReportPath, path.join(tmpdir, "daily.human.md"));
 });
 
@@ -549,4 +575,18 @@ test("an empty --key= value is accepted, not read as a missing value", () => {
 
 test("an unknown --key=value is still rejected", () => {
   assert.throws(() => parseArgs(["--nonsense=x"]), /Unknown option: --nonsense/);
+});
+
+// The summary is now several lines: the failing unit, its log, its exception.
+// It still travels as ONE `--error-summary=` token, and every line has to
+// arrive. pm:2026-09-08-failure-email-named-the-lane-not-the-error
+test("a multi-line error summary survives the single-token form", () => {
+  const options = parseArgs([`--error-summary=${REAL_SUMMARY_2026_09_08}`, "--job-name", "daily_update"]);
+
+  assert.equal(options.errorSummary, REAL_SUMMARY_2026_09_08);
+  assert.equal(options.jobName, "daily_update");
+  assert.match(options.errorSummary, /No magic bytes found at end of file/);
+  const report = buildStaticIncidentReport({ options });
+  assert.equal(report.headline, "DuckDB Catalog Build failed (exit_code=1) — see /Users/moremeds/market-warehouse/logs/daily_update_2026-09-08.log");
+  assert.match(report.summary, /symbol=RJF\/1d\.parquet/);
 });

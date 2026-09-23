@@ -529,14 +529,62 @@ class TestHelpers:
                 [
                     "=== Daily Update 2026-03-11T20:05:07Z ===",
                     "Traceback: boom",
-                    "=== Done equity 2026-03-11T20:05:08Z (attempt 1/3) ===",
+                    "=== Failed 2026-03-11T20:05:08Z after 1 attempt(s) ===",
                 ]
             )
             + "\n",
             encoding="utf-8",
         )
 
-        assert extract_error_summary(log_file) == "Traceback: boom"
+        summary = extract_error_summary(log_file)
+        assert summary.splitlines()[0] == f"Daily Update failed — see {log_file}"
+        assert "  Traceback: boom" in summary
+
+    def test_extract_error_summary_names_the_failing_lane_and_quotes_its_exception(self, tmp_path):
+        """Real text from daily_update_2026-09-08.log on the mini.
+
+        The Silver lane succeeded and wrote the last SUMMARY_JSON in the file;
+        the DuckDB catalog lane then died on a corrupt RJF parquet. The old
+        extractor quoted Silver's counters and the page said `target_date=?`.
+        pm:2026-09-08-failure-email-named-the-lane-not-the-error
+        """
+        log_file = tmp_path / "daily_update_2026-09-08.log"
+        log_file.write_text(
+            "\n".join(
+                [
+                    "=== Silver Rebuild 2026-09-08T07:10:00Z ===",
+                    "ZKIN: unknown price_basis for split-affected row 2021-06-11",
+                    'SUMMARY_JSON {"action_count": 333019, "as_of_date": "2026-09-08", "failed": 269,'
+                    ' "revision": 39, "trimmed": 261, "unchanged": 13279, "window_regressions": 53}',
+                    "=== Done silver 2026-09-08T07:25:34Z ===",
+                    "=== DuckDB Catalog Build 2026-09-08T07:25:34Z ===",
+                    "Command: /Users/moremeds/market-warehouse/releases/23e1de28/scripts/livewire_store.py duckdb build",
+                    "Traceback (most recent call last):",
+                    '  File "/Users/moremeds/market-warehouse/releases/23e1de28/scripts/livewire_store.py",'
+                    " line 59, in <module>",
+                    "    raise SystemExit(main())",
+                    '  File "/Users/moremeds/market-warehouse/releases/23e1de28/clients/duckdb_catalog.py",'
+                    " line 546, in build_coverage",
+                    "    con.execute(_coverage_insert(view_name, date_column))",
+                    "_duckdb.InvalidInputException: Invalid Input Error: No magic bytes found at end of file"
+                    " '/Users/moremeds/market-warehouse/data-lake/bronze/asset_class=equity/symbol=RJF/1d.parquet'",
+                    "=== DuckDB Catalog Build Failed 2026-09-08T07:28:34Z (exit_code=1) ===",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        summary = extract_error_summary(log_file)
+
+        assert summary.splitlines()[0] == f"DuckDB Catalog Build failed (exit_code=1) — see {log_file}"
+        assert "No magic bytes found at end of file" in summary
+        assert "symbol=RJF/1d.parquet" in summary
+        assert "line 546, in build_coverage" in summary
+        # The lane that SUCCEEDED before it never speaks for the failure.
+        assert "trimmed=261" not in summary
+        assert "target_date=?" not in summary
+        assert "unknown price_basis" not in summary
 
     def test_extract_error_summary_prefers_summary_json(self, tmp_path):
         from livewire_scripts.daily_outcomes import build_summary_line
@@ -558,6 +606,7 @@ class TestHelpers:
         log_file.write_text("  AAPL: 1 bar published from Massive\n" + line + "\n", encoding="utf-8")
 
         summary = extract_error_summary(log_file)
+        assert summary.splitlines()[0] == f"Daily update failed — see {log_file}"
         assert "updated=9091" in summary
         assert "no_trade=277" in summary
         assert 'dominant error (12x): "ConnectionError: Massive timeout"' in summary
@@ -566,7 +615,7 @@ class TestHelpers:
     def test_extract_error_summary_legacy_fallback_no_ticker_counting(self, tmp_path):
         log_file = tmp_path / "x.log"
         log_file.write_text("  AAPL: 1 bar published from Massive\nsome tail line\n", encoding="utf-8")
-        assert extract_error_summary(log_file) == "some tail line"
+        assert extract_error_summary(log_file).endswith("  some tail line")
 
     def test_node_binary_exists(self):
         with patch("livewire_scripts.run_daily_update_job.Path.exists", return_value=True):

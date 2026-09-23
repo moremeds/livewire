@@ -16,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:  # pragma: no cover - direct script bootstrap
     sys.path.insert(0, str(REPO_ROOT))
 
 from clients import ledger
+from livewire_scripts.daily_outcomes import clamp_lines
 from livewire_scripts.paths import data_lake_dir
 from livewire_scripts.run_daily_update_job import (
     AlertRequest,
@@ -70,9 +71,21 @@ def run_watchdog(config: RunnerConfig, run_date: str, runner=None) -> int:
     if (not bad and not missing_jobs) or marker_file.exists():
         return 0
 
-    reasons = [section.lines[0] if section.lines else section.name for section in bad]
+    # Every BAD check's EVIDENCE, not just its name. The 2026-09-08 page read
+    # "launchd jobs:; Daily update ran:; Intraday catch-up ran:; Catalog build:;
+    # DuckDB catalog: incomplete" — five headings and not one value.
+    # → pm:2026-09-08-failure-email-named-the-lane-not-the-error
+    reasons: list[str] = []
+    for section in bad:
+        if not section.lines:
+            reasons.append(section.name)
+            continue
+        reasons.append(section.lines[0].rstrip())
+        reasons.extend(f"  {line}" for line in clamp_lines([line.strip() for line in section.lines[1:]]))
+        if section.fix:
+            reasons.append(f"  fix: {section.fix}")
     reasons.extend(f"{job} did not start on {run_date}" for job in missing_jobs)
-    reason = "; ".join(reasons)
+    reason = "\n".join(reasons)
     log_file = build_daily_log_file(config.log_dir, run_date)
     result = send_failure_alert(
         config,

@@ -30,7 +30,7 @@ from clients import ledger
 from clients.parquet_io import path_lock
 from livewire_scripts.job_runner_common import process_group_guard
 from livewire_scripts.paths import data_lake_dir, log_dir
-from livewire_scripts.status import Section, Verdict, collect
+from livewire_scripts.status import Section, Verdict, collect, display_blocks
 from livewire_scripts.sync_runner import TIMEOUT_EXIT_CODE, phase_timeout_seconds
 
 _FAILURE_EMAIL_SCRIPT = _PROJECT_ROOT / "livewire_node" / "send_daily_update_failure_email.mjs"
@@ -43,15 +43,13 @@ def build_digest(run_date: date, log_dir: Path, data_lake: Path, *, sections: li
     verdicts, same fixes. Anything added to collect() reaches both surfaces or
     neither; there is no list here to forget to update.
     """
-    blocks = [f"Livewire nightly digest — {run_date.isoformat()}"]
-    for section in sections if sections is not None else collect(run_date, log_dir, data_lake):
-        headline = section.lines[0] if section.lines else f"{section.name}: (no detail)"
-        lines = [f"[{section.verdict.glyph}] {headline}", *section.lines[1:]]
-        # Same rule as render(): a fix line on a green section is noise, and
-        # noise on the green path is what trains a reader to skim the email.
-        if section.fix and section.verdict is not Verdict.OK:
-            lines.append(f"  fix: {section.fix}")
-        blocks.append("\n".join(lines))
+    resolved = sections if sections is not None else collect(run_date, log_dir, data_lake)
+    worst = max((section.verdict for section in resolved), default=Verdict.OK)
+    blocks = [f"Livewire nightly digest — {run_date.isoformat()} · {worst.name}"]
+    # One layout, shared with `status`: display_blocks() decides what collapses
+    # and where the fix line goes, so the two surfaces cannot drift.
+    for verdict, block in display_blocks(resolved):
+        blocks.append("\n".join([f"[{verdict.glyph}] {block[0]}", *(f"  {line}" for line in block[1:])]))
     return "\n\n".join(blocks) + "\n"
 
 

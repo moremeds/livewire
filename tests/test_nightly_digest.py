@@ -321,3 +321,93 @@ def test_body_file_honors_log_dir_override(tmp_path, monkeypatch):
     assert body_file.parent == custom_log_dir
     assert body_file.exists()
     assert not (wrong_log_dir / "nightly_digest_2026-07-02.txt").exists()
+
+
+class TestTheDigestSaysWhatWentWrong:
+    """The 2026-09-08 digest was 138 lines and named no cause.
+
+    Every non-OK check was padded with six ritual lines ("Impact: ... limited to
+    the ledger evidence above", "Last valid: unknown", "Next action:" repeating
+    the fix verbatim) and every passing check spent three lines saying it was
+    fine. → pm:2026-09-08-failure-email-named-the-lane-not-the-error
+    """
+
+    @staticmethod
+    def _sections_2026_09_08() -> list[status.Section]:
+        """The real checks of 2026-09-08, with the causes the surface now joins in.
+
+        Built through `status.Section` / `status.Verdict`, never the names
+        imported at module scope: `tests/test_status.py` reloads the module, so
+        those are a different class object by the time this runs.
+        """
+        return [
+            status.Section(
+                "Daily update ran",
+                status.Verdict.BAD,
+                [
+                    "Daily update ran:",
+                    "  run_id=daily-update-20260908T050001Z-83253  started=2026-09-08 05:00:01.547337+00:00",
+                    "  lane catalog failed exit=1: _duckdb.InvalidInputException: Invalid Input Error: "
+                    "No magic bytes found at end of file "
+                    "'/Users/moremeds/market-warehouse/data-lake/bronze/asset_class=equity/symbol=RJF/1d.parquet'",
+                    "  log: /Users/moremeds/market-warehouse/logs/daily_update_2026-09-08.log",
+                ],
+                fix="launchctl list | grep livewire.daily-update",
+            ),
+            status.Section(
+                "Undelivered alerts",
+                status.Verdict.WARN,
+                ["Undelivered alerts:", "  script=send_alert  failed_sends=1"],
+                fix='python scripts/livewire_ops.py ledger query "select receipt_json from executions"',
+            ),
+            status.Section(
+                "Coverage", status.Verdict.OK, ["Coverage:", "  timeframes=5  worst_ratio=0.9993356953055802"]
+            ),
+            status.Section(
+                "Corporate-action progress",
+                status.Verdict.OK,
+                ["Corporate-action progress:", "  symbols=14500.0  universe=14844.0"],
+            ),
+            status.Section(
+                "Silver window regressions", status.Verdict.OK, ["Silver window regressions:", "  symbols=0.0"]
+            ),
+            status.Section("Disk", status.Verdict.OK, ["Disk: 58.7 GiB free (74% used)"]),
+        ]
+
+    def test_the_header_carries_the_worst_verdict(self):
+        digest = nightly_digest.build_digest(
+            date(2026, 9, 8), Path("/logs"), Path("/lake"), sections=self._sections_2026_09_08()
+        )
+
+        assert digest.splitlines()[0] == "Livewire nightly digest — 2026-09-08 · BAD"
+
+    def test_a_bad_check_carries_the_error_and_none_of_the_ritual(self):
+        digest = nightly_digest.build_digest(
+            date(2026, 9, 8), Path("/logs"), Path("/lake"), sections=self._sections_2026_09_08()
+        )
+
+        assert "No magic bytes found at end of file" in digest
+        assert "symbol=RJF/1d.parquet" in digest
+        assert "log: /Users/moremeds/market-warehouse/logs/daily_update_2026-09-08.log" in digest
+        assert "fix: launchctl list | grep livewire.daily-update" in digest
+        for ritual in (
+            "Impact:",
+            "Evidence:",
+            "Last valid:",
+            "Automatic handling:",
+            "Next action:",
+            "Clear condition:",
+        ):
+            assert ritual not in digest
+
+    def test_the_passing_checks_keep_their_numbers_in_one_line(self):
+        digest = nightly_digest.build_digest(
+            date(2026, 9, 8), Path("/logs"), Path("/lake"), sections=self._sections_2026_09_08()
+        )
+
+        (collapsed,) = [line for line in digest.splitlines() if line.startswith("[OK ] 4 checks OK")]
+        assert "worst_ratio=0.9993356953055802" in collapsed
+        assert "symbols=14500.0  universe=14844.0" in collapsed
+        assert "58.7 GiB free" in collapsed
+        # Six checks used to cost 26 lines; two of them failed and neither said why.
+        assert len(digest.splitlines()) <= 14

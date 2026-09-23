@@ -19,6 +19,13 @@ from pathlib import Path
 from clients import constants, ledger
 from clients.constants import LANE_ORDER
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
+from livewire_scripts.daily_outcomes import (
+    extract_error_lines,
+    last_failed_section,
+    last_meaningful_line,
+    parse_last_summary_json,
+    read_log_tail,
+)
 from livewire_scripts.job_runner_common import AlertRequest, append_log, process_group_guard
 from livewire_scripts.job_runner_common import build_alert_command as _build_alert_command
 from livewire_scripts.job_runner_common import build_log_file as _build_log_file
@@ -358,37 +365,51 @@ def send_failure_alert(
 
 
 def extract_error_summary(log_file: Path) -> str:
+    """Lead with the error that killed the run, scoped to the lane that failed.
+
+    The old form quoted the LAST SUMMARY_JSON in the file, so on 2026-09-08 a
+    DuckDB catalog build that died on a corrupt RJF parquet was paged as
+    "Daily update failed — updated=0, ... target_date=?" — the counters of the
+    Silver lane that had already succeeded. The failing section is the only
+    part of the log that describes the failure.
+    → pm:2026-09-08-failure-email-named-the-lane-not-the-error
+    """
     try:
-        text = log_file.read_text(encoding="utf-8")
+        text = read_log_tail(log_file)
     except FileNotFoundError:
         return "Daily update failed, and the log file was not found."
 
-    from livewire_scripts.daily_outcomes import parse_last_summary_json
+    unit, exit_code, section = last_failed_section(text)
+    head = f"{unit} failed" if unit else "Daily update failed"
+    if exit_code is not None:
+        head += f" (exit_code={exit_code})"
 
-    summary = parse_last_summary_json(text)
-    if summary is not None:
-        parts = [
-            f"updated={summary.get('updated', 0)}",
-            f"no_trade={summary.get('no_trade', 0)}",
-            f"partial={summary.get('partial', 0)}",
-            f"errors={summary.get('errors', 0)}",
-            f"target_date={summary.get('target_date', '?')}",
-            f"source={summary.get('source', '?')}",
-            f"asset_class={summary.get('asset_class', '?')}",
-        ]
-        top = summary.get("top_errors") or []
-        if top:
-            msg, count = top[0]
-            parts.append(f'dominant error ({count}x): "{msg}"')
-        return "Daily update failed — " + ", ".join(parts)
+    body: list[str] = []
+    summary = parse_last_summary_json(section)
+    if summary is not None and "updated" in summary:
+        body.append(
+            ", ".join(
+                [
+                    f"updated={summary.get('updated', 0)}",
+                    f"no_trade={summary.get('no_trade', 0)}",
+                    f"partial={summary.get('partial', 0)}",
+                    f"errors={summary.get('errors', 0)}",
+                    f"target_date={summary.get('target_date', '?')}",
+                    f"source={summary.get('source', '?')}",
+                    f"asset_class={summary.get('asset_class', '?')}",
+                ]
+            )
+        )
+    body.extend(extract_error_lines(section))
+    if not body:
+        # Legacy fallback: last meaningful line (no per-ticker line counting —
+        # that regex is what once reported success lines as the dominant error).
+        tail = last_meaningful_line(section) or last_meaningful_line(text)
+        if tail is None:
+            return "Daily update failed with no error summary captured in the log."
+        body.append(tail)
 
-    # Legacy fallback: last meaningful line (no per-ticker line counting — that
-    # regex is what once reported success lines as the dominant "error").
-    for line in reversed(text.splitlines()):
-        stripped = line.strip()
-        if stripped and not stripped.startswith("==="):
-            return stripped
-    return "Daily update failed with no error summary captured in the log."
+    return "\n".join([f"{head} — see {log_file}", *(f"  {line}" for line in body)])
 
 
 def _spawn_post_success_quality(runner, log_file, args, label, timeout=120, script=None):

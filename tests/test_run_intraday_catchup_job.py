@@ -299,7 +299,63 @@ class TestExtractErrorSummary:
         )
         log.write_text("some noise\n" + summary + "\n", encoding="utf-8")
         result = _extract_error_summary(log)
-        assert result == "Intraday catchup failed — phases failed: daily_backfill_fred_rates"
+        assert result.splitlines()[0] == "Intraday catchup failed — phases failed: daily_backfill_fred_rates"
+        assert "no phase log under" in result
+
+    def test_quotes_the_failed_phases_own_log(self, tmp_path):
+        """Real text from the 2026-09-08 intraday catch-up on the mini.
+
+        The runner log says only "daily_backfill_duckdb_coverage exited with
+        code 1"; the traceback naming the corrupt RJF parquet is in the phase's
+        own log, one file away, and never reached the page.
+        pm:2026-09-08-failure-email-named-the-lane-not-the-error
+        """
+        from livewire_scripts.daily_outcomes import SUMMARY_PREFIX
+
+        log = tmp_path / "intraday_catchup_2026-09-08.log"
+        log.write_text(
+            "=== Intraday Catchup 2026-09-08T10:00:00Z ===\n"
+            "2026-09-08 18:03:35,610 WARNING daily_backfill_equity_union exited with code 1\n"
+            "2026-09-08 18:06:44,561 WARNING daily_backfill_duckdb_coverage exited with code 1\n"
+            + SUMMARY_PREFIX
+            + '{"job":"daily_backfill","target_date":"2026-09-04",'
+            '"phases":[{"label":"daily_backfill_equity_union","exit":1,"duration_s":214.6},'
+            '{"label":"daily_backfill_duckdb_coverage","exit":1,"duration_s":54.4}],'
+            '"failed":["daily_backfill_equity_union","daily_backfill_duckdb_coverage"],"degraded":[]}\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "daily_backfill_equity_union.log").write_text(
+            "  XOMA: no trade (no bars returned)\n"
+            + SUMMARY_PREFIX
+            + '{"job":"daily_update","asset_class":"equity","source":"massive","target_date":"2026-09-04",'
+            '"updated":0,"no_trade":50,"partial":0,"errors":1,"bars_inserted":0,"validation_issues":0,'
+            '"top_errors":[["ArrowInvalid: Error creating dataset. Could not read schema from '
+            "'/Users/moremeds/market-warehouse/data-lake/bronze/asset_class=equity/symbol=RJF/1d.parquet'. "
+            "Is this a 'parquet' file?: Parquet magic bytes not found in footer.\",1]],"
+            '"scanned":2404,"up_to_date":2353}\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "daily_backfill_duckdb_coverage.log").write_text(
+            "bronze_equity_1d: 0 symbols\n"
+            "Traceback (most recent call last):\n"
+            '  File "/Users/moremeds/market-warehouse/releases/59f18e38/clients/duckdb_catalog.py",'
+            " line 599, in _build_coverage_locked\n"
+            "    con.execute(_coverage_insert(view_name, date_column))\n"
+            "_duckdb.InvalidInputException: Invalid Input Error: No magic bytes found at end of file"
+            " '/Users/moremeds/market-warehouse/data-lake/bronze/asset_class=equity/symbol=RJF/1d.parquet'\n",
+            encoding="utf-8",
+        )
+
+        result = _extract_error_summary(log)
+
+        assert result.splitlines()[0] == (
+            "Intraday catchup failed — phases failed: daily_backfill_equity_union, daily_backfill_duckdb_coverage"
+        )
+        assert str(tmp_path / "daily_backfill_equity_union.log") in result
+        assert str(tmp_path / "daily_backfill_duckdb_coverage.log") in result
+        assert "Parquet magic bytes not found in footer" in result
+        assert "No magic bytes found at end of file" in result
+        assert result.count("symbol=RJF/1d.parquet") >= 2
 
 
 class TestRunIntradayCatchupAdditional:
@@ -424,3 +480,21 @@ class TestRunnersLeaveLockingToWriters:
 
         monkeypatch.setenv("MDW_WAREHOUSE_DIR", str(tmp_path / "warehouse"))
         assert not lake_lock_path().is_relative_to(data_lake_dir())
+
+
+class TestARunnerLogWithoutASummaryLine:
+    def test_a_traceback_in_the_runner_log_is_quoted(self, tmp_path):
+        log = tmp_path / "intraday_catchup_2026-09-08.log"
+        log.write_text(
+            "=== Intraday Catchup 2026-09-08T10:00:00Z ===\n"
+            "Traceback (most recent call last):\n"
+            '  File "/repo/scripts/livewire_ingest.py", line 12, in main\n'
+            "    raise RuntimeError('flatfile credentials missing')\n"
+            "RuntimeError: flatfile credentials missing\n",
+            encoding="utf-8",
+        )
+
+        result = _extract_error_summary(log)
+
+        assert result.splitlines()[0] == f"Intraday catchup failed — see {log}"
+        assert "RuntimeError: flatfile credentials missing" in result
