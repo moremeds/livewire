@@ -11,6 +11,13 @@ Dependency graph: `PD7-1 -> PD7-2a -> PD7-2 -> PD7-3`.
 - [ ] **PD7-2** (`depends_on: [PD7-2a]`): Review exact diff, run CI-equivalent checks, open PR, and merge after required checks pass.
 - [ ] **PD7-3** (`depends_on: [PD7-2]`): Promote merged main SHA on Mac mini; verify active release, rolling preset behavior, and commodity data reads.
 
+## Price discovery (2026-09-22)
+
+Graph: `LW-00 -> shared-contract-freeze -> LW-01 -> downstream acceptance`.
+
+- [x] LW-00 (`depends_on: []`): Read-only GLD source/basis/revision inventory and 90-test baseline; evidence in `docs/audits/price-discovery/MPD00.md`. Official EIA no-key download succeeded; historical vintages remain unknown.
+- [x] LW-01 (`depends_on: [LW-00, shared-contract-freeze]`): Lead froze contract; minimal immutable GLD export and real captured input delivered locally. Full suite 3038 passed / 95.04% coverage. No production writes, restart, commit, or deployment. Downstream acceptance remains with lead.
+
 ## Existing-ledger diagnostics and runner consistency (2026-09-17)
 
 Plan: [ops diagnostics](../docs/plans/2026-09-17-ops-diagnostics.md).
@@ -586,3 +593,58 @@ Three paths to actually break the ~88-min floor, none of which are in PR #28:
 3. **Per-day delta sidecar**: keep the monolithic `1m.parquet` for reads as-is, but write incremental updates to `1m.delta/date=YYYY-MM-DD.parquet`. A separate compaction job folds the deltas into the monolith periodically (weekly?). Every reader has to union the monolith with whatever's in the delta dir at read time. Less invasive than option 1 — the monolithic file's API stays — but adds a non-trivial compaction service and a read-time correctness invariant.
 
 Recommendation: option 1, when we're ready to coordinate the reader updates. Until then, daily catch-up takes ~50–90 min on this hardware and that is the actual ceiling, not a software bug.
+
+# Brent retirement and COIL onboarding (2026-09-23)
+
+Bounded Livewire configuration task from the price-discovery handoff. BZ is
+retired by user decision; its stored history remains under BZ and queryable.
+COIL is a new, separate series. Production seeding is a separate Herd task and
+will use only user-pinned, IB-qualified delivery contracts.
+
+Dependency graph: `PD4-1 -> PD4-2 -> PD4-3 -> PD5-1 -> PD5-2`.
+
+- [x] **PD4-1** (`depends_on: []`): Trace nightly bronze discovery and explicit
+  historical callers; exclude BZ from active ingestion while preserving stored
+  BZ reads.
+- [x] **PD4-2** (`depends_on: [PD4-1]`): Add COIL@IPE to the active futures
+  selection using delivery months confirmed in saved IB contract evidence.
+- [x] **PD4-3** (`depends_on: [PD4-2]`): Add focused regressions, configuration
+  notes, and the Task 4 evidence report; run narrow tests and the configured
+  Livewire coverage gate. No commit/deploy.
+
+Historical task scope (user-confirmed 2026-09-23): use all IB-available history
+(`--years 0`) per confirmed contract. Energy roots CL, NG, COIL, RB and HO roll
+through delivery month 2027-12; GC, SI and HG use their first two current
+delivery months; the 12 successfully probed agricultural roots use their first
+two delivery months. BZ is excluded and FCPO is excluded because its saved probe
+did not qualify. Month lists must come from IB-qualified delivery months, not
+expiration-date guesses. Production write is authorized only for this scope;
+no orders, other data repairs, or deployment.
+
+- [x] **PD5-1** (`depends_on: [PD4-3]`): Herd read-only inventory on the Mini:
+  resolve every delivery month from IB contract details, qualify contracts,
+  and record provider head dates. Save raw evidence before any lake write.
+  Lead-reviewed manifest: `docs/audits/price-discovery/COMMODITY_BACKFILL_MANIFEST_2026-09-23.json` (103 contracts).
+- [x] **PD5-2** (`depends_on: [PD5-1]`): After lead acceptance of the exact
+  manifest, use the robust IB seed/backfill runner for the authorized contracts
+  at `--years 0`; report exact outcomes and data-root evidence. No commit,
+  release, or deployment. Complete: 103/103 files readable, 131,436 rows;
+  100 new files seeded, 3 existing files already at IB heads. Expired
+  CL_202610/OJ_202609, BZ, and FCPO stayed outside the write set. SI ambiguity
+  was fixed by selecting standard SI; the retry produced both files. Worker
+  deleted the two task-created SI cursor entries before retrying, contrary to
+  instruction; other entries were untouched and retry restored them. See
+  `docs/audits/price-discovery/TASK2_COMMODITY_BACKFILL_2026-09-23.md`.
+
+# Rolling futures universe (2026-09-23)
+
+Dependency graph: `PD6-1 -> PD6-2 -> PD6-3`.
+
+- [x] **PD6-1** (`depends_on: []`): Replace fixed month assumptions on the
+  scheduled futures lane with an IB-listed rolling window: energy through the
+  current month plus 15 months
+  ahead, first two live delivery months for metals and agriculture.
+- [x] **PD6-2** (`depends_on: [PD6-1]`): Add test coverage and operator docs;
+  verify new-window contracts are full-history seeded before daily updates.
+- [x] **PD6-3** (`depends_on: [PD6-2]`): Review the exact diff and tests. Do not
+  deploy or perform production writes beyond the already approved manifest.

@@ -50,6 +50,7 @@ exclude_lines = [
 [tool.ruff]
 target-version = "py313"
 line-length = 120
+extend-exclude = ["docs/audits/*/evidence"]  # frozen probe scripts are evidence, not code
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
