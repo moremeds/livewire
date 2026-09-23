@@ -843,6 +843,10 @@ def _r2_extend_event_id(claim_event_id: str) -> str:
     return hashlib.sha256(f"repair-identity-r2-extend\x00{claim_event_id}".encode()).hexdigest()
 
 
+def _r1_repoint_event_id(event_id: str, canonical_id: str) -> str:
+    return hashlib.sha256(f"repair-identity-r1-repoint\x00{event_id}\x00{canonical_id}".encode()).hexdigest()
+
+
 def _r4_reject_event_id(rejected_event_id: str) -> str:
     return hashlib.sha256(f"repair-identity-r4-reject\x00{rejected_event_id}".encode()).hexdigest()
 
@@ -969,6 +973,7 @@ def _plan_r2(
     churn_ids_by_index: dict[str, set[str]],
     revisions: dict[str, int],
     now: datetime,
+    merged_massive_ids: dict[str, str] | None = None,
 ) -> tuple[list[dict], list[dict], list[SecurityIdentityEvent]]:
     """R2: extend each researched narrow claim to the next non-churn remove
     of its security in any processed index, capped (never forced) at the
@@ -986,26 +991,27 @@ def _plan_r2(
     out_events: list[SecurityIdentityEvent] = []
 
     for claim in researched:
-        own = [
-            item
+        own_by_index = {
+            index_id: [
+                item
+                for item in _replay_membership(events)
+                # an event under a merged Massive duplicate is this security's own history (R1b re-points it)
+                if (merged_massive_ids or {}).get(item.security_id, item.security_id) == claim.security_id
+                and item.event_id not in churn_ids_by_index.get(index_id, set())
+            ]
             for index_id, events in sorted(events_by_index.items())
-            for item in _replay_membership(events)
-            if item.security_id == claim.security_id and item.event_id not in churn_ids_by_index.get(index_id, set())
-        ]
-        removes = sorted(
-            (item for item in own if item.action == "remove" and item.effective_at > claim.effective_from),
-            key=lambda item: (item.effective_at, item.event_id),
-        )
-        end = removes[0].effective_at if removes else None
+        }
+        end, ending_remove = _membership_cover_end(own_by_index, claim.effective_from, claim.effective_to)
         # The index's own record is the evidence for the wider window: cite the
-        # adds inside the claim and the remove that ends it, beside the claim's refs.
+        # adds inside the claim and the remove that ends the cover, beside the claim's refs.
         cited = [
             item
-            for item in own
+            for items in own_by_index.values()
+            for item in items
             if item.action == "add"
             and claim.effective_from <= item.effective_at
             and (claim.effective_to is None or item.effective_at < claim.effective_to)
-        ] + removes[:1]
+        ] + ([ending_remove] if ending_remove is not None else [])
         refs = dict(zip(claim.source_refs, claim.source_hashes, strict=True))
         for item in cited:
             refs.update(zip(item.source_refs, item.source_hashes, strict=True))
@@ -1069,6 +1075,43 @@ def _plan_r2(
     return extensions, caps, out_events
 
 
+def _membership_cover_end(
+    own_by_index: dict[str, list[MembershipEvent]], claim_from: datetime, claim_to: datetime | None
+) -> tuple[datetime | None, MembershipEvent | None]:
+    """End of the continuous stretch in which the security is a member of at
+    least one index, starting with a membership that opens inside the claim.
+
+    Returns `(None, None)` while it is still a member, and `(claim_from, None)`
+    when no membership opens inside the claim (nothing to extend). Leaving one
+    index while staying in another does not end it (NVDA left ndx100 on
+    2004-12-20 and stayed in sp500).
+    """
+    intervals: list[tuple[datetime, datetime | None, MembershipEvent | None]] = []
+    for items in own_by_index.values():
+        opened: datetime | None = None
+        for item in items:  # replay order
+            if item.action == "add" and opened is None:
+                opened = item.effective_at
+            elif item.action == "remove" and opened is not None:
+                intervals.append((opened, item.effective_at, item))
+                opened = None
+        if opened is not None:
+            intervals.append((opened, None, None))
+    end: datetime | None = None
+    ending: MembershipEvent | None = None
+    for opened, closed, remove in sorted(intervals, key=lambda row: row[0]):
+        if end is None:  # the first stretch must open inside the claim
+            if opened < claim_from or (claim_to is not None and opened >= claim_to):
+                continue
+        elif opened > end:
+            break  # a day in no index ends the cover
+        if closed is None:
+            return None, None
+        if end is None or closed > end:
+            end, ending = closed, remove
+    return (claim_from, None) if end is None else (end, ending)
+
+
 def _overlaps_interval(
     left_start: datetime, left_end: datetime | None, right_start: datetime, right_end: datetime | None
 ) -> bool:
@@ -1079,8 +1122,17 @@ def _plan_r4(
     events_by_index: dict[str, list[MembershipEvent]],
     churn_ids_by_index: dict[str, set[str]],
     now: datetime,
-) -> tuple[dict[str, list[dict]], dict[str, list[MembershipEvent]]]:
-    """R4: a `rejected` row superseding each still-active churn event."""
+    merged_massive_ids: dict[str, str] | None = None,
+) -> tuple[dict[str, list[dict]], dict[str, list[MembershipEvent]], list[dict]]:
+    """R4: a `rejected` row superseding each still-active churn event.
+
+    R1b: a non-churn active event under a Massive duplicate that R1 merges is
+    the same company's history, joined by CIK. It is rejected under the
+    duplicate and appended unchanged (action, dates, evidence, status) under
+    the canonical id.
+    """
+    merged = merged_massive_ids or {}
+    repoints: list[dict] = []
     rejections: dict[str, list[dict]] = {}
     events_out: dict[str, list[MembershipEvent]] = {}
     for index_id, events in sorted(events_by_index.items()):
@@ -1112,10 +1164,47 @@ def _plan_r4(
                     "rejection_event_id": reject.event_id,
                 }
             )
+        churny = churn_ids_by_index.get(index_id, set())
+        for item in _replay_membership(events):
+            canonical = merged.get(item.security_id)
+            if canonical is None or item.event_id in churny:
+                continue
+            revisions[item.security_id] = revisions.get(item.security_id, 0) + 1
+            new_events.append(
+                replace(
+                    item,
+                    event_id=_r4_reject_event_id(item.event_id),
+                    revision=revisions[item.security_id],
+                    known_at=now,
+                    status="rejected",
+                    supersedes=item.event_id,
+                )
+            )
+            revisions[canonical] = revisions.get(canonical, 0) + 1
+            moved = replace(
+                item,
+                event_id=_r1_repoint_event_id(item.event_id, canonical),
+                security_id=canonical,
+                revision=revisions[canonical],
+                known_at=now,
+                supersedes=None,
+            )
+            new_events.append(moved)
+            repoints.append(
+                {
+                    "index_id": index_id,
+                    "from_security_id": item.security_id,
+                    "to_security_id": canonical,
+                    "action": item.action,
+                    "effective_at": item.effective_at.isoformat(),
+                    "event_id": item.event_id,
+                    "repointed_event_id": moved.event_id,
+                }
+            )
         if new_events:
             rejections[index_id] = rows
             events_out[index_id] = new_events
-    return rejections, events_out
+    return rejections, events_out, repoints
 
 
 def _member_counts(root: Path, indexes: list[str], as_of: datetime) -> dict[str, dict[str, int]]:
@@ -1201,14 +1290,24 @@ def repair_identity(
         revisions[item.security_id] = max(revisions.get(item.security_id, 0), item.revision)
 
     merges, conflicts, r1_events, merged_massive_ids = _plan_r1(identities, revisions, now)
-    extensions, caps, r2_events = _plan_r2(identities, events_by_index, churn_ids_by_index, revisions, now)
-    rejections_by_index, r4_events_by_index = _plan_r4(events_by_index, churn_ids_by_index, now)
+    extensions, caps, r2_events = _plan_r2(
+        identities, events_by_index, churn_ids_by_index, revisions, now, merged_massive_ids
+    )
+    rejections_by_index, r4_events_by_index, repoints = _plan_r4(
+        events_by_index, churn_ids_by_index, now, merged_massive_ids
+    )
+    repointed = {row["event_id"] for row in repoints}
 
     dangling: list[dict] = []
     for index_id, events in sorted(events_by_index.items()):
         churny = churn_ids_by_index.get(index_id, set())
         for item in _replay_membership(events):
-            if item.status == "verified" and item.security_id in merged_massive_ids and item.event_id not in churny:
+            if (
+                item.status == "verified"
+                and item.security_id in merged_massive_ids
+                and item.event_id not in churny
+                and item.event_id not in repointed
+            ):
                 dangling.append({"index_id": index_id, "event_id": item.event_id, "security_id": item.security_id})
 
     run_id = os.environ.get("LW_RUN_ID") or ledger.new_run_id("membership-repair-identity")
@@ -1236,6 +1335,7 @@ def repair_identity(
         "extensions": extensions,
         "caps": caps,
         "rejections": [row for rows in rejections_by_index.values() for row in rows],
+        "repoints": repoints,
         "dangling_verified_references": dangling,
         "member_counts_before": _member_counts(root, indexes, now),
     }
@@ -1251,6 +1351,7 @@ def repair_identity(
             "identity_extensions": len(extensions),
             "identity_caps": len(caps),
             "membership_rejections": sum(len(rows) for rows in rejections_by_index.values()),
+            "membership_repoints": len(repoints),
             "identity_dangling_references": len(dangling),
         }
         ledger.emit(

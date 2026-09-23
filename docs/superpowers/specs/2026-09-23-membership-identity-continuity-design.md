@@ -13,11 +13,11 @@ as `[add − 1d, add + 1d)`, so a member is valid on its add date and gone the
 next day.
 
 | sp500 `as_of` | store.members | same events, identity gate off |
-| --- | --- | --- |
-| 2005-01-03 | 5 | 299 |
-| 2025-01-02 | 237 | 483 |
-| 2026-09-01 | 244 | 489 |
-| 2026-09-22 | 454 | 454 |
+| ------------- | ------------- | ------------------------------ |
+| 2005-01-03    | 5             | 299                            |
+| 2025-01-02    | 237           | 483                            |
+| 2026-09-01    | 244           | 489                            |
+| 2026-09-22    | 454           | 454                            |
 
 The narrow windows then caused churn. `membership_sync` resolves every live
 ticker at `now`. A narrow identity does not cover `now`, so at
@@ -38,6 +38,7 @@ the only one whose CIK differs.
 **R1 — one company, one `security_id`.** For each CIK that has a
 `wikipedia_sec_research` identity, the researched `security_id` is canonical.
 A `massive` identity with the same CIK and symbol is a duplicate:
+
 - its active claims are superseded as `rejected`;
 - the same claim (same provider, FIGIs, MIC and window) is appended under the
   canonical id.
@@ -45,15 +46,28 @@ A `massive` identity with the same CIK and symbol is a duplicate:
 The CIK is the join key and the only one. If the CIKs differ (HOLX), or either
 side lacks a CIK, nothing is merged and the pair is reported.
 
+**R1b — history under a merged duplicate moves with it.** An active,
+non-churn membership event under a merged Massive duplicate is the same
+company's history, joined by CIK. The first dry run on the mini found 105 such
+verified events; 100 were written on 2026-09-16 with real historical dates (for
+example NVDA in ndx100: add 2004-01-01, remove 2004-12-20, add 2005-12-19).
+Each one is superseded as `rejected` under the duplicate and appended
+unchanged (action, dates, evidence, status) under the canonical id.
+
 **R2 — a researched identity covers its membership interval.** A researched
 claim `[d − 1d, d + 1d)` is superseded by a claim for the same
 `(provider, symbol, mic, cik)` covering `[d − 1d, end)`:
-- `end` is the `effective_at` of the next non-churn `remove` of that security
-  in any index. If no such remove exists, `end` is open (`None`).
-- The claim cites the original claim's evidence and the add and remove events'
-  `source_refs`, which are already in the source-evidence CAS. The index's
-  constituent record is the evidence that ticker T was this constituent from
-  add to remove.
+
+- `end` is where the security stops being a member of every index: the end
+  of the continuous stretch, starting inside the claim, during which it is in
+  at least one index. Leaving one index while staying in another does not end
+  it (NVDA left ndx100 on 2004-12-20 and stayed in sp500). While it is still a
+  member somewhere, `end` is open (`None`). Events under a merged duplicate
+  (R1b) count as the security's own.
+- The claim cites the original claim's evidence, the adds inside the claim,
+  and the remove that ends the stretch, by their `source_refs`, which are
+  already in the source-evidence CAS. The index's constituent record is the
+  evidence that ticker T was this constituent from add to remove.
 
 If the extension would collide under `SecurityMaster._validate_append`
 (symbol interval, `share_class_figi`, `composite_figi`), `end` is capped at
@@ -61,6 +75,7 @@ the start of the colliding claim and the cap is reported. It is never forced.
 
 **R3 — membership-sync diffs tickers, not ids.** The live diff maps each
 current member to its ticker:
+
 - a placeholder carries its own ticker;
 - a resolved id takes the symbol of its identity claim covering the member's
   last add.
@@ -74,17 +89,18 @@ genuine changes.
 `remove` of ticker T and an `add` of T (placeholder or resolved), plus any
 later event that resolves that placeholder. Each churn row that is still
 active gets a `rejected` row that supersedes it (revision + 1). A verified
-membership event that still references a rejected Massive duplicate after R1
+membership event that still references a rejected Massive duplicate after R1b
 fails the run and is reported; it is never guessed.
 
 ## 3. Entrypoint
 
 `livewire_ingest.py membership-sync repair-identity [--index sp500 ndx100 djia] [--apply]`:
-- Dry run by default: computes R1, R2 and R4, and writes a JSON manifest
-  (merges, extensions, caps, rejections, conflicts, before/after member counts
+
+- Dry run by default: computes R1, R1b, R2 and R4, and writes a JSON manifest
+  (merges, repoints, extensions, caps, rejections, conflicts, before/after member counts
   at fixed dates) plus one ledger `runs` row and its `measurements`.
 - `--apply` appends security-master rows first (R1, then R2), then membership
-  rejections (R4), in one run. It is idempotent: event ids derive from the
+  rejections and re-points (R4, R1b), in one run. It is idempotent: event ids derive from the
   superseded id, so a rerun appends nothing.
 - It lives in `membership_sync.py`, next to `reresolve`. No new script.
 

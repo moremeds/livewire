@@ -566,36 +566,132 @@ def test_repair_identity_r4_keeps_genuine_same_day_add_without_paired_remove(tmp
     assert events["sp500-add-ORCL"].status == "verified"  # untouched
 
 
-def test_repair_identity_fails_when_a_verified_event_still_references_a_rejected_duplicate(tmp_path):
-    """A verified membership add for the massive duplicate that is NOT part
-    of any detected churn pair: R1 would reject its identity out from under
-    it, and repair-identity must refuse to guess and fail the run instead."""
+NVIDIA_CIK = "0001045810"
+
+
+def test_history_under_a_merged_duplicate_is_repointed_and_one_index_exit_does_not_end_the_identity(tmp_path):
+    """NVDA as the mini holds it: ndx100 history (add 2004-01-01, remove
+    2004-12-20, add 2005-12-19) sits under the Massive identity, sp500 under
+    the researched one (add 2001-11-30), and the 2026-09-17 churn swapped
+    sp500 to the Massive id."""
     lake = tmp_path / "lake"
-    ids = _agilent_and_googl(lake)
     evidence = SourceEvidenceStore(lake)
+    master = _master(lake)
+    researched = SecurityMaster.new_security_id()
+    massive = SecurityMaster.new_security_id()
+    master.append(
+        _identity(
+            _evidence(evidence, "nvda-wiki", "https://en.wikipedia.org/wiki/Nvidia", T0),
+            event_id="nvda-researched",
+            security_id=researched,
+            revision=1,
+            symbol="NVDA",
+            provider="wikipedia_sec_research",
+            exchange_mic="XNAS",
+            cik=NVIDIA_CIK,
+            effective_from=dt("2001-11-29"),
+            effective_to=dt("2001-12-01"),
+            known_at=T0,
+            issuer_name="Nvidia Corp",
+        )
+    )
+    master.append(
+        _identity(
+            _evidence(evidence, "nvda-massive", "https://api.massive.com/v3/reference/tickers/NVDA", T0),
+            event_id="nvda-massive",
+            security_id=massive,
+            revision=1,
+            symbol="NVDA",
+            provider="massive",
+            exchange_mic="XNAS",
+            cik=NVIDIA_CIK,
+            composite_figi="BBG000BBJQV0",
+            share_class_figi="BBG001S5TZJ6",
+            continuity_basis="provider_figi",
+            effective_from=dt("2004-01-01"),
+            effective_to=None,
+            known_at=T0,
+            issuer_name="Nvidia Corp",
+        )
+    )
     store = _store(lake)
-    # ndx100 independently (and correctly, per its own verified identity)
-    # added Agilent's massive-provider id, with no paired remove anywhere --
-    # not churn, just a second index that got there before the merge.
+    sp_ref = _evidence(evidence, "sp500-nvda", "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", T0)
+    ndx_ref = _evidence(evidence, "ndx100-nvda", "https://en.wikipedia.org/wiki/Nasdaq-100", T0)
     store.append(
         _membership(
-            _evidence(evidence, "ndx100-add-A", "https://ndx100-history.test/A", dt("2026-09-18")),
-            event_id="ndx100-add-A",
-            index_id="ndx100",
-            security_id=ids["massive_a"],
+            sp_ref,
+            event_id="sp500-add-NVDA",
+            index_id="sp500",
+            security_id=researched,
             action="add",
-            effective_at=dt("2026-09-18"),
-            known_at=dt("2026-09-18"),
+            effective_at=dt("2001-11-30"),
+            known_at=T0,
+        )
+    )
+    for revision, (action, day) in enumerate(
+        (("add", "2004-01-01"), ("remove", "2004-12-20"), ("add", "2005-12-19")), start=1
+    ):
+        store.append(
+            _membership(
+                ndx_ref,
+                event_id=f"ndx100-{action}-NVDA-{day}",
+                index_id="ndx100",
+                security_id=massive,
+                action=action,
+                effective_at=dt(day),
+                known_at=T0,
+                revision=revision,
+            )
+        )
+    churn_ref = _evidence(evidence, "sp500-live", "https://www.slickcharts.com/sp500", CHURN_T)
+    store.append(
+        _membership(
+            churn_ref,
+            event_id="sp500-churn-remove-NVDA",
+            index_id="sp500",
+            security_id=researched,
+            action="remove",
+            effective_at=CHURN_T,
+            known_at=CHURN_T,
+            revision=2,
+        )
+    )
+    store.append(
+        _membership(
+            churn_ref,
+            event_id="sp500-churn-add-NVDA",
+            index_id="sp500",
+            security_id=massive,
+            action="add",
+            effective_at=CHURN_T,
+            known_at=CHURN_T,
+            revision=1,
         )
     )
 
-    with pytest.raises(ValueError, match="dangling|reject|guess"):
-        membership_sync.repair_identity(indexes=["sp500", "ndx100"], data_lake_root=lake, now=REPAIR_NOW, apply=True)
+    manifest = membership_sync.repair_identity(
+        indexes=["sp500", "ndx100"], data_lake_root=lake, now=REPAIR_NOW, apply=True
+    )
 
+    assert [(m["massive_security_id"], m["researched_security_id"]) for m in manifest["merges"]] == [
+        (massive, researched)
+    ]
+    assert manifest["dangling_verified_references"] == []
+    assert sorted((r["index_id"], r["action"], r["effective_at"][:10]) for r in manifest["repoints"]) == [
+        ("ndx100", "add", "2004-01-01"),
+        ("ndx100", "add", "2005-12-19"),
+        ("ndx100", "remove", "2004-12-20"),
+    ]
+    # Leaving ndx100 on 2004-12-20 does not end the identity: NVDA stayed in sp500.
+    extension = next(e for e in manifest["extensions"] if e["security_id"] == researched)
+    assert extension["new_effective_to"] is None
+
+    reader = _store(lake, writable=False)
+    member = lambda index_id, day: researched in reader.members_effective_at(index_id, dt(day), REPAIR_NOW)  # noqa: E731
+    assert member("ndx100", "2004-06-01") and not member("ndx100", "2005-06-01") and member("ndx100", "2006-01-03")
+    assert member("sp500", "2004-12-21") and member("sp500", "2025-01-02") and member("sp500", "2026-09-22")
     runs = ledger.query("select verdict from runs where job='membership-repair-identity' and ended is not null")
-    assert {row["verdict"] for row in runs} == {"FAILED"}
-    # nothing applied: the ndx100 event is untouched and no security_master row was added
-    assert _membership_events(lake, "ndx100")[0].status == "verified"
+    assert {row["verdict"] for row in runs} == {"OK"}
 
 
 def test_repair_identity_second_apply_appends_nothing(tmp_path):
