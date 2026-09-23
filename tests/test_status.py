@@ -2012,3 +2012,65 @@ def test_the_latest_receipt_is_chosen_by_completion_not_start(tmp_path, monkeypa
     section = status._duckdb_section(NOW.date())
     assert section.verdict is status.Verdict.BAD
     assert "copy_failed" in "\n".join(section.lines)
+
+
+def _eia_measure(name: str, scope: str, value: float, at: datetime) -> None:
+    ledger.emit(
+        "measurements",
+        [
+            {
+                "name": name,
+                "scope": scope,
+                "measured_at": at,
+                "value": value,
+                "unit": "days",
+                "source": "measured",
+                "run_id": "eia-1",
+            }
+        ],
+        run_id="eia-1",
+    )
+
+
+def _eia_check(name: str, now: datetime) -> status.Section:
+    sql = dict(status.CHECKS)[name]
+    return status.run_check(name, sql, {"now": now.strftime("%Y-%m-%d %H:%M:%S")})
+
+
+def test_eia_freshness_is_unknown_for_every_dataset_never_measured():
+    from livewire_scripts.fetch_eia import DATASETS
+
+    section = _eia_check("EIA freshness", datetime(2026, 9, 24, 12, tzinfo=UTC))
+    assert section.verdict.name == "UNKNOWN"
+    graded = [d for d in DATASETS.values() if d.max_lag_days is not None]
+    assert sum("dataset=" in line for line in section.lines) == len(graded)
+
+
+def test_eia_freshness_warns_only_on_a_dataset_past_its_declared_lag():
+    from livewire_scripts.fetch_eia import DATASETS
+
+    now = datetime(2026, 9, 24, 12, tzinfo=UTC)
+    for dataset in DATASETS.values():
+        if dataset.max_lag_days is not None:
+            _eia_measure("eia_staleness_days", dataset.id, dataset.max_lag_days, now - timedelta(hours=2))
+    assert _eia_check("EIA freshness", now).verdict.name == "OK"
+
+    _eia_measure("eia_staleness_days", "petroleum/stocks/1w", 15, now - timedelta(hours=1))
+    section = _eia_check("EIA freshness", now)
+    assert section.verdict.name == "WARN"
+    assert any("petroleum/stocks/1w" in line and "days_behind=15" in line for line in section.lines)
+
+
+def test_eia_bulk_imports_warn_past_twice_the_refresh_interval():
+    from livewire_scripts.fetch_eia import BULK_FAMILIES, EBA
+
+    now = datetime(2026, 9, 24, 12, tzinfo=UTC)
+    for code in [*BULK_FAMILIES, EBA]:
+        _eia_measure("eia_bulk_behind_days", code, 0, now - timedelta(hours=2))
+    assert _eia_check("EIA bulk imports", now).verdict.name == "OK"
+
+    _eia_measure("eia_bulk_behind_days", "ELEC", 15, now - timedelta(hours=1))  # limit 2 x 7
+    _eia_measure("eia_bulk_behind_days", EBA, 45, now - timedelta(hours=1))  # limit 2 x 30: fine
+    section = _eia_check("EIA bulk imports", now)
+    assert section.verdict.name == "WARN"
+    assert [line for line in section.lines if "family=" in line] == ["  family=ELEC  days_behind=15.0  limit_days=14.0"]

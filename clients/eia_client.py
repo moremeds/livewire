@@ -16,7 +16,7 @@ from __future__ import annotations
 import gzip
 import os
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -67,6 +67,23 @@ class EiaClient:
                 (self._sleep or time.sleep)(wait)
         self._last_request = self._clock()
 
+    def facet_names(self, route: str, facet: str) -> dict[str, str]:
+        """{id: name} for one facet of `route` (e.g. respondent PJM -> "PJM Interconnection, LLC")."""
+        self._pace()
+        response = get_with_retry(
+            lambda: self._http.get(
+                f"{self._base_url}/{route.strip('/')}/facet/{facet}",
+                params={"api_key": self.api_key},
+                headers={"Accept-Encoding": "gzip"},
+                timeout=60,
+            ),
+            attempts=int(declared("eia_retry_attempts")),
+            backoff_s=float(declared("eia_retry_backoff_s")),
+            sleep=self._sleep,
+            retry_statuses=frozenset({429}),
+        )
+        return {item["id"]: item["name"] for item in response.json()["response"]["facets"]}
+
     def fetch(
         self,
         route: str,
@@ -76,6 +93,7 @@ class EiaClient:
         end: str,
         sort_columns: Sequence[str],
         data_columns: Sequence[str] = ("value",),
+        facets: Mapping[str, Sequence[str]] | None = None,
     ) -> tuple[list[dict], list[EiaPage]]:
         """Every row of `route` in [start, end], and the pages they came from.
 
@@ -86,6 +104,7 @@ class EiaClient:
         url = f"{self._base_url}/{route.strip('/')}/data/"
         query: list[tuple[str, str | int]] = [("frequency", frequency), ("start", start), ("end", end)]
         query += [("data[]", column) for column in data_columns]
+        query += [(f"facets[{facet}][]", value) for facet, values in (facets or {}).items() for value in values]
         for index, column in enumerate(sort_columns):
             query += [(f"sort[{index}][column]", column), (f"sort[{index}][direction]", "asc")]
 

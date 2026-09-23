@@ -118,10 +118,18 @@ DECLARED: dict[str, tuple[float, str]] = {
     "eia_min_request_interval_s": (0.5, "s"),
     "eia_retry_attempts": (4, "count"),
     "eia_retry_backoff_s": (30, "s"),
-    # Window the daily electricity run re-fetches. Observed publication lag on
+    # Window the daily run re-fetches, every dataset. Observed publication lag on
     # 2026-09-23 was 1-3 days (endPeriod 09-20..09-22); 14 days is margin.
     # Whether EIA revises days older than that has not been measured.
-    "eia_electricity_lookback_days": (14, "days"),
+    "eia_lookback_days": (14, "days"),
+    # EIA bulk files (manifest: api.eia.gov/bulk/manifest.txt). A family is
+    # re-imported when its manifest `last_updated` moved and the last import is
+    # at least this old. PET/NG move weekly with the weekly data; ELEC monthly.
+    # EBA (hourly, 691 MB) moves daily; the API lookback covers the recent edge,
+    # so its re-import only sweeps up revisions older than eia_lookback_days --
+    # whether EIA makes any is what eia_values_revised will measure.
+    "eia_bulk_refresh_days": (7, "days"),
+    "eia_eba_refresh_days": (30, "days"),
 }
 
 

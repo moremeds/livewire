@@ -383,7 +383,7 @@ class TestRunSync:
         joined = [" ".join(c) for c in commands]
         assert any("daily" in c and "--source massive" in c for c in joined)
         assert any("fred-rates" in c for c in joined)
-        assert any("eia-electricity" in c for c in joined)
+        assert any(c.split()[-1] == "eia" for c in joined)
         assert any("cboe-vol" in c for c in joined)
         assert any("flatfile-ingest catch-up" in c for c in joined)
         assert any("flatfile-ingest-daily catch-up" in c for c in joined)
@@ -431,11 +431,11 @@ class TestRunSync:
         config = _make_config(tmp_path)
 
         def selective(command, **kwargs):
-            return CompletedProcess(args=command, returncode=1 if "eia-electricity" in command else 0)
+            return CompletedProcess(args=command, returncode=1 if "eia" in command else 0)
 
         with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
             assert run_sync(config, runner=selective, trading_day_fn=lambda: "2026-05-28") == 1
-        assert parse_last_summary_json(capsys.readouterr().out)["failed"] == ["daily_backfill_eia_electricity"]
+        assert parse_last_summary_json(capsys.readouterr().out)["failed"] == ["daily_backfill_eia"]
 
     def test_a_failed_early_phase_does_not_skip_later_phases(self, tmp_path):
         config = _make_config(tmp_path)

@@ -166,3 +166,38 @@ bronze/asset_class=energy/
 Open:
 - The 429 limit: measure it or cite EIA's number before the ~4,400-request backfill.
 - Electricity hourly: in or out after the daily run.
+
+## Bulk files (checked 2026-09-23, from the mini)
+
+`https://api.eia.gov/bulk/manifest.txt` lists one zip per dataset family, each a
+text file of one JSON object per series (`series_id`, `name`, `units`, `f`,
+`data: [[period, value], …]`). Sizes and contents as downloaded:
+
+| zip | size (unzipped) | series | frequencies | download |
+|---|---|---|---|---|
+| `EBA.zip` grid monitor | 691 MB (4.35 GB) | 3,074 = 1,537 UTC (`.H`) + 1,537 local (`.HL`) | hourly only | 70 s |
+| `PET.zip` | 55 MB (367 MB) | 181,143 | W 1,157 · D 31 · M 84,748 · A 94,773 · 4-weekly 434 | 15 s |
+| `NG.zip` | 4.4 MB (25 MB) | 16,080 | D 5 · W 13 · M 3,151 · A 12,911 | 11 s |
+| `NUC_STATUS.zip` | 11 MB (57 MB) | 522 | daily | 12 s |
+
+Also listed: `ELEC` (288 MB), `PET_IMPORTS`, `COAL`, `INTL`, `SEDS`, `STEO`,
+`TOTAL`, `EMISS`, `AEO.*`, `IEO.*`.
+
+Used for (a) every monthly/quarterly/annual series of PET, PET_IMPORTS, NG, ELEC,
+COAL, TOTAL, SEDS, INTL, EMISS and STEO (per release), and (b) hourly electricity
+history from EBA. Daily/weekly petroleum and gas stay on the API, which carries the
+facet columns (`duoarea`, `product`, `process`) the bulk file does not.
+
+What the files contain that the parser has to handle (profiled 2026-09-23):
+- periods `YYYYMMDD`, `YYYYMM`, `YYYYQn`, `YYYY`; PET's `4` (4-week) uses `YYYYMMDD`;
+- non-numeric values only in TOTAL (`NA` 48,847, `-` 14,445, `- -`, `W`, `--`) and
+  INTL (`--` 321,641, `NA` 95,821, `w`, `ie`) — stored null with the marker kept;
+- the same period listed twice inside one series (PET 30, NG 6), always equal;
+- EMISS opens with a non-JSON line `discontinued`.
+
+EBA vs API, 2026-09-14..15: every bulk key exists in the API, names and units
+agree; 3.7% of `region` values differ by rounding (bulk keeps decimals) and a
+handful by revision. The bulk file lacks series the API has (BA `SWPW`; fuel
+types `BAT`, `SNB`, `PS`; several sub-BAs), so those come from the API after the
+import. It ends ~1 day behind the API (`EBA.PJM-ALL.D.H` ended 2026-09-22T19
+while the API served 09-24T04 forecasts), so the daily refresh stays on the API.

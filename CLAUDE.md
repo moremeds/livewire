@@ -35,6 +35,7 @@ livewire/                       # git repo
 │   │                           #   index_membership, catalog are symlinks onto /Volumes/DATA_LAKE (exFAT;
 │   │                           #   a cold cache is the normal morning state); ledger, raw, cursors stay local
 │   ├── bronze/asset_class=<equity|futures|rates|volatility|fx|cmdty|corporate_action>/symbol=<S>/{1d,1m,5m,30m,1h}.parquet
+│   ├── bronze/asset_class=energy/product=<p>/dataset=<d>/<month|year|vintage>/<tf>.parquet   # EIA, not symbol-keyed; zips in raw/eia/bulk/
 │   ├── bronze-delisted/        # archived symbols; NOT authoritative for the denominator
 │   ├── silver/                 # adjusted daily + factor intervals; revisions/current.json is the commit record
 │   ├── raw/massive/…           # provider flat files; below the rolling GET floor they can never be refetched

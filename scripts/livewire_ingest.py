@@ -21,7 +21,7 @@ COMMANDS = {
     "robust": "livewire_scripts.run_ib_fetch_robust",
     "cboe-vol": "livewire_scripts.fetch_cboe_volatility",
     "fred-rates": "livewire_scripts.fetch_fred_rates",
-    "eia-electricity": "livewire_scripts.fetch_eia_electricity",
+    "eia": "livewire_scripts.fetch_eia",
     "fx": "livewire_scripts.fetch_fx",
     "corporate-actions": "livewire_scripts.sync_corporate_actions",
     "intraday-backfill": "livewire_scripts.backfill_intraday",
