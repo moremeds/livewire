@@ -92,6 +92,19 @@ def test_an_empty_page_before_the_total_fails():
         fetch(client(serve(totals=[100, 100])))
 
 
+def test_a_route_whose_total_overcounts_ends_at_the_first_short_page(monkeypatch):
+    # nuclear-outages/facility-nuclear-outages: `total` counts generator rows (34,424 for 2025)
+    # while 19,824 facility rows are served (mini, 2026-09-23).
+    monkeypatch.setattr(eia_client, "PAGE_ROWS", 15)
+    seen: list[httpx.Request] = []
+    c = client(serve(totals=[100] * 3, seen=seen))
+    rows, _ = c.fetch(
+        ROUTE, frequency="daily", start="2026-09-14", end="2026-09-15", sort_columns=("period",), exact_total=False
+    )
+    assert rows == ROWS
+    assert [int(r.url.params["offset"]) for r in seen] == [0, 15, 30]
+
+
 def test_a_429_is_waited_out_and_retried(monkeypatch):
     monkeypatch.setenv("LW_DECLARED_EIA_RETRY_BACKOFF_S", "30")
     sleeps: list[float] = []

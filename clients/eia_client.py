@@ -94,12 +94,16 @@ class EiaClient:
         sort_columns: Sequence[str],
         data_columns: Sequence[str] = ("value",),
         facets: Mapping[str, Sequence[str]] | None = None,
+        exact_total: bool = True,
     ) -> tuple[list[dict], list[EiaPage]]:
         """Every row of `route` in [start, end], and the pages they came from.
 
         Raises ValueError when the rows received do not add up to EIA's `total`,
         or `total` moves between pages (EIA published mid-read, so offsets
         shifted): a short read must fail, never publish as complete.
+
+        `exact_total=False` is for a route whose `total` overcounts its rows; the
+        read then ends at the first page shorter than PAGE_ROWS.
         """
         url = f"{self._base_url}/{route.strip('/')}/data/"
         query: list[tuple[str, str | int]] = [("frequency", frequency), ("start", start), ("end", end)]
@@ -146,9 +150,11 @@ class EiaClient:
                 )
             )
             data = body.get("data") or []
-            if not data and len(rows) < total:
+            if not data and len(rows) < total and exact_total:
                 raise ValueError(f"EIA {route}: empty page at offset {len(rows)} of {total}")
             rows.extend(data)
-        if len(rows) != total:
+            if not exact_total and len(data) < PAGE_ROWS:
+                break
+        if exact_total and len(rows) != total:
             raise ValueError(f"EIA {route}: received {len(rows)} rows, total says {total}")
         return rows, pages
