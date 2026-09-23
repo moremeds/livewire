@@ -986,16 +986,29 @@ def _plan_r2(
     out_events: list[SecurityIdentityEvent] = []
 
     for claim in researched:
-        ends = [
-            item.effective_at
+        own = [
+            item
             for index_id, events in sorted(events_by_index.items())
             for item in _replay_membership(events)
-            if item.security_id == claim.security_id
-            and item.action == "remove"
-            and item.event_id not in churn_ids_by_index.get(index_id, set())
-            and item.effective_at > claim.effective_from
+            if item.security_id == claim.security_id and item.event_id not in churn_ids_by_index.get(index_id, set())
         ]
-        end = min(ends) if ends else None
+        removes = sorted(
+            (item for item in own if item.action == "remove" and item.effective_at > claim.effective_from),
+            key=lambda item: (item.effective_at, item.event_id),
+        )
+        end = removes[0].effective_at if removes else None
+        # The index's own record is the evidence for the wider window: cite the
+        # adds inside the claim and the remove that ends it, beside the claim's refs.
+        cited = [
+            item
+            for item in own
+            if item.action == "add"
+            and claim.effective_from <= item.effective_at
+            and (claim.effective_to is None or item.effective_at < claim.effective_to)
+        ] + removes[:1]
+        refs = dict(zip(claim.source_refs, claim.source_hashes, strict=True))
+        for item in cited:
+            refs.update(zip(item.source_refs, item.source_hashes, strict=True))
 
         capped_at = None
         for other in active:
@@ -1040,6 +1053,8 @@ def _plan_r2(
             effective_to=new_end,
             known_at=now,
             supersedes=claim.event_id,
+            source_refs=tuple(refs),
+            source_hashes=tuple(refs.values()),
         )
         out_events.append(extended)
         extensions.append(
@@ -1115,8 +1130,12 @@ def _member_counts(root: Path, indexes: list[str], as_of: datetime) -> dict[str,
 
 
 def _scratch_lake_copy(root: Path, dest: Path) -> Path:
-    """Copy only the subtrees repair-identity reads or writes into `dest`."""
-    for sub in ("security_master", "index_membership", "raw"):
+    """Copy only the two stores repair-identity writes into `dest`.
+
+    Never `raw/`: on the mini it holds the Massive flat files. Evidence is
+    verified read-only against the real root's CAS instead.
+    """
+    for sub in ("security_master", "index_membership"):
         src = root / sub
         if src.exists():
             shutil.copytree(src, dest / sub)
@@ -1266,7 +1285,7 @@ def repair_identity(
         else:
             with tempfile.TemporaryDirectory() as tmp:
                 scratch = _scratch_lake_copy(root, Path(tmp) / "scratch")
-                scratch_verifier = _evidence_verifier(SourceEvidenceStore(scratch))
+                scratch_verifier = _evidence_verifier(SourceEvidenceStore(root))
                 _apply_repair(scratch, scratch_verifier, security_master_events, r4_events_by_index)
                 manifest["member_counts_after"] = _member_counts(scratch, indexes, now)
         _write_manifest(output, manifest)

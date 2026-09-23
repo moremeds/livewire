@@ -323,6 +323,15 @@ def test_repair_identity_merges_by_cik_extends_and_restores_continuity(tmp_path)
     duplicate = next(e for e in identities if e.security_id == ids["researched_a"] and e.provider == "massive")
     assert duplicate.composite_figi == "BBG000C2V3D6" and duplicate.effective_to is None
 
+    # R2 cites the index's own record: the extension carries the claim's refs
+    # plus the Agilent add's evidence.
+    extension = next(e for e in identities if e.supersedes == "agilent-researched")
+    agilent_add = next(
+        e for e in _membership_events(lake, "sp500") if e.security_id == ids["researched_a"] and e.action == "add"
+    )
+    assert set(agilent_add.source_refs) <= set(extension.source_refs)
+    assert len(extension.source_refs) == len(extension.source_hashes)
+
     assert len(_identities(lake)) > before_identities
     assert len(_membership_events(lake, "sp500")) > before_membership
 
@@ -624,6 +633,31 @@ def test_repair_identity_dry_run_writes_nothing(tmp_path):
     )
     assert _identities(lake) == before_identities
     assert _membership_events(lake, "sp500") == before_membership
+
+
+def test_the_dry_run_scratch_copy_never_includes_raw(tmp_path, monkeypatch):
+    # On the mini raw/ holds the Massive flat files; copying it would fill the disk.
+    lake = tmp_path / "lake"
+    ids = _agilent_and_googl(lake)
+    _add_agilent_churn(lake, ids)
+    membership_sync.reresolve(index_id="sp500", data_lake_root=lake, now=RERESOLVE_NOW, confidence="B")
+    (lake / "raw" / "massive").mkdir(parents=True, exist_ok=True)
+    copied: list[str] = []
+    real_copytree = membership_sync.shutil.copytree
+
+    def recording_copytree(src, dst, *args, **kwargs):
+        if Path(src).parent == lake:  # shutil recurses through copytree; record top-level subtrees only
+            copied.append(Path(src).name)
+        return real_copytree(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(membership_sync.shutil, "copytree", recording_copytree)
+
+    manifest = membership_sync.repair_identity(indexes=["sp500"], data_lake_root=lake, now=REPAIR_NOW, apply=False)
+
+    assert sorted(copied) == ["index_membership", "security_master"]
+    assert (
+        manifest["member_counts_after"]["sp500"]["2026-09-01"] > manifest["member_counts_before"]["sp500"]["2026-09-01"]
+    )
 
 
 def test_repair_identity_writes_the_manifest_and_ledger_run(tmp_path):
