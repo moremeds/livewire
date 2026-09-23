@@ -13,6 +13,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added verified exchange mappings for the new commodity roots and rolling futures selection: energy through the current month plus 15 months, and the first two live delivery months for GC/SI/HG and 12 agricultural roots. Newly selected contracts are full-history seeded before daily updates.
 - Futures coverage now uses that same live rolling selection; when IB is unavailable it reports futures as UNKNOWN and continues equity coverage and recovery.
 
+- EIA energy lane (`livewire_ingest.py eia`, `clients/eia_client.py`): petroleum
+  (spot, retail, the weekly supply report incl. inventories, refinery, imports),
+  natural gas (Henry Hub spot, storage), nuclear outages, and grid-monitor
+  electricity daily + hourly, into
+  `bronze/asset_class=energy/product=<p>/dataset=<d>/…`. Raw pages in source
+  evidence, `runs`/`measurements` in the ledger, and a `sync_runner` phase that
+  re-fetches the last 14 days of every dataset on each intraday-catchup. Hourly
+  history loads from EIA's bulk `EBA.zip`, with the facets the bulk file lacks
+  filled from the API. Every monthly/quarterly/annual series of EIA's bulk
+  families (PET, PET_IMPORTS, NG, ELEC, COAL, TOTAL, SEDS, INTL, EMISS; STEO kept
+  per release) is imported and re-imported when EIA's manifest moves; each import
+  is a ledger `evidence(kind='eia_bulk')` row, the zip is kept under `raw/eia/bulk`,
+  and replaced values are counted as `eia_values_revised`. `status` grades
+  `EIA freshness` and `EIA bulk imports`.
+  `publish_parquet` accepts a composite sort key; `get_with_retry` takes an
+  opt-in `retry_statuses` (EIA opts into 429 — no other caller does).
+  The EIA catalog and plan are in `docs/audits/eia/`.
+  EIA's `total` overcounts facility nuclear outages (it counts generator rows), so
+  that dataset reads until a short page instead of to `total`.
 - `clients/http_retry.py`: the repo's one definition of a transient HTTP
   failure. A 5xx or a transport error retries with a bounded linear backoff; a
   4xx raises on the first attempt. FRED's local copy was replaced by it and
@@ -136,6 +155,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   committed`; the watchdog paged 4.5h later and Silver never rebuilt.
 
 ### Changed
+
+- Removed the unused ClickHouse bootstrap (`setup_market_warehouse.sh` flags, schema, helper scripts, `clickhouse-connect`). Nothing ran it and the mini never installed it.
+- Refreshed `CLAUDE.md`, `AGENTS.md` and `README.md` against the code and the mini: eight launchd jobs, digest at 15:45Z, equity daily from Massive by default, Gateway 10.50, the lake's per-subtree symlinks, rolling futures selection, and how Apex consumes the lake.
 
 - `massive_requests_per_minute/reference` is 600/min, not the 5/min inherited
   from the free Currencies FX tier. Massive documents no cap on a paid plan and

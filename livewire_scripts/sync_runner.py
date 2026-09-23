@@ -2,7 +2,7 @@
 """Daily sync runner — routine warehouse catch-up.
 
 Replaces tools/run_daily_backfill.sh with a testable Python module.
-Runs Massive equity daily + intraday, FRED rates, CBOE volatility,
+Runs Massive equity daily + intraday, FRED rates, EIA energy, CBOE volatility,
 IB vol intraday, and the DuckDB coverage refresh.
 """
 
@@ -331,6 +331,13 @@ def run_sync(
     rc = _phase("daily_backfill_fred_rates", [py, ingest, "fred-rates"])
     if rc != 0:
         failures.append("fred_rates")
+
+    # Phase 2b: EIA energy -- petroleum, natural gas, nuclear, electricity
+    # (re-fetches the declared lookback window; a backfill is the same command
+    # with --start).
+    rc = _phase("daily_backfill_eia", [py, ingest, "eia"])
+    if rc != 0:
+        failures.append("eia")
 
     # Phase 3: CBOE volatility daily
     rc = _phase(

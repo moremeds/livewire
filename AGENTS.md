@@ -21,10 +21,12 @@ Current live shape:
 - Canonical storage is per-ticker bronze Parquet under `~/market-warehouse/data-lake/bronze/asset_class=equity/symbol=<ticker>/1d.parquet`
 - Delisted symbols that should no longer participate in future syncs or backfills are archived under `~/market-warehouse/data-lake/bronze-delisted/asset_class=equity/symbol=<ticker>/1d.parquet`
 - DuckDB is the analytical query layer: views over the parquet lake plus a small coverage table of per-symbol file statistics. It copies no bar data and is never a second system of record
-- Interactive Brokers is the primary source for ingestion
+- Equity daily comes from Massive by default (`--source ib` forces IB); futures, spot commodities (`cmdty`) and volatility intraday come from IB only; CBOE indices from CBOE, rates from FRED, fx/DXY from Yahoo, energy from EIA (API + bulk files)
+- Futures contracts are selected per root by IB delivery month (energy: current month + 15; GC/SI/HG and 12 agricultural roots: first two live delivery months); a newly selected contract is full-history seeded before daily updates
+- Apex consumes the lake read-only through its `apex-signal-server` API on the mini (`localhost:8322`); see CLAUDE.md "Architecture in six lines"
 - Daily syncs can recover unresolved target-day gaps for the current U.S. equity universe with a narrow external fallback chain
 - The native macOS client has been extracted to the standalone **Sift** app at `~/dev/apps/util/sift/`
-- The long-term direction is broader multi-asset support and future ClickHouse publishing
+- The long-term direction is broader multi-asset support
 
 ## Working Rules
 
@@ -46,13 +48,11 @@ Current live shape:
 
 ## Testing Expectations
 
-- All code in `clients/` and `scripts/` needs tests.
+- All code in `clients/` and `livewire_scripts/` needs tests.
 - The repo enforces `95%` coverage for the configured source set (`fail_under = 95`, CI `--cov-fail-under=95`).
 - Before finishing meaningful changes, run (matches CI):
-  - `uv run pytest tests -q --cov=clients --cov=scripts --cov-report=term-missing`
+  - `uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning` (bare `--cov` reads its source from `pyproject.toml`; `--cov=<pkg>` measures the wrong tree)
 - The native macOS client tests are now in the standalone Sift repo at `~/dev/apps/util/sift/`
-- When script tests mock async runners such as `ib.ib.run(...)`, also run:
-  - `uv run pytest tests -q -W error::RuntimeWarning`
 - When fixing a bug, add or update a regression test if it fits.
 
 ## Bug Fixing
@@ -64,14 +64,14 @@ Current live shape:
 
 ## Operational Facts
 
-- **IB Gateway + IBC run on the Mac mini — which is the host these sessions run ON.** livewire consumes that infrastructure and never installs/restarts the Gateway. ⚠️ **Connect to `127.0.0.1:4001`, never the LAN IP.** The mini's LAN address is TCP-open, so `nc -z` against it succeeds — but `TrustedTwsApiClientIPs` is empty, so an API connection there silently times out after ~4 minutes with no error. A "hanging" IB run is almost always this. The code default `127.0.0.1:4001` is already correct; do not override it. `MDW_IB_HOST`/`MDW_IB_PORT` and `--host`/`--port` exist but need no change locally. Gateway pinned to **10.45**; 2FA approved manually in IBKR Mobile. Do not write order workflows or auto-restart the Gateway on failure.
+- **IB Gateway + IBC run on the Mac mini (`ssh macmini`), the production host; development happens on the MacBook, whose lake is a partial copy.** livewire consumes that infrastructure and never installs/restarts the Gateway. ⚠️ **Connect to `127.0.0.1:4001`, never the LAN IP.** The mini's LAN address is TCP-open, so `nc -z` against it succeeds — but `TrustedTwsApiClientIPs` is empty, so an API connection there silently times out after ~4 minutes with no error. A "hanging" IB run is almost always this. The code default `127.0.0.1:4001` is already correct; do not override it. `MDW_IB_HOST`/`MDW_IB_PORT` and `--host`/`--port` exist but need no change locally. Gateway pinned to **10.50**; 2FA approved manually in IBKR Mobile. Do not write order workflows or auto-restart the Gateway on failure.
 - `IBClient.connect()` already retries successive `clientId` values after IB error `326`.
 - `scripts/livewire_ingest.py daily` is the scheduled parquet-first daily sync and supports `--target-date YYYY-MM-DD` for fixed-date catch-up runs without publishing later bars.
 - `scripts/livewire_ingest.py cboe-vol` fetches all CBOE volatility indices directly from CBOE's public API. This is the authoritative daily sync source for VIX, VVIX, VXHYG, VXSMH, and all other volatility indices in `presets/volatility.json`; for `VIX` and `SPX`, it appends newer official daily-price CSV backup rows when the chart JSON lags.
-- `scripts/livewire_ops.py run-daily-job` syncs equities and futures via IB, then all volatility indices via CBOE in a single daemon run.
+- `scripts/livewire_ingest.py eia` is the energy lane: EIA API v2 (`EIA_API_KEY`) for petroleum/natural-gas daily+weekly, nuclear outages and grid electricity daily+hourly, plus EIA bulk zips for every monthly/quarterly/annual series and hourly history, into `bronze/asset_class=energy/product=<p>/dataset=<d>/…`. Runs as `sync_runner` phase 2b in intraday-catchup; `eia.gov` is reachable only from the mini.
+- `scripts/livewire_ops.py run-daily-job` runs the lanes in `clients.constants.LANE_ORDER` (futures → cmdty → CBOE → FX → corporate-actions → equity → silver), each with its own budget, then a `tail` lane (weekly quality report, housekeeping).
 - `scripts/livewire_ingest.py robust` is the canonical multi-ticker IB execution model. Use it instead of bare `fetch_ib_historical.py` for any bulk run over five tickers; outcomes are reported as `ok`, `ok-noop`, `skip`, `fail`, or `timeout`.
 - `scripts/livewire_ingest.py backfill-all` runs the maximum-entitled-history full-market Massive flat-file equity-intraday build once, in parallel with the CBOE/IB volatility lane, after equity daily and FRED backfill.
-- `scripts/livewire_quality.py report --view summary --since 24h` is the daily quality rollup. The end-of-day `tail` lane in `scripts/livewire_ops.py run-daily-job` runs it after successful market-data syncs.
 - Reliability telemetry and quality audit events are source-tagged JSONL. Valid source values are the closed set `ib`, `uw`, and `massive`.
 - Quality flags are emitted to the parquet sidecar and central audit JSONL — findings, not email; the only email surface is `livewire_scripts/notify.py` (page dedup 24h + unconditional digest).
 - `scripts/livewire_store.py duckdb` is the analytical surface: `build` (rebuild + publish the coverage table), `freshness`, `lag`, `stale`, `bars`, `sql`, `views`. The nightly orchestrators run `duckdb build` last, after every writer.
@@ -92,7 +92,7 @@ Current live shape:
 
 Common traps — check these before investigating further:
 
-- **IB Gateway availability**: the Gateway runs on the mini, which is this host — check `nc -z 127.0.0.1 "${MDW_IB_PORT:-4001}"` before assuming IB is up. **A `nc -z` against the LAN IP also succeeds and is a trap**: the port is open but the API connection silently times out. Do not attempt restarts — failures usually mean 2FA, IBKR maintenance, or session conflict, not something livewire should recover.
+- **IB Gateway availability**: the Gateway runs on the mini — on the mini, check `nc -z 127.0.0.1 "${MDW_IB_PORT:-4001}"` before assuming IB is up. **A `nc -z` against the LAN IP also succeeds and is a trap**: the port is open but the API connection silently times out. Do not attempt restarts — failures usually mean 2FA, IBKR maintenance, or session conflict, not something livewire should recover.
 - **Cold lake reads are minutes, not seconds**: the nightly job writes 23.57 GB of intraday, which evicts the filesystem metadata cache. The same whole-universe query measured 0.86s warm and 283.84s cold, so cold is the normal morning state. Ask freshness/coverage questions through the `duckdb` coverage table (milliseconds, touches no parquet) rather than re-deriving them from 13,270 footers.
 - **Empty IB head timestamps**: IB returns empty head timestamps for some symbols. The fallback to `IB_EARLIEST_DATE` is intentional — do not treat it as an error.
 - **IB error 326 (client ID in use)**: Handled by auto-retry in `IBClient.connect()`. Do not manually reassign client IDs.

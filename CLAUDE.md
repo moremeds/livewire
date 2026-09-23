@@ -1,9 +1,8 @@
 # Livewire
 
 Local-first market data warehouse for quantitative research. The Parquet lake is
-the system of record, DuckDB the query layer, ClickHouse optional for
-benchmarking. Repo `livewire/`; data tree `~/market-warehouse/` (rebranded from
-market-data-warehouse 2026-05-17).
+the system of record, DuckDB the query layer. Repo `livewire/`; data tree
+`~/market-warehouse/` (rebranded from market-data-warehouse 2026-05-17).
 
 This file is the rulebook and it is short on purpose. Every rule is one line and
 points at the test that enforces it (`→ test:`) and/or the incident that earned
@@ -23,20 +22,25 @@ livewire/                       # git repo
 ├── presets/                    # universe definitions (sp500, ndx100-*, r2k-*, futures-*, fx-pairs, …)
 ├── registry/gaps.json          # the coverage denominator rows (see "The one contract")
 ├── livewire_node/              # nodemailer SMTP (Resend) transport for notify (tests: npm run test:alerts)
-├── launchd/                    # *.plist.example templates for the 7 scheduled jobs
+├── launchd/                    # *.plist.example templates for the 8 scheduled jobs
 ├── tests/                      # pytest; 95% coverage gate (clients/ib_client.py exempt)
 └── docs/
-    ├── postmortems/            # one file per incident: rule + what it cost + date (55 as of 2026-09-06)
+    ├── postmortems/            # one file per incident: rule + what it cost + date (73 as of 2026-09-23)
     ├── runbook.md              # every operator command, flag and env var, by task
     ├── superpowers/specs/      # designs; 2026-09-02-livewire-ledger-design.md is current
     └── audits/                 # dated read-only findings
 
 ~/market-warehouse/             # data tree (scripts/setup_market_warehouse.sh)
-├── data-lake -> /Volumes/DATA_LAKE   # exFAT external volume; a cold cache is the normal morning state
+├── data-lake/                 # local dir; bronze*, silver, repairs, quarantine, gold, security_master,
+│   │                           #   index_membership, catalog are symlinks onto /Volumes/DATA_LAKE (exFAT;
+│   │                           #   a cold cache is the normal morning state); ledger, raw, cursors stay local
 │   ├── bronze/asset_class=<equity|futures|rates|volatility|fx|cmdty|corporate_action>/symbol=<S>/{1d,1m,5m,30m,1h}.parquet
+│   ├── bronze/asset_class=energy/product=<p>/dataset=<d>/<month|year|vintage>/<tf>.parquet   # EIA, not symbol-keyed; zips in raw/eia/bulk/
 │   ├── bronze-delisted/        # archived symbols; NOT authoritative for the denominator
 │   ├── silver/                 # adjusted daily + factor intervals; revisions/current.json is the commit record
 │   ├── raw/massive/…           # provider flat files; below the rolling GET floor they can never be refetched
+│   ├── raw/shepherd/           # source-evidence CAS (local only — diagnostics root at `data_lake_dir()`)
+│   ├── catalog/analytics.duckdb  # read-only DuckDB snapshot published after each `duckdb build` (apex reads it)
 │   ├── repairs/                # triage verdicts, unresolved ledger, rollback backups — protected by name
 │   └── quarantine/<stamp>/     # corrupt per-symbol parquet moved aside by the publisher
 ├── releases/<sha>/ + current   # immutable release artifacts; scheduled jobs run `current`
@@ -54,9 +58,9 @@ verified on the mini or it is not verified.
 - Bronze = normalized provider rows at raw prices, per-ticker parquet published `temp → validate → os.replace()`, serialized per path with `fcntl.flock` (`clients/parquet_io.py`).
 - Silver = fully back-adjusted daily bars + factor intervals, derived from bronze equity and the corporate-action store — both Massive-backed. Bronze is read-only to it; IB is never an input.
 - DuckDB reads parquet in place; its only durable artifact is a small coverage table. It is never a second store.
-- Providers: equity daily IB → Massive fallback; equity intraday Massive flat files only; futures/cmdty daily and volatility intraday IB; CBOE vol indices CBOE API; rates FRED; fx/DXY Yahoo (+ Massive intraday).
-- Seven launchd jobs on the mini: daily-update 05:00Z → intraday-catchup 10:00Z → watchdog 10:30Z and 12:00Z → coverage 15:05Z (waits on upstream runs + session_due_at, ≤6h; no timeout) → digest 15:45Z (waits ≤4h for the coverage fact) → release-promote; universe-refresh weekly, from the repo.
-- Apex is the consumer. Its adapter must pin one committed Silver manifest and resolve only its immutable artifact references; it must fail closed for a missing or corrupt reference. The producer-to-adapter boundary is in `docs/plans/2026-09-08-silver-atomic-publication.md`.
+- Providers: equity daily Massive by default (`--source ib` forces IB; a down Gateway then falls back to Massive); equity intraday Massive flat files only; futures/cmdty daily and volatility intraday IB (futures contracts are selected by IB delivery month per root, `clients/ingestion_common.py`; a newly selected contract is full-history seeded first); CBOE vol indices CBOE API; rates FRED; fx/DXY Yahoo (+ Massive intraday); energy EIA API + bulk files (`asset_class=energy/product=<p>/dataset=<d>/…`, not symbol-keyed: graded by `status` freshness checks, not the coverage denominator).
+- Eight launchd jobs on the mini: membership-sync 01:00Z weekdays → daily-update 05:00Z → intraday-catchup 10:00Z → watchdog 10:30Z and 12:00Z → coverage 15:05Z (waits on upstream runs + session_due_at, ≤6h; no timeout) → digest 15:45Z (waits ≤4h for the coverage fact) → release-promote; universe-refresh weekly, from the repo.
+- Apex is the consumer: its `apex-signal-server` API runs on the mini in colima (`localhost:8322`, `/health` reports the Silver revision it has applied) and reads the lake read-only — bronze, pinned Silver, PIT membership, corporate actions. Its adapter must pin one committed Silver manifest and resolve only its immutable artifact references; it must fail closed for a missing or corrupt reference. The producer-to-adapter boundary is in `docs/plans/2026-09-08-silver-atomic-publication.md`.
 
 ## The one contract
 
@@ -111,7 +115,7 @@ gap      = expected − actual
 
 ### Scheduled jobs
 
-- The warehouse plists point at `<warehouse>/current`, never a checkout or worktree — no `.env` there, so every credential resolves to nothing, including the alert that would report it. `universe-refresh` is the one exception (it writes `presets/`, and the release is `chmod -R a-w`); launchd starts it cold, so `livewire_ingest.py` loads the scheduled env for `universe-sync`/`shepherd-universe` itself — without it the dead-ticker check skipped silently and the denominator only ever grew. → test: `tests/test_launchd_templates.py::test_the_scheduled_jobs_run_the_release_not_a_checkout`, `::test_no_other_template_reads_the_repo` (all seven templates; a new template with no entry fails), `tests/test_livewire_entrypoints.py::test_ingest_universe_refresh_commands_load_scheduled_env` · pm:2026-07-27-launchd-pointed-at-worktree-no-env, pm:2026-09-01-universe-refresh-runs-from-repo
+- The warehouse plists point at `<warehouse>/current`, never a checkout or worktree — no `.env` there, so every credential resolves to nothing, including the alert that would report it. `universe-refresh` is the one exception (it writes `presets/`, and the release is `chmod -R a-w`); launchd starts it cold, so `livewire_ingest.py` loads the scheduled env for `universe-sync`/`shepherd-universe` itself — without it the dead-ticker check skipped silently and the denominator only ever grew. → test: `tests/test_launchd_templates.py::test_the_scheduled_jobs_run_the_release_not_a_checkout`, `::test_no_other_template_reads_the_repo` (all eight templates; a new template with no entry fails), `tests/test_livewire_entrypoints.py::test_ingest_universe_refresh_commands_load_scheduled_env` · pm:2026-07-27-launchd-pointed-at-worktree-no-env, pm:2026-09-01-universe-refresh-runs-from-repo
 - A scheduled command is verified with the argv its plist actually produces, and a repair the lake needs nightly is called by a lane: `membership-sync` died every weekday on `unrecognized arguments: ndx100 djia` (`--index` was `action="append"`), `convert-dividend-currency` was wired to nothing (~30 Silver symbols failed on currency mismatch), and "Foreign-currency dividends" graded Sunday's manual row as today's OK. → test: `tests/test_livewire_entrypoints.py::test_the_scheduled_membership_sync_argv_parses_and_covers_every_index`, `tests/test_sync_corporate_actions.py::test_the_lane_converts_foreign_currency_dividends_and_emits_its_measurements`, `tests/test_status.py::test_foreign_currency_dividends_without_a_measurement_today_is_unknown` A repair called by a lane is measured at the lane's scope: a `--tickers` pass files `scope='subset'`, and per-symbol work hoisted out of the loop stays out (the conversion read the whole `security_master` log once per symbol). → test: `tests/test_status.py::test_foreign_currency_dividends_ignores_a_targeted_repairs_subset_row`, `tests/test_sync_corporate_actions.py::test_a_resumed_pass_finishes_its_tail_then_opens_a_new_cycle` · pm:2026-09-14-membership-sync-argv-and-unwired-dividend-fx
 - `promote` exports `origin/main` but runs the checkout's own builder: `git checkout main && git pull` before promoting anything that touches the promoter. Never `rm -rf` the release `current` points at; recover with `release rollback` then `promote`. → pm:2026-07-29-promote-runs-checkout-builder, pm:2026-07-29-rm-rf-release-current-dangling
 - Releases are `git archive` exports (a `git worktree` export keeps a `.git` tether to the checkout) with their own frozen venv. `promote` gates on a completed CI run for that exact SHA — `ci.yml` runs on push to main because a squash merge is a commit no PR run covered; `--allow-unverified` was for bootstrap only. Flipping `current` mid-run is safe (`os.getcwd()` is physical). The lake is deliberately **not** isolated per release: dev and prod share one `fcntl.flock` domain, and containerizing would split it.
@@ -142,7 +146,7 @@ gap      = expected − actual
 - Alert values are passed single-token (`--key=value`); a value beginning with `--` used to be unsendable. → test: `tests/node/send_mail.test.mjs` (`"a value beginning with -- survives"`) · pm:2026-08-08-alert-value-starting-with-dashes
 - Every email is an `executions(script='notify')` row, success or failure; the only dedup is a successful row with the same fingerprint in 24h. → test: `tests/test_notify.py` · pm:2026-09-12-email-was-a-side-effect-not-a-record
 - The watchdog never restates a page a lane already sent: one FRED 502 mailed twice (10:36Z by the lane, 12:00Z by the watchdog) because the two fingerprint in unrelated namespaces. `page_from_sections` drops a BAD section whose `run_id` already paged — only on a delivered send, never for a section belonging to no run, and one suppressed section never silences its neighbours. → test: `tests/test_check_daily_update_watchdog.py::TestTheWatchdogDoesNotRestateALanesOwnPage` · pm:2026-09-16-one-failure-paged-twice
-- The digest is unconditional, daily, 12:15Z after coverage, and reports today's scan; "Digest sent today" is BAD after 12:45Z. → test: `tests/test_nightly_digest.py`, `tests/test_status.py::test_digest_sent_today_is_bad_after_its_deadline`
+- The digest is unconditional, daily, 15:45Z after coverage (waits ≤4h for the coverage fact), and reports today's scan; "Digest sent today" is BAD after ~19:45Z. → test: `tests/test_nightly_digest.py`, `tests/test_status.py::test_digest_sent_today_is_bad_after_its_deadline`
 - A zero denominator is UNKNOWN per scope, never 100%. → test: `tests/test_status.py::test_coverage_a_zero_denominator_scope_is_unknown_not_one_hundred`
 - Recovery deferred on two consecutive scans is BAD. → test: `tests/test_status.py::test_coverage_recovery_deferred_twice_is_bad`
 - The coverage 1d gate calls a session due at next-day 15:00Z; the 11:00Z scan therefore reads `0/0` on weekdays — a schedule-vs-rule gap, disposition open. → pm:2026-09-12-coverage-1d-due-gate-vs-schedule
