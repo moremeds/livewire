@@ -139,6 +139,7 @@ budget emits no measurement — its `lane_results` row (`outcome='blocked'`,
 | ----------------- | ------------------------------------------------------------------- |
 | `MASSIVE_API_KEY` | `MassiveClient` (daily REST equity, splits/dividends, break triage) |
 | `FRED_API_KEY`    | `livewire_ingest.py fred-rates`                                     |
+| `EIA_API_KEY`     | `livewire_ingest.py eia-electricity`                                |
 
 ---
 
@@ -336,6 +337,28 @@ one run with `LW_DECLARED_FRED_RETRY_ATTEMPTS` / `LW_DECLARED_FRED_RETRY_BACKOFF
 a 4xx is raised on the first attempt. One series failing does not skip the
 others, and the command exits 1 if any series is still unfetched — so a
 nonzero exit can still mean some series were written.
+
+### EIA electricity (grid monitor, daily)
+
+Uses `EIA_API_KEY`. Four `electricity/rto` daily routes (`region`, `fuel_type`,
+`sub_ba`, `interchange`), history from 2019-01-01, one file per dataset-month:
+`data-lake/bronze/asset_class=energy/product=electricity/dataset=<name>/month=<YYYY-MM>/1d.parquet`,
+keyed by `period` + the route's facets + `timezone` (every value is published
+once per timezone day-boundary). Rows are upserted by key, never deleted; each
+response page is kept gzip-compressed in source evidence (EIA serves no vintages).
+
+```bash
+python scripts/livewire_ingest.py eia-electricity                          # last eia_electricity_lookback_days (scheduled: sync_runner phase 2b)
+python scripts/livewire_ingest.py eia-electricity --start 2019-01-01       # backfill, ~3,500 requests, ~1 h
+python scripts/livewire_ingest.py eia-electricity --dataset region --start 2024-03-01 --end 2024-03-31   # rerun one failed month
+```
+
+EIA's published limit is < ~9,000 requests/hour and < 5/s; requests are spaced
+`eia_min_request_interval_s` apart, and a 429 (a temporary key suspension) is
+retried like a 5xx (`eia_retry_attempts`, `eia_retry_backoff_s`). A failed
+month is filed as `eia_fetch_failed`, scope `electricity/<dataset>:<YYYY-MM>:<status>`,
+and the command exits 1; the other months still publish. `eia.gov` is
+unreachable from the MacBook's network — run it on the mini.
 
 ### FX and DXY
 

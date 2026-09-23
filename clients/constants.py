@@ -110,6 +110,18 @@ DECLARED: dict[str, tuple[float, str]] = {
     # case is bounded the same way: symbols x 3 attempts x 30s timeout.
     "cboe_retry_attempts": (3, "count"),
     "cboe_retry_backoff_s": (2, "s"),
+    # EIA API v2. Published limit (eia.gov/opendata/faqs.php, read 2026-09-23):
+    # sustained < ~9,000 requests/hour, burst < 5/second; a throttled key is
+    # suspended "between a few seconds and a number of minutes" and lifts on
+    # its own, so 429 is retried (and only for EIA). 0.5 s between requests
+    # caps the rate at 2/s and 7,200/h. The retry waits 30+60+90 s.
+    "eia_min_request_interval_s": (0.5, "s"),
+    "eia_retry_attempts": (4, "count"),
+    "eia_retry_backoff_s": (30, "s"),
+    # Window the daily electricity run re-fetches. Observed publication lag on
+    # 2026-09-23 was 1-3 days (endPeriod 09-20..09-22); 14 days is margin.
+    # Whether EIA revises days older than that has not been measured.
+    "eia_electricity_lookback_days": (14, "days"),
 }
 
 

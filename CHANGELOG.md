@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added verified exchange mappings for the new commodity roots and rolling futures selection: energy through the current month plus 15 months, and the first two live delivery months for GC/SI/HG and 12 agricultural roots. Newly selected contracts are full-history seeded before daily updates.
 - Futures coverage now uses that same live rolling selection; when IB is unavailable it reports futures as UNKNOWN and continues equity coverage and recovery.
 
+- EIA grid-monitor electricity, daily (`livewire_ingest.py eia-electricity`,
+  `clients/eia_client.py`): four `electricity/rto` routes from 2019 into
+  `bronze/asset_class=energy/product=electricity/dataset=<name>/month=<YYYY-MM>/1d.parquet`,
+  raw pages in source evidence, `runs`/`measurements` in the ledger, and a
+  `sync_runner` phase that re-fetches the last 14 days on every intraday-catchup.
+  `publish_parquet` accepts a composite sort key; `get_with_retry` takes an
+  opt-in `retry_statuses` (EIA opts into 429 — no other caller does).
+  The EIA catalog and plan are in `docs/audits/eia/`.
 - `clients/http_retry.py`: the repo's one definition of a transient HTTP
   failure. A 5xx or a transport error retries with a bounded linear backoff; a
   4xx raises on the first attempt. FRED's local copy was replaced by it and

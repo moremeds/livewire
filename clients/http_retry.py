@@ -28,11 +28,19 @@ from collections.abc import Callable
 import httpx
 
 
-def is_transient(exc: BaseException) -> bool:
-    """True for a failure worth repeating: a 5xx, a timeout, a reset."""
+def is_transient(exc: BaseException, retry_statuses: frozenset[int] = frozenset()) -> bool:
+    """True for a failure worth repeating: a 5xx, a timeout, a reset.
+
+    `retry_statuses` opts a caller into repeating specific 4xx codes. It exists
+    for 429 on a provider that documents a self-lifting throttle (EIA suspends
+    a key "between a few seconds and a number of minutes"); it is never a
+    default, because a 429 with no such contract is a quota, not a blip.
+    """
     if isinstance(exc, httpx.TransportError):
         return True
-    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    return exc.response.status_code >= 500 or exc.response.status_code in retry_statuses
 
 
 def get_with_retry(
@@ -41,11 +49,13 @@ def get_with_retry(
     attempts: int,
     backoff_s: float,
     sleep: Callable[[float], None] | None = None,
+    retry_statuses: frozenset[int] = frozenset(),
 ) -> httpx.Response:
     """Call `send` until it returns a response whose status is not 5xx.
 
     Retries a transient failure `attempts` times with a linear backoff, then
-    re-raises the last one. A 4xx leaves immediately, on the first attempt.
+    re-raises the last one. A 4xx leaves immediately, on the first attempt,
+    unless its code is in `retry_statuses`.
     `attempts` below 1 still sends exactly once; a negative backoff is treated
     as no wait, so a bad override degrades the pacing and never the request.
 
@@ -62,7 +72,7 @@ def get_with_retry(
             response = send()
             response.raise_for_status()
         except Exception as exc:
-            if not is_transient(exc):
+            if not is_transient(exc, retry_statuses):
                 raise
             last_error = exc
         else:

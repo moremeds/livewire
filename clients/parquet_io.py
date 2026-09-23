@@ -136,7 +136,7 @@ def symbol_lock(parquet_path: Path, *, directory_exclusive: bool = False) -> Ite
 def publish_parquet(
     out_path: Path,
     table: pa.Table,
-    sort_column: str,
+    sort_column: str | tuple[str, ...],
 ) -> Path:
     """Atomically publish a parquet file: write temp -> validate -> rename.
 
@@ -188,17 +188,21 @@ def restore_parquet_exact(backup: Path, target: Path, expected_sha256: str) -> N
 def validate_parquet_file(
     path: Path,
     expected_rows: int,
-    sort_column: str,
+    sort_column: str | tuple[str, ...],
 ) -> None:
     """Validate a parquet file: row count, ascending sort, no duplicates.
 
+    `sort_column` may be a tuple for a composite key (EIA electricity is keyed
+    by period x respondent x type x timezone): rows are then compared as tuples.
     Raises ValueError on row count, sort order, or duplicate failures.
-    Raises KeyError if sort_column doesn't exist in the file.
+    Raises KeyError if a sort column doesn't exist in the file.
     """
+    columns = (sort_column,) if isinstance(sort_column, str) else tuple(sort_column)
     # First read schema to check column existence
     schema = pq.read_schema(path)
-    if sort_column not in schema.names:
-        raise KeyError(f"sort column {sort_column!r} not in parquet")
+    for column in columns:
+        if column not in schema.names:
+            raise KeyError(f"sort column {column!r} not in parquet")
 
     # Decode every column before replacing the last valid file. A valid footer
     # and date column do not establish that the price/volume pages are readable.
@@ -206,11 +210,14 @@ def validate_parquet_file(
     if table.num_rows != expected_rows:
         raise ValueError(f"{path}: expected {expected_rows} rows, found {table.num_rows}")
 
-    raw_values = table.column(sort_column).to_pylist()
     # Dates become ISO text (string-sortable); everything else keeps its own
     # type. str() on an int sorted "10" before "2", so an 11-row ledger emit
     # was unpublishable and a genuinely unsorted [1, 10, 2] validated clean.
-    values = [v.isoformat() if isinstance(v, (date, datetime)) else v for v in raw_values]
+    per_column = [
+        [v.isoformat() if isinstance(v, (date, datetime)) else v for v in table.column(column).to_pylist()]
+        for column in columns
+    ]
+    values = per_column[0] if len(columns) == 1 else list(zip(*per_column, strict=True))
     if values != sorted(values):
         raise ValueError(f"{path}: {sort_column} values are not sorted ascending")
     if len(values) != len(set(values)):

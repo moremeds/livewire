@@ -383,6 +383,7 @@ class TestRunSync:
         joined = [" ".join(c) for c in commands]
         assert any("daily" in c and "--source massive" in c for c in joined)
         assert any("fred-rates" in c for c in joined)
+        assert any("eia-electricity" in c for c in joined)
         assert any("cboe-vol" in c for c in joined)
         assert any("flatfile-ingest catch-up" in c for c in joined)
         assert any("flatfile-ingest-daily catch-up" in c for c in joined)
@@ -424,6 +425,18 @@ class TestRunSync:
         summary = parse_last_summary_json(capsys.readouterr().out)
         assert summary["failed"] == ["daily_backfill_fred_rates"]
 
+    def test_a_failed_eia_phase_is_named_and_fails_the_run(self, tmp_path, capsys):
+        from livewire_scripts.daily_outcomes import parse_last_summary_json
+
+        config = _make_config(tmp_path)
+
+        def selective(command, **kwargs):
+            return CompletedProcess(args=command, returncode=1 if "eia-electricity" in command else 0)
+
+        with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+            assert run_sync(config, runner=selective, trading_day_fn=lambda: "2026-05-28") == 1
+        assert parse_last_summary_json(capsys.readouterr().out)["failed"] == ["daily_backfill_eia_electricity"]
+
     def test_a_failed_early_phase_does_not_skip_later_phases(self, tmp_path):
         config = _make_config(tmp_path)
         commands: list[list[str]] = []
@@ -436,7 +449,7 @@ class TestRunSync:
         with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
             assert run_sync(config, runner=selective, trading_day_fn=lambda: "2026-05-28") == 1
 
-        assert len(commands) == 8
+        assert len(commands) == 9
         assert any("duckdb" in command for command in commands)
 
     def test_uses_target_date_from_config(self, tmp_path):
@@ -529,9 +542,9 @@ class TestRunSync:
 
         with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
             run_sync(config, runner=capture, trading_day_fn=lambda: "2026-05-28")
-        # 1 equity daily + 1 FRED + 1 CBOE + 1 day_aggs + 1 full-market equity
-        # intraday + 2 vol intraday (30m, 5m) + 1 DuckDB coverage refresh
-        assert len(commands) == 8
+        # 1 equity daily + 1 FRED + 1 EIA electricity + 1 CBOE + 1 day_aggs + 1
+        # full-market equity intraday + 2 vol intraday (30m, 5m) + 1 DuckDB coverage refresh
+        assert len(commands) == 9
 
 
 class TestMain:
