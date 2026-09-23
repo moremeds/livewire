@@ -49,9 +49,10 @@ class EiaClient:
         sleep: Callable[[float], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self.api_key = api_key or os.environ.get("EIA_API_KEY")
-        if not self.api_key:
+        key = api_key or os.environ.get("EIA_API_KEY")
+        if not key:
             raise ValueError("EIA_API_KEY environment variable is not set")
+        self.api_key: str = key
         self._http = http_client or httpx
         self._base_url = base_url.rstrip("/")
         self._sleep = sleep
