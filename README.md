@@ -12,17 +12,16 @@ Livewire is a market data warehouse designed for storing and analyzing historica
 
 * **Parquet data lake** → canonical storage
 * **DuckDB** → SQL query layer over the lake (views + a coverage table; copies no bars)
-* **ClickHouse (optional)** → large-scale aggregation & concurrency
 
 ### Current Capabilities
 
 * Daily ingestion for:
 
   * **Equities** (Massive by default; IB available with `--source ib`)
-  * **Futures** (IB)
+  * **Futures** (IB) — energy, metals, agriculture, index and treasury roots; see [Futures contract selection](#futures-contract-selection)
   * **Volatility indices** (CBOE API)
   * **Spot commodities** (IB CMDTY MIDPOINT)
-  * **FX pairs** (IB Forex MIDPOINT, with reverse-pair inversion when needed)
+  * **FX pairs and DXY** (Yahoo daily via the scheduled `fx` lane, Massive intraday; `daily --asset-class fx` still fetches IB Forex MIDPOINT on demand)
   * **Treasury yields** (FRED API)
 * Intraday bars for:
 
@@ -59,19 +58,47 @@ Raw → Bronze → Silver → Gold
 * **Raw** → vendor data
 * **Bronze** → canonical Parquet (primary ingestion layer)
 * **Silver** → cleaned / adjusted datasets
-* **Gold** → analytics, factors, derived tables
+* **Gold** → reserved for analytics and derived tables; no job writes it today
 
 ### Storage Strategy
 
 * **System of record**: Parquet (`data-lake/`)
 * **Analytical query layer**: DuckDB (in place, over the Parquet)
-* **Warehouse (optional)**: ClickHouse
 
 Live ingestion writes bronze Parquet only. DuckDB reads that Parquet in place; its one durable artifact is a coverage table of per-symbol file statistics, rebuildable at any time.
 
 Daily and intraday bronze mutations are serialized per exact Parquet path with
 blocking advisory locks. Persistent `*.parquet.lock` sidecars coordinate writers;
 they are not market data and are excluded from discovery and R2 synchronization.
+
+### Consumer: Apex
+
+Apex (`~/projects/apex`) is the only downstream consumer. Its
+`apex-signal-server` runs on the mini in a colima Docker container on
+`localhost:8322`, with the lake mounted read-only. It never writes the lake.
+
+* **What it reads**: bronze bars (raw mode), Silver adjusted bars pinned to one
+  committed manifest (`silver/revisions/current.json`, every artifact
+  hash-checked; a missing or corrupt reference fails closed), PIT index
+  membership and the corporate-action store.
+* **Routes** (v0.1.12, from its `/openapi.json`): `/v1/{asset_class}/{symbol}/bars`,
+  `/v1/equity/bars`, `/v1/equity/returns`, `/v1/equity/{symbol}/actions`,
+  `/v1/equity/{symbol}/delisting`, `/v1/instruments`, `/v1/membership/indices`,
+  `/v1/membership/{index_id}`, `/v1/membership/history`, `/v1/rates/{symbol}/series`,
+  plus its own signal, screener, regime and backtest routes.
+* **`/health`** reports bronze and Silver recency and the Silver revision it has
+  fully applied — the quickest check that a new Silver publish reached Apex:
+
+```bash
+ssh macmini 'curl -s localhost:8322/health'
+```
+
+* **MCP**: a read-only market-data MCP server over the same queries is
+  designed in the Apex repo (branch `spec/market-data-mcp`, 2026-09-22) and not
+  yet implemented; there is no MCP server for the lake today.
+
+The producer-to-adapter boundary is specified in
+`docs/plans/2026-09-08-silver-atomic-publication.md`.
 
 ---
 
@@ -128,7 +155,6 @@ they are not market data and are excluded from discovery and R2 synchronization.
 * Python 3.13+
 * Node.js 22+
 * [Interactive Brokers](https://ibkr.com/referral/joseph5632) account
-* ClickHouse (optional)
 
 ---
 
@@ -143,8 +169,6 @@ scripts/setup_market_warehouse.sh
 
 ```bash
 scripts/setup_market_warehouse.sh \
-  --start-clickhouse \
-  --init-clickhouse \
   --with-sample-data \
   --smoke-test
 ```
@@ -165,7 +189,7 @@ ever called it.
 | `scripts/livewire_quality.py` | Quality and health reporting | Bronze health checks, HTML warehouse report, coverage reports, daily rollup, weekly summary, watchdog alerts |
 | `scripts/livewire_ops.py` | Operations | Scheduled daily job, notices (page/digest) |
 | `scripts/livewire_store.py` | Storage maintenance | DuckDB catalog, Silver rebuild, R2 sync, parquet filename migration |
-| `scripts/setup_market_warehouse.sh` | One-time bootstrap | Create `~/market-warehouse/`, venv, directories, optional ClickHouse helpers |
+| `scripts/setup_market_warehouse.sh` | One-time bootstrap | Create `~/market-warehouse/`, venv, directories |
 
 **Sources** — equity daily uses Massive by default (requires `MASSIVE_API_KEY`);
 pass `--source ib` to force IB. Equity intraday always requires Massive flat-file
@@ -205,7 +229,7 @@ tail -30 /opt/ibc/logs/ibc-watchdog.log
 nc -z 127.0.0.1 4001
 ```
 
-> Gateway pinned to **10.45** (10.46 incompatible). 2FA approval via IBKR Mobile is manual on every fresh login.
+> Gateway pinned to **10.50** (10.46 is disabled on the mini). 2FA approval via IBKR Mobile is manual on every fresh login.
 
 ---
 
@@ -574,13 +598,16 @@ python scripts/livewire_ingest.py daily
 # Force IB for equity instead of Massive
 python scripts/livewire_ingest.py daily --asset-class equity --source ib
 
-# Futures daily update (IB)
+# Futures daily update (IB; resolves presets/futures-rolling.json against IB first)
 python scripts/livewire_ingest.py daily --asset-class futures
 
 # Spot commodity daily update (IB)
 python scripts/livewire_ingest.py daily --asset-class cmdty --preset presets/cmdty-metals.json
 
-# FX daily update (IB)
+# FX daily + intraday, the scheduled lane (Yahoo daily incl. DXY, Massive intraday)
+python scripts/livewire_ingest.py fx --days 7
+
+# FX daily from IB instead (on demand)
 python scripts/livewire_ingest.py daily --asset-class fx --preset presets/fx-pairs.json
 
 # Volatility (CBOE direct — authoritative)
@@ -607,28 +634,59 @@ Key behavior:
 
 ### Scheduled Daily Runs
 
-The scheduled runner handles equities, futures, and CBOE volatility:
+`run-daily-job` runs the lanes in `clients.constants.LANE_ORDER` — futures → cmdty
+→ CBOE → FX → corporate-actions → equity → silver — each under its own budget,
+then a `tail` lane (weekly quality report, housekeeping). A lane over budget is
+killed and the next lane still starts; an unreachable Gateway skips the IB lanes
+(exit 86, run DEGRADED).
 
 ```bash
 python scripts/livewire_ops.py run-daily-job
 ```
 
-**macOS launchd scheduling:**
+Eight launchd jobs run on the mini. Every template except `universe-refresh`
+points at the release `<warehouse>/current`, never a checkout:
+
+| Job | Target (UTC) |
+| --- | --- |
+| membership-sync | 01:00 weekdays |
+| release-promote | 04:30 daily |
+| daily-update | 05:00 daily |
+| intraday-catchup | 10:00 daily |
+| daily-update-watchdog | 10:30 and 12:00 daily |
+| coverage | 15:05 daily (waits on upstream runs, no timeout) |
+| digest | 15:45 daily (waits ≤4h for the coverage fact) |
+| universe-refresh | Sunday 13:00, from the repo |
+
+Install a template by substituting its paths and loading it:
 
 ```bash
-sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.daily-update.plist.example > ~/Library/LaunchAgents/com.livewire.daily-update.plist
-sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.daily-update-watchdog.plist.example > ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
-sed "s|/path/to/repo|$(pwd)|g" launchd/com.livewire.intraday-catchup.plist.example > ~/Library/LaunchAgents/com.livewire.intraday-catchup.plist
+sed -e "s|/path/to/warehouse|$HOME/market-warehouse|g" -e "s|/path/to/repo|$(pwd)|g" \
+  launchd/com.livewire.daily-update.plist.example > ~/Library/LaunchAgents/com.livewire.daily-update.plist
 launchctl load ~/Library/LaunchAgents/com.livewire.daily-update.plist
-launchctl load ~/Library/LaunchAgents/com.livewire.daily-update-watchdog.plist
-launchctl load ~/Library/LaunchAgents/com.livewire.intraday-catchup.plist
 ```
 
-* **Daily sync**: 05:05 UTC (01:05 ET, ~9h after US RTH close)
-* **Watchdog**: 10:30 UTC (06:30 ET)
-* **Intraday catch-up**: 20:30 UTC (16:30 EDT Mar–Nov / 15:30 EST Nov–Mar — see CLAUDE.md for the DST-drift caveat)
-
 > launchd has no `TimeZone` key — each plist's `Hour`/`Minute` are interpreted in the Mac's local TZ. The example plists ship with `Asia/Hong_Kong` defaults; see each plist header for the conversion table to other Mac timezones.
+
+### Futures contract selection
+
+The scheduled `daily --asset-class futures` lane resolves
+`presets/futures-rolling.json` against IB ContractDetails on every run:
+
+| Roots | Contracts tracked |
+| --- | --- |
+| CL, NG, COIL, RB, HO (energy) | every listed delivery month through the current month + 15 |
+| GC, SI, HG (metals) | first two live delivery months |
+| SB, KC, CC, CT, OJ, ZS, ZM, ZL, ZC, ZW, LE, HE (agriculture) | first two live delivery months |
+
+A newly selected contract is full-history seeded through the robust IB runner
+before the daily scan; the scan still visits every stored non-retired futures
+directory. `futures-active.json` is a dated seed snapshot, not the rolling rule.
+Coverage resolves the same live list for its futures denominator, so with IB
+down futures coverage reads `UNKNOWN`. `BZ` is retired from new ingestion (its
+stored parquet stays readable); `COIL` is its own IPE series and is never merged
+with it. Spot gold (`XAUUSD`, `presets/cmdty-metals.json`) is the separate
+`cmdty` asset class. Details: `docs/runbook.md`.
 
 ---
 
@@ -771,27 +829,15 @@ python scripts/livewire_store.py migrate-parquet
 
 ### Run Tests
 
-```bash
-source ~/market-warehouse/.venv/bin/activate
-python -m pytest tests/ -v
-```
-
-### Coverage
+The CI command, verbatim (`.github/workflows/ci.yml`):
 
 ```bash
-python -m pytest tests -q --cov=clients --cov=livewire_scripts --cov=scripts --cov-report=term-missing
+uv run pytest tests/ --cov --cov-fail-under=95 -W error::RuntimeWarning
+npm run test:alerts        # Node alert transport suite
 ```
 
-* **95% coverage enforced** (`fail_under = 95` in `pyproject.toml`)
+* **95% coverage enforced**; bare `--cov` takes its source from `pyproject.toml` (`clients` + `livewire_scripts`). Passing `--cov=<pkg>` overrides it and measures the wrong tree.
 * `clients/ib_client.py` excluded from the coverage gate
-
-### RuntimeWarning Gate
-
-Run after changes that touch async script runners or tests that mock `ib.ib.run(...)`:
-
-```bash
-python -m pytest tests -q -W error::RuntimeWarning
-```
 
 ---
 
@@ -820,18 +866,6 @@ Lossless OHLCV rollup (pure function, no I/O):
 - Supported: `1m→5m`, `1m→30m`, `1m→1h`, `30m→1h`
 - Clock-aligned windows: `open=first, high=max, low=min, close=last, volume=sum`
 - Partial windows at end of data are dropped
-
----
-
-## ClickHouse (Optional)
-
-Used for benchmarking, concurrency testing, and production simulation.
-
-```bash
-~/market-warehouse/scripts/start_clickhouse.sh
-~/market-warehouse/scripts/init_clickhouse.sh
-~/market-warehouse/scripts/stop_clickhouse.sh
-```
 
 ---
 
