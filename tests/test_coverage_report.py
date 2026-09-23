@@ -37,6 +37,7 @@ from livewire_scripts.coverage_report import (
 @pytest.fixture(autouse=True)
 def isolated_recovery_cursor(tmp_path, monkeypatch):
     monkeypatch.setenv("MDW_CURSOR_DIR", str(tmp_path / "cursors"))
+    monkeypatch.setattr(coverage_report, "_resolve_rolling_futures_tickers", lambda as_of: ["CL_202609"])
 
 
 def test_active_minute_cursor_defers_repair_without_claiming_recovery(tmp_path):
@@ -116,13 +117,16 @@ def test_main_repairs_minute_date_once_for_all_rollups(tmp_path, monkeypatch, ab
     outcome = RecoveryOutcome("1m", ["AAPL"], int(not aborted), ["AAPL"] if aborted else [], aborted, "DEFERRED")
     with (
         patch.object(coverage_report, "compute_coverage", side_effect=[initial, recovered]),
-        patch.object(coverage_report, "compute_non_equity_coverage", return_value={}),
-        patch.object(coverage_report, "_scan_and_write_artifacts", return_value="scan done"),
+        patch.object(coverage_report, "compute_non_equity_coverage", return_value={}) as non_equity,
+        patch.object(coverage_report, "_scan_and_write_artifacts", return_value="scan done") as scan,
+        patch.object(coverage_report, "_resolve_rolling_futures_tickers", return_value=["CL_202609"]),
         patch.object(coverage_report, "auto_recover", return_value=outcome) as repair,
         patch.object(coverage_report, "_run_child") as child,
     ):
         main()
     repair.assert_called_once()
+    assert non_equity.call_args.kwargs["rolling_futures_tickers"] == ["CL_202609"]
+    assert scan.call_args.args[2] == ["CL_202609"]
     assert repair.call_args.kwargs["timeframe"] == "1m"
     child.assert_not_called()  # recovery outcomes are measurements, not an email
     from clients import ledger
@@ -1023,7 +1027,7 @@ class TestNonEquityCoverage:
         self._write_non_equity(root, "volatility", "VVIX", [date(2026, 3, 1)])
         self._write_non_equity(root, "rates", "DGS10", [target])
 
-        results = compute_non_equity_coverage(target, bronze_root=root)
+        results = compute_non_equity_coverage(target, bronze_root=root, rolling_futures_tickers=["CL_202604"])
 
         # The denominator is now the registry universe, so every preset member
         # with no file is also missing. The assertion that matters is unchanged:
@@ -1038,7 +1042,9 @@ class TestNonEquityCoverage:
         # it is also not an empty result: every preset member is countable and
         # missing, which is the whole point -- a symbol that never landed used to
         # be invisible.
-        results = compute_non_equity_coverage(date(2026, 4, 6), bronze_root=tmp_path / "bronze")
+        results = compute_non_equity_coverage(
+            date(2026, 4, 6), bronze_root=tmp_path / "bronze", rolling_futures_tickers=["CL_202604"]
+        )
         assert set(results) == {"volatility", "futures", "rates", "fx", "cmdty"}
         for result in results.values():
             assert result.present == 0
@@ -1237,7 +1243,7 @@ def test_non_equity_denominator_includes_fx_and_cmdty(tmp_path):
     # contract was invisible to coverage at every timeframe.
     bronze = tmp_path / "bronze"
     (bronze / "asset_class=rates" / "symbol=DGS10").mkdir(parents=True)
-    results = compute_non_equity_coverage(date(2026, 8, 28), bronze_root=bronze)
+    results = compute_non_equity_coverage(date(2026, 8, 28), bronze_root=bronze, rolling_futures_tickers=["CL_202609"])
     assert "fx" in results
     assert "cmdty" in results
 
@@ -1247,7 +1253,7 @@ def test_a_non_equity_symbol_that_never_landed_is_counted_missing(tmp_path):
     # and has no directory at all, so a disk glob cannot see it.
     bronze = tmp_path / "bronze"
     (bronze / "asset_class=rates" / "symbol=DGS10").mkdir(parents=True)
-    results = compute_non_equity_coverage(date(2026, 8, 28), bronze_root=bronze)
+    results = compute_non_equity_coverage(date(2026, 8, 28), bronze_root=bronze, rolling_futures_tickers=["CL_202609"])
     assert "DGS30" in results["rates"].missing_symbols
 
 
@@ -1269,6 +1275,7 @@ def test_rates_is_graded_against_the_newest_session_its_lane_actually_owed(tmp_p
         date(2026, 8, 28),
         bronze_root=bronze,
         as_of=datetime(2026, 8, 29, 16, 0, tzinfo=UTC),
+        rolling_futures_tickers=["CL_202609"],
     )
     assert results["rates"].measured_session == date(2026, 8, 27)
     assert results["rates"].total == 4

@@ -4,10 +4,11 @@ Active task lists live here. Completed sections move to [archive.md](archive.md)
 
 ## Rolling futures production rollout (2026-09-23)
 
-Dependency graph: `PD7-1 -> PD7-2 -> PD7-3`.
+Dependency graph: `PD7-1 -> PD7-2a -> PD7-2 -> PD7-3`.
 
 - [x] **PD7-1** (`depends_on: []`): Isolate rolling/BZ/COIL code, verified contract presets, and regression coverage on a clean branch.
-- [ ] **PD7-2** (`depends_on: [PD7-1]`): Review exact diff, run CI-equivalent checks, open PR, and merge after required checks pass.
+- [ ] **PD7-2a** (`depends_on: [PD7-1]`): Make futures coverage use the same live rolling contract list as scheduled ingestion.
+- [ ] **PD7-2** (`depends_on: [PD7-2a]`): Review exact diff, run CI-equivalent checks, open PR, and merge after required checks pass.
 - [ ] **PD7-3** (`depends_on: [PD7-2]`): Promote merged main SHA on Mac mini; verify active release, rolling preset behavior, and commodity data reads.
 
 ## Existing-ledger diagnostics and runner consistency (2026-09-17)

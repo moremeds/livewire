@@ -29,6 +29,19 @@ def test_denominator_does_not_depend_on_disk():
         assert s.sessions == (date(2026, 8, 26), date(2026, 8, 27), date(2026, 8, 28))
 
 
+def test_dynamic_ticker_override_replaces_static_futures_preset():
+    series = build_denominator(
+        [PRESETS / "futures-active.json"],
+        asset_class="futures",
+        timeframe="1d",
+        start=date(2026, 8, 26),
+        end=date(2026, 8, 28),
+        as_of=datetime(2026, 8, 31, 16, 0, tzinfo=UTC),
+        tickers_override=["CL_202609", "CL_202610"],
+    )
+    assert [item.symbol for item in series] == ["CL_202609", "CL_202610"]
+
+
 def test_expired_futures_contract_is_not_expected():
     """June-2026 index contracts have expired as of 2026-08-31.
 
