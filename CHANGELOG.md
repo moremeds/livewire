@@ -137,6 +137,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Removed the unused ClickHouse bootstrap (`setup_market_warehouse.sh` flags, schema, helper scripts, `clickhouse-connect`). Nothing ran it and the mini never installed it.
+- Refreshed `CLAUDE.md`, `AGENTS.md` and `README.md` against the code and the mini: eight launchd jobs, digest at 15:45Z, equity daily from Massive by default, Gateway 10.50, the lake's per-subtree symlinks, rolling futures selection, and how Apex consumes the lake.
+
 - `massive_requests_per_minute/reference` is 600/min, not the 5/min inherited
   from the free Currencies FX tier. Massive documents no cap on a paid plan and
   advises staying under 100 req/s; the backfill is latency-bound well below it.
