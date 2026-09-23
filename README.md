@@ -23,6 +23,7 @@ Livewire is a market data warehouse designed for storing and analyzing historica
   * **Spot commodities** (IB CMDTY MIDPOINT)
   * **FX pairs and DXY** (Yahoo daily via the scheduled `fx` lane, Massive intraday; `daily --asset-class fx` still fetches IB Forex MIDPOINT on demand)
   * **Treasury yields** (FRED API)
+  * **Energy** (EIA API + bulk files: petroleum incl. weekly inventories, natural gas, nuclear outages, grid electricity daily + hourly, and every monthly/quarterly/annual EIA series)
 * Intraday bars for:
 
   * **Equities** (Massive whole-market flat files for 1m, with local derivation to 5m/30m/1h)
@@ -205,7 +206,7 @@ python scripts/livewire_ingest.py historical --help
 Subcommand map:
 
 ```text
-livewire_ingest.py   daily | historical | robust | cboe-vol | fred-rates |
+livewire_ingest.py   daily | historical | robust | cboe-vol | fred-rates | eia |
                      corporate-actions |
                      intraday-backfill | flatfile-ingest | universe |
                      universe-sync | backfill-all | daily-backfill
@@ -498,6 +499,37 @@ Default intraday lookback: 7 calendar days (`MDW_DAILY_BACKFILL_INTRADAY_DAYS`).
 
 ---
 
+### Energy (EIA)
+
+One command, `python scripts/livewire_ingest.py eia`, with two channels into
+`bronze/asset_class=energy/product=<p>/dataset=<d>/…` (full detail: `docs/runbook.md`):
+
+- **API** (needs `EIA_API_KEY`): petroleum spot, retail, the Weekly Petroleum Status
+  Report incl. inventories (`dataset=stocks`), refinery, imports; Henry Hub spot and
+  gas storage; nuclear outages; grid-monitor electricity (region, fuel type, sub-BA,
+  interchange) daily and hourly. Files `year=<YYYY>/1d|1w.parquet` or, for electricity,
+  `month=<YYYY-MM>/1d|1h.parquet`.
+- **Bulk files** (`https://www.eia.gov/opendata/bulk/<code>.zip`, no key): every
+  monthly/quarterly/annual series of PET, PET_IMPORTS, NG, ELEC, COAL, TOTAL, SEDS, INTL,
+  EMISS (`dataset=<code>/year=<YYYY>/1mo|1q|1y.parquet` + `series.parquet`), STEO kept per
+  release (`vintage=<date>/`), and hourly electricity history from `EBA.zip`. The zips are
+  kept under `raw/eia/bulk/`; each import is a ledger `evidence(kind='eia_bulk')` row.
+
+Scheduled as `sync_runner` phase 2b inside the intraday-catchup job: re-fetches the last
+14 days of every API dataset, then re-imports each bulk family whose EIA manifest moved
+(at most weekly; EBA monthly). `status` grades `EIA freshness` and `EIA bulk imports`.
+
+```bash
+python scripts/livewire_ingest.py eia                                            # what the schedule runs
+python scripts/livewire_ingest.py eia --dataset petroleum natural_gas --start 1980-01-01   # API backfill
+python scripts/livewire_ingest.py eia --bulk EBA                                 # hourly electricity history
+python scripts/livewire_ingest.py eia --bulk PET ELEC                            # re-import bulk families now
+```
+
+`eia.gov` is reachable only from the mini (it resets TLS from the MacBook's network).
+
+---
+
 ### Backfill Missing Data
 
 ```bash
@@ -787,6 +819,7 @@ python scripts/livewire_store.py migrate-parquet
 | `MASSIVE_S3_ACCESS_KEY` | Massive S3 access key; required for equity intraday |
 | `MASSIVE_S3_SECRET_KEY` | Massive S3 secret key; required for equity intraday |
 | `FRED_API_KEY` | FRED API key for Treasury yield rates |
+| `EIA_API_KEY` | EIA API v2 key for the energy lane (`livewire_ingest.py eia`); bulk files need no key |
 
 ### IB Gateway
 

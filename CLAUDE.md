@@ -35,6 +35,7 @@ livewire/                       # git repo
 │   │                           #   index_membership, catalog are symlinks onto /Volumes/DATA_LAKE (exFAT;
 │   │                           #   a cold cache is the normal morning state); ledger, raw, cursors stay local
 │   ├── bronze/asset_class=<equity|futures|rates|volatility|fx|cmdty|corporate_action>/symbol=<S>/{1d,1m,5m,30m,1h}.parquet
+│   ├── bronze/asset_class=energy/product=<p>/dataset=<d>/<month|year|vintage>/<tf>.parquet   # EIA, not symbol-keyed; zips in raw/eia/bulk/
 │   ├── bronze-delisted/        # archived symbols; NOT authoritative for the denominator
 │   ├── silver/                 # adjusted daily + factor intervals; revisions/current.json is the commit record
 │   ├── raw/massive/…           # provider flat files; below the rolling GET floor they can never be refetched
@@ -57,7 +58,7 @@ verified on the mini or it is not verified.
 - Bronze = normalized provider rows at raw prices, per-ticker parquet published `temp → validate → os.replace()`, serialized per path with `fcntl.flock` (`clients/parquet_io.py`).
 - Silver = fully back-adjusted daily bars + factor intervals, derived from bronze equity and the corporate-action store — both Massive-backed. Bronze is read-only to it; IB is never an input.
 - DuckDB reads parquet in place; its only durable artifact is a small coverage table. It is never a second store.
-- Providers: equity daily Massive by default (`--source ib` forces IB; a down Gateway then falls back to Massive); equity intraday Massive flat files only; futures/cmdty daily and volatility intraday IB (futures contracts are selected by IB delivery month per root, `clients/ingestion_common.py`; a newly selected contract is full-history seeded first); CBOE vol indices CBOE API; rates FRED; fx/DXY Yahoo (+ Massive intraday).
+- Providers: equity daily Massive by default (`--source ib` forces IB; a down Gateway then falls back to Massive); equity intraday Massive flat files only; futures/cmdty daily and volatility intraday IB (futures contracts are selected by IB delivery month per root, `clients/ingestion_common.py`; a newly selected contract is full-history seeded first); CBOE vol indices CBOE API; rates FRED; fx/DXY Yahoo (+ Massive intraday); energy EIA API + bulk files (`asset_class=energy/product=<p>/dataset=<d>/…`, not symbol-keyed: graded by `status` freshness checks, not the coverage denominator).
 - Eight launchd jobs on the mini: membership-sync 01:00Z weekdays → daily-update 05:00Z → intraday-catchup 10:00Z → watchdog 10:30Z and 12:00Z → coverage 15:05Z (waits on upstream runs + session_due_at, ≤6h; no timeout) → digest 15:45Z (waits ≤4h for the coverage fact) → release-promote; universe-refresh weekly, from the repo.
 - Apex is the consumer: its `apex-signal-server` API runs on the mini in colima (`localhost:8322`, `/health` reports the Silver revision it has applied) and reads the lake read-only — bronze, pinned Silver, PIT membership, corporate actions. Its adapter must pin one committed Silver manifest and resolve only its immutable artifact references; it must fail closed for a missing or corrupt reference. The producer-to-adapter boundary is in `docs/plans/2026-09-08-silver-atomic-publication.md`.
 

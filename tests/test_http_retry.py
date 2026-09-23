@@ -124,3 +124,24 @@ class TestGetWithRetry:
             get_with_retry(send, attempts=3, backoff_s=2, sleep=sleeps.append)
 
         assert sleeps == [2.0, 4.0]
+
+
+class TestOptInRetryStatuses:
+    def test_a_429_is_retried_only_when_the_caller_opts_in(self):
+        send = MagicMock(side_effect=[_status_response(429), _ok_response()])
+        waits: list[float] = []
+        response = get_with_retry(send, attempts=2, backoff_s=30, sleep=waits.append, retry_statuses=frozenset({429}))
+        assert response.status_code == 200
+        assert waits == [30]
+
+    def test_without_the_opt_in_a_429_still_leaves_on_the_first_attempt(self):
+        send = MagicMock(return_value=_status_response(429))
+        with pytest.raises(httpx.HTTPStatusError):
+            get_with_retry(send, attempts=3, backoff_s=0, sleep=lambda _: None)
+        assert send.call_count == 1
+
+    def test_an_opted_in_status_does_not_make_other_4xx_transient(self):
+        response = _status_response(404)
+        with pytest.raises(httpx.HTTPStatusError) as caught:
+            response.raise_for_status()
+        assert is_transient(caught.value, frozenset({429})) is False

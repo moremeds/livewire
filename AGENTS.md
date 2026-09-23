@@ -21,7 +21,7 @@ Current live shape:
 - Canonical storage is per-ticker bronze Parquet under `~/market-warehouse/data-lake/bronze/asset_class=equity/symbol=<ticker>/1d.parquet`
 - Delisted symbols that should no longer participate in future syncs or backfills are archived under `~/market-warehouse/data-lake/bronze-delisted/asset_class=equity/symbol=<ticker>/1d.parquet`
 - DuckDB is the analytical query layer: views over the parquet lake plus a small coverage table of per-symbol file statistics. It copies no bar data and is never a second system of record
-- Equity daily comes from Massive by default (`--source ib` forces IB); futures, spot commodities (`cmdty`) and volatility intraday come from IB only; CBOE indices from CBOE, rates from FRED, fx/DXY from Yahoo
+- Equity daily comes from Massive by default (`--source ib` forces IB); futures, spot commodities (`cmdty`) and volatility intraday come from IB only; CBOE indices from CBOE, rates from FRED, fx/DXY from Yahoo, energy from EIA (API + bulk files)
 - Futures contracts are selected per root by IB delivery month (energy: current month + 15; GC/SI/HG and 12 agricultural roots: first two live delivery months); a newly selected contract is full-history seeded before daily updates
 - Apex consumes the lake read-only through its `apex-signal-server` API on the mini (`localhost:8322`); see CLAUDE.md "Architecture in six lines"
 - Daily syncs can recover unresolved target-day gaps for the current U.S. equity universe with a narrow external fallback chain
@@ -68,6 +68,7 @@ Current live shape:
 - `IBClient.connect()` already retries successive `clientId` values after IB error `326`.
 - `scripts/livewire_ingest.py daily` is the scheduled parquet-first daily sync and supports `--target-date YYYY-MM-DD` for fixed-date catch-up runs without publishing later bars.
 - `scripts/livewire_ingest.py cboe-vol` fetches all CBOE volatility indices directly from CBOE's public API. This is the authoritative daily sync source for VIX, VVIX, VXHYG, VXSMH, and all other volatility indices in `presets/volatility.json`; for `VIX` and `SPX`, it appends newer official daily-price CSV backup rows when the chart JSON lags.
+- `scripts/livewire_ingest.py eia` is the energy lane: EIA API v2 (`EIA_API_KEY`) for petroleum/natural-gas daily+weekly, nuclear outages and grid electricity daily+hourly, plus EIA bulk zips for every monthly/quarterly/annual series and hourly history, into `bronze/asset_class=energy/product=<p>/dataset=<d>/…`. Runs as `sync_runner` phase 2b in intraday-catchup; `eia.gov` is reachable only from the mini.
 - `scripts/livewire_ops.py run-daily-job` runs the lanes in `clients.constants.LANE_ORDER` (futures → cmdty → CBOE → FX → corporate-actions → equity → silver), each with its own budget, then a `tail` lane (weekly quality report, housekeeping).
 - `scripts/livewire_ingest.py robust` is the canonical multi-ticker IB execution model. Use it instead of bare `fetch_ib_historical.py` for any bulk run over five tickers; outcomes are reported as `ok`, `ok-noop`, `skip`, `fail`, or `timeout`.
 - `scripts/livewire_ingest.py backfill-all` runs the maximum-entitled-history full-market Massive flat-file equity-intraday build once, in parallel with the CBOE/IB volatility lane, after equity daily and FRED backfill.

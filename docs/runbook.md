@@ -139,6 +139,7 @@ budget emits no measurement — its `lane_results` row (`outcome='blocked'`,
 | ----------------- | ------------------------------------------------------------------- |
 | `MASSIVE_API_KEY` | `MassiveClient` (daily REST equity, splits/dividends, break triage) |
 | `FRED_API_KEY`    | `livewire_ingest.py fred-rates`                                     |
+| `EIA_API_KEY`     | `livewire_ingest.py eia`                                            |
 
 ---
 
@@ -336,6 +337,71 @@ one run with `LW_DECLARED_FRED_RETRY_ATTEMPTS` / `LW_DECLARED_FRED_RETRY_BACKOFF
 a 4xx is raised on the first attempt. One series failing does not skip the
 others, and the command exits 1 if any series is still unfetched — so a
 nonzero exit can still mean some series were written.
+
+### EIA energy (petroleum, natural gas, nuclear, electricity, and every EIA bulk family)
+
+Uses `EIA_API_KEY`. One command, two channels, both declared in `livewire_scripts/fetch_eia.py`:
+
+**API datasets** (`DATASETS`, ids like `petroleum/stocks/1w`, `electricity/region/1h`):
+
+| product | datasets | frequency | file |
+|---|---|---|---|
+| `petroleum` | `spot_price` · `retail_price` · `weekly_supply` (full WPSR) · `stocks` · `refiner_production` · `blender_production` · `imports_by_country` · `heating_oil_propane` | daily / weekly | `year=<YYYY>/1d\|1w.parquet`, keyed `period, series` |
+| `natural_gas` | `spot_price` (Henry Hub `RNGWHHD`) · `storage` | daily / weekly | `year=<YYYY>/…`, keyed `period, series` |
+| `nuclear` | `outages_us` · `outages_facility` · `outages_generator` | daily | `year=<YYYY>/1d.parquet` |
+| `electricity` | `region` · `fuel_type` · `sub_ba` · `interchange` | daily + hourly (UTC) | `month=<YYYY-MM>/1d.parquet` + `1h.parquet` |
+
+**Bulk families** (`BULK_FAMILIES`; `https://www.eia.gov/opendata/bulk/<code>.zip`), every
+series at monthly (`1mo`), quarterly (`1q`), annual (`1y`) and PET's 4-week (`4w`)
+frequency, as `product=<p>/dataset=<code>/year=<YYYY>/<tf>.parquet` keyed `period, series`
+(`period` = the period's first day) plus `series.parquet` (name, units, geography, …):
+`PET`, `PET_IMPORTS` → petroleum · `NG` → natural_gas · `ELEC` → electricity · `COAL` ·
+`TOTAL` → total_energy · `SEDS` → state_energy · `INTL` → international · `EMISS` → emissions
+(discontinued upstream) · `STEO` → steo, kept whole per release as `vintage=<YYYY-MM-DD>/`
+(a forecast is rewritten by every release). PET/NG daily and weekly stay on the API.
+A value EIA publishes as a marker (`NA`, `W`, `--`, `ie`, …) is stored null with the marker
+in `value_flag`. `EBA` is the hourly grid monitor: mapped onto the four hourly API datasets.
+AEO/IEO (long-range outlooks) are not imported.
+
+Measured on the mini, 2026-09-23: ELEC (60M points) 164 s, 2.0 GB peak; PET + PET_IMPORTS
++ COAL + SEDS + INTL + STEO 76 s; NG + TOTAL + EMISS 20 s.
+
+```bash
+python scripts/livewire_ingest.py eia                                   # scheduled (sync_runner phase 2b): API lookback, then the bulk families that are due
+python scripts/livewire_ingest.py eia --dataset petroleum natural_gas nuclear --start 1980-01-01   # API backfill; each dataset clamps to its first period
+python scripts/livewire_ingest.py eia --dataset electricity/region/1d --start 2024-03-01 --end 2024-03-31   # rerun one failed window
+python scripts/livewire_ingest.py eia --bulk PET ELEC                   # import these families now, due or not
+python scripts/livewire_ingest.py eia --bulk EBA                        # hourly electricity history (691 MB)
+```
+
+A bulk family is **due** when its manifest (`https://api.eia.gov/bulk/manifest.txt`)
+`last_updated` moved and its last import is at least `eia_bulk_refresh_days` old
+(`eia_eba_refresh_days` for EBA). The last import is the newest ledger row
+`evidence(kind='eia_bulk', subject=<code>)`, whose payload names the zip
+(`raw/eia/bulk/<code>/<last_updated>.zip` — `raw/eia` is a symlink onto the lake volume,
+like `raw/massive`) and the rows published. A family with any failed partition writes
+no evidence row, so it stays due. The first EBA import also fetches from the API every
+facet value the bulk file lacks (on 2026-09-23: BA `SWPW`, fuel types `BAT`/`SNB`/`PS`,
+several sub-BAs); afterwards the daily lookback keeps them.
+
+**Bulk vs API.** Every upsert counts the stored values it replaces with a different
+value as `eia_values_revised` (scope `<dataset>:<window>`). That one measurement answers
+both open questions: whether EIA revises history older than the lookback (a bulk
+re-import changing old rows), and how far the two channels disagree (an API fetch over
+bulk-imported rows). `source` says which channel wrote a row: `eia_bulk` or `eia`.
+
+**Status.** `EIA freshness`: each API dataset's newest `eia_staleness_days` against its
+declared `max_lag_days` (provisional, from one observation plus EIA's release days);
+none measured in 4 days is UNKNOWN. `EIA bulk imports`: `eia_bulk_behind_days` (0 when
+current with the manifest, else the age of the last import) against twice the refresh
+interval.
+
+EIA's published limit is < ~9,000 requests/hour and < 5/s; requests are spaced
+`eia_min_request_interval_s` apart, and a 429 (a temporary key suspension) is
+retried like a 5xx (`eia_retry_attempts`, `eia_retry_backoff_s`). A failed
+window is filed as `eia_fetch_failed`, scope `<dataset id>:<YYYY-MM>:<status>` or
+`bulk/<code>:<status>`, and the command exits 1; the rest still publishes. `eia.gov` is
+unreachable from the MacBook's network — run it on the mini.
 
 ### FX and DXY
 

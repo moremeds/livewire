@@ -81,6 +81,44 @@ def _lane_values(lanes: tuple[str, ...]) -> str:
     return ", ".join(f"('{lane}')" for lane in lanes)
 
 
+def _eia_freshness_sql() -> str:
+    """EIA API datasets: the newest `eia_staleness_days` per dataset against its declared lag.
+
+    Generated from `fetch_eia.DATASETS`, so a new dataset cannot be fetched but ungraded.
+    """
+    from livewire_scripts.fetch_eia import DATASETS
+
+    expected = ", ".join(f"('{d.id}', {d.max_lag_days})" for d in DATASETS.values() if d.max_lag_days is not None)
+    return (
+        "select case when m.behind is null then 'UNKNOWN' else 'WARN' end as verdict, "
+        "e.dataset, m.behind as days_behind, e.max_lag "
+        f"from (values {expected}) as e(dataset, max_lag) "
+        "left join (select scope as dataset, arg_max(value, measured_at) as behind from measurements "
+        "  where name = 'eia_staleness_days' and measured_at >= timestamp '$now' - interval 4 day "
+        "  group by scope) m using (dataset) "
+        "where m.behind is null or m.behind > e.max_lag order by e.dataset"
+    )
+
+
+def _eia_bulk_sql() -> str:
+    """EIA bulk families: days behind EIA's manifest, against twice the refresh interval."""
+    from livewire_scripts.fetch_eia import BULK_FAMILIES, EBA
+
+    limits = ", ".join(
+        f"('{code}', {2 * float(constants.declared('eia_eba_refresh_days' if code == EBA else 'eia_bulk_refresh_days'))})"
+        for code in [*BULK_FAMILIES, EBA]
+    )
+    return (
+        "select case when m.behind is null then 'UNKNOWN' else 'WARN' end as verdict, "
+        "e.family, m.behind as days_behind, e.limit_days "
+        f"from (values {limits}) as e(family, limit_days) "
+        "left join (select scope as family, arg_max(value, measured_at) as behind from measurements "
+        "  where name = 'eia_bulk_behind_days' and measured_at >= timestamp '$now' - interval 4 day "
+        "  group by scope) m using (family) "
+        "where m.behind is null or m.behind > e.limit_days order by e.family"
+    )
+
+
 #: Every operational check is one SQL statement over the ledger plus one test.
 CHECKS: list[tuple[str, str]] = [
     (
@@ -393,9 +431,13 @@ CHECKS: list[tuple[str, str]] = [
         "  when declared_value > 2 * measured_p95 or measured_p95 > 2 * declared_value "
         "  then 0 else 2 end, name, scope limit 1",
     ),
+    ("EIA freshness", _eia_freshness_sql()),
+    ("EIA bulk imports", _eia_bulk_sql()),
 ]
 
 _EMPTY_IS_OK = {
+    "EIA freshness",
+    "EIA bulk imports",
     "Undelivered notifications",
     "Stale non-equity",
     "Lanes within budget",
@@ -410,6 +452,8 @@ _FIXES = {
         "from lane_results where run_id = '$open_run'\"   # which lane is still open"
     ),
     "Intraday catch-up ran": "launchctl start com.livewire.intraday-catchup",
+    "EIA freshness": "python scripts/livewire_ingest.py eia --dataset <dataset>   # then check the dataset's release day",
+    "EIA bulk imports": "python scripts/livewire_ingest.py eia --bulk <family>",
     "Silver failures": _SILVER_FIX,
     "Silver window regressions": _SILVER_FIX,
     "Coverage": "launchctl start com.livewire.coverage",

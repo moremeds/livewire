@@ -185,6 +185,30 @@ class TestValidateParquetFile:
         with pytest.raises(ValueError, match="duplicate"):
             validate_parquet_file(out, expected_rows=2, sort_column="trade_date")
 
+    def test_a_composite_key_validates_rows_as_tuples(self, tmp_path):
+        """EIA electricity repeats a date across respondents; only the full key is unique."""
+        out = tmp_path / "data.parquet"
+        rows = [
+            {"trade_date": date(2026, 1, 5), "symbol_id": 1, "value": 1.0},
+            {"trade_date": date(2026, 1, 5), "symbol_id": 2, "value": 1.0},
+            {"trade_date": date(2026, 1, 6), "symbol_id": 1, "value": 1.0},
+        ]
+        pq.write_table(_table(rows), out)
+        validate_parquet_file(out, expected_rows=3, sort_column=("trade_date", "symbol_id"))
+
+    def test_a_composite_key_still_rejects_a_duplicate_and_a_misorder(self, tmp_path):
+        out = tmp_path / "data.parquet"
+        dup = [{"trade_date": date(2026, 1, 5), "symbol_id": 1, "value": v} for v in (1.0, 2.0)]
+        pq.write_table(_table(dup), out)
+        with pytest.raises(ValueError, match="duplicate"):
+            validate_parquet_file(out, expected_rows=2, sort_column=("trade_date", "symbol_id"))
+        misordered = [{"trade_date": date(2026, 1, 5), "symbol_id": i, "value": 1.0} for i in (2, 1)]
+        pq.write_table(_table(misordered), out)
+        with pytest.raises(ValueError, match="not sorted"):
+            validate_parquet_file(out, expected_rows=2, sort_column=("trade_date", "symbol_id"))
+        with pytest.raises(KeyError, match="nope"):
+            validate_parquet_file(out, expected_rows=2, sort_column=("trade_date", "nope"))
+
 
 def test_fsync_directory_opens_and_closes_the_directory(tmp_path, monkeypatch):
     from clients import parquet_io
