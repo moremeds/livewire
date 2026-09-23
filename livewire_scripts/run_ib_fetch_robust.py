@@ -72,9 +72,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=_env_int("MDW_ORCHESTRATOR_COOLDOWN_SECONDS", 60),
     )
+    p.add_argument(
+        "--include-expired",
+        action="store_true",
+        help="Pass --include-expired to worker processes (requires --asset-class futures; default off).",
+    )
     p.add_argument("--bronze-dir", type=Path, default=data_lake_dir() / "bronze")
     p.add_argument("--log-dir", type=Path, default=log_dir())
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.include_expired and args.asset_class != "futures":
+        p.error("--include-expired requires --asset-class futures")
+    return args
 
 
 def load_tickers(*, preset_path: Path | None, explicit: list[str] | None) -> list[str]:
@@ -124,7 +132,13 @@ class TickerOutcome:
     note: str = ""
 
 
-def _build_worker_cmd(ticker: str, mode: str, asset_class: str, source: str = "auto") -> list[str]:
+def _build_worker_cmd(
+    ticker: str,
+    mode: str,
+    asset_class: str,
+    source: str = "auto",
+    include_expired: bool = False,
+) -> list[str]:
     """Construct the subprocess args for the historical ingest command."""
     cmd = [
         sys.executable,
@@ -145,6 +159,8 @@ def _build_worker_cmd(ticker: str, mode: str, asset_class: str, source: str = "a
         cmd += ["--years", "0"]
     elif mode == "backfill":
         cmd += ["--backfill"]
+    if include_expired:
+        cmd += ["--include-expired"]
     return cmd
 
 
@@ -170,12 +186,13 @@ def run_one_ticker(
     max_attempts: int,
     cooldown: int,
     source: str = "auto",
+    include_expired: bool = False,
 ) -> TickerOutcome:
     parquet = _bronze_path_for(bronze_dir, asset_class, ticker)
     if _is_already_done(parquet, mode):
         return TickerOutcome(ticker, OutcomeCategory.SKIP, 0, 0.0, 0, 0)
 
-    cmd = _build_worker_cmd(ticker, mode, asset_class, source)
+    cmd = _build_worker_cmd(ticker, mode, asset_class, source, include_expired=include_expired)
     rows_before = _count_rows(parquet)
     start = time.monotonic()
 
@@ -298,6 +315,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout=args.timeout,
             max_attempts=args.max_attempts,
             cooldown=args.cooldown,
+            include_expired=args.include_expired,
         )
         outcomes.append(outcome)
         line = (

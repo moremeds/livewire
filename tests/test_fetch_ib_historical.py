@@ -962,6 +962,48 @@ class TestFetchTickerBars:
         head_dt_arg = call_args[0]
         assert head_dt_arg.year == 1980
 
+    def test_include_expired_sets_contract_flag_before_qualification(self):
+        """include_expired=True sets Contract.includeExpired on the qualified contract."""
+        mock_ib = MagicMock()
+        mock_ib.ib.qualifyContractsAsync = AsyncMock(return_value=[Future("CL", "202610", "NYMEX", currency="USD")])
+        mock_ib.get_head_timestamp_async = AsyncMock(return_value="20180124-00:00:00")
+        mock_ib.get_historical_data_async = AsyncMock(return_value=[_make_bar()])
+
+        sem = asyncio.Semaphore(6)
+
+        with patch("livewire_scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+            mock_cdw.return_value = [("1 Y", "20250101-00:00:00")]
+            ticker, bars = asyncio.run(
+                fetch_ticker_bars(
+                    "CL_202610",
+                    mock_ib,
+                    sem,
+                    asset_class="futures",
+                    include_expired=True,
+                )
+            )
+
+        contract = mock_ib.ib.qualifyContractsAsync.await_args.args[0]
+        assert contract.includeExpired is True
+        assert ticker == "CL_202610"
+        assert len(bars) == 1
+
+    def test_include_expired_defaults_off(self):
+        """Without the flag the qualified contract keeps includeExpired=False."""
+        mock_ib = MagicMock()
+        mock_ib.ib.qualifyContractsAsync = AsyncMock(return_value=[Future("CL", "202611", "NYMEX", currency="USD")])
+        mock_ib.get_head_timestamp_async = AsyncMock(return_value="20180124-00:00:00")
+        mock_ib.get_historical_data_async = AsyncMock(return_value=[_make_bar()])
+
+        sem = asyncio.Semaphore(6)
+
+        with patch("livewire_scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+            mock_cdw.return_value = [("1 Y", "20250101-00:00:00")]
+            asyncio.run(fetch_ticker_bars("CL_202611", mock_ib, sem, asset_class="futures"))
+
+        contract = mock_ib.ib.qualifyContractsAsync.await_args.args[0]
+        assert contract.includeExpired is False
+
 
 # ══════════════════════════════════════════════════════════════════════
 # fetch_all_tickers (async)
@@ -1045,6 +1087,31 @@ class TestFetchAllTickers:
 
         assert captured_kwargs["AAPL"]["end_dt_override"] == datetime(2020, 6, 15)
         assert captured_kwargs["NVDA"]["end_dt_override"] is None
+
+    def test_passes_include_expired(self):
+        """include_expired is forwarded to fetch_ticker_bars."""
+        captured_kwargs = {}
+
+        async def mock_fetch_ticker_bars(ticker, ib, sem, **kwargs):
+            captured_kwargs[ticker] = kwargs
+            return (ticker, [_make_bar()])
+
+        mock_ib = MagicMock()
+
+        with patch(
+            "livewire_scripts.fetch_ib_historical.fetch_ticker_bars",
+            side_effect=mock_fetch_ticker_bars,
+        ):
+            asyncio.run(
+                fetch_all_tickers(
+                    ["CL_202610"],
+                    mock_ib,
+                    asset_class="futures",
+                    include_expired=True,
+                )
+            )
+
+        assert captured_kwargs["CL_202610"]["include_expired"] is True
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1691,6 +1758,53 @@ class TestMain:
         )
         with pytest.raises(SystemExit, match="2"):
             main()
+
+    def test_main_rejects_include_expired_for_non_futures(self, monkeypatch):
+        monkeypatch.setattr(
+            "sys.argv",
+            ["fetch_ib_historical.py", "--tickers", "AAPL", "--include-expired"],
+        )
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
+    @pytest.mark.integration
+    def test_main_include_expired_threads_flag_to_fetch(self, tmp_path, monkeypatch):
+        """--include-expired reaches fetch_all_tickers through _run_normal."""
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "fetch_ib_historical.py",
+                "--tickers",
+                "CL_202610",
+                "--asset-class",
+                "futures",
+                "--include-expired",
+            ],
+        )
+        mock_ib = _mock_ib_instance({"CL_202610": []})
+        captured: dict = {}
+
+        def fake_fetch(tickers, ib, **kw):
+            captured.update(kw)
+
+            async def _empty():
+                return {t: [] for t in tickers}
+
+            return _empty()
+
+        with (
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch(
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
+                lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
+            ),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+            patch("livewire_scripts.fetch_ib_historical.fetch_all_tickers", fake_fetch),
+        ):
+            main()
+
+        assert captured["include_expired"] is True
 
     @pytest.mark.integration
     def test_main_end_to_end(self, tmp_path, monkeypatch):
