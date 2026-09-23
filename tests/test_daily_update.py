@@ -898,6 +898,7 @@ class TestMain:
         mock_bronze.get_latest_dates.return_value = {
             "BZ_202610": "2025-01-02",
             "CL_202610": "2025-01-03",
+            "HO_202501": "2024-12-20",
         }
         with (
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
@@ -915,7 +916,7 @@ class TestMain:
 
         printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
         assert "Skipped 1 retired BZ contract" in printed
-        assert "Gap Report (1 tickers)" in printed
+        assert "Gap Report (2 tickers)" in printed
 
     @pytest.mark.integration
     def test_default_futures_lane_seeds_missing_rolling_contract_before_scan(self, tmp_path, monkeypatch):
@@ -951,6 +952,30 @@ class TestMain:
         assert command[command.index("--mode") + 1] == "seed"
         assert command[command.index("--source") + 1] == "ib"
         assert command[command.index("--tickers") + 1] == "CL_202611"
+
+    @pytest.mark.integration
+    def test_gateway_down_during_rolling_seed_is_propagated_without_scanning(self, tmp_path, monkeypatch):
+        today = date(2026, 9, 23)
+        monkeypatch.setattr("sys.argv", ["daily_update.py", "--asset-class", "futures"])
+        monkeypatch.setattr("livewire_scripts.daily_update.BRONZE_DIR", tmp_path / "futures-bronze")
+        mock_ib = MagicMock()
+        mock_ib.__enter__ = MagicMock(return_value=mock_ib)
+        with (
+            patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
+            patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
+            patch(
+                "livewire_scripts.daily_update.resolve_rolling_futures_preset",
+                return_value=("futures-rolling", ["CL_202611"], {}),
+            ),
+            patch(
+                "livewire_scripts.daily_update.subprocess.run",
+                return_value=CompletedProcess([], 86),
+            ),
+            patch("livewire_scripts.daily_update.BronzeClient", side_effect=AssertionError("scan must not run")),
+            patch("livewire_scripts.daily_update.console.print"),
+        ):
+            assert main() == 86
 
     @pytest.fixture(autouse=True)
     def _isolate_live_massive_credentials(self, monkeypatch):

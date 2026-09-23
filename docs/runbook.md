@@ -386,8 +386,9 @@ python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --asset-class
   against IB ContractDetails on each run. It tracks all listed energy delivery
   months through the current month plus 15 months, and the first two live delivery contracts for metals and
   agriculture. Missing selected contracts are full-history seeded through the
-  robust IB runner before the daily scan; contracts outside the current window
-  remain stored but are not part of that lane's daily update set. The dated
+  robust IB runner before the daily scan. The subsequent scan still visits all
+  existing non-retired futures directories; BZ is excluded while its parquet
+  remains stored. The dated
   `futures-active.json` is a reproducible seed snapshot, not the rolling rule.
 
 ---

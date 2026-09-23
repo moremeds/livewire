@@ -618,7 +618,6 @@ def main():  # pragma: no cover — only exercised by integration tests
 
     # The scheduled futures lane follows the live IB-listed strip. Newly entering
     # contracts are full-history seeded before the daily scan sees them.
-    rolling_tickers: set[str] | None = None
     rolling_preset: Path | None = None
     if asset_class == "futures" and args.tickers is None:
         if args.preset is None:
@@ -629,7 +628,6 @@ def main():  # pragma: no cover — only exercised by integration tests
         with IBClient() as ib:
             ib.connect(host=args.host, port=args.port)
             preset_name, rolling_list, _ = resolve_rolling_futures_preset(rolling_preset, ib, today)
-        rolling_tickers = set(rolling_list)
         missing = [ticker for ticker in rolling_list if not (bronze_dir / f"symbol={ticker}" / "1d.parquet").exists()]
         console.print(f"[bold]Rolling preset:[/bold] {preset_name} ({len(rolling_list)} contracts)")
         if missing and not args.dry_run:
@@ -664,8 +662,8 @@ def main():  # pragma: no cover — only exercised by integration tests
     )
 
     # ── Load preset filter (if any) ─────────────────────────────────
-    preset_tickers: set[str] | None = rolling_tickers
-    if args.preset and rolling_tickers is None:
+    preset_tickers: set[str] | None = None
+    if args.preset and rolling_preset is None:
         preset_name, preset_list, _ = load_preset(args.preset)
         preset_tickers = set(preset_list)
         console.print(f"[bold]Preset:[/bold] {preset_name} ({len(preset_tickers)} tickers)")

@@ -216,6 +216,16 @@ def run_one_ticker(
                     rows_after,
                     note=f"rows +{rows_after - rows_before}",
                 )
+            if mode == "seed" and asset_class == "futures":
+                return TickerOutcome(
+                    ticker,
+                    OutcomeCategory.SKIP,
+                    attempts,
+                    elapsed,
+                    rows_before,
+                    rows_after,
+                    note="no futures history yet",
+                )
             return TickerOutcome(
                 ticker,
                 OutcomeCategory.FAIL,
@@ -304,12 +314,12 @@ def main(argv: list[str] | None = None) -> int:
     print(summary, flush=True)
     with summary_log.open("a", encoding="utf-8") as fh:
         fh.write(summary + "\n")
-    failed_categories = {
-        OutcomeCategory.FAIL,
-        OutcomeCategory.TIMEOUT,
-        OutcomeCategory.TEMPORARY_UNAVAILABLE,
-    }
-    return 0 if all(o.code not in failed_categories for o in outcomes) else 1
+    failed_categories = {OutcomeCategory.FAIL, OutcomeCategory.TIMEOUT}
+    if any(o.code in failed_categories for o in outcomes):
+        return 1
+    if any(o.code == OutcomeCategory.TEMPORARY_UNAVAILABLE for o in outcomes):
+        return GATEWAY_DOWN_EXIT_CODE
+    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover

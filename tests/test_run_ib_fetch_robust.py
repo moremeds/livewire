@@ -329,6 +329,21 @@ def test_seed_exit_zero_without_bronze_is_fail(tmp_path, monkeypatch):
     assert outcome.note == "exit 0 but no bronze written"
 
 
+def test_futures_seed_without_history_is_skipped_for_retry(tmp_path, monkeypatch):
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: MagicMock(returncode=0))
+    outcome = run_one_ticker(
+        ticker="CL_202611",
+        mode="seed",
+        asset_class="futures",
+        bronze_dir=tmp_path,
+        timeout=10,
+        max_attempts=1,
+        cooldown=0,
+    )
+    assert outcome.code == OutcomeCategory.SKIP
+    assert outcome.note == "no futures history yet"
+
+
 def test_summary_line_format():
     outcomes = [
         TickerOutcome("AAPL", OutcomeCategory.OK, 1, 12.0, 0, 6000),
@@ -413,3 +428,58 @@ def test_main_returns_fail_status_for_timeout(tmp_path, monkeypatch, capsys):
 
     assert rc == 1
     assert "[1/1 timeout] HOOD" in capsys.readouterr().out
+
+
+def test_main_returns_gateway_down_when_seed_only_hits_temporary_unavailability(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "livewire_scripts.run_ib_fetch_robust.run_one_ticker",
+        lambda **kwargs: TickerOutcome(
+            "CL_202611", OutcomeCategory.TEMPORARY_UNAVAILABLE, 1, 0.1, 0, 0, "ib-gateway-unavailable"
+        ),
+    )
+
+    rc = main(
+        [
+            "--tickers",
+            "CL_202611",
+            "--mode",
+            "seed",
+            "--asset-class",
+            "futures",
+            "--log-dir",
+            str(tmp_path),
+            "--bronze-dir",
+            str(tmp_path / "bronze"),
+        ]
+    )
+
+    assert rc == GATEWAY_DOWN_EXIT_CODE
+    assert "temporary-unavailable" in capsys.readouterr().out
+
+
+def test_main_returns_failure_if_gateway_loss_coincides_with_hard_failure(tmp_path, monkeypatch):
+    outcomes = iter(
+        [
+            TickerOutcome("CL_202611", OutcomeCategory.TEMPORARY_UNAVAILABLE, 1, 0.1, 0, 0, "ib-gateway-unavailable"),
+            TickerOutcome("HO_202611", OutcomeCategory.FAIL, 3, 2.0, 0, 0, "invalid contract"),
+        ]
+    )
+    monkeypatch.setattr("livewire_scripts.run_ib_fetch_robust.run_one_ticker", lambda **kwargs: next(outcomes))
+
+    rc = main(
+        [
+            "--tickers",
+            "CL_202611",
+            "HO_202611",
+            "--mode",
+            "seed",
+            "--asset-class",
+            "futures",
+            "--log-dir",
+            str(tmp_path),
+            "--bronze-dir",
+            str(tmp_path / "bronze"),
+        ]
+    )
+
+    assert rc == 1

@@ -1732,7 +1732,7 @@ class TestMain:
 
     @pytest.mark.integration
     def test_main_handles_empty_bars(self, tmp_path, monkeypatch):
-        """main() marks ticker done when IB returns empty bars (no data available)."""
+        """Equity tickers with no data keep the existing terminal cursor behavior."""
         monkeypatch.setattr("sys.argv", ["fetch_ib_historical.py", "--tickers", "FAIL"])
 
         mock_ib = _mock_ib_instance({"FAIL": []})
@@ -1754,6 +1754,35 @@ class TestMain:
         assert cursor_file.exists()
         data = json.loads(cursor_file.read_text())
         assert "FAIL" in data["completed"]
+
+    @pytest.mark.integration
+    def test_main_futures_empty_bars_do_not_complete_cursor(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "sys.argv",
+            ["fetch_ib_historical.py", "--tickers", "CL_202611", "--asset-class", "futures"],
+        )
+        cursor_dir = tmp_path / "cursors"
+        cursor_dir.mkdir()
+        cursor_file = cursor_dir / "cursor_custom.json"
+        cursor_file.write_text(json.dumps({"completed": {"CL_202611": ["1d"]}}))
+        mock_ib = _mock_ib_instance({"CL_202611": []})
+
+        with (
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch(
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
+                lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
+            ),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
+        ):
+            main()
+            main()
+
+        assert mock_ib.ib.run.called
+        assert mock_ib.ib.run.call_count == 2
+        assert not (tmp_path / "bronze" / "symbol=CL_202611" / "1d.parquet").exists()
+        assert json.loads(cursor_file.read_text())["completed"]["CL_202611"] == ["1d"]
 
     @pytest.mark.integration
     def test_main_custom_args(self, tmp_path, monkeypatch):

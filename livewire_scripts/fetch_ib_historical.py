@@ -748,6 +748,13 @@ def main():  # pragma: no cover — only exercised by integration tests
         console.print("[yellow]Cursor reset.[/yellow]")
 
     completed = load_cursor(effective_cursor)
+    bronze_dir = _resolved_bronze_dir(args.asset_class)
+    if args.asset_class == "futures":
+        # A cursor without its Parquet file is not proof that a contract was
+        # seeded. Futures that have no trades yet must be retried on later runs.
+        for ticker in all_tickers:
+            if not (bronze_dir / f"symbol={ticker}" / "1d.parquet").exists():
+                completed.pop(ticker, None)
     remaining = [t for t in all_tickers if not is_ticker_complete(completed, t, ("1d",))]
 
     n_completed = sum(1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",)))
@@ -770,8 +777,6 @@ def main():  # pragma: no cover — only exercised by integration tests
     # ── Live bronze publication ───────────────────────────────────────
     run_t0 = time.monotonic()
     asset_class = args.asset_class
-    bronze_dir = _resolved_bronze_dir(asset_class)
-
     with _storage_client()(bronze_dir=bronze_dir, asset_class=asset_class) as bronze:
         if args.backfill and resolved_source == "massive":
             with MassiveClient() as massive:
@@ -1185,9 +1190,12 @@ def _run_normal(
                     console.print(f"  [green]{ticker}[/green]: {count:,} rows inserted")
                     batch_ok += 1
                 elif not bars:
-                    mark_timeframe_done(completed, ticker, "1d")
-                    save_cursor(cursor_name, completed, started_at)
-                    console.print(f"  [dim]{ticker}[/dim]: no data available (done)")
+                    if asset_class == "futures":
+                        console.print(f"  [dim]{ticker}[/dim]: no data yet (will retry next run)")
+                    else:
+                        mark_timeframe_done(completed, ticker, "1d")
+                        save_cursor(cursor_name, completed, started_at)
+                        console.print(f"  [dim]{ticker}[/dim]: no data available (done)")
                     batch_ok += 1
                 else:
                     console.print(f"  [yellow]{ticker}[/yellow]: 0 rows (will retry next run)")
