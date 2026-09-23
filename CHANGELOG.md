@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Retired the BZ futures root from new ingestion while preserving stored BZ history. COIL is configured as a separate IPE series.
 - Added verified exchange mappings for the new commodity roots and rolling futures selection: energy through the current month plus 15 months, and the first two live delivery months for GC/SI/HG and 12 agricultural roots. Newly selected contracts are full-history seeded before daily updates.
+- Futures coverage now uses that same live rolling selection; when IB is unavailable it reports futures as UNKNOWN and continues equity coverage and recovery.
 
 - `clients/http_retry.py`: the repo's one definition of a transient HTTP
   failure. A 5xx or a transport error retries with a bounded linear backoff; a

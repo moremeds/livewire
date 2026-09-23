@@ -390,6 +390,9 @@ python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --asset-class
   existing non-retired futures directories; BZ is excluded while its parquet
   remains stored. The dated
   `futures-active.json` is a reproducible seed snapshot, not the rolling rule.
+  The coverage report resolves this same live list for its futures denominator.
+  If IB is unavailable, futures coverage is `UNKNOWN`; equity coverage and
+  recovery continue, and the rolling-resolution failure is recorded in the log.
 
 ---
 

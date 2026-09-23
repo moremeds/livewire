@@ -140,6 +140,45 @@ def test_main_repairs_minute_date_once_for_all_rollups(tmp_path, monkeypatch, ab
     assert "30m recovery" in report
 
 
+def test_main_ib_failure_marks_futures_unknown_but_continues_equity_coverage(tmp_path, monkeypatch):
+    monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setattr(sys, "argv", ["coverage_report.py", "--target-date", "2026-04-06"])
+    equity = {
+        timeframe: CoverageResult(
+            timeframe,
+            total=1,
+            present=int(timeframe == "1d"),
+            missing_symbols=[] if timeframe == "1d" else ["AAPL"],
+        )
+        for timeframe in coverage_report.TIMEFRAMES
+    }
+    non_equity = {
+        "futures": CoverageResult("futures", total=0, present=0),
+        "rates": CoverageResult("rates", total=1, present=1),
+    }
+    log_path = tmp_path / "coverage.log"
+    log_path.write_text("")
+    with (
+        patch.object(coverage_report, "_resolve_rolling_futures_tickers", side_effect=ConnectionError("gateway down")),
+        patch.object(coverage_report, "compute_coverage", return_value=equity) as compute_equity,
+        patch.object(coverage_report, "emit_coverage_measurements"),
+        patch.object(coverage_report, "compute_non_equity_coverage", return_value=non_equity) as compute_other,
+        patch.object(coverage_report, "emit_stale_non_equity"),
+        patch.object(coverage_report, "_scan_and_write_artifacts", return_value="scan: FAILED (IB unavailable)"),
+        patch.object(coverage_report, "emit_coverage_scan_measurement"),
+        patch.object(coverage_report, "write_coverage_log", return_value=log_path) as write_log,
+        patch.object(coverage_report, "auto_recover", return_value=RecoveryOutcome("1m", ["AAPL"], 1, [])) as recover,
+        patch.object(coverage_report, "emit_recovery_measurements"),
+    ):
+        main()
+
+    compute_equity.assert_called()
+    assert compute_other.call_args.kwargs["rolling_futures_tickers"] is None
+    assert "futures=UNKNOWN" in write_log.call_args.args[2][-1]
+    assert any("gateway down" in block for block in write_log.call_args.args[2])
+    recover.assert_called()
+
+
 def test_coverage_emits_its_percentage_and_elapsed_seconds(tmp_path, monkeypatch):
     from clients import ledger
 
@@ -1049,6 +1088,20 @@ class TestNonEquityCoverage:
         for result in results.values():
             assert result.present == 0
             assert len(result.missing_symbols) == result.total
+
+    def test_futures_is_unknown_without_live_rolling_selection(self, tmp_path):
+        results = compute_non_equity_coverage(date(2026, 4, 6), bronze_root=tmp_path / "bronze")
+        assert results["futures"].total == 0
+        assert "futures=UNKNOWN" in format_non_equity_line(date(2026, 4, 6), results)
+
+    def test_unknown_futures_does_not_clear_stale_measurement(self, monkeypatch):
+        from clients import ledger
+
+        monkeypatch.setenv("LW_RUN_ID", "test-run")
+        unknown = {"futures": CoverageResult("futures", total=0, present=0)}
+        with patch.object(ledger, "emit") as emit:
+            coverage_report.emit_stale_non_equity(unknown)
+        emit.assert_not_called()
 
 
 def _count_opens(monkeypatch) -> list[Path]:

@@ -671,7 +671,7 @@ def emit_recovery_measurements(results: dict[str, CoverageResult], outcomes: lis
 
 
 def emit_stale_non_equity(results: dict[str, CoverageResult]) -> None:
-    """Publish each asset class's stale-symbol count; a clean class emits 0 and clears."""
+    """Publish stale-symbol counts; UNKNOWN classes must not clear prior measurements."""
     now = datetime.now(UTC)
     run = os.environ["LW_RUN_ID"]
     rows = [
@@ -685,7 +685,10 @@ def emit_stale_non_equity(results: dict[str, CoverageResult]) -> None:
             "run_id": run,
         }
         for asset_class, result in sorted(results.items())
+        if result.total > 0
     ]
+    if not rows:
+        return
     try:
         ledger.emit("measurements", rows, run_id=run)
     except Exception as exc:  # pragma: no cover - reporting must not abort coverage
@@ -936,14 +939,15 @@ def compute_non_equity_coverage(
     as_of = as_of or datetime.now(UTC)
     results: dict[str, CoverageResult] = {}
     for row in _non_equity_rows(registry_path):
-        if row.asset_class == "futures" and not rolling_futures_tickers:
-            raise RegistryError("futures coverage requires the resolved rolling contract list")
         lag_days = DUE_LAG_DAYS.get(row.asset_class, 1)
         # Each class is graded against the newest session ITS lane owed, which
         # for rates is one session behind the run's target.
         session = _newest_due_session(target_date, lag_days, as_of)
         if session is None:
             results[row.asset_class] = CoverageResult(row.asset_class, 0, 0, [])
+            continue
+        if row.asset_class == "futures" and not rolling_futures_tickers:
+            results[row.asset_class] = CoverageResult(row.asset_class, 0, 0, [], measured_session=session)
             continue
         expected = build_denominator(
             [presets_dir / f"{name}.json" for name in row.universe],
@@ -980,6 +984,9 @@ def format_non_equity_line(target_date: date, results: dict[str, CoverageResult]
     parts = []
     for ac in sorted(results):
         r = results[ac]
+        if r.total == 0:
+            parts.append(f"{ac}=UNKNOWN")
+            continue
         stamp = f"@{r.measured_session}" if r.measured_session and r.measured_session != target_date else ""
         parts.append(f"{ac}={r.present}/{r.total}{stamp}")
     return f"{target_date} non-equity 1d: " + " ".join(parts)
@@ -1298,8 +1305,14 @@ def main() -> None:
     # on whether the target session was due.
     as_of = datetime.now(UTC)
     rolling_futures_tickers = None
+    futures_resolution_issue = None
     if any(row.asset_class == "futures" for row in _non_equity_rows(None)):
-        rolling_futures_tickers = _resolve_rolling_futures_tickers(_et_today())
+        try:
+            rolling_futures_tickers = _resolve_rolling_futures_tickers(_et_today())
+        except Exception as exc:  # IB must not block unrelated coverage or recovery.
+            futures_resolution_issue = f"futures rolling selection unavailable: {type(exc).__name__}: {exc}"
+            log.error(futures_resolution_issue, exc_info=True)
+            console.print(f"[yellow]{futures_resolution_issue}[/yellow]")
     # Cached across runs: an unchanged (mtime, size) cannot mean a later max
     # date, and the cold footer walk is what this job's runtime actually is.
     coverage_started = time.monotonic()
@@ -1338,6 +1351,8 @@ def main() -> None:
     # -- new, and consumed by nothing yet -- would otherwise take down the coverage
     # log, the auto-recovery and the alert, and leave `status` and the digest
     # reading a frozen log. That is the four-week blindness in CLAUDE.md, rebuilt.
+    if futures_resolution_issue:
+        blocks.append(futures_resolution_issue)
     log_path = write_coverage_log(target, line, [*blocks, non_equity_line], results)
 
     scan_line = _scan_and_write_artifacts(target, as_of, rolling_futures_tickers)
