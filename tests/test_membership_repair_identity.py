@@ -694,6 +694,73 @@ def test_history_under_a_merged_duplicate_is_repointed_and_one_index_exit_does_n
     assert {row["verdict"] for row in runs} == {"OK"}
 
 
+def test_a_churn_pair_across_merged_ids_is_rejected_in_one_pass(tmp_path):
+    """GOOGL on the mini: the 2026-09-17 diff removed the researched id (its
+    latest claim reads GOOG) and added the Massive duplicate.
+    The first pass must reject the pair, not re-point the add; a second pass
+    appends nothing."""
+    lake = tmp_path / "lake"
+    ids = _agilent_and_googl(lake)
+    evidence = SourceEvidenceStore(lake)
+    # The real id also carries the 2014 GOOG claim. With no claim covering
+    # 2026-09-17 the ticker falls back to the latest one, GOOG, so only the
+    # R1 merge (not the ticker) pairs this remove with the GOOGL add.
+    _master(lake).append(
+        _identity(
+            _evidence(evidence, "googl-wiki-2014", "https://en.wikipedia.org/wiki/Alphabet_Inc.", T0),
+            event_id="googl-researched-goog-2014",
+            security_id=ids["researched_g"],
+            revision=3,
+            symbol="GOOG",
+            provider="wikipedia_sec_research",
+            exchange_mic="XNAS",
+            cik=GOOGL_CIK,
+            effective_from=dt("2014-04-02"),
+            effective_to=dt("2014-04-04"),
+            known_at=T0,
+            issuer_name="Alphabet Inc.",
+        )
+    )
+    store = _store(lake)
+    live = _evidence(evidence, "sp500-live-googl", "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", CHURN_T)
+    store.append(
+        _membership(
+            live,
+            event_id="sp500-churn-remove-GOOGL",
+            index_id="sp500",
+            security_id=ids["researched_g"],
+            action="remove",
+            effective_at=CHURN_T,
+            known_at=CHURN_T,
+            revision=2,
+        )
+    )
+    store.append(
+        _membership(
+            live,
+            event_id="sp500-churn-add-GOOGL",
+            index_id="sp500",
+            security_id=ids["massive_g"],
+            action="add",
+            effective_at=CHURN_T,
+            known_at=CHURN_T,
+            revision=1,
+        )
+    )
+
+    first = membership_sync.repair_identity(indexes=["sp500"], data_lake_root=lake, now=REPAIR_NOW, apply=True)
+    rejected = {row["rejected_event_id"] for row in first["rejections"]}
+    assert {"sp500-churn-remove-GOOGL", "sp500-churn-add-GOOGL"} <= rejected
+    assert all(row["event_id"] != "sp500-churn-add-GOOGL" for row in first["repoints"])
+    counts = (len(_identities(lake)), len(_membership_events(lake, "sp500")))
+
+    second = membership_sync.repair_identity(indexes=["sp500"], data_lake_root=lake, now=REPAIR_NOW, apply=True)
+    assert (len(_identities(lake)), len(_membership_events(lake, "sp500"))) == counts
+    assert second["rejections"] == [] and second["repoints"] == []
+    reader = _store(lake, writable=False)
+    assert ids["researched_g"] in reader.members_effective_at("sp500", dt("2026-09-22"), REPAIR_NOW)
+
+
 def test_repair_identity_second_apply_appends_nothing(tmp_path):
     lake = tmp_path / "lake"
     ids = _agilent_and_googl(lake)
@@ -784,3 +851,172 @@ def test_repair_identity_cli_dispatch(tmp_path, monkeypatch):
 
     assert membership_sync.main(["repair-identity", "--index", "sp500", "--apply"]) == 0
     assert any(e.supersedes == "agilent-massive" and e.status == "rejected" for e in _identities(lake))
+
+
+def test_a_backfilled_rename_pair_is_history_not_churn(tmp_path):
+    """Torchmark renamed Globe Life (CIK 0000320335) on 2019-08-08; the
+    backfill recorded it as remove(unresolved:TMK) + add(researched id) on
+    that date, known 2026-09-16. Same shape as churn, but not written by the
+    live diff, so R4 leaves it alone and GL stays a member (mini, 2026-09-23)."""
+    lake = tmp_path / "lake"
+    evidence = SourceEvidenceStore(lake)
+    refs = _evidence(evidence, "globe-life-wiki", "https://en.wikipedia.org/wiki/Globe_Life", T0)
+    gl = SecurityMaster.new_security_id()
+    _master(lake).append(
+        _identity(
+            refs,
+            event_id="gl-researched",
+            security_id=gl,
+            revision=1,
+            symbol="TMK",
+            provider="wikipedia_sec_research",
+            exchange_mic="XNYS",
+            cik="0000320335",
+            effective_from=dt("2019-08-07"),
+            effective_to=dt("2019-08-09"),
+            known_at=T0,
+            issuer_name="Globe Life Inc.",
+        )
+    )
+    store = _store(lake)
+    for event_id, security_id, action, at, status, revision in (
+        ("tmk-add", "unresolved:TMK", "add", "1996-01-02", "unresolved", 1),
+        ("tmk-remove", "unresolved:TMK", "remove", "2019-08-08", "unresolved", 2),
+        ("gl-add", gl, "add", "2019-08-08", "verified", 1),
+    ):
+        store.append(
+            _membership(
+                refs,
+                event_id=event_id,
+                index_id="sp500",
+                security_id=security_id,
+                action=action,
+                effective_at=dt(at),
+                known_at=T0,
+                status=status,
+                revision=revision,
+            )
+        )
+
+    manifest = membership_sync.repair_identity(indexes=["sp500"], data_lake_root=lake, now=REPAIR_NOW, apply=True)
+    assert manifest["rejections"] == []
+    assert gl in _store(lake, writable=False).members_effective_at("sp500", dt("2026-09-22"), REPAIR_NOW)
+
+
+def test_sync_r3_a_renamed_member_is_neither_removed_nor_added(tmp_path):
+    """FleetCor renamed Corpay (CIK 0001175454) on 2024-03-25; its sp500 add
+    (2018-06-20) is covered by the FLT claim, the live list says CPAY, and CPAY
+    resolves to the same id. Diffing tickers alone would remove and re-add it
+    (mini scratch dry-run, 2026-09-23)."""
+    lake = tmp_path / "lake"
+    evidence = SourceEvidenceStore(lake)
+    refs = _evidence(evidence, "corpay-massive", "massive://reference/CPAY", T0)
+    cpay = SecurityMaster.new_security_id()
+    master = _master(lake)
+    for revision, symbol, start, end in ((1, "FLT", "2018-06-20", "2024-03-25"), (2, "CPAY", "2024-03-25", None)):
+        master.append(
+            _identity(
+                refs,
+                event_id=f"corpay-{symbol}",
+                security_id=cpay,
+                revision=revision,
+                symbol=symbol,
+                provider="massive",
+                exchange_mic="XNYS",
+                cik="0001175454",
+                effective_from=dt(start),
+                effective_to=dt(end) if end else None,
+                known_at=T0,
+                issuer_name="Corpay, Inc.",
+            )
+        )
+    _store(lake).append(
+        _membership(
+            refs,
+            event_id="sp500-add-FLT",
+            index_id="sp500",
+            security_id=cpay,
+            action="add",
+            effective_at=dt("2018-06-20"),
+            known_at=T0,
+        )
+    )
+
+    code = membership_sync.sync(
+        indexes=["sp500"],
+        data_lake_root=lake,
+        now=RERESOLVE_NOW,
+        fetch_fn=lambda index_id: (
+            {"CPAY"},
+            membership_sync.HashedRef(*_evidence(evidence, "live", "https://sp500-live.test", RERESOLVE_NOW)),
+        ),
+    )
+
+    assert code == 0
+    assert [e.event_id for e in _membership_events(lake, "sp500")] == ["sp500-add-FLT"]
+
+
+def test_a_rename_across_merged_ids_keeps_the_member_and_a_second_pass_appends_nothing(tmp_path):
+    """Fiserv (CIK 0000798354) moved FISV -> FI on 2023-06-07 and back on
+    2025-11-11; the backfill wrote each as remove + add across the researched
+    id and its Massive duplicate (FIGI BBG001S5R6Q4, FISV again from
+    2026-09-17, which is what R1 joins on). Re-pointed onto one id,
+    the later-known remove would win the same-date tie and drop Fiserv from
+    sp500 after 2025-11-11 (mini scratch apply, 2026-09-23)."""
+    lake = tmp_path / "lake"
+    evidence = SourceEvidenceStore(lake)
+    refs = _evidence(evidence, "fiserv-wiki", "https://en.wikipedia.org/wiki/Fiserv", T0)
+    researched, massive = SecurityMaster.new_security_id(), SecurityMaster.new_security_id()
+    master = _master(lake)
+    for event_id, security_id, revision, symbol, provider, mic, figi, start, end in (
+        ("fisv-2001", researched, 1, "FISV", "wikipedia_sec_research", "XNAS", None, "2001-04-01", "2001-04-03"),
+        ("fisv-2025", researched, 2, "FISV", "wikipedia_sec_research", "XNYS", None, "2025-11-10", "2025-11-12"),
+        ("fi-massive", massive, 1, "FI", "massive", "XNYS", "BBG001S5R6Q4", "2023-06-07", "2025-11-11"),
+        ("fisv-massive", massive, 2, "FISV", "massive", "XNAS", "BBG001S5R6Q4", "2026-09-17", None),
+    ):
+        master.append(
+            _identity(
+                refs,
+                event_id=event_id,
+                security_id=security_id,
+                revision=revision,
+                symbol=symbol,
+                provider=provider,
+                exchange_mic=mic,
+                share_class_figi=figi,
+                cik="0000798354",
+                effective_from=dt(start),
+                effective_to=dt(end) if end else None,
+                known_at=T0,
+                issuer_name="Fiserv, Inc.",
+            )
+        )
+    store = _store(lake)
+    for event_id, security_id, action, at, revision in (
+        ("fisv-add-2001", researched, "add", "2001-04-02", 1),
+        ("fisv-remove-2023", researched, "remove", "2023-06-07", 2),
+        ("fi-add-2023", massive, "add", "2023-06-07", 1),
+        ("fi-remove-2025", massive, "remove", "2025-11-11", 2),
+        ("fisv-add-2025", researched, "add", "2025-11-11", 3),
+    ):
+        store.append(
+            _membership(
+                refs,
+                event_id=event_id,
+                index_id="sp500",
+                security_id=security_id,
+                action=action,
+                effective_at=dt(at),
+                known_at=T0,
+                revision=revision,
+            )
+        )
+
+    first = membership_sync.repair_identity(indexes=["sp500"], data_lake_root=lake, now=REPAIR_NOW, apply=True)
+    assert first["repoints"] == []
+    counts = (len(_identities(lake)), len(_membership_events(lake, "sp500")))
+    second = membership_sync.repair_identity(indexes=["sp500"], data_lake_root=lake, now=REPAIR_NOW, apply=True)
+    assert (len(_identities(lake)), len(_membership_events(lake, "sp500"))) == counts
+    reader = _store(lake, writable=False)
+    for day in ("2024-06-03", "2026-09-22"):
+        assert researched in reader.members_effective_at("sp500", dt(day), REPAIR_NOW)

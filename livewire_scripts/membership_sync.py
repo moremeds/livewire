@@ -509,11 +509,17 @@ def sync(
             remove_tickers = sorted(set(member_ticker) - set(tickers))
 
             fetched: dict[str, str | None] = {}
+            renamed: set[str] = set()
             for ticker in add_tickers:
                 resolved = _resolve(master, ticker, now, now)
+                if resolved in member_ticker.values():
+                    # A rename (FLT -> CPAY): the new ticker resolves to a
+                    # current member, so neither side is an event.
+                    renamed.add(resolved)
+                    continue
                 fetched[resolved or f"unresolved:{ticker}"] = resolved
             adds = sorted(fetched)
-            removes = [member_ticker[ticker] for ticker in remove_tickers]
+            removes = [member_ticker[ticker] for ticker in remove_tickers if member_ticker[ticker] not in renamed]
             added = removed = 0
             if not dry_run:
                 pending = [(key, "add") for key in adds] + [(key, "remove") for key in removes]
@@ -876,11 +882,14 @@ def _plan_r1(
     events: list[SecurityIdentityEvent] = []
     merged_massive_ids: dict[str, str] = {}
 
+    # Pair each Massive duplicate with its canonical id on one matching claim
+    # (CIK + symbol); the merge then moves every claim the duplicate holds, so
+    # a renamed ticker's older symbol moves too (Jacobs: JEC until 2019, then J).
+    matched: dict[str, dict[str, tuple[str, str]]] = {}
     for canonical_id, claims in sorted(researched_by_id.items()):
         ciks = {c.cik for c in claims if c.cik}
         cik_r = next(iter(ciks)) if len(ciks) == 1 else None
-        symbols = {c.symbol for c in claims}
-        for symbol in sorted(symbols):
+        for symbol in sorted({c.symbol for c in claims}):
             for candidate in massive:
                 if candidate.symbol != symbol or candidate.security_id == canonical_id:
                     continue
@@ -896,55 +905,82 @@ def _plan_r1(
                         }
                     )
                     continue
-                reject_id = _r1_reject_event_id(candidate.event_id)
-                merge_id = _r1_merge_event_id(candidate.event_id, canonical_id)
-                revisions[candidate.security_id] = revisions.get(candidate.security_id, 0) + 1
-                events.append(
-                    replace(
-                        candidate,
-                        event_id=reject_id,
-                        revision=revisions[candidate.security_id],
-                        known_at=now,
-                        status="rejected",
-                        supersedes=candidate.event_id,
-                    )
+                matched.setdefault(candidate.security_id, {})[canonical_id] = (symbol, cik_r)
+
+    for massive_id, targets in sorted(matched.items()):
+        if len(targets) > 1:
+            conflicts.append(
+                {
+                    "ticker": ",".join(sorted(symbol for symbol, _ in targets.values())),
+                    "researched_security_id": ",".join(sorted(targets)),
+                    "massive_security_id": massive_id,
+                    "researched_cik": None,
+                    "massive_cik": None,
+                    "reason": "duplicate_matches_two_canonical_ids",
+                }
+            )
+            continue
+        ((canonical_id, (symbol, cik_r)),) = targets.items()
+        for candidate in sorted(
+            (item for item in active if item.security_id == massive_id),
+            key=lambda item: (item.effective_from, item.event_id),
+        ):
+            reject_id = _r1_reject_event_id(candidate.event_id)
+            merge_id = _r1_merge_event_id(candidate.event_id, canonical_id)
+            revisions[massive_id] = revisions.get(massive_id, 0) + 1
+            events.append(
+                replace(
+                    candidate,
+                    event_id=reject_id,
+                    revision=revisions[massive_id],
+                    known_at=now,
+                    status="rejected",
+                    supersedes=candidate.event_id,
                 )
-                revisions[canonical_id] = revisions.get(canonical_id, 0) + 1
-                events.append(
-                    replace(
-                        candidate,
-                        event_id=merge_id,
-                        security_id=canonical_id,
-                        revision=revisions[canonical_id],
-                        known_at=now,
-                        status="verified",
-                        supersedes=None,
-                    )
+            )
+            revisions[canonical_id] = revisions.get(canonical_id, 0) + 1
+            events.append(
+                replace(
+                    candidate,
+                    event_id=merge_id,
+                    security_id=canonical_id,
+                    revision=revisions[canonical_id],
+                    known_at=now,
+                    supersedes=None,
                 )
-                merged_massive_ids[candidate.security_id] = canonical_id
-                merges.append(
-                    {
-                        "cik": cik_r,
-                        "ticker": symbol,
-                        "researched_security_id": canonical_id,
-                        "massive_security_id": candidate.security_id,
-                        "rejected_event_id": reject_id,
-                        "merged_event_id": merge_id,
-                    }
-                )
+            )
+            merges.append(
+                {
+                    "cik": cik_r,
+                    "ticker": candidate.symbol,
+                    "matched_on": symbol,
+                    "researched_security_id": canonical_id,
+                    "massive_security_id": massive_id,
+                    "rejected_event_id": reject_id,
+                    "merged_event_id": merge_id,
+                }
+            )
+        merged_massive_ids[massive_id] = canonical_id
     return merges, conflicts, events, merged_massive_ids
 
 
 def _detect_churn(
     events_by_index: dict[str, list[MembershipEvent]],
     identities: list[SecurityIdentityEvent],
+    merged_massive_ids: dict[str, str] | None = None,
 ) -> dict[str, set[str]]:
     """R4: index_id -> event_ids of same-timestamp remove+add pairs for one
     ticker. `_identity_ticker` already resolves a placeholder to its own
     ticker and a resolved id to the symbol its identity claim covering that
     moment carries, so an add that only *looks* like a different security
     (old id removed, new massive id or placeholder added) still pairs.
+
+    A pair whose two ids R1 merges into one security is churn too, even when
+    the removed id's narrow claim cannot name its ticker at that moment
+    (GOOGL: researched id removed, its Massive duplicate added, 2026-09-17),
+    and is rejected at any `known_at`: the security never left the index.
     """
+    canonical = merged_massive_ids or {}
     churn: dict[str, set[str]] = {}
     for index_id, events in events_by_index.items():
         active = _replay_membership(events)
@@ -953,14 +989,28 @@ def _detect_churn(
             by_time.setdefault(item.effective_at, []).append(item)
         ids: set[str] = set()
         for group in by_time.values():
+            # `live`: only the live diff writes `effective_at == known_at`. A
+            # backfilled rename (TMK -> GL, 2019-08-08, known 2026-09-16) has
+            # the same remove+add shape and is real history.
             removes = [item for item in group if item.action == "remove"]
             adds = [item for item in group if item.action == "add"]
             for rem in removes:
+                live = rem.effective_at == rem.known_at
                 ticker_r = _identity_ticker(rem.security_id, rem.effective_at, identities)
-                if ticker_r is None:
-                    continue
                 for add in adds:
-                    if _identity_ticker(add.security_id, add.effective_at, identities) == ticker_r:
+                    same_security = canonical.get(rem.security_id, rem.security_id) == canonical.get(
+                        add.security_id, add.security_id
+                    )
+                    same_ticker = (
+                        ticker_r is not None
+                        and _identity_ticker(add.security_id, add.effective_at, identities) == ticker_r
+                    )
+                    # Across two ids R1 merges, a same-date remove+add is a
+                    # rename inside the index at any `known_at` (FISV -> FI on
+                    # 2023-06-07): re-pointed onto one id, the store's
+                    # `known_at` order would let the remove win.
+                    renamed = same_security and rem.security_id != add.security_id
+                    if renamed or (live and (same_security or same_ticker)):
                         ids.add(rem.event_id)
                         ids.add(add.event_id)
         churn[index_id] = ids
@@ -1244,7 +1294,13 @@ def _apply_repair(
     store = IndexMembershipStore(root, security_master=reader_master, evidence_verifier=verifier)
     for _index_id, events in sorted(membership_events_by_index.items()):
         for event in events:
-            store.append(event)
+            try:
+                store.append(event)
+            except ValueError as exc:  # name the row: a bare validator message cannot be acted on
+                raise ValueError(
+                    f"{exc}: {event.index_id} {event.action} {event.security_id} "
+                    f"effective {event.effective_at.isoformat()} event {event.event_id}"
+                ) from exc
 
 
 def repair_identity(
@@ -1283,13 +1339,14 @@ def repair_identity(
         )
         for index_id in indexes
     }
-    churn_ids_by_index = _detect_churn(events_by_index, active_identities)
-
     revisions: dict[str, int] = {}
     for item in identities:
         revisions[item.security_id] = max(revisions.get(item.security_id, 0), item.revision)
 
+    # R1 first: churn is judged against the merged identities, or a pair whose
+    # removed id has only a narrow claim is missed and R1b re-points it instead.
     merges, conflicts, r1_events, merged_massive_ids = _plan_r1(identities, revisions, now)
+    churn_ids_by_index = _detect_churn(events_by_index, active_identities, merged_massive_ids)
     extensions, caps, r2_events = _plan_r2(
         identities, events_by_index, churn_ids_by_index, revisions, now, merged_massive_ids
     )

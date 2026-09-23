@@ -81,13 +81,20 @@ current member to its ticker:
   last add.
 
 A ticker present on both sides produces no event, even when it now resolves to
-a different id. Only a ticker that enters or leaves the live list produces an
+a different id. A new live ticker that resolves to a current member is a rename
+(FLT → CPAY): neither the add nor that member's remove is written. Only a ticker that enters or leaves the live list produces an
 add or remove. The live source has no dates, so `effective_at = now` stays for
 genuine changes.
 
 **R4 — reject the churn.** Churn is a same-timestamp pair in one index: a
-`remove` of ticker T and an `add` of T (placeholder or resolved), plus any
-later event that resolves that placeholder. Each churn row that is still
+`remove` written by the live diff (`effective_at == known_at`) and an `add` of
+the same security — the same ticker, or two ids R1 merges — plus any later
+event that resolves that placeholder. A backfilled rename has the same shape
+(TMK → GL on 2019-08-08, known 2026-09-16) and is history, not churn. The
+exception is a same-date remove+add across two ids R1 merges (FISV → FI on
+2023-06-07 and back on 2025-11-11): the security never left the index, so the
+pair is rejected, not re-pointed. Re-pointed onto one id, the store's
+`known_at` order would let the remove win the tie. Each churn row that is still
 active gets a `rejected` row that supersedes it (revision + 1). A verified
 membership event that still references a rejected Massive duplicate after R1b
 fails the run and is reported; it is never guessed.
