@@ -72,6 +72,7 @@ from clients.ingestion_common import (
     bars_to_futures_rows,
     bars_to_midpoint_rows,
     bars_to_rows,
+    is_retired_futures_ticker,
     load_preset,
 )
 from clients.ingestion_common import (
@@ -723,6 +724,11 @@ def main():  # pragma: no cover — only exercised by integration tests
         cursor_name = "custom"
         all_tickers = args.tickers if args.tickers else MAG7
         console.print(f"\n[bold]Tickers:[/bold] {' '.join(all_tickers)}")
+
+    if args.asset_class == "futures":
+        retired = [ticker for ticker in all_tickers if is_retired_futures_ticker(ticker)]
+        if retired:
+            parser.error(f"retired futures contracts cannot be ingested: {', '.join(retired)}")
 
     cursor_name_display = f"backfill_{cursor_name}" if args.backfill else cursor_name
     console.print(f"[bold]Cursor:[/bold]  {_cursor_path(cursor_name_display)}")

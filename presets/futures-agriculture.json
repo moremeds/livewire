@@ -1,0 +1,127 @@
+{
+  "name": "futures-agriculture",
+  "description": "IB-qualified first and second live delivery months for agriculture",
+  "asset_class": "futures",
+  "contracts": [
+    {
+      "root": "SB",
+      "exchange": "NYBOT",
+      "expiry": "202610"
+    },
+    {
+      "root": "SB",
+      "exchange": "NYBOT",
+      "expiry": "202703"
+    },
+    {
+      "root": "KC",
+      "exchange": "NYBOT",
+      "expiry": "202612"
+    },
+    {
+      "root": "KC",
+      "exchange": "NYBOT",
+      "expiry": "202703"
+    },
+    {
+      "root": "CC",
+      "exchange": "NYBOT",
+      "expiry": "202612"
+    },
+    {
+      "root": "CC",
+      "exchange": "NYBOT",
+      "expiry": "202703"
+    },
+    {
+      "root": "CT",
+      "exchange": "NYBOT",
+      "expiry": "202610"
+    },
+    {
+      "root": "CT",
+      "exchange": "NYBOT",
+      "expiry": "202612"
+    },
+    {
+      "root": "OJ",
+      "exchange": "NYBOT",
+      "expiry": "202611"
+    },
+    {
+      "root": "OJ",
+      "exchange": "NYBOT",
+      "expiry": "202701"
+    },
+    {
+      "root": "ZS",
+      "exchange": "CBOT",
+      "expiry": "202611"
+    },
+    {
+      "root": "ZS",
+      "exchange": "CBOT",
+      "expiry": "202701"
+    },
+    {
+      "root": "ZM",
+      "exchange": "CBOT",
+      "expiry": "202610"
+    },
+    {
+      "root": "ZM",
+      "exchange": "CBOT",
+      "expiry": "202612"
+    },
+    {
+      "root": "ZL",
+      "exchange": "CBOT",
+      "expiry": "202610"
+    },
+    {
+      "root": "ZL",
+      "exchange": "CBOT",
+      "expiry": "202612"
+    },
+    {
+      "root": "ZC",
+      "exchange": "CBOT",
+      "expiry": "202612"
+    },
+    {
+      "root": "ZC",
+      "exchange": "CBOT",
+      "expiry": "202703"
+    },
+    {
+      "root": "ZW",
+      "exchange": "CBOT",
+      "expiry": "202612"
+    },
+    {
+      "root": "ZW",
+      "exchange": "CBOT",
+      "expiry": "202703"
+    },
+    {
+      "root": "LE",
+      "exchange": "CME",
+      "expiry": "202610"
+    },
+    {
+      "root": "LE",
+      "exchange": "CME",
+      "expiry": "202612"
+    },
+    {
+      "root": "HE",
+      "exchange": "CME",
+      "expiry": "202610"
+    },
+    {
+      "root": "HE",
+      "exchange": "CME",
+      "expiry": "202612"
+    }
+  ]
+}

@@ -6,6 +6,7 @@ Extracted from daily_update and fetch_ib_historical to eliminate duplication.
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 
 from ib_async import Contract, Forex, Future, Index, Stock
@@ -27,9 +28,33 @@ ROOT_EXCHANGE_MAP = {
     "ZF": "CBOT",
     "CL": "NYMEX",
     "NG": "NYMEX",
+    "COIL": "IPE",
+    "RB": "NYMEX",
+    "HO": "NYMEX",
+    "HG": "COMEX",
+    "SB": "NYBOT",
+    "KC": "NYBOT",
+    "CC": "NYBOT",
+    "CT": "NYBOT",
+    "OJ": "NYBOT",
+    "ZS": "CBOT",
+    "ZM": "CBOT",
+    "ZL": "CBOT",
+    "ZC": "CBOT",
+    "ZW": "CBOT",
+    "LE": "CME",
+    "HE": "CME",
     "GC": "COMEX",
     "SI": "COMEX",
 }
+
+RETIRED_FUTURES_ROOT = "BZ"
+
+
+def is_retired_futures_ticker(ticker: str) -> bool:
+    """Return whether a futures contract root is retired from ingestion."""
+    return ticker.split("_", 1)[0].upper() == RETIRED_FUTURES_ROOT
+
 
 SUPPORTED_IB_FX_PAIRS = {
     "EURUSD",
@@ -95,7 +120,11 @@ def make_contract(ticker: str, asset_class: str = "equity", exchange: str | None
     """Build an IB contract for the given *ticker* and *asset_class*."""
     if asset_class == "futures":
         root, expiry = ticker.rsplit("_", 1)
+        if is_retired_futures_ticker(ticker):
+            raise ValueError(f"futures contract {ticker!r} is retired for ingestion")
         exch = exchange or ROOT_EXCHANGE_MAP.get(root, "CME")
+        if root == "SI":
+            return Future(root, expiry, exch, multiplier="5000", currency="USD", tradingClass="SI")
         return Future(root, expiry, exch, currency="USD")
     if asset_class == "cmdty":
         return Contract(
@@ -211,6 +240,64 @@ def load_preset(path: str | Path) -> tuple[str, list[str], dict[str, str]]:
         return (data["name"], tickers, exchange_map)
 
     return (data["name"], data["tickers"], exchange_map)
+
+
+def resolve_rolling_futures_preset(path: str | Path, ib_client, as_of: date) -> tuple[str, list[str], dict[str, str]]:
+    """Resolve a rolling futures preset against currently listed IB contracts."""
+    data = json.loads(Path(path).read_text())
+    rules = data.get("rolling_contracts")
+    if not rules:
+        raise ValueError(f"preset {path} has no rolling_contracts rules")
+
+    tickers: list[str] = []
+    exchange_map: dict[str, str] = {}
+    for rule in rules:
+        count = int(rule["count"]) if "count" in rule else None
+        months_ahead = int(rule["months_ahead"]) if "months_ahead" in rule else None
+        if (count is None) == (months_ahead is None):
+            raise ValueError(f"rolling rule must set exactly one of count or months_ahead: {rule!r}")
+        if count is not None and count < 1:
+            raise ValueError(f"rolling contract count must be positive: {rule!r}")
+        if months_ahead is not None and months_ahead < 1:
+            raise ValueError(f"rolling month horizon must be positive: {rule!r}")
+        start_month_index = as_of.year * 12 + as_of.month - 1
+        end_month_index = start_month_index + months_ahead if months_ahead is not None else None
+        end_month = (
+            f"{end_month_index // 12:04d}{end_month_index % 12 + 1:02d}" if end_month_index is not None else None
+        )
+        for root in rule["roots"]:
+            exchange = ROOT_EXCHANGE_MAP[root]
+            request = make_contract(f"{root}_", "futures", exchange)
+            details = ib_client.get_contract_details(request)
+            candidates: dict[str, str] = {}
+            for detail in details:
+                contract = detail.contract
+                if root == "SI" and (contract.tradingClass != "SI" or str(contract.multiplier) != "5000"):
+                    continue
+                delivery_month = str(detail.contractMonth)[:6]
+                if len(delivery_month) != 6 or not delivery_month.isdigit():
+                    continue
+                last_trade = str(contract.lastTradeDateOrContractMonth or "")
+                if len(last_trade) == 8 and last_trade.isdigit():
+                    if date.fromisoformat(f"{last_trade[:4]}-{last_trade[4:6]}-{last_trade[6:8]}") < as_of:
+                        continue
+                elif len(last_trade) == 6 and last_trade.isdigit() and last_trade < f"{as_of:%Y%m}":
+                    continue
+                candidates.setdefault(delivery_month, exchange)
+            selected = sorted(
+                month for month in candidates if month >= f"{as_of:%Y%m}" and (end_month is None or month <= end_month)
+            )
+            if count is not None:
+                selected = selected[:count]
+            if count is None and not selected:
+                raise ValueError(f"IB listed no live contracts for {root} in the rolling month horizon")
+            if count is not None and len(selected) < count:
+                raise ValueError(f"IB listed only {len(selected)} live contracts for {root}; expected {count}")
+            for expiry in selected:
+                ticker = f"{root}_{expiry}"
+                tickers.append(ticker)
+                exchange_map[ticker] = candidates[expiry]
+    return data["name"], tickers, exchange_map
 
 
 def action_store_for_bronze(bronze_dir: Path) -> CorporateActionStore:

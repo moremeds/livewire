@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 from datetime import UTC, date, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -238,6 +239,61 @@ class TestComputeDateWindows:
 
 
 class TestLoadPreset:
+    def test_active_futures_preset_retires_bz_and_selects_coil(self):
+        preset = Path(__file__).resolve().parents[1] / "presets" / "futures-active.json"
+        name, tickers, exchange_map = load_preset(preset)
+
+        assert name == "futures-active"
+        assert not any(ticker.startswith("BZ_") for ticker in tickers)
+        assert "COIL_202611" in tickers
+        assert "COIL_202712" in tickers
+        assert {exchange_map[ticker] for ticker in tickers if ticker.startswith("COIL_")} == {"IPE"}
+
+    def test_commodity_backfill_presets_match_ib_manifest(self):
+        repo = Path(__file__).resolve().parents[1]
+        manifest = json.loads(
+            (repo / "docs/audits/price-discovery/COMMODITY_BACKFILL_MANIFEST_2026-09-23.json").read_text()
+        )
+        groups = {
+            "futures-active": {
+                "CL",
+                "NG",
+                "COIL",
+                "RB",
+                "HO",
+                "GC",
+                "SI",
+                "HG",
+                "SB",
+                "KC",
+                "CC",
+                "CT",
+                "OJ",
+                "ZS",
+                "ZM",
+                "ZL",
+                "ZC",
+                "ZW",
+                "LE",
+                "HE",
+            },
+            "futures-energy": {"CL", "NG", "COIL", "RB", "HO"},
+            "futures-metals": {"GC", "SI", "HG"},
+            "futures-agriculture": {"SB", "KC", "CC", "CT", "OJ", "ZS", "ZM", "ZL", "ZC", "ZW", "LE", "HE"},
+        }
+
+        for preset_name, roots in groups.items():
+            name, tickers, exchanges = load_preset(repo / f"presets/{preset_name}.json")
+            expected = {
+                contract["ticker"] for contract in manifest["contracts"] if contract["ticker"].split("_", 1)[0] in roots
+            }
+            assert name == preset_name
+            assert set(tickers) == expected
+            assert all(
+                exchanges[ticker] == next(c["exchange"] for c in manifest["contracts"] if c["ticker"] == ticker)
+                for ticker in tickers
+            )
+
     def test_loads_preset_file(self, tmp_path):
         preset = {"name": "test-preset", "tickers": ["AAPL", "MSFT", "NVDA"]}
         preset_file = tmp_path / "test.json"
@@ -689,6 +745,41 @@ class TestMakeContract:
         contract_explicit = _make_contract("ES_202506", "futures", exchange="GLOBEX")
         assert isinstance(contract_explicit, Future)
         assert contract_explicit.exchange == "GLOBEX"
+
+    @pytest.mark.parametrize(
+        ("ticker", "exchange"),
+        [
+            ("COIL_202610", "IPE"),
+            ("RB_202610", "NYMEX"),
+            ("HO_202611", "NYMEX"),
+            ("HG_202612", "COMEX"),
+            ("SB_202609", "NYBOT"),
+            ("KC_202612", "NYBOT"),
+            ("CC_202612", "NYBOT"),
+            ("CT_202610", "NYBOT"),
+            ("OJ_202611", "NYBOT"),
+            ("ZS_202611", "CBOT"),
+            ("ZM_202612", "CBOT"),
+            ("ZL_202612", "CBOT"),
+            ("ZC_202612", "CBOT"),
+            ("ZW_202612", "CBOT"),
+            ("LE_202610", "CME"),
+            ("HE_202610", "CME"),
+        ],
+    )
+    def test_make_contract_maps_new_commodity_roots(self, ticker, exchange):
+        assert _make_contract(ticker, "futures").exchange == exchange
+
+    def test_make_contract_rejects_retired_bz(self):
+        with pytest.raises(ValueError, match="retired for ingestion"):
+            _make_contract("BZ_202610", "futures")
+
+    def test_make_contract_selects_standard_si_contract_over_sil(self):
+        contract = _make_contract("SI_202609", "futures")
+
+        assert contract.exchange == "COMEX"
+        assert contract.multiplier == "5000"
+        assert contract.tradingClass == "SI"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1593,6 +1684,14 @@ def _mock_massive_instance(ticker_bars):
 
 
 class TestMain:
+    def test_main_rejects_explicit_retired_bz_ingestion(self, monkeypatch):
+        monkeypatch.setattr(
+            "sys.argv",
+            ["fetch_ib_historical.py", "--tickers", "BZ_202610", "--asset-class", "futures"],
+        )
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
     @pytest.mark.integration
     def test_main_end_to_end(self, tmp_path, monkeypatch):
         """Full integration: main() with mocked IB client and bronze parquet."""

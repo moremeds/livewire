@@ -1,18 +1,522 @@
 {
   "name": "futures-active",
-  "description": "Active COMEX/NYMEX metals + energy futures. Every contract month below was verified against live IB on 2026-08-02: qualified, and returning daily TRADES bars through the 2026-07-31 session. Each root now carries its front month plus the forward strip, so one expiry rolling off no longer empties the preset — of the 202607/202608/202609 set this replaces, 3 of 4 contracts had expired by 2026-08-02, which is why the nightly futures lane reported updated=1 no_trade=3.",
+  "description": "Frozen IB-qualified 2026-09-23 seed manifest; nightly collection resolves futures-rolling.json against current IB listings",
   "asset_class": "futures",
   "contracts": [
-    {"root": "GC", "exchange": "COMEX", "expiry": "202608"},
-    {"root": "GC", "exchange": "COMEX", "expiry": "202610"},
-    {"root": "GC", "exchange": "COMEX", "expiry": "202612"},
-    {"root": "GC", "exchange": "COMEX", "expiry": "202702"},
-    {"root": "CL", "exchange": "NYMEX", "expiry": "202609"},
-    {"root": "CL", "exchange": "NYMEX", "expiry": "202610"},
-    {"root": "CL", "exchange": "NYMEX", "expiry": "202611"},
-    {"root": "CL", "exchange": "NYMEX", "expiry": "202612"},
-    {"root": "BZ", "exchange": "NYMEX", "expiry": "202610"},
-    {"root": "BZ", "exchange": "NYMEX", "expiry": "202611"},
-    {"root": "BZ", "exchange": "NYMEX", "expiry": "202612"}
+    {
+      "root": "CL",
+      "exchange": "NYMEX",
+      "expiry": "202611"
+    },
+    {
+      "root": "CL",
+      "exchange": "NYMEX",
+      "expiry": "202612"
+    },
+    {
+      "root": "CL",
+      "exchange": "NYMEX",
+      "expiry": "202701"
+    },
+    {
+      "root": "CL",
+      "exchange": "NYMEX",
+      "expiry": "202702"
+    },
+    {
+      "root": "CL",
+      "exchange": "NYMEX",
+      "expiry": "202703"
+    },
+    {
+      "root": "CL",
+      "exchange": "NYMEX",
+      "expiry": "202704"
+    },
+    {
+      "root": "CL",
+      "exchange": "NYMEX",
+      "expiry": "202705"
+    },
+    {
+      "root": "CL",
+      "exchange": "NYMEX",
+      "expiry": "202706"
+    },
+    {
+      "root": "CL",
+      "exchange": "NYMEX",
+      "expiry": "202707"
+    },
+    {
+      "root": "CL",
+      "exchange": "NYMEX",
+      "expiry": "202708"
+    },
+    {
+      "root": "CL",
+      "exchange": "NYMEX",
+      "expiry": "202709"
+    },
+    {
+      "root": "CL",
+      "exchange": "NYMEX",
+      "expiry": "202710"
+    },
+    {
+      "root": "CL",
+      "exchange": "NYMEX",
+      "expiry": "202711"
+    },
+    {
+      "root": "CL",
+      "exchange": "NYMEX",
+      "expiry": "202712"
+    },
+    {
+      "root": "NG",
+      "exchange": "NYMEX",
+      "expiry": "202610"
+    },
+    {
+      "root": "NG",
+      "exchange": "NYMEX",
+      "expiry": "202611"
+    },
+    {
+      "root": "NG",
+      "exchange": "NYMEX",
+      "expiry": "202612"
+    },
+    {
+      "root": "NG",
+      "exchange": "NYMEX",
+      "expiry": "202701"
+    },
+    {
+      "root": "NG",
+      "exchange": "NYMEX",
+      "expiry": "202702"
+    },
+    {
+      "root": "NG",
+      "exchange": "NYMEX",
+      "expiry": "202703"
+    },
+    {
+      "root": "NG",
+      "exchange": "NYMEX",
+      "expiry": "202704"
+    },
+    {
+      "root": "NG",
+      "exchange": "NYMEX",
+      "expiry": "202705"
+    },
+    {
+      "root": "NG",
+      "exchange": "NYMEX",
+      "expiry": "202706"
+    },
+    {
+      "root": "NG",
+      "exchange": "NYMEX",
+      "expiry": "202707"
+    },
+    {
+      "root": "NG",
+      "exchange": "NYMEX",
+      "expiry": "202708"
+    },
+    {
+      "root": "NG",
+      "exchange": "NYMEX",
+      "expiry": "202709"
+    },
+    {
+      "root": "NG",
+      "exchange": "NYMEX",
+      "expiry": "202710"
+    },
+    {
+      "root": "NG",
+      "exchange": "NYMEX",
+      "expiry": "202711"
+    },
+    {
+      "root": "NG",
+      "exchange": "NYMEX",
+      "expiry": "202712"
+    },
+    {
+      "root": "COIL",
+      "exchange": "IPE",
+      "expiry": "202611"
+    },
+    {
+      "root": "COIL",
+      "exchange": "IPE",
+      "expiry": "202612"
+    },
+    {
+      "root": "COIL",
+      "exchange": "IPE",
+      "expiry": "202701"
+    },
+    {
+      "root": "COIL",
+      "exchange": "IPE",
+      "expiry": "202702"
+    },
+    {
+      "root": "COIL",
+      "exchange": "IPE",
+      "expiry": "202703"
+    },
+    {
+      "root": "COIL",
+      "exchange": "IPE",
+      "expiry": "202704"
+    },
+    {
+      "root": "COIL",
+      "exchange": "IPE",
+      "expiry": "202705"
+    },
+    {
+      "root": "COIL",
+      "exchange": "IPE",
+      "expiry": "202706"
+    },
+    {
+      "root": "COIL",
+      "exchange": "IPE",
+      "expiry": "202707"
+    },
+    {
+      "root": "COIL",
+      "exchange": "IPE",
+      "expiry": "202708"
+    },
+    {
+      "root": "COIL",
+      "exchange": "IPE",
+      "expiry": "202709"
+    },
+    {
+      "root": "COIL",
+      "exchange": "IPE",
+      "expiry": "202710"
+    },
+    {
+      "root": "COIL",
+      "exchange": "IPE",
+      "expiry": "202711"
+    },
+    {
+      "root": "COIL",
+      "exchange": "IPE",
+      "expiry": "202712"
+    },
+    {
+      "root": "RB",
+      "exchange": "NYMEX",
+      "expiry": "202610"
+    },
+    {
+      "root": "RB",
+      "exchange": "NYMEX",
+      "expiry": "202611"
+    },
+    {
+      "root": "RB",
+      "exchange": "NYMEX",
+      "expiry": "202612"
+    },
+    {
+      "root": "RB",
+      "exchange": "NYMEX",
+      "expiry": "202701"
+    },
+    {
+      "root": "RB",
+      "exchange": "NYMEX",
+      "expiry": "202702"
+    },
+    {
+      "root": "RB",
+      "exchange": "NYMEX",
+      "expiry": "202703"
+    },
+    {
+      "root": "RB",
+      "exchange": "NYMEX",
+      "expiry": "202704"
+    },
+    {
+      "root": "RB",
+      "exchange": "NYMEX",
+      "expiry": "202705"
+    },
+    {
+      "root": "RB",
+      "exchange": "NYMEX",
+      "expiry": "202706"
+    },
+    {
+      "root": "RB",
+      "exchange": "NYMEX",
+      "expiry": "202707"
+    },
+    {
+      "root": "RB",
+      "exchange": "NYMEX",
+      "expiry": "202708"
+    },
+    {
+      "root": "RB",
+      "exchange": "NYMEX",
+      "expiry": "202709"
+    },
+    {
+      "root": "RB",
+      "exchange": "NYMEX",
+      "expiry": "202710"
+    },
+    {
+      "root": "RB",
+      "exchange": "NYMEX",
+      "expiry": "202711"
+    },
+    {
+      "root": "RB",
+      "exchange": "NYMEX",
+      "expiry": "202712"
+    },
+    {
+      "root": "HO",
+      "exchange": "NYMEX",
+      "expiry": "202610"
+    },
+    {
+      "root": "HO",
+      "exchange": "NYMEX",
+      "expiry": "202611"
+    },
+    {
+      "root": "HO",
+      "exchange": "NYMEX",
+      "expiry": "202612"
+    },
+    {
+      "root": "HO",
+      "exchange": "NYMEX",
+      "expiry": "202701"
+    },
+    {
+      "root": "HO",
+      "exchange": "NYMEX",
+      "expiry": "202702"
+    },
+    {
+      "root": "HO",
+      "exchange": "NYMEX",
+      "expiry": "202703"
+    },
+    {
+      "root": "HO",
+      "exchange": "NYMEX",
+      "expiry": "202704"
+    },
+    {
+      "root": "HO",
+      "exchange": "NYMEX",
+      "expiry": "202705"
+    },
+    {
+      "root": "HO",
+      "exchange": "NYMEX",
+      "expiry": "202706"
+    },
+    {
+      "root": "HO",
+      "exchange": "NYMEX",
+      "expiry": "202707"
+    },
+    {
+      "root": "HO",
+      "exchange": "NYMEX",
+      "expiry": "202708"
+    },
+    {
+      "root": "HO",
+      "exchange": "NYMEX",
+      "expiry": "202709"
+    },
+    {
+      "root": "HO",
+      "exchange": "NYMEX",
+      "expiry": "202710"
+    },
+    {
+      "root": "HO",
+      "exchange": "NYMEX",
+      "expiry": "202711"
+    },
+    {
+      "root": "HO",
+      "exchange": "NYMEX",
+      "expiry": "202712"
+    },
+    {
+      "root": "GC",
+      "exchange": "COMEX",
+      "expiry": "202609"
+    },
+    {
+      "root": "GC",
+      "exchange": "COMEX",
+      "expiry": "202610"
+    },
+    {
+      "root": "SI",
+      "exchange": "COMEX",
+      "expiry": "202609"
+    },
+    {
+      "root": "SI",
+      "exchange": "COMEX",
+      "expiry": "202610"
+    },
+    {
+      "root": "HG",
+      "exchange": "COMEX",
+      "expiry": "202609"
+    },
+    {
+      "root": "HG",
+      "exchange": "COMEX",
+      "expiry": "202610"
+    },
+    {
+      "root": "SB",
+      "exchange": "NYBOT",
+      "expiry": "202610"
+    },
+    {
+      "root": "SB",
+      "exchange": "NYBOT",
+      "expiry": "202703"
+    },
+    {
+      "root": "KC",
+      "exchange": "NYBOT",
+      "expiry": "202612"
+    },
+    {
+      "root": "KC",
+      "exchange": "NYBOT",
+      "expiry": "202703"
+    },
+    {
+      "root": "CC",
+      "exchange": "NYBOT",
+      "expiry": "202612"
+    },
+    {
+      "root": "CC",
+      "exchange": "NYBOT",
+      "expiry": "202703"
+    },
+    {
+      "root": "CT",
+      "exchange": "NYBOT",
+      "expiry": "202610"
+    },
+    {
+      "root": "CT",
+      "exchange": "NYBOT",
+      "expiry": "202612"
+    },
+    {
+      "root": "OJ",
+      "exchange": "NYBOT",
+      "expiry": "202611"
+    },
+    {
+      "root": "OJ",
+      "exchange": "NYBOT",
+      "expiry": "202701"
+    },
+    {
+      "root": "ZS",
+      "exchange": "CBOT",
+      "expiry": "202611"
+    },
+    {
+      "root": "ZS",
+      "exchange": "CBOT",
+      "expiry": "202701"
+    },
+    {
+      "root": "ZM",
+      "exchange": "CBOT",
+      "expiry": "202610"
+    },
+    {
+      "root": "ZM",
+      "exchange": "CBOT",
+      "expiry": "202612"
+    },
+    {
+      "root": "ZL",
+      "exchange": "CBOT",
+      "expiry": "202610"
+    },
+    {
+      "root": "ZL",
+      "exchange": "CBOT",
+      "expiry": "202612"
+    },
+    {
+      "root": "ZC",
+      "exchange": "CBOT",
+      "expiry": "202612"
+    },
+    {
+      "root": "ZC",
+      "exchange": "CBOT",
+      "expiry": "202703"
+    },
+    {
+      "root": "ZW",
+      "exchange": "CBOT",
+      "expiry": "202612"
+    },
+    {
+      "root": "ZW",
+      "exchange": "CBOT",
+      "expiry": "202703"
+    },
+    {
+      "root": "LE",
+      "exchange": "CME",
+      "expiry": "202610"
+    },
+    {
+      "root": "LE",
+      "exchange": "CME",
+      "expiry": "202612"
+    },
+    {
+      "root": "HE",
+      "exchange": "CME",
+      "expiry": "202610"
+    },
+    {
+      "root": "HE",
+      "exchange": "CME",
+      "expiry": "202612"
+    }
   ]
 }

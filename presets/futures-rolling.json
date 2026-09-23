@@ -1,0 +1,10 @@
+{
+  "name": "futures-rolling",
+  "description": "IB-listed energy delivery contracts through a rolling 15-month horizon and first two live metals/agriculture maturities",
+  "asset_class": "futures",
+  "rolling_contracts": [
+    {"roots": ["CL", "NG", "COIL", "RB", "HO"], "months_ahead": 15},
+    {"roots": ["GC", "SI", "HG"], "count": 2},
+    {"roots": ["SB", "KC", "CC", "CT", "OJ", "ZS", "ZM", "ZL", "ZC", "ZW", "LE", "HE"], "count": 2}
+  ]
+}

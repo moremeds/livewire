@@ -225,6 +225,11 @@ python scripts/livewire_ingest.py historical --preset presets/futures-energy.jso
 python scripts/livewire_ingest.py historical --host 192.168.1.50 --port 4001 --tickers AAPL            # Remote IB Gateway
 ```
 
+`BZ` is retired from new futures ingestion: daily directory discovery skips
+stored BZ contracts and historical/daily BZ requests fail before IB access.
+Stored BZ parquet remains readable. `COIL` is maintained as its own IPE series;
+the two roots are never merged, relabeled, or treated as continuous history.
+
 **Backfill mode** (`--backfill`) fetches only missing older data for tickers
 already in bronze parquet:
 
@@ -377,6 +382,13 @@ python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --asset-class
 - `--asset-class futures` uses `Future(root, expiry, exchange)` contracts with
   composite tickers (`ES_202506`), writes to `data-lake/bronze/asset_class=futures/`,
   and uses the futures parquet schema.
+- The scheduled `daily --asset-class futures` lane resolves `presets/futures-rolling.json`
+  against IB ContractDetails on each run. It tracks all listed energy delivery
+  months through the current month plus 15 months, and the first two live delivery contracts for metals and
+  agriculture. Missing selected contracts are full-history seeded through the
+  robust IB runner before the daily scan; contracts outside the current window
+  remain stored but are not part of that lane's daily update set. The dated
+  `futures-active.json` is a reproducible seed snapshot, not the rolling rule.
 
 ---
 

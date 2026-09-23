@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 from datetime import date
+from subprocess import CompletedProcess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -876,6 +877,81 @@ def _mock_massive_instance(ticker_bars=None):
 
 
 class TestMain:
+    @pytest.mark.integration
+    def test_explicit_retired_bz_ticker_is_rejected_before_lake_access(self, monkeypatch):
+        monkeypatch.setattr(
+            "sys.argv",
+            ["daily_update.py", "--asset-class", "futures", "--tickers", "BZ_202610"],
+        )
+        with patch("livewire_scripts.daily_update.BronzeClient", side_effect=AssertionError("must not open lake")):
+            assert main() == 2
+
+    @pytest.mark.integration
+    def test_existing_bz_directory_is_skipped_while_other_futures_remain_active(self, monkeypatch):
+        monkeypatch.setattr(
+            "sys.argv",
+            ["daily_update.py", "--asset-class", "futures", "--dry-run", "--target-date", "2025-01-03"],
+        )
+        mock_bronze = MagicMock()
+        mock_bronze.__enter__ = MagicMock(return_value=mock_bronze)
+        mock_bronze.__exit__ = MagicMock(return_value=False)
+        mock_bronze.get_latest_dates.return_value = {
+            "BZ_202610": "2025-01-02",
+            "CL_202610": "2025-01-03",
+        }
+        with (
+            patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
+            patch("livewire_scripts.daily_update._et_today", return_value=date(2025, 1, 3)),
+            patch("livewire_scripts.daily_update.IBClient") as ib_client,
+            patch(
+                "livewire_scripts.daily_update.resolve_rolling_futures_preset",
+                return_value=("futures-rolling", ["CL_202610"], {}),
+            ),
+            patch("livewire_scripts.daily_update.BronzeClient", return_value=mock_bronze),
+            patch("livewire_scripts.daily_update.console.print") as print_mock,
+        ):
+            ib_client.return_value.__enter__.return_value = ib_client.return_value
+            main()
+
+        printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
+        assert "Skipped 1 retired BZ contract" in printed
+        assert "Gap Report (1 tickers)" in printed
+
+    @pytest.mark.integration
+    def test_default_futures_lane_seeds_missing_rolling_contract_before_scan(self, tmp_path, monkeypatch):
+        today = date(2026, 9, 23)
+        monkeypatch.setattr(
+            "sys.argv",
+            ["daily_update.py", "--asset-class", "futures", "--force"],
+        )
+        monkeypatch.setattr("livewire_scripts.daily_update.BRONZE_DIR", tmp_path / "futures-bronze")
+        mock_bronze = MagicMock()
+        mock_bronze.__enter__ = MagicMock(return_value=mock_bronze)
+        mock_bronze.__exit__ = MagicMock(return_value=False)
+        mock_bronze.get_latest_dates.return_value = {"CL_202611": today.isoformat()}
+        mock_ib = MagicMock()
+        mock_ib.__enter__.return_value = mock_ib
+        seed = CompletedProcess([], 0)
+
+        with (
+            patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
+            patch("livewire_scripts.daily_update._et_today", return_value=today),
+            patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
+            patch(
+                "livewire_scripts.daily_update.resolve_rolling_futures_preset",
+                return_value=("futures-rolling", ["CL_202611"], {}),
+            ),
+            patch("livewire_scripts.daily_update.subprocess.run", return_value=seed) as run_seed,
+            patch("livewire_scripts.daily_update.BronzeClient", return_value=mock_bronze),
+            patch("livewire_scripts.daily_update.console.print"),
+        ):
+            main()
+
+        command = run_seed.call_args.args[0]
+        assert command[command.index("--mode") + 1] == "seed"
+        assert command[command.index("--source") + 1] == "ib"
+        assert command[command.index("--tickers") + 1] == "CL_202611"
+
     @pytest.fixture(autouse=True)
     def _isolate_live_massive_credentials(self, monkeypatch):
         """Unit/integration fixtures must opt into Massive with an explicit mock."""
@@ -1567,6 +1643,10 @@ class TestMain:
             patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
             patch(
+                "livewire_scripts.daily_update.resolve_rolling_futures_preset",
+                return_value=("futures-rolling", ["ES_202506"], {}),
+            ),
+            patch(
                 "livewire_scripts.daily_update.FallbackClient",
                 return_value=mock_fallback,
             ),
@@ -1624,6 +1704,10 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
+            patch(
+                "livewire_scripts.daily_update.resolve_rolling_futures_preset",
+                return_value=("futures-rolling", ["ES_202506"], {}),
+            ),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
                 return_value=mock_fallback,
@@ -2443,6 +2527,10 @@ class TestMain:
             patch("livewire_scripts.daily_update.is_trading_day", return_value=True),
             patch("livewire_scripts.daily_update._et_today", return_value=today),
             patch("livewire_scripts.daily_update.IBClient", return_value=mock_ib),
+            patch(
+                "livewire_scripts.daily_update.resolve_rolling_futures_preset",
+                return_value=("futures-rolling", ["ES_202506"], {}),
+            ),
             patch(
                 "livewire_scripts.daily_update.FallbackClient",
                 return_value=mock_fallback,
