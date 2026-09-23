@@ -360,15 +360,20 @@ async def fetch_ticker_bars(
     end_dt_override: datetime | None = None,
     asset_class: str = "equity",
     exchange: str | None = None,
+    include_expired: bool = False,
 ) -> tuple[str, list]:
     """Fetch historical daily bars for *ticker*.
 
     When *max_years* > 0, caps lookback to that many years instead of inception.
     When *end_dt_override* is set, uses it as the end date and ignores *max_years*.
+    When *include_expired* is set, the contract carries ``includeExpired`` so IB
+    can qualify expired futures contracts (futures only; enforced by the CLI).
     Returns ``(ticker, bars)`` where bars are deduplicated IB BarData objects.
     """
     t0 = time.monotonic()
     contract = _make_contract(ticker, asset_class, exchange=exchange)
+    if include_expired:
+        contract.includeExpired = True
     await ib.ib.qualifyContractsAsync(contract)
 
     head_ts = await ib.get_head_timestamp_async(contract)
@@ -437,6 +442,7 @@ async def fetch_all_tickers(
     end_dt_overrides: dict[str, datetime] | None = None,
     asset_class: str = "equity",
     exchange_map: dict[str, str] | None = None,
+    include_expired: bool = False,
 ) -> dict[str, list | None]:
     """Fetch historical bars for all *tickers* concurrently.
 
@@ -464,6 +470,7 @@ async def fetch_all_tickers(
                 end_dt_override=edt,
                 asset_class=asset_class,
                 exchange=exch,
+                include_expired=include_expired,
             )
         except (IBError, Exception) as exc:
             console.print(f"    [red]{ticker}: {type(exc).__name__} — {exc}[/red]")
@@ -697,11 +704,18 @@ def main():  # pragma: no cover — only exercised by integration tests
         help="Asset class to fetch (default: equity).",
     )
     parser.add_argument(
+        "--include-expired",
+        action="store_true",
+        help="Qualify expired futures contracts via IB includeExpired (requires --asset-class futures; default off).",
+    )
+    parser.add_argument(
         "--no-quality",
         action="store_true",
         help="Disable the post-fetch quality detection hook (debug only).",
     )
     args = parser.parse_args()
+    if args.include_expired and args.asset_class != "futures":
+        parser.error("--include-expired is only valid with --asset-class futures")
     quality_detector.QUALITY_ENABLED = not args.no_quality
     resolved_source = _resolve_historical_source(
         args.source,
@@ -739,6 +753,10 @@ def main():  # pragma: no cover — only exercised by integration tests
         f"  host={args.host}  port={args.port}  years={years_label}  skip_existing={args.skip_existing}"
         f"  mode={mode_label}  source={args.source}->{resolved_source}"
     )
+    if args.include_expired:
+        console.print(
+            "[yellow]includeExpired enabled: expired futures contracts are eligible for qualification[/yellow]"
+        )
 
     # ── Cursor management ────────────────────────────────────────────
     effective_cursor = f"backfill_{cursor_name}" if args.backfill else cursor_name
@@ -809,6 +827,7 @@ def main():  # pragma: no cover — only exercised by integration tests
                         asset_class=asset_class,
                         bronze_dir=bronze_dir,
                         exchange_map=exchange_map,
+                        include_expired=args.include_expired,
                     )
                 else:
                     _run_normal(
@@ -823,6 +842,7 @@ def main():  # pragma: no cover — only exercised by integration tests
                         asset_class=asset_class,
                         bronze_dir=bronze_dir,
                         exchange_map=exchange_map,
+                        include_expired=args.include_expired,
                     )
 
         run_elapsed = time.monotonic() - run_t0
@@ -852,6 +872,7 @@ def _run_backfill(
     asset_class="equity",
     bronze_dir=None,
     exchange_map=None,
+    include_expired=False,
 ):
     """Backfill mode: fetch only missing older data for tickers already in bronze."""
     oldest_dates = get_oldest_dates(bronze)
@@ -904,6 +925,7 @@ def _run_backfill(
                 end_dt_overrides=batch_overrides,
                 asset_class=asset_class,
                 exchange_map=exchange_map,
+                include_expired=include_expired,
             )
         )
 
@@ -1110,6 +1132,7 @@ def _run_normal(
     asset_class="equity",
     bronze_dir=None,
     exchange_map=None,
+    include_expired=False,
 ):
     """Normal fetch mode: replace the per-ticker bronze snapshot."""
     if args.skip_existing:
@@ -1152,6 +1175,7 @@ def _run_normal(
                 max_years=args.years,
                 asset_class=asset_class,
                 exchange_map=exchange_map,
+                include_expired=include_expired,
             )
         )
 
