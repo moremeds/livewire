@@ -8,10 +8,11 @@ import json
 import os
 import socket
 import sys
+from collections import defaultdict
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Lock
@@ -19,20 +20,36 @@ from threading import Event, Lock
 import pyarrow.parquet as pq
 
 from clients import constants, ledger
+from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import (
     CorporateAction,
     CorporateActionStore,
     DividendConversion,
     ProviderEvent,
+    SplitAddition,
 )
+from clients.ib_client import IBClient
+from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from clients.ingestion_common import load_preset
 from clients.massive_client import MassiveAuthError, MassiveClient, MassivePageEvidence
 from clients.source_evidence import SourceEvidence, SourceEvidenceStore, canonical_bytes, digest_bytes
 from clients.symbol_paths import canonical_symbol, decode_symbol
 from clients.telemetry import MassiveTelemetry
+from clients.yahoo_basis import ib_split_step_verdict, reconcile_splits
+from clients.yahoo_client import _DEFAULT_BASE_URL as YAHOO_CHART_URL
+from clients.yahoo_client import YahooClient
+from livewire_scripts.adjusted_history_sources import IBHistoryFetcher
 from livewire_scripts.corporate_action_cursor import build_identity, default_cursor_path, open_cursor
 from livewire_scripts.job_runner_common import emit_progress
 from livewire_scripts.paths import data_lake_dir
+from livewire_scripts.shepherd_actions import (
+    RESTORATION_IDENTITY_PREFIX,
+    RESTORATION_KIND,
+    RESTORATION_VERSION,
+    SPLIT_DAY_TOL,
+    SPLIT_RATIO_TOL,
+    YAHOO_ONLY_BEFORE,
+)
 
 # Share of attempted symbols that may fail before the run counts as systemic.
 FAILURE_RATE_TOLERANCE = constants.declared("failure_rate_tolerance")
@@ -977,10 +994,396 @@ def convert_dividend_currency_main(argv: Sequence[str]) -> int:
     return 0
 
 
+# --- restore-yahoo-splits --------------------------------------------------
+
+_IB_WINDOW_DAYS = 21
+
+
+def _cancelled_yahoo_split_candidates(
+    store: CorporateActionStore, symbols: list[str]
+) -> list[tuple[str, CorporateAction]]:
+    """Every (symbol, head) whose current head is a cancelled yahoo split -- the shape
+    the 2026-07-19/07-26 full-reconcile bug left behind (a provider-scoped reconcile now
+    never cancels a yahoo row, but it does not undo what it already cancelled)."""
+    candidates: list[tuple[str, CorporateAction]] = []
+    for symbol in symbols:
+        by_event: dict[str, list[CorporateAction]] = defaultdict(list)
+        for row in store.history(symbol):
+            by_event[row.provider_event_id].append(row)
+        for revisions in by_event.values():
+            head = max(revisions, key=lambda row: row.event_revision)
+            if head.provider == "yahoo" and head.action_type == "split" and head.status == "cancelled":
+                candidates.append((symbol, head))
+    return candidates
+
+
+def _restoration_envelope(
+    symbol: str,
+    head: CorporateAction,
+    grade: str,
+    *,
+    yahoo_ref: str,
+    yahoo_sha256: str,
+    ib: dict | None,
+    restored_at: datetime,
+) -> dict:
+    return {
+        "kind": RESTORATION_KIND,
+        "version": RESTORATION_VERSION,
+        "symbol": symbol,
+        "exDate": head.ex_date.isoformat(),
+        "splitFrom": head.split_from,
+        "splitTo": head.split_to,
+        "grade": grade,
+        "yahoo": {"ref": yahoo_ref, "sha256": yahoo_sha256},
+        "ib": ib,
+        "restoredAt": restored_at.isoformat(),
+    }
+
+
+def restore_yahoo_splits(
+    *,
+    tickers: list[str] | None,
+    apply: bool,
+    ib_verify: bool,
+    output_dir: Path | None,
+    lake_root: Path,
+    now: datetime | None = None,
+    yahoo_factory: Callable[[], object] = YahooClient,
+    ib_factory: Callable[[], object] = IBClient,
+    ib_fetcher_factory: Callable[[object], Callable[[str, date, date], list[dict]]] = IBHistoryFetcher,
+    run_id: str | None = None,
+    scope: str = "all",
+) -> dict:
+    """Restore yahoo split heads the 2026-07-19/07-26 full-reconcile bug wrongly cancelled.
+
+    Dry-run by default: grades every candidate and writes no store rows and no CAS
+    evidence. ``--apply`` (which requires ``--ib-verify``) restores each ``ib_verified``
+    or ``yahoo_only`` candidate through the fixed ``apply_repairs`` revival path, with an
+    evidence envelope ``shepherd_actions`` can later prove. A candidate on/after the IB
+    floor (1993-01-29) is restorable only once IB confirms the split's price step across
+    its ex-date; below the floor, Yahoo's own listing is the accepted evidence -- the
+    only source that population has.
+    """
+    if apply and not ib_verify:
+        raise ValueError("--apply requires --ib-verify (no publish without IB confirmation)")
+    root = Path(lake_root)
+    now = now or datetime.now(UTC)
+    store = CorporateActionStore(root)
+    symbols = [canonical_symbol(t) for t in tickers] if tickers is not None else _convertible_symbols(root)
+    candidates = sorted(_cancelled_yahoo_split_candidates(store, symbols), key=lambda item: (item[0], item[1].ex_date))
+
+    run_id = run_id or os.environ.get("LW_RUN_ID") or ledger.new_run_id("restore-yahoo-splits")
+    run_row = {
+        "run_id": run_id,
+        "job": "restore-yahoo-splits",
+        "host": socket.gethostname(),
+        "release_sha": os.environ.get("LW_RELEASE_SHA"),
+        "presets_sha": None,
+        "registry_sha": None,
+        "started": now,
+        "ended": None,
+        "exit_code": None,
+        "verdict": None,
+    }
+    abandoned = ledger.open_run(run_row)
+    if abandoned:
+        print(f"abandoned {len(abandoned)} open run(s) of restore-yahoo-splits: {', '.join(abandoned)}")
+
+    yahoo = yahoo_factory()
+    evidence_store = SourceEvidenceStore(root) if apply else None
+    bronze = BronzeClient(root / "bronze" / "asset_class=equity", "equity")
+
+    yahoo_cache: dict[str, tuple[bytes, list] | Exception] = {}
+    ib_client = None
+    ib_fetcher: Callable[[str, date, date], list[dict]] | None = None
+    ib_unavailable = False
+
+    def get_ib_fetcher() -> Callable[[str, date, date], list[dict]]:
+        nonlocal ib_client, ib_fetcher
+        if ib_fetcher is not None:
+            return ib_fetcher
+        client = ib_factory()
+        client.connect(host=os.environ.get("MDW_IB_HOST", "127.0.0.1"), port=int(os.environ.get("MDW_IB_PORT", "4001")))
+        ib_client = client
+        ib_fetcher = ib_fetcher_factory(client)
+        return ib_fetcher
+
+    results: list[dict] = []
+    # (symbol, head, grade, yahoo raw bytes, yahoo sha256, ib evidence or None)
+    restorable: list[tuple[str, CorporateAction, str, bytes, str, dict | None]] = []
+    restored = 0
+    counts: dict[str, int] = {}
+    exit_code = 0
+    try:
+        for symbol, head in candidates:
+            expected_step = float(head.split_to) / float(head.split_from)
+            entry: dict = {
+                "symbol": symbol,
+                "exDate": head.ex_date.isoformat(),
+                "splitFrom": head.split_from,
+                "splitTo": head.split_to,
+                "applied": False,
+            }
+            cached = yahoo_cache.get(symbol)
+            if cached is None:
+                try:
+                    cached = yahoo.get_split_events(symbol)
+                except Exception as exc:  # provider fetch/parse failure -- never fabricate a listing
+                    cached = exc
+                yahoo_cache[symbol] = cached
+            if isinstance(cached, Exception):
+                entry["outcome"] = "left_cancelled:yahoo_error"
+                entry["detail"] = str(cached)[:120]
+                results.append(entry)
+                continue
+            raw_bytes, splits = cached
+            yahoo_sha = digest_bytes(raw_bytes)
+            reconciliation = reconcile_splits(
+                splits, [(head.ex_date, expected_step)], ratio_tol=SPLIT_RATIO_TOL, day_tol=SPLIT_DAY_TOL
+            )
+            if not reconciliation.matched:
+                entry["outcome"] = "left_cancelled:yahoo_does_not_list"
+                results.append(entry)
+                continue
+
+            if head.ex_date < YAHOO_ONLY_BEFORE:
+                entry["outcome"] = "yahoo_only"
+                results.append(entry)
+                restorable.append((symbol, head, "yahoo_only", raw_bytes, yahoo_sha, None))
+                continue
+
+            if ib_unavailable:
+                entry["outcome"] = "left_cancelled:ib_unavailable"
+                results.append(entry)
+                continue
+            try:
+                fetcher = get_ib_fetcher()
+            except Exception as exc:
+                # Livewire never auto-retries an IB connection failure (2FA / maintenance
+                # / session conflict): every remaining IB-window candidate is graded the
+                # same way, and pre-floor candidates -- which need no IB -- are unaffected.
+                ib_unavailable = True
+                entry["outcome"] = "left_cancelled:ib_unavailable"
+                entry["detail"] = str(exc)[:120]
+                results.append(entry)
+                continue
+            window_start = head.ex_date - timedelta(days=_IB_WINDOW_DAYS)
+            window_end = head.ex_date + timedelta(days=_IB_WINDOW_DAYS)
+            try:
+                ib_rows = fetcher(symbol, window_start, window_end)
+            except Exception as exc:
+                entry["outcome"] = "left_cancelled:ib_error"
+                entry["detail"] = str(exc)[:120]
+                results.append(entry)
+                continue
+            bronze_rows = bronze.read_symbol_rows(symbol)
+            verdict = ib_split_step_verdict(bronze_rows, ib_rows, head.ex_date, expected_step)
+            entry["ibOverlap"] = verdict.overlap
+            if verdict.step is not None:
+                entry["ibStep"] = verdict.step
+            if not verdict.verified:
+                entry["outcome"] = f"left_cancelled:{verdict.reason}"
+                results.append(entry)
+                continue
+            ib_bytes = canonical_bytes(ib_rows, default=str)
+            ib_sha = digest_bytes(ib_bytes)
+            entry["outcome"] = "ib_verified"
+            results.append(entry)
+            restorable.append(
+                (
+                    symbol,
+                    head,
+                    "ib_verified",
+                    raw_bytes,
+                    yahoo_sha,
+                    {"bytes": ib_bytes, "sha256": ib_sha, "step": verdict.step, "overlap": verdict.overlap},
+                )
+            )
+
+        if apply:
+            # Evidence first, committed once (MDW_SOURCE_EVIDENCE rule), and only then the
+            # store rows that reference it: a crash between the two leaves unreferenced
+            # evidence, never a row pointing at evidence that was never recorded.
+            def evidence(artifact, url: str, content_type: str = "application/json") -> SourceEvidence:
+                return SourceEvidence(
+                    ref=artifact.ref,
+                    sha256=artifact.sha256,
+                    source_url=url,
+                    retrieved_at=now,
+                    publication_time=None,
+                    mediawiki_revision_id=None,
+                    mediawiki_revision_time=None,
+                    content_type=content_type,
+                )
+
+            pending: list[SourceEvidence] = []
+            yahoo_refs: dict[str, str] = {}
+            revivals: list[tuple[str, CorporateAction, str, object]] = []  # (symbol, head, grade, envelope)
+            for symbol, head, grade, raw_bytes, yahoo_sha, ib_info in restorable:
+                if symbol not in yahoo_refs:
+                    artifact = evidence_store.persist_raw(raw_bytes, expected_sha256=yahoo_sha)
+                    pending.append(evidence(artifact, f"{YAHOO_CHART_URL}/{symbol}?events=split"))
+                    yahoo_refs[symbol] = artifact.ref
+                ib_envelope = None
+                if ib_info is not None:
+                    ib_artifact = evidence_store.persist_raw(ib_info["bytes"], expected_sha256=ib_info["sha256"])
+                    pending.append(evidence(ib_artifact, f"ib://{symbol}/1d?ex_date={head.ex_date.isoformat()}"))
+                    ib_envelope = {
+                        "ref": ib_artifact.ref,
+                        "sha256": ib_artifact.sha256,
+                        "step": ib_info["step"],
+                        "overlap": ib_info["overlap"],
+                    }
+                envelope = _restoration_envelope(
+                    symbol,
+                    head,
+                    grade,
+                    yahoo_ref=yahoo_refs[symbol],
+                    yahoo_sha256=yahoo_sha,
+                    ib=ib_envelope,
+                    restored_at=now,
+                )
+                envelope_bytes = canonical_bytes(envelope)
+                envelope_artifact = evidence_store.persist_raw(
+                    envelope_bytes, expected_sha256=digest_bytes(envelope_bytes)
+                )
+                pending.append(
+                    evidence(
+                        envelope_artifact,
+                        f"restoration://yahoo-split/{symbol}/{head.ex_date.isoformat()}",
+                        "application/vnd.livewire.yahoo-split-restoration+json",
+                    )
+                )
+                revivals.append((symbol, head, grade, envelope_artifact))
+            evidence_store.record_many(pending)
+
+            entries_by_key = {(entry["symbol"], entry["exDate"]): entry for entry in results}
+            for symbol, head, grade, envelope_artifact in revivals:
+                store.apply_repairs(
+                    symbol,
+                    add_splits=[
+                        SplitAddition(
+                            ex_date=head.ex_date,
+                            split_from=head.split_from,
+                            split_to=head.split_to,
+                            source_ref=envelope_artifact.ref,
+                            source_hash=envelope_artifact.sha256,
+                            source_fetched_at=now,
+                            source_cursor_identity=f"{RESTORATION_IDENTITY_PREFIX}{grade}",
+                        )
+                    ],
+                    cancel_ex_dates=[],
+                    fetched_at=now,
+                    provider="yahoo",
+                    dry_run=False,
+                )
+                restored += 1
+                entries_by_key[(symbol, head.ex_date.isoformat())]["applied"] = True
+
+        for entry in results:
+            counts[entry["outcome"]] = counts.get(entry["outcome"], 0) + 1
+        measurement_rows = [
+            {
+                "name": name,
+                "scope": scope,
+                "measured_at": now,
+                "value": float(value),
+                "unit": "count",
+                "source": "measured",
+                "run_id": run_id,
+            }
+            for name, value in (
+                ("restore_yahoo_splits_candidates", len(results)),
+                ("restore_yahoo_splits_restored", restored),
+            )
+        ]
+        for outcome, count in counts.items():
+            measurement_rows.append(
+                {
+                    "name": f"restore_yahoo_splits_outcome_{outcome.split(':')[0]}",
+                    "scope": scope,
+                    "measured_at": now,
+                    "value": float(count),
+                    "unit": "count",
+                    "source": "measured",
+                    "run_id": run_id,
+                }
+            )
+        ledger.emit("measurements", measurement_rows, run_id=run_id)
+        exit_code = GATEWAY_DOWN_EXIT_CODE if ib_unavailable else 0
+        verdict = "DEGRADED" if ib_unavailable else "OK"  # IB down is a skipped source, not a failure
+        ledger.emit(
+            "runs", [run_row | {"ended": datetime.now(UTC), "exit_code": exit_code, "verdict": verdict}], run_id=run_id
+        )
+    except BaseException:
+        ledger.emit(
+            "runs", [run_row | {"ended": datetime.now(UTC), "exit_code": 1, "verdict": "FAILED"}], run_id=run_id
+        )
+        raise
+    finally:
+        if ib_client is not None:
+            disconnect = getattr(ib_client, "disconnect", None)
+            if callable(disconnect):
+                disconnect()
+
+    manifest_path = None
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = output_dir / "restore_yahoo_splits.json"
+        manifest_path.write_text(json.dumps({"candidates": results}, indent=1, sort_keys=True, default=str) + "\n")
+
+    return {
+        "candidates": len(results),
+        "restored": restored,
+        "counts": counts,
+        "manifest": None if manifest_path is None else str(manifest_path),
+        "run_id": run_id,
+        "exit_code": exit_code,
+    }
+
+
+def _restore_yahoo_splits_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="livewire_ingest.py corporate-actions restore-yahoo-splits",
+        description="Restore yahoo split heads the cancellation-inference bug wrongly cancelled",
+    )
+    parser.add_argument(
+        "--tickers", nargs="+", help="Symbols to scan (default: every cancelled-yahoo-split-head symbol)"
+    )
+    parser.add_argument("--apply", action="store_true", help="Write the revival rows + evidence (default: dry-run)")
+    parser.add_argument(
+        "--ib-verify", action="store_true", help="Required with --apply: confirm IB-window candidates against IB"
+    )
+    parser.add_argument("--output-dir", type=Path, help="Where the candidate manifest is written")
+    return parser
+
+
+def restore_yahoo_splits_main(argv: Sequence[str]) -> int:
+    args = _restore_yahoo_splits_parser().parse_args(list(argv))
+    result = restore_yahoo_splits(
+        tickers=args.tickers,
+        apply=args.apply,
+        ib_verify=args.ib_verify,
+        output_dir=args.output_dir,
+        lake_root=data_lake_dir(),
+        # By name, not the function's own defaults: a test double patches this
+        # module's attribute, which only a call-time lookup ever sees.
+        yahoo_factory=YahooClient,
+        ib_factory=IBClient,
+        ib_fetcher_factory=IBHistoryFetcher,
+        scope="all" if args.tickers is None else "subset",
+    )
+    print(json.dumps(result, sort_keys=True, default=str))
+    return result["exit_code"]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     argv = list(argv) if argv is not None else sys.argv[1:]
     if argv[:1] == ["convert-dividend-currency"]:
         return convert_dividend_currency_main(argv[1:])
+    if argv[:1] == ["restore-yahoo-splits"]:
+        return restore_yahoo_splits_main(argv[1:])
     return run(argv)
 
 

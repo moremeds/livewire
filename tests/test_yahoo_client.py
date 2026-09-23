@@ -5,6 +5,7 @@ Fixture is REAL AMC (AMC Entertainment) split-adjusted closes across its real
 — the HTTP is mocked with `responses`.
 """
 
+import json
 from datetime import UTC, date, datetime, time
 
 import pytest
@@ -76,6 +77,25 @@ def test_get_daily_parses_split_adjusted_bars_and_the_split():
     assert (split.numerator, split.denominator) == (1.0, 10.0)
     # Reverse 1:10 → pre-split raw is one-tenth of the split-adjusted close.
     assert split.price_multiplier == pytest.approx(0.1)
+
+
+@responses.activate
+def test_get_split_events_returns_exact_bytes_and_parsed_splits():
+    payload = _amc_payload()
+    responses.add(responses.GET, "https://query1.finance.yahoo.com/v8/finance/chart/AMC", json=payload)
+    raw, splits = YahooClient().get_split_events("AMC")
+
+    assert json.loads(raw) == payload  # exact response bytes, not a re-serialization
+    assert len(splits) == 1
+    assert splits[0].ex_date == date(2023, 8, 24)
+    assert (splits[0].numerator, splits[0].denominator) == (1.0, 10.0)
+
+
+@responses.activate
+def test_get_split_events_propagates_not_found():
+    responses.add(responses.GET, "https://query1.finance.yahoo.com/v8/finance/chart/GONE", status=404)
+    with pytest.raises(YahooNotFound):
+        YahooClient().get_split_events("GONE")
 
 
 @responses.activate
