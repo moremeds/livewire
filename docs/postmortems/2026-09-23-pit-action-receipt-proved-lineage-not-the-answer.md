@@ -37,3 +37,25 @@ all remaining blockers of that kind or FLT/JEC (pre-rename tickers).
 `::test_a_null_provenance_july_lineage_row_does_not_block_a_head_proven_by_the_latest_page`,
 `::test_a_split_the_provider_lists_under_another_id_is_proven_by_its_content`,
 `tests/test_pit_silver_revision.py::test_a_v1_receipt_cannot_be_replayed`.
+
+**The same afternoon, twice more.** The first v2 republish (release `a2e065c`) failed
+before writing anything:
+- sp500: its fresh receipt no longer matched its own replay seconds later. The
+  corporate-actions lane was writing the store at the same moment, and `reconcile`
+  still rewrote superseded rows to `corrected` in place.
+- ndx100: it would have been blocked by `_recover_orphans`, which verifies the
+  current revision (a v1 receipt) before allocating the next one, and v2 refuses to
+  replay v1. (Flagged by apex-ea's spec review.)
+
+Now the store is append-only: neither `reconcile` nor the dividend conversion
+rewrites a superseded row. Every reader goes through `latest_active()`, which picks
+the max revision. A manual DuckDB query over the raw `corporate_actions` view that
+filters `status = 'active'` will now also see superseded rows. Heads rewritten
+before the change are dated by their successor: same payload means a revived
+cancellation, a different payload means a revised active row. A legacy-version
+current revision is checked for integrity only and then superseded. A
+current-version revision that fails replay still blocks.
+
+**Test:** `tests/test_shepherd_actions.py::test_a_head_rewritten_in_place_before_the_store_went_append_only_reads_its_as_of_status`,
+`tests/test_pit_silver_revision.py::test_a_legacy_current_revision_is_superseded_after_an_integrity_check`,
+`::test_a_current_version_revision_that_no_longer_replays_still_blocks_the_next_publish`.

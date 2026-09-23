@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from clients.corporate_action_store import CorporateActionStore
 from clients.index_membership_store import IndexMembershipStore, MembershipEvent
 from clients.pit_silver_revision import PitSilverRevisionPublisher
 from clients.security_master import SecurityIdentityEvent, SecurityMaster
@@ -14,7 +15,7 @@ from clients.silver_client import PublishedArtifact
 from clients.silver_revision import AffectedSymbol, SilverRevisionPublisher
 from clients.source_evidence import SourceEvidenceStore
 from livewire_scripts.shepherd_actions import export_actions
-from tests.test_shepherd_actions import _verified_empty_fetch
+from tests.test_shepherd_actions import _page, _verified_empty_fetch
 from tests.test_shepherd_daily import _seed
 
 AS_OF = datetime(2026, 8, 31, 23, 59, tzinfo=UTC)
@@ -404,4 +405,53 @@ def test_a_v1_receipt_cannot_be_replayed(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="receipt version 1 cannot be replayed; republish"):
         PitSilverRevisionPublisher(tmp_path).publish(
             index_id="sp500", membership_revision=1, as_of=AS_OF, actions_receipt=receipt
+        )
+
+
+def test_a_legacy_current_revision_is_superseded_after_an_integrity_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import livewire_scripts.shepherd_actions as shepherd_actions
+
+    _ready(tmp_path)
+    publisher = PitSilverRevisionPublisher(tmp_path)
+    monkeypatch.setattr(shepherd_actions, "RECEIPT_VERSION", 1)
+    legacy = publisher.publish(
+        index_id="sp500",
+        membership_revision=1,
+        as_of=AS_OF,
+        actions_receipt=export_actions(["AAPL"], AS_OF, data_lake_root=tmp_path),
+    )
+    monkeypatch.setattr(shepherd_actions, "RECEIPT_VERSION", 2)
+
+    later = AS_OF + timedelta(hours=1)
+    published = publisher.publish(
+        index_id="sp500",
+        membership_revision=1,
+        as_of=later,
+        actions_receipt=export_actions(["AAPL"], AS_OF, data_lake_root=tmp_path),
+    )
+
+    assert (legacy.revision, published.revision) == (1, 2)
+    assert publisher.verify()["revision"] == 2
+    with pytest.raises(ValueError, match="receipt version 1 cannot be replayed"):
+        publisher.verify(legacy.manifest_path)
+
+
+def test_a_current_version_revision_that_no_longer_replays_still_blocks_the_next_publish(tmp_path: Path) -> None:
+    _ready(tmp_path)
+    publisher = PitSilverRevisionPublisher(tmp_path)
+    receipt = export_actions(["AAPL"], AS_OF, data_lake_root=tmp_path)
+    publisher.publish(index_id="sp500", membership_revision=1, as_of=AS_OF, actions_receipt=receipt)
+    # Drift: a fetch before as-of appears after publish, so the replay no longer matches.
+    split = {"id": "split-1", "ticker": "AAPL", "execution_date": "2020-08-31", "split_from": 1, "split_to": 4}
+    pages = [
+        _page(tmp_path, "splits", json.dumps({"results": [split]}).encode(), "sha256:" + "7" * 64),
+        _page(tmp_path, "dividends", b'{"results":[]}', "sha256:" + "8" * 64),
+    ]
+    CorporateActionStore(tmp_path).record_fetch("AAPL", pages, AS_OF - timedelta(hours=1), full_reconcile=True)
+
+    with pytest.raises(ValueError, match="local replay"):
+        publisher.publish(
+            index_id="sp500", membership_revision=1, as_of=AS_OF + timedelta(hours=1), actions_receipt=receipt
         )

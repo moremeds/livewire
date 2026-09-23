@@ -92,18 +92,19 @@ def _listed(head: CorporateAction, page: _Page) -> bool:
     )
 
 
-def _status_at_as_of(head: CorporateAction, page: _Page | None) -> str:
-    """The head's status at as-of, never the store's live column.
+def _status_at_as_of(head: CorporateAction, successor: CorporateAction | None) -> str:
+    """The head's status at as-of, never a status rewritten after it.
 
-    ``reconcile`` rewrites a superseded row's ``status`` to ``corrected`` in place, so a head
-    whose successor arrived after as-of reads ``corrected`` today (AXON 2004-02-11, revised
-    2026-09-23T06:01Z, broke replay of both PIT manifests published at 04:25Z). The row
-    alone cannot say whether it was active or cancelled; the as-of page can.
+    Until 2026-09-23 ``reconcile`` rewrote a superseded row's ``status`` to ``corrected`` in
+    place (AXON 2004-02-11, revised at 06:01Z, broke replay of both PIT manifests published
+    at 04:25Z); the store is append-only since. A head rewritten that way is told apart by
+    the row that superseded it: reconcile revives a cancelled event with its payload
+    unchanged, and revises an active one only when the payload changed.
     """
     if head.status != "corrected":
         return head.status
-    if head.provider == RECONCILE_PROVIDER and page is not None:
-        return "active" if _listed(head, page) else "cancelled"
+    if successor is not None and successor.payload_hash == head.payload_hash:
+        return "cancelled"
     return "active"
 
 
@@ -172,7 +173,9 @@ def _export_symbol(
                 if not _verified_ref(evidence_store, ref, digest):
                     issues.append("missing-or-corrupt-fetch-evidence")
 
-    rows = [row for row in action_store.history(symbol) if row.fetched_at <= as_of]
+    history = action_store.history(symbol)
+    rows = [row for row in history if row.fetched_at <= as_of]
+    successors = {row.supersedes_action_id: row for row in history if row.supersedes_action_id is not None}
     by_event: dict[str, list[CorporateAction]] = defaultdict(list)
     for row in rows:
         by_event[row.provider_event_id].append(row)
@@ -187,7 +190,7 @@ def _export_symbol(
     for event_id in sorted(by_event):
         revisions = sorted(by_event[event_id], key=lambda row: (row.event_revision, row.action_id))
         head = revisions[-1]
-        status = _status_at_as_of(head, page)
+        status = _status_at_as_of(head, successors.get(head.action_id))
         tag = f"{event_id}:{head.event_revision}"
         if head.provider != RECONCILE_PROVIDER:
             # Nothing in a Massive page speaks for a yahoo/eod_fx/legacy row, and none of

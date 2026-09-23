@@ -123,7 +123,7 @@ def test_corrected_payload_creates_revision_lineage(tmp_path):
     rows = pq.ParquetFile(store.path_for("NVDA")).read().to_pylist()
     previous, current = sorted(rows, key=lambda row: row["event_revision"])
     assert [previous["event_revision"], current["event_revision"]] == [1, 2]
-    assert previous["status"] == "corrected"
+    assert previous["status"] == "active"  # append only: the superseded row is never rewritten
     assert current["status"] == "active"
     assert current["supersedes_action_id"] == previous["action_id"]
     assert current["action_id"] != previous["action_id"]
@@ -435,7 +435,7 @@ def test_convert_dividend_supersedes_with_provider_eod_fx(tmp_path):
     assert row.source_hash == _ACR_SOURCE_HASH
     assert row.ex_date == date(2008, 6, 26)
     history = {r.action_id: r for r in store.history("ACR")}
-    assert history[old.action_id].status == "corrected"
+    assert history[old.action_id] == old  # append only: the superseded head is never rewritten
     assert history[row.action_id].status == "active"
 
 
