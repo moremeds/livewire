@@ -24,6 +24,13 @@ from clients.trading_calendar import (
 )
 
 
+def _is_legacy_receipt(receipt: dict[str, Any]) -> bool:
+    from livewire_scripts.shepherd_actions import RECEIPT_VERSION
+
+    version = receipt.get("version")
+    return isinstance(version, int) and version < RECEIPT_VERSION
+
+
 def daily_bar_cutoff(as_of: datetime) -> date:
     """Return the latest conservatively closed US equity daily session."""
     if as_of.tzinfo is None or as_of.utcoffset() is None:
@@ -143,14 +150,15 @@ class PitSilverRevisionPublisher:
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
-    def verify(self, manifest_path: Path | None = None) -> dict[str, Any]:
-        path = self.current if manifest_path is None else Path(manifest_path)
+    def _verified_integrity(self, path: Path, *, pointer: bool) -> tuple[dict[str, Any], Path, dict[str, Any]]:
+        """Everything about a manifest that holds without replaying it: its revision, its
+        immutable bytes, and the identity of its corporate-action receipt."""
         payload = json.loads(path.read_bytes())
         if path.name.startswith("revision=") and path.name.endswith(".json"):
             filename_revision = int(path.stem.split("=", 1)[1])
             if int(payload["revision"]) != filename_revision:
                 raise ValueError("PIT Silver filename revision does not match payload")
-        if manifest_path is None:
+        if pointer:
             revisions = [
                 int(candidate.stem.split("=", 1)[1])
                 for candidate in self.revisions.glob("revision=*.json")
@@ -171,6 +179,11 @@ class PitSilverRevisionPublisher:
         actions_receipt = json.loads(action_bytes)
         if action_input.get("receipt_hash") != actions_receipt.get("receiptHash"):
             raise ValueError("corporate-action receipt identity mismatch")
+        return payload, immutable, actions_receipt
+
+    def verify(self, manifest_path: Path | None = None) -> dict[str, Any]:
+        path = self.current if manifest_path is None else Path(manifest_path)
+        payload, immutable, actions_receipt = self._verified_integrity(path, pointer=manifest_path is None)
         core = self._build_core(
             str(payload["index_id"]),
             int(payload["membership_revision"]),
@@ -448,7 +461,13 @@ class PitSilverRevisionPublisher:
             immutable = self.revisions / f"revision={current_revision}.json"
             if not immutable.is_file() or immutable.read_bytes() != self.current.read_bytes():
                 raise ValueError("PIT Silver current pointer does not match its immutable revision")
-            self.verify(immutable)
+            # A receipt from an older rule cannot be replayed (v1 copied the store's mutable
+            # status column), so a legacy current is checked for integrity only and then
+            # superseded. A current-version receipt that fails replay still blocks: that is
+            # drift or tampering, never age.
+            _, _, receipt = self._verified_integrity(immutable, pointer=False)
+            if not _is_legacy_receipt(receipt):
+                self.verify(immutable)
         candidates = sorted(
             (
                 (int(path.stem.split("=", 1)[1]), path)
