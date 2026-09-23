@@ -35,9 +35,9 @@ def _silver(root: Path) -> tuple[Path, bytes]:
     return artifact, current.read_bytes()
 
 
-def _actions(*symbols: str, state: str = "VERIFIED") -> dict:
+def _actions(*symbols: str, state: str = "VERIFIED", version: int = 2) -> dict:
     receipt = {
-        "version": 1,
+        "version": version,
         "operation": "shepherd-actions-export",
         "asOf": AS_OF.isoformat(),
         "symbols": [{"symbol": symbol, "state": state, "fetch": {}, "actions": [], "issues": []} for symbol in symbols],
@@ -394,4 +394,14 @@ def test_changed_publish_rejects_a_tampered_current_pointer(tmp_path: Path) -> N
             membership_revision=1,
             as_of=datetime(2026, 9, 1, 23, 59, tzinfo=UTC),
             actions_receipt=actions,
+        )
+
+
+def test_a_v1_receipt_cannot_be_replayed(tmp_path: Path) -> None:
+    _ready(tmp_path)
+    receipt = _actions("AAPL", version=1)
+
+    with pytest.raises(ValueError, match="receipt version 1 cannot be replayed; republish"):
+        PitSilverRevisionPublisher(tmp_path).publish(
+            index_id="sp500", membership_revision=1, as_of=AS_OF, actions_receipt=receipt
         )
