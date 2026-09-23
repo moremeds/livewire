@@ -91,6 +91,7 @@ class Dataset:
     partition: str = "year"
     values: dict[str, str] = field(default_factory=lambda: {"value": "value"})  # data column -> column
     facets: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    exact_total: bool = True  # False: EIA's `total` overcounts this route (see EiaClient.fetch)
 
     @property
     def id(self) -> str:
@@ -105,8 +106,8 @@ def _grid(name: str, route: str, frequency: str, keys: tuple[str, ...], names: d
     return Dataset("electricity", name, route, frequency, keys, names, date(2019, 1, 1), lag, partition="month")
 
 
-def _nuclear(name: str, route: str, keys: tuple[str, ...], names: dict[str, str]) -> Dataset:
-    return Dataset("nuclear", name, route, "daily", keys, names, date(2007, 1, 1), 4, values=NUCLEAR_VALUES)
+def _nuclear(name: str, route: str, keys: tuple[str, ...], names: dict[str, str], **kw) -> Dataset:
+    return Dataset("nuclear", name, route, "daily", keys, names, date(2007, 1, 1), 4, values=NUCLEAR_VALUES, **kw)
 
 
 _REGION = {"respondent-name": "respondent_name", "type-name": "type_name"}
@@ -144,7 +145,14 @@ DATASETS = {
         # Week ending Friday, released the next Thursday.
         _series("natural_gas", "storage", "natural-gas/stor/wkly", "weekly", date(2010, 1, 1), 14),
         _nuclear("outages_us", "nuclear-outages/us-nuclear-outages", (), {}),
-        _nuclear("outages_facility", "nuclear-outages/facility-nuclear-outages", ("facility",), _FACILITY),
+        # `total` counts generator rows: 2025 says 34,424 and serves 19,824 (mini, 2026-09-23).
+        _nuclear(
+            "outages_facility",
+            "nuclear-outages/facility-nuclear-outages",
+            ("facility",),
+            _FACILITY,
+            exact_total=False,
+        ),
         _nuclear(
             "outages_generator", "nuclear-outages/generator-nuclear-outages", ("facility", "generator"), _FACILITY
         ),
@@ -757,6 +765,7 @@ def run(argv: Sequence[str] | None = None, *, client: EiaClient | None = None, h
                         sort_columns=("period", *dataset.keys),
                         data_columns=tuple(dataset.values),
                         facets=facets,
+                        exact_total=dataset.exact_total,
                     )
                     evidence.extend(_evidence(store, pages))
                     rows = [normalize(dataset, raw) for raw in raw_rows]

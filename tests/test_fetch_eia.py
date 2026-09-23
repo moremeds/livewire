@@ -33,8 +33,11 @@ def lake(tmp_path, monkeypatch):
     return tmp_path / "lake"
 
 
-def eia(rows=ROWS, *, fail_start=None, seen=None, facet_names=None, route=None):
-    """Answers every window with `rows` (filtered to the window, any facet filter, and `route` if given)."""
+def eia(rows=ROWS, *, fail_start=None, seen=None, facet_names=None, route=None, overcount=0):
+    """Answers every window with `rows` (filtered to the window, any facet filter, and `route` if given).
+
+    `overcount` inflates `total` the way EIA does on the facility nuclear-outages route.
+    """
 
     def handler(request: httpx.Request) -> httpx.Response:
         params = request.url.params
@@ -57,7 +60,7 @@ def eia(rows=ROWS, *, fail_start=None, seen=None, facet_names=None, route=None):
         offset, length = int(params["offset"]), int(params["length"])
         # Like EIA, echo the request (minus the key): distinct requests never share a body.
         echo = {"command": request.url.path, "params": [item for item in params.multi_items() if item[0] != "api_key"]}
-        page = {"total": len(window), "data": window[offset : offset + length]}
+        page = {"total": len(window) + overcount, "data": window[offset : offset + length]}
         return httpx.Response(200, json={"response": page, "request": echo}, request=request)
 
     return EiaClient(KEY, http_client=httpx.Client(transport=httpx.MockTransport(handler)), sleep=lambda _: None)
@@ -272,6 +275,13 @@ def test_henry_hub_is_fetched_by_its_series_facet(lake):
     assert seen[0].url.params.get_list("facets[series][]") == ["RNGWHHD"]
     (stored,) = read(lake, f"{ENERGY}/product=natural_gas/dataset=spot_price/year=2026/1d.parquet").to_pylist()
     assert (stored["value"], stored["units"]) == (2.81, "$/MMBTU")
+
+
+def test_facility_outages_publish_although_eia_total_overcounts_them(lake):
+    row = ONE_ROW["nuclear-outages/facility-nuclear-outages:daily"]
+    args = ("--dataset", "nuclear/outages_facility", "--start", "2026-09-22", "--end", "2026-09-22")
+    assert run(*args, client=eia([row], overcount=1)) == 0
+    assert read(lake, f"{ENERGY}/product=nuclear/dataset=outages_facility/year=2026/1d.parquet").num_rows == 1
 
 
 def test_nuclear_outages_keep_all_three_measures_with_their_units(lake):

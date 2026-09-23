@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `publish_parquet` accepts a composite sort key; `get_with_retry` takes an
   opt-in `retry_statuses` (EIA opts into 429 — no other caller does).
   The EIA catalog and plan are in `docs/audits/eia/`.
+  EIA's `total` overcounts facility nuclear outages (it counts generator rows), so
+  that dataset reads until a short page instead of to `total`.
 - `clients/http_retry.py`: the repo's one definition of a transient HTTP
   failure. A 5xx or a transport error retries with a bounded linear backoff; a
   4xx raises on the first attempt. FRED's local copy was replaced by it and
