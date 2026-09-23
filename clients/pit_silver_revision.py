@@ -379,8 +379,12 @@ class PitSilverRevisionPublisher:
             raise ValueError("Silver corporate-action cutoff is later than PIT as-of")
         if receipt_as_of.astimezone(UTC) != actions_as_of:
             raise ValueError("corporate-action receipt as-of does not match Silver cutoff")
-        from livewire_scripts.shepherd_actions import export_actions
+        from livewire_scripts.shepherd_actions import RECEIPT_VERSION, export_actions
 
+        if actions_receipt.get("version") != RECEIPT_VERSION:
+            raise ValueError(
+                f"corporate-action receipt version {actions_receipt.get('version')} cannot be replayed; republish"
+            )
         regenerated = export_actions(sorted(expected_symbols), actions_as_of, data_lake_root=self.root)
         if regenerated != actions_receipt:
             raise ValueError("corporate-action receipt does not match local replay")
