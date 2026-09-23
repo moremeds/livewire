@@ -5,6 +5,8 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from clients.corporate_action_store import CorporateActionStore, SplitAddition
@@ -260,11 +262,11 @@ def test_a_provider_revision_after_as_of_does_not_change_the_replay(tmp_path: Pa
     as_of = AT + timedelta(minutes=1)
     before = export_actions(["NVDA"], as_of, data_lake_root=tmp_path)
 
-    # AXON 2004-02-11, 2026-09-23T06:01Z: the provider revised a July split; reconcile
-    # rewrote the July row's status to "corrected" in place.
+    july = store.history("NVDA")
+    # AXON 2004-02-11, 2026-09-23T06:01Z: the provider revised a July split after as-of.
     store.reconcile("NVDA", [_split({**PAYLOAD, "split_to": 4})], as_of + timedelta(hours=1))
 
-    assert store.history("NVDA")[0].status == "corrected" or store.history("NVDA")[1].status == "corrected"
+    assert [row for row in store.history("NVDA") if row.event_revision == 1] == july  # append only
     assert export_actions(["NVDA"], as_of, data_lake_root=tmp_path) == before
     assert [row["statusAtAsOf"] for row in before["symbols"][0]["actions"]] == ["active"]
 
@@ -299,3 +301,38 @@ def test_a_split_under_another_id_at_another_ratio_is_not_the_same_split(tmp_pat
     item = export_actions(["NVDA"], AT + timedelta(minutes=1), data_lake_root=tmp_path)["symbols"][0]
 
     assert (item["state"], item["issues"]) == ("UNRESOLVED", ["event-not-in-latest-fetch:split-1:1"])
+
+
+def _rewrite_status_in_place(root: Path, symbol: str, action_id: str, status: str) -> None:
+    """What reconcile did to a superseded row until 2026-09-23."""
+    store = CorporateActionStore(root)
+    path = store.path_for(symbol)
+    rows = pq.ParquetFile(path).read().to_pylist()
+    for row in rows:
+        if row["action_id"] == action_id:
+            row["status"] = status
+    pq.write_table(pa.Table.from_pylist(rows, schema=store.schema), path)
+
+
+@pytest.mark.parametrize(
+    ("revived_payload", "status_at_as_of"),
+    [(PAYLOAD, "cancelled"), ({**PAYLOAD, "split_to": 4}, "active")],
+)
+def test_a_head_rewritten_in_place_before_the_store_went_append_only_reads_its_as_of_status(
+    tmp_path: Path, revived_payload: dict, status_at_as_of: str
+) -> None:
+    store = CorporateActionStore(tmp_path)
+    store.reconcile("NVDA", [_split(PAYLOAD)], JULY)
+    if status_at_as_of == "cancelled":
+        store.reconcile("NVDA", [], JULY + timedelta(days=1), full_reconcile=True)
+    _fetch(tmp_path, "NVDA", [] if status_at_as_of == "cancelled" else [PAYLOAD])
+    as_of = AT + timedelta(minutes=1)
+    before = export_actions(["NVDA"], as_of, data_lake_root=tmp_path)
+    head = max(store.history("NVDA"), key=lambda row: row.event_revision)
+
+    store.reconcile("NVDA", [_split(revived_payload)], as_of + timedelta(hours=1))
+    _rewrite_status_in_place(tmp_path, "NVDA", head.action_id, "corrected")
+
+    after = export_actions(["NVDA"], as_of, data_lake_root=tmp_path)
+    assert after == before
+    assert before["symbols"][0]["actions"][-1]["statusAtAsOf"] == status_at_as_of

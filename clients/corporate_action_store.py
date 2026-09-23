@@ -264,7 +264,9 @@ class CorporateActionStore:
                     # the repair every Sunday.
                     unchanged += 1
                 else:
-                    rows[rows.index(previous)] = replace(previous, status="corrected")
+                    # Append only: a superseded row is never rewritten. Rewriting its status
+                    # to "corrected" changed rows an earlier as-of had already exported, and
+                    # broke replay of both PIT manifests of 2026-09-23 (AXON 2004-02-11).
                     current = self._from_provider(
                         event,
                         fetched_at,
@@ -410,8 +412,7 @@ class CorporateActionStore:
                     continue  # idempotent: this conversion already landed
                 if head.status != "active":
                     continue  # nothing live to supersede
-                rows[rows.index(head)] = replace(head, status="corrected")
-                payload = (
+                payload = (  # append only; the superseded head is left as it was written
                     f"{EOD_FX_PROVIDER}|{head.provider_event_id}"
                     f"|{conversion.cash_amount!r}|{conversion.currency}|{conversion.source_hash}"
                 )
