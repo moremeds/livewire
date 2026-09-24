@@ -710,6 +710,7 @@ The scheduled `daily --asset-class futures` lane resolves
 | CL, NG, COIL, RB, HO (energy) | every listed delivery month through the current month + 15 |
 | GC, SI, HG (metals) | first two live delivery months |
 | SB, KC, CC, CT, OJ, ZS, ZM, ZL, ZC, ZW, LE, HE (agriculture) | first two live delivery months |
+| ES, NQ, RTY, YM (index), ZN, ZB, ZF (treasury) | first two live quarterly contracts |
 
 A newly selected contract is full-history seeded through the robust IB runner
 before the daily scan; the scan still visits every stored non-retired futures
