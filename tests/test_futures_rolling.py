@@ -79,6 +79,7 @@ def test_shipped_rolling_preset_uses_relative_contract_counts():
         {"roots": ["CL", "NG", "COIL", "RB", "HO"], "months_ahead": 15},
         {"roots": ["GC", "SI", "HG"], "count": 2},
         {"roots": ["SB", "KC", "CC", "CT", "OJ", "ZS", "ZM", "ZL", "ZC", "ZW", "LE", "HE"], "count": 2},
+        {"roots": ["ES", "NQ", "RTY", "YM", "ZN", "ZB", "ZF"], "count": 2},
     ]
 
 
