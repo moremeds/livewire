@@ -15,8 +15,11 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import socket
 import sys
+import tempfile
+from dataclasses import replace
 from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Literal
@@ -24,7 +27,7 @@ from typing import Literal
 from clients import ledger
 from clients.index_membership_store import IndexMembershipStore, MembershipEvent
 from clients.mediawiki_client import MediaWikiClient, MediaWikiFetchError
-from clients.security_master import SecurityMaster
+from clients.security_master import SecurityIdentityEvent, SecurityMaster
 from clients.shepherd_repair import HashedRef
 from clients.source_evidence import SourceEvidence, SourceEvidenceStore, canonical_bytes, digest_bytes
 from clients.universe_client import (
@@ -258,23 +261,72 @@ def import_events(
     }
 
 
-def _current_members(items: list[MembershipEvent]) -> set[str]:
-    """Replay non-superseded events to the live member set.
+def _replay_membership(items: list[MembershipEvent]) -> list[MembershipEvent]:
+    """Non-superseded, non-`rejected` events in replay order.
 
-    Every non-`rejected` status counts: an `unresolved:` placeholder is a
-    member (else a still-unresolved ticker would be re-added on every sync),
-    and a `candidate` is a member pending review. `rejected` never enters.
+    Shared by `_current_members` and the last-add tracking R3 needs: every
+    non-`rejected` status counts (an `unresolved:` placeholder is a member,
+    else a still-unresolved ticker would be re-added on every sync; a
+    `candidate` is a member pending review), `rejected` never enters.
     """
     superseded = {item.supersedes for item in items if item.supersedes is not None}
     applicable = [item for item in items if item.event_id not in superseded and item.status != "rejected"]
     applicable.sort(key=lambda item: (item.effective_at, item.known_at, item.revision, item.event_id))
+    return applicable
+
+
+def _current_members(items: list[MembershipEvent]) -> set[str]:
+    """Replay to the live member set (security_ids)."""
     members: set[str] = set()
-    for item in applicable:
+    for item in _replay_membership(items):
         if item.action == "add":
             members.add(item.security_id)
         else:
             members.discard(item.security_id)
     return members
+
+
+def _current_members_last_add(items: list[MembershipEvent]) -> dict[str, datetime]:
+    """Live security_ids -> `effective_at` of the add that put them in the index.
+
+    R3: the ticker a currently-held member maps to is read off the identity
+    claim covering *this* date, not `now` — a security whose ticker changed
+    since the add would otherwise resolve to the wrong symbol.
+    """
+    members: dict[str, datetime] = {}
+    for item in _replay_membership(items):
+        if item.action == "add":
+            members[item.security_id] = item.effective_at
+        else:
+            members.pop(item.security_id, None)
+    return members
+
+
+def _active_identities(items: list[SecurityIdentityEvent]) -> list[SecurityIdentityEvent]:
+    superseded = {item.supersedes for item in items if item.supersedes is not None}
+    return [item for item in items if item.event_id not in superseded and item.status == "verified"]
+
+
+def _identity_ticker(security_id: str, at: datetime, identities: list[SecurityIdentityEvent]) -> str | None:
+    """The symbol of the verified identity claim covering `at`.
+
+    A placeholder carries its own ticker (R3 rule 1). Otherwise this mirrors
+    `members_at.symbol_for`: the claim containing `at`, or (no claim contains
+    it) the most recently known claim, so a member never silently drops out
+    of the diff for want of a covering window.
+    """
+    if security_id.startswith("unresolved:"):
+        return security_id.removeprefix("unresolved:")
+    candidates = [item for item in identities if item.security_id == security_id]
+    containing = [
+        item
+        for item in candidates
+        if item.effective_from <= at and (item.effective_to is None or at < item.effective_to)
+    ]
+    pick = containing or candidates
+    if not pick:
+        return None
+    return max(pick, key=lambda item: (item.effective_from, item.known_at, item.event_id)).symbol
 
 
 def members_at(
@@ -442,13 +494,32 @@ def sync(
                 print(json.dumps({"index": index_id, "fetch_ok": 0, "error": str(exc)}, sort_keys=True))
                 continue
 
-            members = _current_members(existing)
+            # R3: diff by ticker, not security_id. A member's ticker is its
+            # placeholder's own ticker, or the symbol of the identity claim
+            # covering its last add — never the ticker `_resolve` would find
+            # at `now`, which a narrow researched window does not cover
+            # (pm:2026-09-23-narrow-identity-window-churned-membership).
+            identities = _active_identities(master.events(as_of=now))
+            member_ticker: dict[str, str] = {}
+            for security_id, add_at in _current_members_last_add(existing).items():
+                ticker = _identity_ticker(security_id, add_at, identities)
+                if ticker is not None:
+                    member_ticker[ticker] = security_id
+            add_tickers = sorted(set(tickers) - set(member_ticker))
+            remove_tickers = sorted(set(member_ticker) - set(tickers))
+
             fetched: dict[str, str | None] = {}
-            for ticker in sorted(tickers):
+            renamed: set[str] = set()
+            for ticker in add_tickers:
                 resolved = _resolve(master, ticker, now, now)
+                if resolved in member_ticker.values():
+                    # A rename (FLT -> CPAY): the new ticker resolves to a
+                    # current member, so neither side is an event.
+                    renamed.add(resolved)
+                    continue
                 fetched[resolved or f"unresolved:{ticker}"] = resolved
-            adds = sorted(set(fetched) - members)
-            removes = sorted(members - set(fetched))
+            adds = sorted(fetched)
+            removes = [member_ticker[ticker] for ticker in remove_tickers if member_ticker[ticker] not in renamed]
             added = removed = 0
             if not dry_run:
                 pending = [(key, "add") for key in adds] + [(key, "remove") for key in removes]
@@ -752,6 +823,670 @@ def reresolve(
     }
 
 
+# --- repair-identity: R1 (CIK merge), R2 (window extension), R4 (churn reject) ---
+# docs/superpowers/specs/2026-09-23-membership-identity-continuity-design.md
+
+REPAIR_INDEXES = ("sp500", "ndx100", "djia")
+
+# Acceptance §4: the three sp500 as-of dates the before/after member counts are
+# checked against. Fixed, not a CLI flag — the design names them, not a range.
+_MEMBER_COUNT_DATES = (
+    datetime(2015, 1, 2, tzinfo=UTC),
+    datetime(2025, 1, 2, tzinfo=UTC),
+    datetime(2026, 9, 1, tzinfo=UTC),
+)
+
+
+def _r1_reject_event_id(claim_event_id: str) -> str:
+    return hashlib.sha256(f"repair-identity-r1-reject\x00{claim_event_id}".encode()).hexdigest()
+
+
+def _r1_merge_event_id(claim_event_id: str, canonical_id: str) -> str:
+    return hashlib.sha256(f"repair-identity-r1-merge\x00{claim_event_id}\x00{canonical_id}".encode()).hexdigest()
+
+
+def _r2_extend_event_id(claim_event_id: str) -> str:
+    return hashlib.sha256(f"repair-identity-r2-extend\x00{claim_event_id}".encode()).hexdigest()
+
+
+def _r1_repoint_event_id(event_id: str, canonical_id: str) -> str:
+    return hashlib.sha256(f"repair-identity-r1-repoint\x00{event_id}\x00{canonical_id}".encode()).hexdigest()
+
+
+def _r4_reject_event_id(rejected_event_id: str) -> str:
+    return hashlib.sha256(f"repair-identity-r4-reject\x00{rejected_event_id}".encode()).hexdigest()
+
+
+def _plan_r1(
+    identities: list[SecurityIdentityEvent],
+    revisions: dict[str, int],
+    now: datetime,
+) -> tuple[list[dict], list[dict], list[SecurityIdentityEvent], dict[str, str]]:
+    """R1: a `massive` identity sharing CIK and symbol with a researched one is
+    a duplicate — its active claim is rejected and re-appended under the
+    researched (canonical) `security_id`. Different or missing CIKs merge
+    nothing and are reported as a conflict, never guessed.
+
+    `revisions` is threaded through so R2's later appends for the same
+    security continue the sequence this function starts.
+    """
+    active = _active_identities(identities)
+    researched_by_id: dict[str, list[SecurityIdentityEvent]] = {}
+    for item in active:
+        if item.provider == "wikipedia_sec_research":
+            researched_by_id.setdefault(item.security_id, []).append(item)
+    massive = [item for item in active if item.provider == "massive"]
+
+    merges: list[dict] = []
+    conflicts: list[dict] = []
+    events: list[SecurityIdentityEvent] = []
+    merged_massive_ids: dict[str, str] = {}
+
+    # Pair each Massive duplicate with its canonical id on one matching claim
+    # (CIK + symbol); the merge then moves every claim the duplicate holds, so
+    # a renamed ticker's older symbol moves too (Jacobs: JEC until 2019, then J).
+    matched: dict[str, dict[str, tuple[str, str]]] = {}
+    for canonical_id, claims in sorted(researched_by_id.items()):
+        ciks = {c.cik for c in claims if c.cik}
+        cik_r = next(iter(ciks)) if len(ciks) == 1 else None
+        for symbol in sorted({c.symbol for c in claims}):
+            for candidate in massive:
+                if candidate.symbol != symbol or candidate.security_id == canonical_id:
+                    continue
+                if cik_r is None or candidate.cik is None or candidate.cik != cik_r:
+                    conflicts.append(
+                        {
+                            "ticker": symbol,
+                            "researched_security_id": canonical_id,
+                            "massive_security_id": candidate.security_id,
+                            "researched_cik": cik_r,
+                            "massive_cik": candidate.cik,
+                            "reason": "missing_cik" if cik_r is None or candidate.cik is None else "cik_mismatch",
+                        }
+                    )
+                    continue
+                matched.setdefault(candidate.security_id, {})[canonical_id] = (symbol, cik_r)
+
+    for massive_id, targets in sorted(matched.items()):
+        if len(targets) > 1:
+            conflicts.append(
+                {
+                    "ticker": ",".join(sorted(symbol for symbol, _ in targets.values())),
+                    "researched_security_id": ",".join(sorted(targets)),
+                    "massive_security_id": massive_id,
+                    "researched_cik": None,
+                    "massive_cik": None,
+                    "reason": "duplicate_matches_two_canonical_ids",
+                }
+            )
+            continue
+        ((canonical_id, (symbol, cik_r)),) = targets.items()
+        for candidate in sorted(
+            (item for item in active if item.security_id == massive_id),
+            key=lambda item: (item.effective_from, item.event_id),
+        ):
+            reject_id = _r1_reject_event_id(candidate.event_id)
+            merge_id = _r1_merge_event_id(candidate.event_id, canonical_id)
+            revisions[massive_id] = revisions.get(massive_id, 0) + 1
+            events.append(
+                replace(
+                    candidate,
+                    event_id=reject_id,
+                    revision=revisions[massive_id],
+                    known_at=now,
+                    status="rejected",
+                    supersedes=candidate.event_id,
+                )
+            )
+            revisions[canonical_id] = revisions.get(canonical_id, 0) + 1
+            events.append(
+                replace(
+                    candidate,
+                    event_id=merge_id,
+                    security_id=canonical_id,
+                    revision=revisions[canonical_id],
+                    known_at=now,
+                    supersedes=None,
+                )
+            )
+            merges.append(
+                {
+                    "cik": cik_r,
+                    "ticker": candidate.symbol,
+                    "matched_on": symbol,
+                    "researched_security_id": canonical_id,
+                    "massive_security_id": massive_id,
+                    "rejected_event_id": reject_id,
+                    "merged_event_id": merge_id,
+                }
+            )
+        merged_massive_ids[massive_id] = canonical_id
+    return merges, conflicts, events, merged_massive_ids
+
+
+def _detect_churn(
+    events_by_index: dict[str, list[MembershipEvent]],
+    identities: list[SecurityIdentityEvent],
+    merged_massive_ids: dict[str, str] | None = None,
+) -> dict[str, set[str]]:
+    """R4: index_id -> event_ids of same-timestamp remove+add pairs for one
+    ticker. `_identity_ticker` already resolves a placeholder to its own
+    ticker and a resolved id to the symbol its identity claim covering that
+    moment carries, so an add that only *looks* like a different security
+    (old id removed, new massive id or placeholder added) still pairs.
+
+    A pair whose two ids R1 merges into one security is churn too, even when
+    the removed id's narrow claim cannot name its ticker at that moment
+    (GOOGL: researched id removed, its Massive duplicate added, 2026-09-17),
+    and is rejected at any `known_at`: the security never left the index.
+    """
+    canonical = merged_massive_ids or {}
+    churn: dict[str, set[str]] = {}
+    for index_id, events in events_by_index.items():
+        active = _replay_membership(events)
+        by_time: dict[datetime, list[MembershipEvent]] = {}
+        for item in active:
+            by_time.setdefault(item.effective_at, []).append(item)
+        ids: set[str] = set()
+        for group in by_time.values():
+            # `live`: only the live diff writes `effective_at == known_at`. A
+            # backfilled rename (TMK -> GL, 2019-08-08, known 2026-09-16) has
+            # the same remove+add shape and is real history.
+            removes = [item for item in group if item.action == "remove"]
+            adds = [item for item in group if item.action == "add"]
+            for rem in removes:
+                live = rem.effective_at == rem.known_at
+                ticker_r = _identity_ticker(rem.security_id, rem.effective_at, identities)
+                for add in adds:
+                    same_security = canonical.get(rem.security_id, rem.security_id) == canonical.get(
+                        add.security_id, add.security_id
+                    )
+                    same_ticker = (
+                        ticker_r is not None
+                        and _identity_ticker(add.security_id, add.effective_at, identities) == ticker_r
+                    )
+                    # Across two ids R1 merges, a same-date remove+add is a
+                    # rename inside the index at any `known_at` (FISV -> FI on
+                    # 2023-06-07): re-pointed onto one id, the store's
+                    # `known_at` order would let the remove win.
+                    renamed = same_security and rem.security_id != add.security_id
+                    if renamed or (live and (same_security or same_ticker)):
+                        ids.add(rem.event_id)
+                        ids.add(add.event_id)
+        churn[index_id] = ids
+    return churn
+
+
+def _plan_r2(
+    identities: list[SecurityIdentityEvent],
+    events_by_index: dict[str, list[MembershipEvent]],
+    churn_ids_by_index: dict[str, set[str]],
+    revisions: dict[str, int],
+    now: datetime,
+    merged_massive_ids: dict[str, str] | None = None,
+) -> tuple[list[dict], list[dict], list[SecurityIdentityEvent]]:
+    """R2: extend each researched narrow claim to the next non-churn remove
+    of its security in any processed index, capped (never forced) at the
+    start of a claim it would otherwise collide with under
+    `SecurityMaster._validate_append`.
+    """
+    active = _active_identities(identities)
+    researched = sorted(
+        (item for item in active if item.provider == "wikipedia_sec_research"),
+        key=lambda item: (item.security_id, item.effective_from, item.event_id),
+    )
+
+    extensions: list[dict] = []
+    caps: list[dict] = []
+    out_events: list[SecurityIdentityEvent] = []
+
+    for claim in researched:
+        own_by_index = {
+            index_id: [
+                item
+                for item in _replay_membership(events)
+                # an event under a merged Massive duplicate is this security's own history (R1b re-points it)
+                if (merged_massive_ids or {}).get(item.security_id, item.security_id) == claim.security_id
+                and item.event_id not in churn_ids_by_index.get(index_id, set())
+            ]
+            for index_id, events in sorted(events_by_index.items())
+        }
+        end, ending_remove = _membership_cover_end(own_by_index, claim.effective_from, claim.effective_to)
+        # The index's own record is the evidence for the wider window: cite the
+        # adds inside the claim and the remove that ends the cover, beside the claim's refs.
+        cited = [
+            item
+            for items in own_by_index.values()
+            for item in items
+            if item.action == "add"
+            and claim.effective_from <= item.effective_at
+            and (claim.effective_to is None or item.effective_at < claim.effective_to)
+        ] + ([ending_remove] if ending_remove is not None else [])
+        refs = dict(zip(claim.source_refs, claim.source_hashes, strict=True))
+        for item in cited:
+            refs.update(zip(item.source_refs, item.source_hashes, strict=True))
+
+        capped_at = None
+        for other in active:
+            if other.security_id == claim.security_id or other.event_id == claim.event_id:
+                continue
+            if not _overlaps_interval(claim.effective_from, end, other.effective_from, other.effective_to):
+                continue
+            same_symbol_interval = (claim.provider, claim.symbol, claim.exchange_mic) == (
+                other.provider,
+                other.symbol,
+                other.exchange_mic,
+            )
+            figi_collision = any(
+                getattr(claim, field) is not None and getattr(claim, field) == getattr(other, field)
+                for field in ("share_class_figi", "composite_figi")
+            )
+            if (same_symbol_interval or figi_collision) and (capped_at is None or other.effective_from < capped_at):
+                capped_at = other.effective_from
+
+        new_end = end
+        if capped_at is not None and (end is None or capped_at < end):
+            caps.append(
+                {
+                    "security_id": claim.security_id,
+                    "event_id": claim.event_id,
+                    "requested_end": end.isoformat() if end else None,
+                    "capped_at": capped_at.isoformat(),
+                }
+            )
+            new_end = capped_at
+
+        if new_end is not None and new_end <= claim.effective_from:
+            continue  # never forced: a cap at or before the window's own start extends nothing
+        if new_end == claim.effective_to:
+            continue
+
+        revisions[claim.security_id] = revisions.get(claim.security_id, 0) + 1
+        extended = replace(
+            claim,
+            event_id=_r2_extend_event_id(claim.event_id),
+            revision=revisions[claim.security_id],
+            effective_to=new_end,
+            known_at=now,
+            supersedes=claim.event_id,
+            source_refs=tuple(refs),
+            source_hashes=tuple(refs.values()),
+        )
+        out_events.append(extended)
+        extensions.append(
+            {
+                "security_id": claim.security_id,
+                "event_id": claim.event_id,
+                "extended_event_id": extended.event_id,
+                "old_effective_to": claim.effective_to.isoformat() if claim.effective_to else None,
+                "new_effective_to": new_end.isoformat() if new_end else None,
+            }
+        )
+    return extensions, caps, out_events
+
+
+def _membership_cover_end(
+    own_by_index: dict[str, list[MembershipEvent]], claim_from: datetime, claim_to: datetime | None
+) -> tuple[datetime | None, MembershipEvent | None]:
+    """End of the continuous stretch in which the security is a member of at
+    least one index, starting with a membership that opens inside the claim.
+
+    Returns `(None, None)` while it is still a member, and `(claim_from, None)`
+    when no membership opens inside the claim (nothing to extend). Leaving one
+    index while staying in another does not end it (NVDA left ndx100 on
+    2004-12-20 and stayed in sp500).
+    """
+    intervals: list[tuple[datetime, datetime | None, MembershipEvent | None]] = []
+    for items in own_by_index.values():
+        opened: datetime | None = None
+        for item in items:  # replay order
+            if item.action == "add" and opened is None:
+                opened = item.effective_at
+            elif item.action == "remove" and opened is not None:
+                intervals.append((opened, item.effective_at, item))
+                opened = None
+        if opened is not None:
+            intervals.append((opened, None, None))
+    end: datetime | None = None
+    ending: MembershipEvent | None = None
+    for opened, closed, remove in sorted(intervals, key=lambda row: row[0]):
+        if end is None:  # the first stretch must open inside the claim
+            if opened < claim_from or (claim_to is not None and opened >= claim_to):
+                continue
+        elif opened > end:
+            break  # a day in no index ends the cover
+        if closed is None:
+            return None, None
+        if end is None or closed > end:
+            end, ending = closed, remove
+    return (claim_from, None) if end is None else (end, ending)
+
+
+def _overlaps_interval(
+    left_start: datetime, left_end: datetime | None, right_start: datetime, right_end: datetime | None
+) -> bool:
+    return (right_end is None or left_start < right_end) and (left_end is None or right_start < left_end)
+
+
+def _plan_r4(
+    events_by_index: dict[str, list[MembershipEvent]],
+    churn_ids_by_index: dict[str, set[str]],
+    now: datetime,
+    merged_massive_ids: dict[str, str] | None = None,
+) -> tuple[dict[str, list[dict]], dict[str, list[MembershipEvent]], list[dict]]:
+    """R4: a `rejected` row superseding each still-active churn event.
+
+    R1b: a non-churn active event under a Massive duplicate that R1 merges is
+    the same company's history, joined by CIK. It is rejected under the
+    duplicate and appended unchanged (action, dates, evidence, status) under
+    the canonical id.
+    """
+    merged = merged_massive_ids or {}
+    repoints: list[dict] = []
+    rejections: dict[str, list[dict]] = {}
+    events_out: dict[str, list[MembershipEvent]] = {}
+    for index_id, events in sorted(events_by_index.items()):
+        by_id = {item.event_id: item for item in events}
+        revisions: dict[str, int] = {}
+        for item in events:
+            revisions[item.security_id] = max(revisions.get(item.security_id, 0), item.revision)
+        rows: list[dict] = []
+        new_events: list[MembershipEvent] = []
+        for churn_id in sorted(churn_ids_by_index.get(index_id, set())):
+            item = by_id[churn_id]
+            revisions[item.security_id] = revisions.get(item.security_id, 0) + 1
+            reject = replace(
+                item,
+                event_id=_r4_reject_event_id(item.event_id),
+                revision=revisions[item.security_id],
+                known_at=now,
+                status="rejected",
+                supersedes=item.event_id,
+            )
+            new_events.append(reject)
+            rows.append(
+                {
+                    "index_id": index_id,
+                    "security_id": item.security_id,
+                    "action": item.action,
+                    "effective_at": item.effective_at.isoformat(),
+                    "rejected_event_id": item.event_id,
+                    "rejection_event_id": reject.event_id,
+                }
+            )
+        churny = churn_ids_by_index.get(index_id, set())
+        for item in _replay_membership(events):
+            canonical = merged.get(item.security_id)
+            if canonical is None or item.event_id in churny:
+                continue
+            revisions[item.security_id] = revisions.get(item.security_id, 0) + 1
+            new_events.append(
+                replace(
+                    item,
+                    event_id=_r4_reject_event_id(item.event_id),
+                    revision=revisions[item.security_id],
+                    known_at=now,
+                    status="rejected",
+                    supersedes=item.event_id,
+                )
+            )
+            revisions[canonical] = revisions.get(canonical, 0) + 1
+            moved = replace(
+                item,
+                event_id=_r1_repoint_event_id(item.event_id, canonical),
+                security_id=canonical,
+                revision=revisions[canonical],
+                known_at=now,
+                supersedes=None,
+            )
+            new_events.append(moved)
+            repoints.append(
+                {
+                    "index_id": index_id,
+                    "from_security_id": item.security_id,
+                    "to_security_id": canonical,
+                    "action": item.action,
+                    "effective_at": item.effective_at.isoformat(),
+                    "event_id": item.event_id,
+                    "repointed_event_id": moved.event_id,
+                }
+            )
+        if new_events:
+            rejections[index_id] = rows
+            events_out[index_id] = new_events
+    return rejections, events_out, repoints
+
+
+def _member_counts(root: Path, indexes: list[str], as_of: datetime) -> dict[str, dict[str, int]]:
+    master = SecurityMaster(root, evidence_verifier=None)
+    store = IndexMembershipStore(root, security_master=master, evidence_verifier=None)
+    return {
+        index_id: {
+            d.date().isoformat(): len(store.members_effective_at(index_id, d, as_of)) for d in _MEMBER_COUNT_DATES
+        }
+        for index_id in indexes
+    }
+
+
+def _scratch_lake_copy(root: Path, dest: Path) -> Path:
+    """Copy only the two stores repair-identity writes into `dest`.
+
+    Never `raw/`: on the mini it holds the Massive flat files. Evidence is
+    verified read-only against the real root's CAS instead.
+    """
+    for sub in ("security_master", "index_membership"):
+        src = root / sub
+        if src.exists():
+            shutil.copytree(src, dest / sub)
+    return dest
+
+
+def _apply_repair(
+    root: Path,
+    verifier,
+    security_master_events: list[SecurityIdentityEvent],
+    membership_events_by_index: dict[str, list[MembershipEvent]],
+) -> None:
+    master = SecurityMaster(root, evidence_verifier=verifier)
+    for event in security_master_events:
+        master.append(event)
+    reader_master = SecurityMaster(root, evidence_verifier=None)
+    store = IndexMembershipStore(root, security_master=reader_master, evidence_verifier=verifier)
+    for _index_id, events in sorted(membership_events_by_index.items()):
+        for event in events:
+            try:
+                store.append(event)
+            except ValueError as exc:  # name the row: a bare validator message cannot be acted on
+                raise ValueError(
+                    f"{exc}: {event.index_id} {event.action} {event.security_id} "
+                    f"effective {event.effective_at.isoformat()} event {event.event_id}"
+                ) from exc
+
+
+def repair_identity(
+    *,
+    indexes: list[str],
+    data_lake_root: Path,
+    now: datetime,
+    apply: bool = False,
+    output: Path | None = None,
+) -> dict:
+    """R1 (CIK merge), R2 (researched-window extension), R4 (churn rejection).
+
+    Dry run by default: computes the plan, writes the JSON manifest (if
+    `output` is given) and one ledger run + its measurements, without
+    touching a store. `member_counts_after` is computed by replaying the plan
+    onto a scratch copy of the lake, which is discarded either way.
+    `--apply` appends security-master rows first (R1 then R2), then
+    membership rejections (R4), to the real lake, in that order.
+
+    Idempotent: every appended event id derives from the event it
+    supersedes (or, for an R1 merge, from the claim and its target), and
+    superseding a claim removes it from the next run's "active" set — so a
+    rerun over the same input state has nothing left to merge, extend or
+    reject, and appends nothing.
+    """
+    root = Path(data_lake_root)
+    evidence = SourceEvidenceStore(root)
+    verifier = _evidence_verifier(evidence)
+    reader_master = SecurityMaster(root, evidence_verifier=None)
+    identities = reader_master.events(as_of=now)
+    active_identities = _active_identities(identities)
+
+    events_by_index = {
+        index_id: IndexMembershipStore(root, security_master=reader_master, evidence_verifier=None).events(
+            index_id, as_of=now
+        )
+        for index_id in indexes
+    }
+    revisions: dict[str, int] = {}
+    for item in identities:
+        revisions[item.security_id] = max(revisions.get(item.security_id, 0), item.revision)
+
+    # R1 first: churn is judged against the merged identities, or a pair whose
+    # removed id has only a narrow claim is missed and R1b re-points it instead.
+    merges, conflicts, r1_events, merged_massive_ids = _plan_r1(identities, revisions, now)
+    churn_ids_by_index = _detect_churn(events_by_index, active_identities, merged_massive_ids)
+    extensions, caps, r2_events = _plan_r2(
+        identities, events_by_index, churn_ids_by_index, revisions, now, merged_massive_ids
+    )
+    rejections_by_index, r4_events_by_index, repoints = _plan_r4(
+        events_by_index, churn_ids_by_index, now, merged_massive_ids
+    )
+    repointed = {row["event_id"] for row in repoints}
+
+    dangling: list[dict] = []
+    for index_id, events in sorted(events_by_index.items()):
+        churny = churn_ids_by_index.get(index_id, set())
+        for item in _replay_membership(events):
+            if (
+                item.status == "verified"
+                and item.security_id in merged_massive_ids
+                and item.event_id not in churny
+                and item.event_id not in repointed
+            ):
+                dangling.append({"index_id": index_id, "event_id": item.event_id, "security_id": item.security_id})
+
+    run_id = os.environ.get("LW_RUN_ID") or ledger.new_run_id("membership-repair-identity")
+    run_row = {
+        "run_id": run_id,
+        "job": "membership-repair-identity",
+        "host": socket.gethostname(),
+        "release_sha": os.environ.get("LW_RELEASE_SHA"),
+        "presets_sha": None,
+        "registry_sha": None,
+        "started": now,
+        "ended": None,
+        "exit_code": None,
+        "verdict": None,
+    }
+    abandoned = ledger.open_run(run_row)
+    if abandoned:
+        print(f"abandoned {len(abandoned)} open run(s) of membership-repair-identity: {', '.join(abandoned)}")
+
+    manifest = {
+        "indexes": sorted(indexes),
+        "apply": apply,
+        "merges": merges,
+        "conflicts": conflicts,
+        "extensions": extensions,
+        "caps": caps,
+        "rejections": [row for rows in rejections_by_index.values() for row in rows],
+        "repoints": repoints,
+        "dangling_verified_references": dangling,
+        "member_counts_before": _member_counts(root, indexes, now),
+    }
+    security_master_events = r1_events + r2_events
+
+    def close(exit_code: int, verdict: str) -> None:
+        ledger.emit(
+            "runs", [run_row | {"ended": datetime.now(UTC), "exit_code": exit_code, "verdict": verdict}], run_id=run_id
+        )
+        counts = {
+            "identity_merges": len(merges),
+            "identity_conflicts": len(conflicts),
+            "identity_extensions": len(extensions),
+            "identity_caps": len(caps),
+            "membership_rejections": sum(len(rows) for rows in rejections_by_index.values()),
+            "membership_repoints": len(repoints),
+            "identity_dangling_references": len(dangling),
+        }
+        ledger.emit(
+            "measurements",
+            [
+                {
+                    "name": name,
+                    "scope": ",".join(sorted(indexes)),
+                    "measured_at": now,
+                    "value": float(value),
+                    "unit": "count",
+                    "source": "measured",
+                    "run_id": run_id,
+                }
+                for name, value in counts.items()
+            ],
+            run_id=run_id,
+        )
+
+    try:
+        if dangling:
+            manifest["member_counts_after"] = manifest["member_counts_before"]
+            _write_manifest(output, manifest)
+            raise ValueError(
+                f"{len(dangling)} verified membership event(s) still reference a security_master identity "
+                "R1 would reject; refusing to guess, nothing applied"
+            )
+
+        if apply:
+            _apply_repair(root, verifier, security_master_events, r4_events_by_index)
+            manifest["member_counts_after"] = _member_counts(root, indexes, now)
+        else:
+            with tempfile.TemporaryDirectory() as tmp:
+                scratch = _scratch_lake_copy(root, Path(tmp) / "scratch")
+                scratch_verifier = _evidence_verifier(SourceEvidenceStore(root))
+                _apply_repair(scratch, scratch_verifier, security_master_events, r4_events_by_index)
+                manifest["member_counts_after"] = _member_counts(scratch, indexes, now)
+        _write_manifest(output, manifest)
+    except BaseException:  # noqa: BLE001 - pm:2026-09-16-interrupted-runs-never-closed
+        close(1, "FAILED")
+        raise
+    close(0, "OK")
+    return manifest
+
+
+def _write_manifest(output: Path | None, manifest: dict) -> None:
+    if output is None:
+        return
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(manifest, indent=2, sort_keys=True, default=str) + "\n")
+
+
+def _repair_identity_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="livewire_ingest.py membership-sync repair-identity",
+        description="R1/R2/R4: merge CIK-duplicate identities, extend researched windows, reject 2026-09-17-style churn",
+    )
+    parser.add_argument(
+        "--index",
+        action="extend",
+        nargs="+",
+        choices=sorted(REPAIR_INDEXES),
+        help="Indexes to repair (space-separated and/or repeatable; default: sp500 ndx100 djia)",
+    )
+    parser.add_argument("--apply", action="store_true", help="Append the planned events (default: dry run)")
+    parser.add_argument("--output", type=Path, help="Write the JSON manifest to this path")
+    args = parser.parse_args(argv)
+    manifest = repair_identity(
+        indexes=args.index or list(REPAIR_INDEXES),
+        data_lake_root=data_lake_dir(),
+        now=datetime.now(UTC),
+        apply=args.apply,
+        output=args.output,
+    )
+    print(json.dumps(manifest, sort_keys=True, default=str))
+    return 0
+
+
 def _reresolve_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="livewire_ingest.py membership-sync reresolve",
@@ -817,6 +1552,8 @@ def main(argv: list[str] | None = None) -> int:
         return _import_main(argv[1:])
     if argv[:1] == ["reresolve"]:
         return _reresolve_main(argv[1:])
+    if argv[:1] == ["repair-identity"]:
+        return _repair_identity_main(argv[1:])
     parser = argparse.ArgumentParser(
         prog="livewire_ingest.py membership-sync",
         description="Diff each index's live source against the membership store",

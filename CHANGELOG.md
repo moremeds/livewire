@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `membership-sync repair-identity`: one `security_id` per company after the 2026-09-17 narrow-identity-window churn. R1 merges a `massive` duplicate into its researched twin by CIK and moves all its claims; R1b re-points the duplicate's membership history; R2 extends a researched claim to the end of its cross-index membership stretch, citing the index record; R4 rejects the live-diff remove+add churn pairs and same-date renames across merged ids, while backfilled renames stay history. Dry run by default (copies only the two stores); `--apply` writes a JSON manifest and a ledger run and is idempotent. The live diff (`membership-sync`) now compares tickers rather than `security_id`s, and a renamed member (FLT → CPAY) is neither removed nor added.
 - Retired the BZ futures root from new ingestion while preserving stored BZ history. COIL is configured as a separate IPE series.
 - Added verified exchange mappings for the new commodity roots and rolling futures selection: energy through the current month plus 15 months, and the first two live delivery months for GC/SI/HG and 12 agricultural roots. Newly selected contracts are full-history seeded before daily updates.
 - Futures coverage now uses that same live rolling selection; when IB is unavailable it reports futures as UNKNOWN and continues equity coverage and recovery.

@@ -1288,6 +1288,7 @@ python scripts/livewire_ingest.py membership-sync [--index sp500 ndx100 ...] [--
 python scripts/livewire_ingest.py membership-sync import --index sp500 \
     --events grok_index/pit_membership/sp500/events.jsonl --source <file>...        # one-time panel import
 python scripts/livewire_ingest.py membership-sync reresolve --index sp500 --confidence B   # placeholder → security_id
+python scripts/livewire_ingest.py membership-sync repair-identity [--index sp500 ndx100 djia] [--apply] [--output <json>]
 ```
 
 - **Live sync** fetches each index's current source — Wikipedia
@@ -1320,6 +1321,22 @@ python scripts/livewire_ingest.py membership-sync reresolve --index sp500 --conf
   `known_at = now`, so an `as_of` before the pass still sees the placeholder.
   Idempotent; an interrupted pass is completed by the retry. Run
   `security-master sync` first — a ticker with no identity stays a placeholder.
+- **`repair-identity`** merges a `massive` identity into its researched
+  (`wikipedia_sec_research`) twin by CIK (R1), extends a researched claim's
+  narrow `[add-1d, add+1d)` window to the next non-churn `remove` (R2, capped
+  and reported on collision, never forced), and rejects a same-timestamp
+  remove+add churn pair in one index (R4) — the fix for the 2026-09-17
+  narrow-identity churn (`docs/superpowers/specs/2026-09-23-membership-identity-continuity-design.md`).
+  Dry run by default; `--apply` writes security-master rows (R1 then R2) then
+  membership rejections (R4) in one run; `--output` writes the JSON manifest
+  (merges, conflicts, extensions, caps, rejections, dangling references,
+  before/after member counts). Idempotent — event ids derive from the event
+  they supersede, so a rerun appends nothing. A verified membership event
+  still referencing a rejected duplicate after R1 fails the run rather than
+  guessing.
+- **Ledger:** `runs` rows `job='membership-repair-identity'`; measurements
+  `identity_merges`, `identity_conflicts`, `identity_extensions`,
+  `identity_caps`, `membership_rejections`, `identity_dangling_references`.
 - **Ledger:** `runs` rows `job='membership-reresolve'` — deliberately not
   `membership-sync`, so a later OK pass cannot hide the night's FAILED
   scheduled run. Measurements `membership_reresolve_conflict` and
