@@ -1076,6 +1076,7 @@ python scripts/livewire_store.py duckdb sql "SELECT ... FROM bronze_equity_1d"
 - Symbol-scoped reads bypass views entirely — `duckdb bars` constructs
   `symbol=<TICKER>/<tf>.parquet` paths directly.
 - Coverage is **daily-only**.
+- Energy (EIA) is `bronze_energy_<tf>`: one view per timeframe across all datasets, filter on `product`/`dataset`; a column another dataset lacks reads NULL. Not in the coverage table.
 - `build` publishes by writing a staging database and `os.replace()`-ing it into
   place; concurrent `read_only` readers are fine.
 
