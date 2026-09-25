@@ -64,10 +64,21 @@ from livewire_scripts.paths import data_lake_dir, silver_dir, warehouse_dir
 # CREATE VIEW in the database but can create temporary ones, so this single
 # form works for in-memory, read-write and read_only alike.
 _VIEW_SQL = "CREATE OR REPLACE TEMP VIEW {name} AS SELECT * FROM read_parquet({glob!r}, hive_partitioning=1)"
+# EIA partitions by month, year or vintage depending on the dataset, and DuckDB's
+# hive reader rejects files whose partition keys differ, so product and dataset
+# are read off the path instead. Datasets carry different columns; union_by_name
+# leaves another dataset's columns NULL.
+_ENERGY_VIEW_SQL = (
+    "CREATE OR REPLACE TEMP VIEW {name} AS SELECT * EXCLUDE (filename),"
+    " regexp_extract(filename, 'product=([^/]+)', 1) AS product,"
+    " regexp_extract(filename, 'dataset=([^/]+)', 1) AS dataset"
+    " FROM read_parquet({glob!r}, hive_partitioning=false, union_by_name=true, filename=true)"
+)
 _SHEPHERD_VIEW_SQL = "CREATE OR REPLACE TEMP VIEW {name} AS SELECT * FROM read_parquet({path!r})"
 
 _EQUITY_INTRADAY = ("1m", "5m", "30m", "1h")
 _DAILY_ASSET_CLASSES = ("equity", "volatility", "futures", "rates", "fx", "cmdty")
+_ENERGY_TIMEFRAMES = ("1h", "1d", "1w", "4w", "1mo", "1q", "1y")
 _SILVER_KINDS = {"silver_equity_1d": "1d", "silver_factors": "factors"}
 _SILVER_SNAPSHOTS: WeakKeyDictionary[duckdb.DuckDBPyConnection, SilverSnapshot] = WeakKeyDictionary()
 
@@ -91,15 +102,20 @@ class ViewSpec:
     ``filename`` the per-symbol file inside them. Keeping the halves separate
     rather than storing a finished glob is what lets :func:`symbol_files`
     address files directly instead of paying for enumeration.
+
+    ``depth`` is how many partition levels sit between the two (energy has
+    three: product, dataset, period) and ``sql`` how the files become a view.
     """
 
     name: str
     directory: str
     filename: str
+    depth: int = 1
+    sql: str = _VIEW_SQL
 
     @property
     def glob(self) -> str:
-        return str(Path(self.directory) / "*" / self.filename)
+        return str(Path(self.directory, *("*",) * self.depth, self.filename))
 
     def path_for(self, symbol: str) -> str:
         """Resolve one symbol's file, encoding the partition name as the writers do.
@@ -140,6 +156,10 @@ def view_specs(
     specs += [
         ViewSpec(f"bronze_equity_{timeframe}", str(bronze / "asset_class=equity"), f"{timeframe}.parquet")
         for timeframe in _EQUITY_INTRADAY
+    ]
+    specs += [
+        ViewSpec(f"bronze_energy_{tf}", str(bronze / "asset_class=energy"), f"{tf}.parquet", 3, _ENERGY_VIEW_SQL)
+        for tf in _ENERGY_TIMEFRAMES
     ]
     specs.append(ViewSpec("corporate_actions", str(bronze / "asset_class=corporate_action"), "events.parquet"))
     specs.append(ViewSpec("silver_equity_1d", str(silver / "asset_class=equity"), "1d.parquet"))
@@ -259,7 +279,7 @@ def ensure_view(
             raise FileNotFoundError(f"no committed artifacts for {name}")
         con.execute(_VIEW_SQL.format(name=spec.name, glob=files))
         return
-    con.execute(_VIEW_SQL.format(name=spec.name, glob=spec.glob))
+    con.execute(spec.sql.format(name=spec.name, glob=spec.glob))
 
 
 def _shepherd_metadata_paths(data_lake_root: Path | None = None) -> dict[str, Path]:
