@@ -12,6 +12,7 @@ from clients.intraday_bronze_client import (
 )
 from clients.massive_client import MassiveClient, MassiveDividend, MassiveSMAValue, MassiveSplit
 from clients.massive_flatfile_client import MassiveFlatfileClient
+from clients.research_export import export_gld_research
 from clients.tag_registry import TagRegistry
 from clients.timeframe_aggregator import VALID_ROLLUPS, aggregate_bars
 
@@ -34,4 +35,5 @@ __all__ = [
     "TagRegistry",
     "VALID_ROLLUPS",
     "aggregate_bars",
+    "export_gld_research",
 ]

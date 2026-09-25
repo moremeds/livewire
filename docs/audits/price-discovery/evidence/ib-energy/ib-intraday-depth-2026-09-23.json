@@ -1,0 +1,20 @@
+{
+  "probe_utc": "2026-09-23T06:19:34Z..06:23Z",
+  "note": "CLX6=CL_202611 conId 304037511, RBX6=RB_202611 conId 600696516, ZSX6=ZS_202611 conId 597391703; all TRADES useRTH=1",
+  "probes": [
+    {"contract":"CLX6","req":"1h end 2022-01-15 dur 1M","rows":0,"errors":[{"code":162,"msg":"HMDS query returned no data"}]},
+    {"contract":"CLX6","req":"1m end 2024-06-15 dur 1D","rows":0,"errors":[{"code":162}]},
+    {"contract":"RBX6","req":"1h end 2022-01-15","rows":0,"errors":[{"code":162}]},
+    {"contract":"RBX6","req":"1m end 2024-06-15","rows":0,"errors":[{"code":162}]},
+    {"contract":"ZSX6","req":"1h end 2022-01-15","rows":0,"errors":[{"code":162}]},
+    {"contract":"ZSX6","req":"1m end 2024-06-15","rows":0,"errors":[{"code":162}]},
+    {"contract":"CLX6","req":"1h end 2025-12-15 dur 1M","rows":162,"first":"2025-11-13 09:30-05:00","last":"2025-12-12 16:00-05:00"},
+    {"contract":"CLX6","req":"1h end 2026-06-15 dur 1M","rows":168,"first":"2026-05-14","last":"2026-06-12"},
+    {"contract":"CLX6","req":"1h end 2026-08-15 dur 1M","rows":176,"first":"2026-07-16","last":"2026-08-14"},
+    {"contract":"CLX6","req":"1h end 2024-06-15 dur 1M","rows":7,"first":"2024-06-05 10:00-04:00","last":"2024-06-05 16:00-04:00","note":"sparse — back-month contract barely traded then"},
+    {"contract":"CLX6","req":"1m end 2026-06-15 dur 1D","rows":450,"first":"2026-06-12 09:30","last":"2026-06-12 16:59"},
+    {"contract":"CLX6","req":"1m end 2026-01-15 dur 1D","rows":450,"first":"2026-01-14 09:30","last":"2026-01-14 16:59"},
+    {"contract":"CLX6","req":"1m end 2026-08-15 dur 1D","rows":450,"first":"2026-08-14","last":"2026-08-14"},
+    {"contract":"CLX6","req":"1m end 2026-09-15 dur 1D","rows":450,"first":"2026-09-14","last":"2026-09-14"}
+  ]
+}

@@ -1,0 +1,557 @@
+[energy] CL @NYMEX
+  CL_202610 qual=True head=2018-01-24 14:30:00+00:00
+  CL_202611 qual=True head=2018-01-24 14:30:00+00:00
+  CL_202612 qual=True head=2017-11-22 14:30:00+00:00
+  CL_202701 qual=True head=2018-01-24 14:30:00+00:00
+  CL_202702 qual=True head=2018-01-24 14:30:00+00:00
+  CL_202703 qual=True head=2018-11-21 14:30:00+00:00
+  CL_202704 qual=True head=2018-11-21 14:30:00+00:00
+  CL_202705 qual=True head=2018-11-21 14:30:00+00:00
+  CL_202706 qual=True head=2018-11-21 14:30:00+00:00
+  CL_202707 qual=True head=2018-11-21 14:30:00+00:00
+  CL_202708 qual=True head=2018-11-21 14:30:00+00:00
+  CL_202709 qual=True head=2018-11-21 14:30:00+00:00
+  CL_202710 qual=True head=2018-11-21 14:30:00+00:00
+  CL_202711 qual=True head=2018-11-21 14:30:00+00:00
+  CL_202712 qual=True head=2018-11-21 14:30:00+00:00
+[energy] NG @NYMEX
+  NG_202610 qual=True head=2017-03-14 13:30:00+00:00
+  NG_202611 qual=True head=2017-03-14 13:30:00+00:00
+  NG_202612 qual=True head=2017-03-14 13:30:00+00:00
+  NG_202701 qual=True head=2017-03-14 13:30:00+00:00
+  NG_202702 qual=True head=2017-03-14 13:30:00+00:00
+  NG_202703 qual=True head=2017-03-14 13:30:00+00:00
+  NG_202704 qual=True head=2017-03-14 13:30:00+00:00
+  NG_202705 qual=True head=2017-03-14 13:30:00+00:00
+  NG_202706 qual=True head=2017-03-14 13:30:00+00:00
+  NG_202707 qual=True head=2017-03-14 13:30:00+00:00
+  NG_202708 qual=True head=2017-03-14 13:30:00+00:00
+  NG_202709 qual=True head=2017-03-14 13:30:00+00:00
+  NG_202710 qual=True head=2017-03-14 13:30:00+00:00
+  NG_202711 qual=True head=2017-03-14 13:30:00+00:00
+  NG_202712 qual=True head=2017-03-14 13:30:00+00:00
+[energy] COIL @IPE
+  COIL_202611 qual=True head=2019-04-17 00:00:00+00:00
+  COIL_202612 qual=True head=2019-04-17 00:00:00+00:00
+  COIL_202701 qual=True head=2019-04-17 00:00:00+00:00
+  COIL_202702 qual=True head=2019-04-17 00:00:00+00:00
+  COIL_202703 qual=True head=2019-04-17 00:00:00+00:00
+Error 1100, reqId -1: Connectivity between IBKR and Trader Workstation has been lost.
+IB connectivity 1100: Connectivity between IBKR and Trader Workstation has been lost.
+Error 1100, reqId -1: Connectivity between IBKR and Trader Workstation has been lost.
+IB connectivity 1100: Connectivity between IBKR and Trader Workstation has been lost.
+Error 1100, reqId -1: Connectivity between IBKR and Trader Workstation has been lost.
+IB connectivity 1100: Connectivity between IBKR and Trader Workstation has been lost.
+Error 1100, reqId -1: Connectivity between IBKR and Trader Workstation has been lost.
+IB connectivity 1100: Connectivity between IBKR and Trader Workstation has been lost.
+Error handling fields: ['10', '66', 'COIL', 'FUT', '20260930 19:30:00 GB-Eire', '0', '', 'IPE', 'USD', 'COILX6', 'COIL', 'COIL', '361002948', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,BOARDLOT,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,MIT,MKT,MTL,NGCOMB,NONALGO,OCA,OPENCLOSE,PEGBENCH,REL,RELPCTOFS,SCALE,SCALERST,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,WHATIF', 'IPE,QBALGOIEU', '1', '30865593', 'ICE Brent Crude', '', '202611', '', '', '', 'GB-Eire', '20260923:0100-20260923:2300;20260924:0100-20260924:2300;20260925:0100-20260925:2300;20260926:CLOSED;20260927:2300-20260928:2300', '20260923:0100-20260923:2300;20260924:0100-20260924:2300;20260925:0100-20260925:2300;20260926:CLOSED;20260927:2300-20260928:2300', '', '', '0', '2147483647', 'COIL', 'IND', '32,32', '20261001', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 66
+Error handling fields: ['10', '68', 'COIL', 'FUT', '20261030 19:30:00 GB-Eire', '0', '', 'IPE', 'USD', 'COILZ6', 'COIL', 'COIL', '361002955', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,BOARDLOT,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,MIT,MKT,MTL,NGCOMB,NONALGO,OCA,OPENCLOSE,PEGBENCH,REL,RELPCTOFS,SCALE,SCALERST,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,WHATIF', 'IPE,QBALGOIEU', '1', '30865593', 'ICE Brent Crude', '', '202612', '', '', '', 'GB-Eire', '20260923:0100-20260923:2300;20260924:0100-20260924:2300;20260925:0100-20260925:2300;20260926:CLOSED;20260927:2300-20260928:2300', '20260923:0100-20260923:2300;20260924:0100-20260924:2300;20260925:0100-20260925:2300;20260926:CLOSED;20260927:2300-20260928:2300', '', '', '0', '2147483647', 'COIL', 'IND', '32,32', '20261102', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 68
+Error handling fields: ['10', '70', 'COIL', 'FUT', '20261130 19:30:00 GB-Eire', '0', '', 'IPE', 'USD', 'COILF7', 'COIL', 'COIL', '361002958', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,BOARDLOT,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,MIT,MKT,MTL,NGCOMB,NONALGO,OCA,OPENCLOSE,PEGBENCH,REL,RELPCTOFS,SCALE,SCALERST,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,WHATIF', 'IPE,QBALGOIEU', '1', '30865593', 'ICE Brent Crude', '', '202701', '', '', '', 'GB-Eire', '20260923:0100-20260923:2300;20260924:0100-20260924:2300;20260925:0100-20260925:2300;20260926:CLOSED;20260927:2300-20260928:2300', '20260923:0100-20260923:2300;20260924:0100-20260924:2300;20260925:0100-20260925:2300;20260926:CLOSED;20260927:2300-20260928:2300', '', '', '0', '2147483647', 'COIL', 'IND', '32,32', '20261201', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 70
+Error handling fields: ['10', '72', 'COIL', 'FUT', '20261230 19:30:00 GB-Eire', '0', '', 'IPE', 'USD', 'COILG7', 'COIL', 'COIL', '361002960', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,BOARDLOT,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,MIT,MKT,MTL,NGCOMB,NONALGO,OCA,OPENCLOSE,PEGBENCH,REL,RELPCTOFS,SCALE,SCALERST,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,WHATIF', 'IPE,QBALGOIEU', '1', '30865593', 'ICE Brent Crude', '', '202702', '', '', '', 'GB-Eire', '20260923:0100-20260923:2300;20260924:0100-20260924:2300;20260925:0100-20260925:2300;20260926:CLOSED;20260927:2300-20260928:2300', '20260923:0100-20260923:2300;20260924:0100-20260924:2300;20260925:0100-20260925:2300;20260926:CLOSED;20260927:2300-20260928:2300', '', '', '0', '2147483647', 'COIL', 'IND', '32,32', '20261231', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 72
+Error handling fields: ['10', '74', 'COIL', 'FUT', '20270129 19:30:00 GB-Eire', '0', '', 'IPE', 'USD', 'COILH7', 'COIL', 'COIL', '361002970', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,BOARDLOT,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,MIT,MKT,MTL,NGCOMB,NONALGO,OCA,OPENCLOSE,PEGBENCH,REL,RELPCTOFS,SCALE,SCALERST,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,WHATIF', 'IPE,QBALGOIEU', '1', '30865593', 'ICE Brent Crude', '', '202703', '', '', '', 'GB-Eire', '20260923:0100-20260923:2300;20260924:0100-20260924:2300;20260925:0100-20260925:2300;20260926:CLOSED;20260927:2300-20260928:2300', '20260923:0100-20260923:2300;20260924:0100-20260924:2300;20260925:0100-20260925:2300;20260926:CLOSED;20260927:2300-20260928:2300', '', '', '0', '2147483647', 'COIL', 'IND', '32,32', '20270201', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 74
+Error handling fields: ['10', '35', 'NG', 'FUT', '20260928 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'NGV26', 'NG', 'NG', '269460151', '0.001', '10000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '36552980', 'Henry Hub Natural Gas', '', '202610', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1430', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1430', '', '', '0', '2147483647', 'NG', 'IND', '98,98', '20260928', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 35
+Error handling fields: ['10', '37', 'NG', 'FUT', '20261028 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'NGX26', 'NG', 'NG', '269460170', '0.001', '10000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '36552980', 'Henry Hub Natural Gas', '', '202611', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'NG', 'IND', '98,98', '20261028', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 37
+Error handling fields: ['10', '39', 'NG', 'FUT', '20261125 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'NGZ26', 'NG', 'NG', '269460190', '0.001', '10000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '36552980', 'Henry Hub Natural Gas', '', '202612', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'NG', 'IND', '98,98', '20261125', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 39
+Error handling fields: ['10', '41', 'NG', 'FUT', '20261229 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'NGF27', 'NG', 'NG', '269459992', '0.001', '10000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '36552980', 'Henry Hub Natural Gas', '', '202701', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'NG', 'IND', '98,98', '20261229', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 41
+Error handling fields: ['10', '43', 'NG', 'FUT', '20270127 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'NGG27', 'NG', 'NG', '269460011', '0.001', '10000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '36552980', 'Henry Hub Natural Gas', '', '202702', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'NG', 'IND', '98,98', '20270127', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 43
+Error handling fields: ['10', '45', 'NG', 'FUT', '20270224 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'NGH27', 'NG', 'NG', '269460026', '0.001', '10000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '36552980', 'Henry Hub Natural Gas', '', '202703', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'NG', 'IND', '98,98', '20270224', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 45
+Error handling fields: ['10', '47', 'NG', 'FUT', '20270329 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'NGJ27', 'NG', 'NG', '269460040', '0.001', '10000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '36552980', 'Henry Hub Natural Gas', '', '202704', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'NG', 'IND', '98,98', '20270329', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 47
+Error handling fields: ['10', '49', 'NG', 'FUT', '20270428 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'NGK27', 'NG', 'NG', '269460057', '0.001', '10000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '36552980', 'Henry Hub Natural Gas', '', '202705', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'NG', 'IND', '98,98', '20270428', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 49
+Error handling fields: ['10', '51', 'NG', 'FUT', '20270526 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'NGM27', 'NG', 'NG', '269460074', '0.001', '10000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '36552980', 'Henry Hub Natural Gas', '', '202706', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'NG', 'IND', '98,98', '20270526', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 51
+Error handling fields: ['10', '53', 'NG', 'FUT', '20270628 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'NGN27', 'NG', 'NG', '269460094', '0.001', '10000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '36552980', 'Henry Hub Natural Gas', '', '202707', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'NG', 'IND', '98,98', '20270628', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 53
+Error handling fields: ['10', '55', 'NG', 'FUT', '20270728 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'NGQ27', 'NG', 'NG', '269460112', '0.001', '10000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '36552980', 'Henry Hub Natural Gas', '', '202708', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'NG', 'IND', '98,98', '20270728', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 55
+Error handling fields: ['10', '57', 'NG', 'FUT', '20270827 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'NGU27', 'NG', 'NG', '269460134', '0.001', '10000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '36552980', 'Henry Hub Natural Gas', '', '202709', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'NG', 'IND', '98,98', '20270827', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 57
+Error handling fields: ['10', '59', 'NG', 'FUT', '20270928 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'NGV27', 'NG', 'NG', '269460152', '0.001', '10000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '36552980', 'Henry Hub Natural Gas', '', '202710', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'NG', 'IND', '98,98', '20270928', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 59
+Error handling fields: ['10', '61', 'NG', 'FUT', '20271027 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'NGX27', 'NG', 'NG', '269460175', '0.001', '10000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '36552980', 'Henry Hub Natural Gas', '', '202711', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'NG', 'IND', '98,98', '20271027', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 61
+Error handling fields: ['10', '63', 'NG', 'FUT', '20271126 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'NGZ27', 'NG', 'NG', '269460194', '0.001', '10000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '36552980', 'Henry Hub Natural Gas', '', '202712', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'NG', 'IND', '98,98', '20271126', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 63
+Error 1102, reqId -1: Connectivity between IBKR and Trader Workstation has been restored - data maintained. All data farms are connected: usfarm.nj; usfarm; ushmds; secdefnj.
+IB connectivity 1102: Connectivity between IBKR and Trader Workstation has been restored - data maintained. All data farms are connected: usfarm.nj; usfarm; ushmds; secdefnj.
+Error handling fields: ['10', '8', 'CL', 'FUT', '20261120 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'CLZ6', 'CL', 'CL', '296574787', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '17340715', 'Light Sweet Crude Oil', '', '202612', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'CL', 'IND', '32,32', '20261120', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 8
+Error handling fields: ['10', '10', 'CL', 'FUT', '20261221 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'CLF7', 'CL', 'CL', '304037396', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '17340715', 'Light Sweet Crude Oil', '', '202701', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'CL', 'IND', '32,32', '20261221', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 10
+Error handling fields: ['10', '12', 'CL', 'FUT', '20270120 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'CLG7', 'CL', 'CL', '304037415', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '17340715', 'Light Sweet Crude Oil', '', '202702', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'CL', 'IND', '32,32', '20270120', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 12
+Error handling fields: ['10', '4', 'CL', 'FUT', '20260922', '0', '', 'NYMEX', 'USD', 'CLV6', 'CL', 'CL', '304037496', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '17340715', 'Light Sweet Crude Oil', '', '202610', '', '', '', '', '', '', '', '', '0', '2147483647', 'CL', 'IND', '32,32', '20260922', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 4
+Error handling fields: ['10', '6', 'CL', 'FUT', '20261020 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'CLX6', 'CL', 'CL', '304037511', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '17340715', 'Light Sweet Crude Oil', '', '202611', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'CL', 'IND', '32,32', '20261020', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 6
+Error handling fields: ['10', '14', 'CL', 'FUT', '20270222 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'CLH7', 'CL', 'CL', '342054394', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '17340715', 'Light Sweet Crude Oil', '', '202703', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'CL', 'IND', '32,32', '20270222', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 14
+Error handling fields: ['10', '16', 'CL', 'FUT', '20270322 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'CLJ7', 'CL', 'CL', '342054399', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '17340715', 'Light Sweet Crude Oil', '', '202704', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'CL', 'IND', '32,32', '20270322', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 16
+Error handling fields: ['10', '18', 'CL', 'FUT', '20270420 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'CLK7', 'CL', 'CL', '342054403', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '17340715', 'Light Sweet Crude Oil', '', '202705', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'CL', 'IND', '32,32', '20270420', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 18
+Error handling fields: ['10', '20', 'CL', 'FUT', '20270520 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'CLM7', 'CL', 'CL', '342054406', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '17340715', 'Light Sweet Crude Oil', '', '202706', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'CL', 'IND', '32,32', '20270520', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 20
+Error handling fields: ['10', '22', 'CL', 'FUT', '20270622 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'CLN7', 'CL', 'CL', '342054409', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '17340715', 'Light Sweet Crude Oil', '', '202707', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'CL', 'IND', '32,32', '20270622', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 22
+Error handling fields: ['10', '24', 'CL', 'FUT', '20270720 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'CLQ7', 'CL', 'CL', '342054412', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '17340715', 'Light Sweet Crude Oil', '', '202708', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'CL', 'IND', '32,32', '20270720', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 24
+Error handling fields: ['10', '26', 'CL', 'FUT', '20270820 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'CLU7', 'CL', 'CL', '342054418', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '17340715', 'Light Sweet Crude Oil', '', '202709', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'CL', 'IND', '32,32', '20270820', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 26
+Error handling fields: ['10', '28', 'CL', 'FUT', '20270921 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'CLV7', 'CL', 'CL', '342054423', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '17340715', 'Light Sweet Crude Oil', '', '202710', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'CL', 'IND', '32,32', '20270921', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 28
+Error handling fields: ['10', '30', 'CL', 'FUT', '20271020 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'CLX7', 'CL', 'CL', '342054424', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '17340715', 'Light Sweet Crude Oil', '', '202711', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'CL', 'IND', '32,32', '20271020', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 30
+Error handling fields: ['10', '32', 'CL', 'FUT', '20271119 14:30:00 US/Eastern', '0', '', 'NYMEX', 'USD', 'CLZ7', 'CL', 'CL', '342054429', '0.01', '1000', 'ACTIVETIM,AD,ADJUST,ALERT,ALGO,ALLOC,AVGCOST,BASKET,BENCHPX,COND,CONDORDER,DAY,DEACT,DEACTDIS,DEACTEOD,GAT,GTC,GTD,GTT,HID,ICE,IOC,LIT,LMT,LTH,MIT,MKT,MKTPROT,MTL,NGCOMB,NONALGO,OCA,PEGBENCH,SCALE,SCALERST,SIZECHK,SNAPMID,SNAPMKT,SNAPREL,STP,STPLMT,STPPROT,TRAIL,TRAILLIT,TRAILLMT,TRAILMIT,WHATIF', 'NYMEX,QBALGO', '1', '17340715', 'Light Sweet Crude Oil', '', '202712', '', '', '', 'US/Eastern', '20260921:1800-20260922:1700;20260922:1800-20260923:1700;20260923:1800-20260924:1700;20260924:1800-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '20260922:0930-20260922:1700;20260923:0930-20260923:1700;20260924:0930-20260924:1700;20260925:0930-20260925:1700;20260926:CLOSED;20260927:1800-20260928:1700', '', '', '0', '2147483647', 'CL', 'IND', '32,32', '20271119', '', '1', '1', '1']
+Traceback (most recent call last):
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 181, in interpret
+    handler(fields)
+    ~~~~~~~^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/decoder.py", line 344, in contractDetails
+    self.wrapper.contractDetails(int(reqId), cd)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/Users/moremeds/market-warehouse/releases/f83e3df0c4c9ba1ba54d6e5e9abd49be50b278e2/.venv/lib/python3.13/site-packages/ib_async/wrapper.py", line 874, in contractDetails
+    self._results[reqId].append(contractDetails)
+    ~~~~~~~~~~~~~^^^^^^^
+KeyError: 32
+  COIL_202704 qual=False head=2019-04-17 00:00:00+00:00
+  COIL_202705 qual=True head=2019-04-17 00:00:00+00:00
+  COIL_202706 qual=True head=2019-04-17 00:00:00+00:00
+  COIL_202707 qual=True head=2019-04-17 00:00:00+00:00
+  COIL_202708 qual=True head=2019-04-17 00:00:00+00:00
+  COIL_202709 qual=True head=2019-04-17 00:00:00+00:00
+  COIL_202710 qual=True head=2019-04-17 00:00:00+00:00
+  COIL_202711 qual=True head=2019-04-17 00:00:00+00:00
+  COIL_202712 qual=True head=2019-04-17 00:00:00+00:00
+[energy] RB @NYMEX
+  RB_202610 qual=True head=2022-12-01 14:30:00+00:00
+  RB_202611 qual=True head=2022-12-01 14:30:00+00:00
+  RB_202612 qual=True head=2022-12-01 14:30:00+00:00
+  RB_202701 qual=True head=2022-12-01 14:30:00+00:00
+  RB_202702 qual=True head=2023-12-01 14:30:00+00:00
+  RB_202703 qual=True head=2023-12-01 14:30:00+00:00
+  RB_202704 qual=True head=2023-12-01 14:30:00+00:00
+  RB_202705 qual=True head=2023-12-01 14:30:00+00:00
+  RB_202706 qual=True head=2023-12-01 14:30:00+00:00
+  RB_202707 qual=True head=2023-12-01 14:30:00+00:00
+  RB_202708 qual=True head=2023-12-01 14:30:00+00:00
+  RB_202709 qual=True head=2023-12-01 14:30:00+00:00
+  RB_202710 qual=True head=2023-12-01 14:30:00+00:00
+  RB_202711 qual=True head=2023-12-01 14:30:00+00:00
+  RB_202712 qual=True head=2023-12-01 14:30:00+00:00
+[energy] HO @NYMEX
+  HO_202610 qual=True head=2022-12-01 14:30:00+00:00
+  HO_202611 qual=True head=2022-11-30 23:00:00+00:00
+  HO_202612 qual=True head=2022-11-30 23:00:00+00:00
+  HO_202701 qual=True head=2022-11-30 23:00:00+00:00
+  HO_202702 qual=True head=2023-11-30 23:00:00+00:00
+  HO_202703 qual=True head=2023-11-30 23:00:00+00:00
+  HO_202704 qual=True head=2023-11-30 23:00:00+00:00
+  HO_202705 qual=True head=2023-11-30 23:00:00+00:00
+  HO_202706 qual=True head=2023-11-30 23:00:00+00:00
+  HO_202707 qual=True head=2023-11-30 23:00:00+00:00
+  HO_202708 qual=True head=2023-11-30 23:00:00+00:00
+IB error 2103: Market data farm connection is broken:usfarm.nj
+IB error 2103: Market data farm connection is broken:usfarm
+IB error 2119: Market data farm is connecting:usfarm
+  HO_202709 qual=True head=2023-11-30 23:00:00+00:00
+  HO_202710 qual=True head=2023-11-30 23:00:00+00:00
+  HO_202711 qual=True head=2023-11-30 23:00:00+00:00
+  HO_202712 qual=True head=2023-11-30 23:00:00+00:00
+[metals] GC @COMEX
+  GC_202609 qual=True head=2025-02-09 23:00:00+00:00
+  GC_202610 qual=True head=2024-11-27 23:00:00+00:00
+[metals] SI @COMEX
+  SI_202609 qual=True head=2024-10-30 22:00:00+00:00
+  SI_202610 qual=True head=2025-02-09 23:00:00+00:00
+[metals] HG @COMEX
+  HG_202609 qual=True head=2021-06-29 22:00:00+00:00
+  HG_202610 qual=True head=2024-10-30 22:00:00+00:00
+[ags] SB @NYBOT
+  SB_202610 qual=True head=2023-11-02 07:30:00+00:00
+  SB_202703 qual=True head=2024-04-02 07:30:00+00:00
+[ags] KC @NYBOT
+  KC_202612 qual=True head=2024-01-03 09:15:00+00:00
+  KC_202703 qual=True head=2024-04-02 08:15:00+00:00
+[ags] CC @NYBOT
+  CC_202612 qual=True head=2025-01-03 09:45:00+00:00
+  CC_202703 qual=True head=2025-04-02 08:45:00+00:00
+[ags] CT @NYBOT
+  CT_202610 qual=True head=2023-11-02 01:00:00+00:00
+  CT_202612 qual=True head=2024-01-03 02:00:00+00:00
+[ags] OJ @NYBOT
+  OJ_202609 qual=True head=2023-10-03 12:00:00+00:00
+  OJ_202611 qual=True head=2023-12-04 13:00:00+00:00
+[ags] ZS @CBOT
+  ZS_202611 qual=True head=2022-11-15 01:00:00+00:00
+  ZS_202701 qual=True head=2024-11-15 01:00:00+00:00
+[ags] ZM @CBOT
+  ZM_202610 qual=True head=2022-12-15 01:00:00+00:00
+  ZM_202612 qual=True head=2022-12-15 01:00:00+00:00
+[ags] ZL @CBOT
+  ZL_202610 qual=True head=2022-12-15 01:00:00+00:00
+  ZL_202612 qual=True head=2022-12-15 01:00:00+00:00
+[ags] ZC @CBOT
+  ZC_202612 qual=True head=2022-12-15 01:00:00+00:00
+  ZC_202703 qual=True head=2024-12-16 01:00:00+00:00
+[ags] ZW @CBOT
+  ZW_202612 qual=True head=2024-07-15 00:00:00+00:00
+  ZW_202703 qual=True head=2024-07-15 00:00:00+00:00
+[ags] LE @CME
+  LE_202610 qual=True head=2025-05-01 13:30:00+00:00
+  LE_202612 qual=True head=2025-06-09 13:30:00+00:00
+[ags] HE @CME
+  HE_202610 qual=True head=2025-05-15 13:30:00+00:00
+  HE_202612 qual=True head=2025-06-16 13:30:00+00:00

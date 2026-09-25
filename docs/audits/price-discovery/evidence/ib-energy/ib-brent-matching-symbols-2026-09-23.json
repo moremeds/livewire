@@ -1,0 +1,212 @@
+{
+  "probe_utc": "2026-09-23T02:57:55.610398+00:00",
+  "search": {
+    "Brent": {
+      "count": 42,
+      "matches": [
+        {
+          "conId": 700328153,
+          "sym": "BRENT",
+          "secType": "STK",
+          "exch": "",
+          "cur": "EUR",
+          "desc": null,
+          "derSecTypes": []
+        },
+        {
+          "conId": 95095632,
+          "sym": "BRENT",
+          "secType": "IND",
+          "exch": "",
+          "cur": "USD",
+          "desc": null,
+          "derSecTypes": [
+            "IOPT"
+          ]
+        },
+        {
+          "conId": 673368808,
+          "sym": "BRENT",
+          "secType": "STK",
+          "exch": "",
+          "cur": "USD",
+          "desc": null,
+          "derSecTypes": []
+        },
+        {
+          "conId": -1,
+          "sym": "",
+          "secType": "BOND",
+          "exch": "",
+          "cur": "",
+          "desc": null,
+          "derSecTypes": []
+        },
+        {
+          "conId": -1,
+          "sym": "",
+          "secType": "BOND",
+          "exch": "",
+          "cur": "",
+          "desc": null,
+          "derSecTypes": []
+        },
+        {
+          "conId": 30865593,
+          "sym": "COIL",
+          "secType": "IND",
+          "exch": "",
+          "cur": "USD",
+          "desc": null,
+          "derSecTypes": [
+            "FOP",
+            "IOPT",
+            "FUT",
+            "BAG"
+          ]
+        },
+        {
+          "conId": 45631501,
+          "sym": "BZ",
+          "secType": "IND",
+          "exch": "",
+          "cur": "USD",
+          "desc": null,
+          "derSecTypes": [
+            "FOP",
+            "FUT",
+            "BAG"
+          ]
+        },
+        {
+          "conId": 75961365,
+          "sym": "BNO",
+          "secType": "STK",
+          "exch": "",
+          "cur": "USD",
+          "desc": null,
+          "derSecTypes": [
+            "CFD",
+            "OPT",
+            "BAG"
+          ]
+        },
+        {
+          "conId": 103375199,
+          "sym": "BRNT",
+          "secType": "STK",
+          "exch": "",
+          "cur": "USD",
+          "desc": null,
+          "derSecTypes": []
+        },
+        {
+          "conId": 112978910,
+          "sym": "BRNT",
+          "secType": "STK",
+          "exch": "",
+          "cur": "EUR",
+          "desc": null,
+          "derSecTypes": []
+        }
+      ],
+      "errors": []
+    },
+    "LCO": {
+      "count": 17,
+      "matches": [
+        {
+          "conId": 842017858,
+          "sym": "LCO",
+          "secType": "STK",
+          "exch": "",
+          "cur": "USD",
+          "desc": null,
+          "derSecTypes": []
+        },
+        {
+          "conId": 80940416,
+          "sym": "LCO",
+          "secType": "STK",
+          "exch": "",
+          "cur": "EUR",
+          "desc": null,
+          "derSecTypes": []
+        },
+        {
+          "conId": 99970283,
+          "sym": "LCOC",
+          "secType": "STK",
+          "exch": "",
+          "cur": "EUR",
+          "desc": null,
+          "derSecTypes": []
+        },
+        {
+          "conId": 782097052,
+          "sym": "LCOW",
+          "secType": "STK",
+          "exch": "",
+          "cur": "USD",
+          "desc": null,
+          "derSecTypes": []
+        },
+        {
+          "conId": 50504565,
+          "sym": "LCOC",
+          "secType": "STK",
+          "exch": "",
+          "cur": "USD",
+          "desc": null,
+          "derSecTypes": []
+        },
+        {
+          "conId": 113747310,
+          "sym": "LCOP",
+          "secType": "STK",
+          "exch": "",
+          "cur": "EUR",
+          "desc": null,
+          "derSecTypes": []
+        },
+        {
+          "conId": 99970298,
+          "sym": "LCOR",
+          "secType": "STK",
+          "exch": "",
+          "cur": "EUR",
+          "desc": null,
+          "derSecTypes": []
+        },
+        {
+          "conId": 50504364,
+          "sym": "LCOR",
+          "secType": "STK",
+          "exch": "",
+          "cur": "USD",
+          "desc": null,
+          "derSecTypes": []
+        },
+        {
+          "conId": 608478497,
+          "sym": "LCO3",
+          "secType": "STK",
+          "exch": "",
+          "cur": "GBP",
+          "desc": null,
+          "derSecTypes": []
+        },
+        {
+          "conId": 50504361,
+          "sym": "LCOP",
+          "secType": "STK",
+          "exch": "",
+          "cur": "USD",
+          "desc": null,
+          "derSecTypes": []
+        }
+      ],
+      "errors": []
+    }
+  }
+}

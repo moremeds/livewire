@@ -1,0 +1,31 @@
+                             definition has been found for the                  
+                             request                                            
+                    WARNING  Unknown contract: Future(symbol='BZ',    ib.py:2133
+                             lastTradeDateOrContractMonth='202609',             
+                             exchange='CME', currency='USD')                    
+                    ERROR    Error 200, reqId 33: No security    wrapper.py:1644
+                             definition has been found for the                  
+--
+                             definition has been found for the                  
+                             request                                            
+                    WARNING  Unknown contract: Future(symbol='BZ',    ib.py:2133
+                             lastTradeDateOrContractMonth='202610',             
+                             exchange='CME', currency='USD')                    
+                    WARNING  Unknown contract: Future(symbol='BZ',    ib.py:2133
+                             lastTradeDateOrContractMonth='202611',             
+                             exchange='CME', currency='USD')                    
+[09/22/26 13:00:08] ERROR    Error 200, reqId 34: No security    wrapper.py:1644
+                             definition has been found for the                  
+--
+                             definition has been found for the                  
+                             request                                            
+                    WARNING  Unknown contract: Future(symbol='BZ',    ib.py:2133
+                             lastTradeDateOrContractMonth='202612',             
+                             exchange='CME', currency='USD')                    
+                    WARNING  Unknown contract: Future(symbol='CL',    ib.py:2133
+                             lastTradeDateOrContractMonth='202608',             
+=== SUMMARY ===
+SUMMARY_JSON {"job":"daily_update","asset_class":"futures","source":"ib","target_date":"2026-09-21","updated":6,"no_trade":8,"partial":0,"errors":0,"bars_inserted":6,"validation_issues":0,"top_errors":[],"scanned":14,"up_to_date":0}
+/Users/moremeds/market-warehouse/logs/daily_update_2026-09-20.log:4
+/Users/moremeds/market-warehouse/logs/daily_update_2026-09-21.log:4
+/Users/moremeds/market-warehouse/logs/daily_update_2026-09-22.log:4
