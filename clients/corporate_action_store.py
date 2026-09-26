@@ -88,6 +88,10 @@ class SplitAddition:
     ex_date: date
     split_from: float
     split_to: float
+    source_ref: str | None = None
+    source_hash: str | None = None
+    source_fetched_at: datetime | None = None
+    source_cursor_identity: str | None = None
 
 
 @dataclass(frozen=True)
@@ -325,8 +329,11 @@ class CorporateActionStore:
     ) -> RepairResult:
         """Add reference splits, cancel spurious splits, and convert dividends atomically.
 
-        Adds insert fresh active ``provider`` rows (revision 1). Cancels target the active
-        split matching each ex-date and append a superseding ``cancelled`` revision — the
+        Adds insert fresh active ``provider`` rows (revision 1), or -- when the event's head
+        is a ``cancelled`` row under the same event id -- revive it as the next revision,
+        append-only: the row it supersedes is never rewritten (an earlier as-of export may
+        already have read it). An already-``active`` head is left untouched. Cancels target
+        the active split matching each ex-date and append a superseding ``cancelled`` revision — the
         lineage is retained, never deleted, mirroring ``reconcile``'s cancellation path.
         Conversions supersede the active foreign-currency dividend with an
         ``eod_fx``-provider row carrying the converted amount; the ``eod_fx``
@@ -353,12 +360,20 @@ class CorporateActionStore:
                     continue
                 payload = f"{provider}|{symbol}|{addition.ex_date}|{addition.split_from}|{addition.split_to}"
                 payload_hash = hashlib.blake2b(payload.encode(), digest_size=16).hexdigest()
+                if existing is None:
+                    revision, supersedes = 1, None
+                else:
+                    # A cancelled head is revived as the next revision: append-only,
+                    # never rewrite the row it supersedes -- an earlier as-of export
+                    # already read that row, and mutating it in place would change
+                    # what that export replays. The head is simply the max revision.
+                    revision, supersedes = existing.event_revision + 1, existing.action_id
                 action = CorporateAction(
-                    action_id=self._action_id(provider, event_id, 1, payload_hash),
+                    action_id=self._action_id(provider, event_id, revision, payload_hash),
                     provider=provider,
                     provider_event_id=event_id,
-                    event_revision=1,
-                    supersedes_action_id=None,
+                    event_revision=revision,
+                    supersedes_action_id=supersedes,
                     symbol=symbol,
                     action_type="split",
                     ex_date=addition.ex_date,
@@ -372,6 +387,10 @@ class CorporateActionStore:
                     status="active",
                     fetched_at=fetched_at,
                     payload_hash=payload_hash,
+                    source_ref=addition.source_ref,
+                    source_hash=addition.source_hash,
+                    source_fetched_at=addition.source_fetched_at,
+                    source_cursor_identity=addition.source_cursor_identity,
                 )
                 rows.append(action)
                 latest[event_id] = action

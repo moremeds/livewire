@@ -600,6 +600,29 @@ does a full pass, so a night that catches up still reconciles the whole universe
 500 symbols, so a lane killed at its budget still records how far it got —
 `livewire_ops.py status` renders it as `Corporate-action progress`.
 
+#### Restore yahoo splits the cancellation-inference bug wrongly cancelled
+
+`corporate-actions restore-yahoo-splits` finds every yahoo-provider split whose
+current head is `cancelled` (the shape left by the 2026-07-19/07-26
+full-reconcile bug — pm:2026-07-19-cancellation-inference-provider-scoped) and,
+per candidate, checks Yahoo still lists the split (within 3 days / 2% of the
+row) and, for an ex-date on/after the IB floor (1993-01-29), confirms the
+price step against IB (`--ib-verify`, required with `--apply`); below the
+floor Yahoo's listing alone is accepted. Dry-run by default: grades every
+candidate and writes nothing. `--apply` revives each restorable candidate
+through the store's fixed revival path, with an evidence envelope
+(`kind="yahoo-split-restoration"`) committed to the CAS that
+`shepherd-actions export` later proves — the row's `evidenceGrade` in the v2
+receipt is `ib_verified` or `yahoo_only`. If IB is unreachable every IB-window
+candidate is left cancelled and the command exits 86; pre-floor candidates
+still restore and the run's own measurements/`runs` row are still emitted.
+
+```bash
+python scripts/livewire_ingest.py corporate-actions restore-yahoo-splits                                   # dry-run, every cancelled yahoo split head
+python scripts/livewire_ingest.py corporate-actions restore-yahoo-splits --tickers AMC                     # dry-run, one symbol
+python scripts/livewire_ingest.py corporate-actions restore-yahoo-splits --tickers AMC --apply --ib-verify --output-dir ~/market-warehouse/repairs/yahoo_splits/
+```
+
 #### Why was corporate-actions slow last night?
 
 ```bash

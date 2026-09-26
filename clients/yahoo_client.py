@@ -84,8 +84,12 @@ class YahooClient:
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": _USER_AGENT})
 
-    def _chart(self, symbol: str, params: dict) -> dict:
-        """Fetch one chart payload and return its `result` block."""
+    def _chart_raw(self, symbol: str, params: dict) -> tuple[bytes, dict]:
+        """Fetch one chart payload and return (exact response bytes, `result` block).
+
+        The raw bytes are what an evidence CAS commits — never the re-serialized
+        parsed object, which would not reproduce the provider's exact response.
+        """
         try:
             response = self._session.get(f"{self._base_url}/{symbol.upper()}", params=params, timeout=self._timeout)
         except requests.RequestException as exc:
@@ -104,7 +108,26 @@ class YahooClient:
         results = chart.get("result") or []
         if not results:
             raise YahooNotFound(symbol.upper())
-        return results[0]
+        return response.content, results[0]
+
+    def _chart(self, symbol: str, params: dict) -> dict:
+        """Fetch one chart payload and return its `result` block."""
+        _, result = self._chart_raw(symbol, params)
+        return result
+
+    @staticmethod
+    def _parse_splits(result: dict) -> list[YahooSplit]:
+        splits: list[YahooSplit] = []
+        for event in ((result.get("events") or {}).get("splits") or {}).values():
+            splits.append(
+                YahooSplit(
+                    datetime.fromtimestamp(event["date"], tz=UTC).date(),
+                    float(event["numerator"]),
+                    float(event["denominator"]),
+                )
+            )
+        splits.sort(key=lambda split: split.ex_date)
+        return splits
 
     @staticmethod
     def _ohlcv(result: dict) -> list[YahooOHLCV]:
@@ -184,15 +207,18 @@ class YahooClient:
                 continue
             adj = adj_closes[index] if index < len(adj_closes) and adj_closes[index] is not None else close
             bars.append(YahooBar(datetime.fromtimestamp(ts, tz=UTC).date(), float(close), float(adj)))
-        splits: list[YahooSplit] = []
-        for event in ((result.get("events") or {}).get("splits") or {}).values():
-            splits.append(
-                YahooSplit(
-                    datetime.fromtimestamp(event["date"], tz=UTC).date(),
-                    float(event["numerator"]),
-                    float(event["denominator"]),
-                )
-            )
         bars.sort(key=lambda bar: bar.trade_date)
-        splits.sort(key=lambda split: split.ex_date)
-        return bars, splits
+        return bars, self._parse_splits(result)
+
+    def get_split_events(self, symbol: str) -> tuple[bytes, list[YahooSplit]]:
+        """Full split history for ``symbol``, plus the exact response bytes.
+
+        Used by the restore-yahoo-splits repair: the raw bytes are the evidence
+        committed to the CAS, and the parsed splits are what gets reconciled
+        against a cancelled store row.
+        """
+        raw, result = self._chart_raw(
+            symbol,
+            {"period1": 0, "period2": int(datetime.now(tz=UTC).timestamp()), "events": "split", "interval": "1d"},
+        )
+        return raw, self._parse_splits(result)

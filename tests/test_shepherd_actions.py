@@ -9,10 +9,17 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from clients.corporate_action_store import CorporateActionStore, SplitAddition
+from clients.corporate_action_store import CorporateAction, CorporateActionStore, SplitAddition
 from clients.massive_client import MassiveClient, MassivePageEvidence, MassiveSplit
 from clients.source_evidence import SourceEvidence, SourceEvidenceStore
-from livewire_scripts.shepherd_actions import export_actions
+from clients.yahoo_client import YahooSplit
+from livewire_scripts import sync_corporate_actions
+from livewire_scripts.shepherd_actions import (
+    _restoration_grade,
+    _verify_restoration,
+    _yahoo_bytes_list_the_split,
+    export_actions,
+)
 
 AT = datetime(2026, 8, 31, 1, 0, tzinfo=UTC)
 
@@ -336,3 +343,340 @@ def test_a_head_rewritten_in_place_before_the_store_went_append_only_reads_its_a
     after = export_actions(["NVDA"], as_of, data_lake_root=tmp_path)
     assert after == before
     assert before["symbols"][0]["actions"][-1]["statusAtAsOf"] == status_at_as_of
+
+
+# --- restore-yahoo-splits proof path -----------------------------------------
+
+# IBM 2-for-1 split, 1968-04-23 (a yahoo row in the macmini store, checked 2026-09-23) -- pre-IB-floor (1993-01-29), so its
+# restoration needs no IB evidence, only Yahoo's listing.
+_IBM_EX = date(1968, 4, 23)
+
+
+def _yahoo_chart_bytes(splits: list[YahooSplit]) -> bytes:
+    events = {
+        str(index): {
+            "date": int(datetime.combine(split.ex_date, datetime.min.time(), tzinfo=UTC).timestamp()),
+            "numerator": split.numerator,
+            "denominator": split.denominator,
+        }
+        for index, split in enumerate(splits)
+    }
+    return json.dumps({"chart": {"result": [{"events": {"splits": events}}]}}).encode()
+
+
+class _FakeYahooSplits:
+    def __init__(self, splits: list[YahooSplit]):
+        self._splits = splits
+
+    def get_split_events(self, symbol: str) -> tuple[bytes, list[YahooSplit]]:
+        return _yahoo_chart_bytes(self._splits), self._splits
+
+
+def _seed_cancelled_ibm(tmp_path: Path) -> None:
+    CorporateActionStore(tmp_path).apply_repairs(
+        "IBM", add_splits=[SplitAddition(_IBM_EX, 1.0, 2.0)], cancel_ex_dates=[], fetched_at=JULY
+    )
+    CorporateActionStore(tmp_path).apply_repairs("IBM", add_splits=[], cancel_ex_dates=[_IBM_EX], fetched_at=JULY)
+
+
+def _restore_ibm(tmp_path: Path, *, now: datetime, seed: bool = True) -> dict:
+    if seed:
+        _seed_cancelled_ibm(tmp_path)
+    return sync_corporate_actions.restore_yahoo_splits(
+        tickers=["IBM"],
+        apply=True,
+        ib_verify=True,
+        output_dir=None,
+        lake_root=tmp_path,
+        now=now,
+        yahoo_factory=lambda: _FakeYahooSplits([YahooSplit(_IBM_EX, 2.0, 1.0)]),
+    )
+
+
+def test_a_yahoo_only_restoration_is_proven_and_carries_its_grade(tmp_path: Path) -> None:
+    restored_at = JULY + timedelta(days=60)
+    result = _restore_ibm(tmp_path, now=restored_at)
+    _fetch(tmp_path, "IBM", [])
+    assert result["restored"] == 1
+
+    item = export_actions(["IBM"], restored_at + timedelta(minutes=1), data_lake_root=tmp_path)["symbols"][0]
+
+    assert item["state"] == "VERIFIED"
+    head = max(item["actions"], key=lambda row: row["eventRevision"])
+    assert head["evidenceGrade"] == "yahoo_only"
+    assert head["statusAtAsOf"] == "active"
+
+
+def test_a_tampered_restoration_envelope_is_restoration_evidence_invalid(tmp_path: Path) -> None:
+    restored_at = JULY + timedelta(days=60)
+    _restore_ibm(tmp_path, now=restored_at)
+    _fetch(tmp_path, "IBM", [])
+    head = CorporateActionStore(tmp_path).latest_active("IBM")[0]
+    SourceEvidenceStore(tmp_path).raw_path(head.source_hash).write_bytes(b"tampered")
+
+    item = export_actions(["IBM"], restored_at + timedelta(minutes=1), data_lake_root=tmp_path)["symbols"][0]
+
+    assert item["state"] == "UNRESOLVED"
+    tag = f"{head.provider_event_id}:{head.event_revision}"
+    assert item["issues"] == [f"restoration-evidence-invalid:{tag}"]
+
+
+def test_an_old_cancelled_yahoo_head_without_an_envelope_is_still_unproven(tmp_path: Path) -> None:
+    """The pre-fix shape: a cancelled yahoo head with no `source_cursor_identity`
+    at all -- `restore-yahoo-splits` never ran, so there is no envelope to check."""
+    CorporateActionStore(tmp_path).apply_repairs(
+        "NVDA", add_splits=[SplitAddition(date(2007, 9, 11), 1.0, 1.5)], cancel_ex_dates=[], fetched_at=JULY
+    )
+    CorporateActionStore(tmp_path).apply_repairs(
+        "NVDA", add_splits=[], cancel_ex_dates=[date(2007, 9, 11)], fetched_at=JULY
+    )
+    _fetch(tmp_path, "NVDA", [])
+
+    item = export_actions(["NVDA"], AT + timedelta(minutes=1), data_lake_root=tmp_path)["symbols"][0]
+
+    assert item["state"] == "UNRESOLVED"
+    assert [issue.split(":")[:2] for issue in item["issues"]] == [["non-massive-head-without-proof", "yahoo"]]
+
+
+def test_a_receipt_before_the_restoration_is_unaffected_by_it(tmp_path: Path) -> None:
+    """The revival's `fetched_at` is after this as-of, so it must never enter the
+    replay -- other rows' payloads (and the whole receipt) stay byte-identical."""
+    _seed_cancelled_ibm(tmp_path)
+    as_of = JULY + timedelta(days=1)
+    before = export_actions(["IBM"], as_of, data_lake_root=tmp_path)
+
+    _restore_ibm(tmp_path, now=JULY + timedelta(days=60), seed=False)
+
+    after = export_actions(["IBM"], as_of, data_lake_root=tmp_path)
+    assert after == before
+
+
+# --- direct unit tests for the proof helpers ---------------------------------
+
+
+def test_restoration_grade_is_none_without_a_matching_cursor_identity(tmp_path: Path) -> None:
+    CorporateActionStore(tmp_path).apply_repairs(
+        "IBM",
+        add_splits=[SplitAddition(_IBM_EX, 1.0, 2.0, source_cursor_identity="some-other-repair")],
+        cancel_ex_dates=[],
+        fetched_at=JULY,
+    )
+    head = CorporateActionStore(tmp_path).latest_active("IBM")[0]
+    assert _restoration_grade(head) is None
+
+
+def test_yahoo_bytes_list_the_split_true_when_it_matches() -> None:
+    raw = _yahoo_chart_bytes([YahooSplit(_IBM_EX, 2.0, 1.0)])
+    assert _yahoo_bytes_list_the_split(raw, _IBM_EX, 2.0) is True
+
+
+def test_yahoo_bytes_list_the_split_false_on_malformed_json() -> None:
+    assert _yahoo_bytes_list_the_split(b"not json", _IBM_EX, 2.0) is False
+
+
+def test_yahoo_bytes_list_the_split_false_when_the_result_block_is_not_a_dict() -> None:
+    raw = json.dumps({"chart": {"result": []}}).encode()
+    assert _yahoo_bytes_list_the_split(raw, _IBM_EX, 2.0) is False
+
+
+def _envelope(symbol: str, ex_date: date, split_from: float, split_to: float, grade: str, yahoo: dict, ib=None) -> dict:
+    return {
+        "kind": "yahoo-split-restoration",
+        "version": 1,
+        "symbol": symbol,
+        "exDate": ex_date.isoformat(),
+        "splitFrom": split_from,
+        "splitTo": split_to,
+        "grade": grade,
+        "yahoo": yahoo,
+        "ib": ib,
+        "restoredAt": JULY.isoformat(),
+    }
+
+
+def _persist(store: SourceEvidenceStore, payload: bytes) -> tuple[str, str]:
+    artifact = store.persist_raw(payload)
+    store.record(
+        SourceEvidence(
+            ref=artifact.ref,
+            sha256=artifact.sha256,
+            source_url="test://fixture",
+            retrieved_at=JULY,
+            publication_time=None,
+            mediawiki_revision_id=None,
+            mediawiki_revision_time=None,
+            content_type="application/json",
+        )
+    )
+    return artifact.ref, artifact.sha256
+
+
+def _head_row(tmp_path: Path, *, source_ref, source_hash, cursor_identity: str, grade_fields=None) -> CorporateAction:
+    fields = grade_fields or {"ex_date": _IBM_EX, "split_from": 1.0, "split_to": 2.0}
+    CorporateActionStore(tmp_path).apply_repairs(
+        "IBM",
+        add_splits=[
+            SplitAddition(
+                fields["ex_date"],
+                fields["split_from"],
+                fields["split_to"],
+                source_ref=source_ref,
+                source_hash=source_hash,
+                source_fetched_at=JULY,
+                source_cursor_identity=cursor_identity,
+            )
+        ],
+        cancel_ex_dates=[],
+        fetched_at=JULY,
+    )
+    return CorporateActionStore(tmp_path).latest_active("IBM")[0]
+
+
+def test_verify_restoration_false_when_the_row_carries_no_envelope_reference(tmp_path: Path) -> None:
+    head = _head_row(tmp_path, source_ref=None, source_hash=None, cursor_identity="restore-yahoo-splits:yahoo_only")
+    assert _verify_restoration(head, "yahoo_only", SourceEvidenceStore(tmp_path)) is False
+
+
+def test_verify_restoration_false_on_malformed_envelope_json(tmp_path: Path) -> None:
+    evidence = SourceEvidenceStore(tmp_path)
+    ref, sha = _persist(evidence, b"not json")
+    head = _head_row(tmp_path, source_ref=ref, source_hash=sha, cursor_identity="restore-yahoo-splits:yahoo_only")
+    assert _verify_restoration(head, "yahoo_only", evidence) is False
+
+
+def test_verify_restoration_false_on_a_non_dict_envelope(tmp_path: Path) -> None:
+    evidence = SourceEvidenceStore(tmp_path)
+    ref, sha = _persist(evidence, json.dumps([1, 2, 3]).encode())
+    head = _head_row(tmp_path, source_ref=ref, source_hash=sha, cursor_identity="restore-yahoo-splits:yahoo_only")
+    assert _verify_restoration(head, "yahoo_only", evidence) is False
+
+
+def test_verify_restoration_false_when_the_envelope_ex_date_disagrees_with_the_row(tmp_path: Path) -> None:
+    evidence = SourceEvidenceStore(tmp_path)
+    yref, ysha = _persist(evidence, _yahoo_chart_bytes([YahooSplit(_IBM_EX, 2.0, 1.0)]))
+    bad = _envelope("IBM", date(1999, 1, 1), 1.0, 2.0, "yahoo_only", {"ref": yref, "sha256": ysha})
+    ref, sha = _persist(evidence, json.dumps(bad, sort_keys=True).encode())
+    head = _head_row(tmp_path, source_ref=ref, source_hash=sha, cursor_identity="restore-yahoo-splits:yahoo_only")
+    assert _verify_restoration(head, "yahoo_only", evidence) is False
+
+
+def test_verify_restoration_false_when_the_yahoo_block_is_not_a_dict(tmp_path: Path) -> None:
+    evidence = SourceEvidenceStore(tmp_path)
+    bad = _envelope("IBM", _IBM_EX, 1.0, 2.0, "yahoo_only", "not-a-dict")
+    ref, sha = _persist(evidence, json.dumps(bad, sort_keys=True).encode())
+    head = _head_row(tmp_path, source_ref=ref, source_hash=sha, cursor_identity="restore-yahoo-splits:yahoo_only")
+    assert _verify_restoration(head, "yahoo_only", evidence) is False
+
+
+def test_verify_restoration_false_when_the_yahoo_artifact_is_missing(tmp_path: Path) -> None:
+    evidence = SourceEvidenceStore(tmp_path)
+    bad = _envelope(
+        "IBM", _IBM_EX, 1.0, 2.0, "yahoo_only", {"ref": "artifact://sha256/" + "0" * 64, "sha256": "0" * 64}
+    )
+    ref, sha = _persist(evidence, json.dumps(bad, sort_keys=True).encode())
+    head = _head_row(tmp_path, source_ref=ref, source_hash=sha, cursor_identity="restore-yahoo-splits:yahoo_only")
+    assert _verify_restoration(head, "yahoo_only", evidence) is False
+
+
+def test_verify_restoration_false_when_the_yahoo_artifact_hash_disagrees(tmp_path: Path) -> None:
+    evidence = SourceEvidenceStore(tmp_path)
+    yref, _ = _persist(evidence, _yahoo_chart_bytes([YahooSplit(_IBM_EX, 2.0, 1.0)]))
+    bad = _envelope("IBM", _IBM_EX, 1.0, 2.0, "yahoo_only", {"ref": yref, "sha256": "f" * 64})
+    ref, sha = _persist(evidence, json.dumps(bad, sort_keys=True).encode())
+    head = _head_row(tmp_path, source_ref=ref, source_hash=sha, cursor_identity="restore-yahoo-splits:yahoo_only")
+    assert _verify_restoration(head, "yahoo_only", evidence) is False
+
+
+def test_verify_restoration_false_when_the_yahoo_response_does_not_list_the_split(tmp_path: Path) -> None:
+    evidence = SourceEvidenceStore(tmp_path)
+    yref, ysha = _persist(evidence, _yahoo_chart_bytes([]))  # no splits at all
+    bad = _envelope("IBM", _IBM_EX, 1.0, 2.0, "yahoo_only", {"ref": yref, "sha256": ysha})
+    ref, sha = _persist(evidence, json.dumps(bad, sort_keys=True).encode())
+    head = _head_row(tmp_path, source_ref=ref, source_hash=sha, cursor_identity="restore-yahoo-splits:yahoo_only")
+    assert _verify_restoration(head, "yahoo_only", evidence) is False
+
+
+def test_verify_restoration_false_when_the_ib_block_is_missing_for_ib_verified(tmp_path: Path) -> None:
+    evidence = SourceEvidenceStore(tmp_path)
+    yref, ysha = _persist(evidence, _yahoo_chart_bytes([YahooSplit(_IBM_EX, 2.0, 1.0)]))
+    bad = _envelope("IBM", _IBM_EX, 1.0, 2.0, "ib_verified", {"ref": yref, "sha256": ysha}, ib=None)
+    ref, sha = _persist(evidence, json.dumps(bad, sort_keys=True).encode())
+    head = _head_row(tmp_path, source_ref=ref, source_hash=sha, cursor_identity="restore-yahoo-splits:ib_verified")
+    assert _verify_restoration(head, "ib_verified", evidence) is False
+
+
+def test_verify_restoration_false_when_the_ib_artifact_is_missing(tmp_path: Path) -> None:
+    evidence = SourceEvidenceStore(tmp_path)
+    yref, ysha = _persist(evidence, _yahoo_chart_bytes([YahooSplit(_IBM_EX, 2.0, 1.0)]))
+    bad = _envelope(
+        "IBM",
+        _IBM_EX,
+        1.0,
+        2.0,
+        "ib_verified",
+        {"ref": yref, "sha256": ysha},
+        ib={"ref": "artifact://sha256/" + "1" * 64, "sha256": "1" * 64, "step": 0.5, "overlap": 8},
+    )
+    ref, sha = _persist(evidence, json.dumps(bad, sort_keys=True).encode())
+    head = _head_row(tmp_path, source_ref=ref, source_hash=sha, cursor_identity="restore-yahoo-splits:ib_verified")
+    assert _verify_restoration(head, "ib_verified", evidence) is False
+
+
+def test_verify_restoration_false_when_the_ib_artifact_hash_disagrees(tmp_path: Path) -> None:
+    evidence = SourceEvidenceStore(tmp_path)
+    yref, ysha = _persist(evidence, _yahoo_chart_bytes([YahooSplit(_IBM_EX, 2.0, 1.0)]))
+    iref, _ = _persist(evidence, b'{"real":"ib-bytes"}')  # readable, but metadata claims the wrong digest
+    bad = _envelope(
+        "IBM",
+        _IBM_EX,
+        1.0,
+        2.0,
+        "ib_verified",
+        {"ref": yref, "sha256": ysha},
+        ib={"ref": iref, "sha256": "f" * 64, "step": 0.5, "overlap": 8},
+    )
+    ref, sha = _persist(evidence, json.dumps(bad, sort_keys=True).encode())
+    head = _head_row(tmp_path, source_ref=ref, source_hash=sha, cursor_identity="restore-yahoo-splits:ib_verified")
+    assert _verify_restoration(head, "ib_verified", evidence) is False
+
+
+def _valid_restoration(tmp_path: Path, ex_date: date, grade: str) -> CorporateAction:
+    """A restoration whose envelope and Yahoo listing are both intact: only the grade policy can fail it."""
+    evidence = SourceEvidenceStore(tmp_path)
+    yref, ysha = _persist(evidence, _yahoo_chart_bytes([YahooSplit(ex_date, 2.0, 1.0)]))
+    ib = None
+    if grade == "ib_verified":
+        iref, isha = _persist(evidence, b"[]")
+        ib = {"ref": iref, "sha256": isha, "step": 2.0, "overlap": 10}
+    ref, sha = _persist(
+        evidence, json.dumps(_envelope("IBM", ex_date, 1.0, 2.0, grade, {"ref": yref, "sha256": ysha}, ib)).encode()
+    )
+    return _head_row(
+        tmp_path,
+        source_ref=ref,
+        source_hash=sha,
+        cursor_identity=f"restore-yahoo-splits:{grade}",
+        grade_fields={"ex_date": ex_date, "split_from": 1.0, "split_to": 2.0},
+    )
+
+
+@pytest.mark.parametrize(
+    ("ex_date", "grade", "proven"),
+    [
+        (_IBM_EX, "yahoo_only", True),  # below IB's floor Yahoo alone is the accepted evidence
+        (date(1997, 5, 28), "yahoo_only", False),  # at/after the floor Yahoo alone proves nothing
+        (_IBM_EX, "ib_verified", False),  # IB has no history below its floor to verify with
+        (date(1997, 5, 28), "self_asserted", False),  # an unknown grade is never a proof
+    ],
+)
+def test_the_restoration_grade_must_fit_the_ex_date(tmp_path: Path, ex_date: date, grade: str, proven: bool) -> None:
+    head = _valid_restoration(tmp_path, ex_date, grade)
+
+    assert _verify_restoration(head, grade, SourceEvidenceStore(tmp_path)) is proven
+
+
+def test_the_yahoo_only_floor_is_ib_s_history_floor() -> None:
+    from livewire_scripts.fetch_ib_historical import IB_EARLIEST_DATE
+    from livewire_scripts.shepherd_actions import YAHOO_ONLY_BEFORE
+
+    assert IB_EARLIEST_DATE.date() == YAHOO_ONLY_BEFORE

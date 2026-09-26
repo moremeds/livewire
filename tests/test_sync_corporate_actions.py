@@ -13,10 +13,13 @@ import pytest
 import responses
 
 from clients import ledger
-from clients.corporate_action_store import CorporateActionStore
+from clients.bronze_client import BronzeClient
+from clients.corporate_action_store import CorporateActionStore, SplitAddition
+from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from clients.massive_client import MassiveAuthError, MassiveDividend, MassiveResponseCapture
 from clients.source_evidence import SourceEvidenceStore
 from clients.telemetry import MassiveTelemetry
+from clients.yahoo_client import YahooSplit
 from livewire_scripts import sync_corporate_actions
 from livewire_scripts.corporate_action_cursor import build_identity, open_cursor
 
@@ -1759,3 +1762,444 @@ def test_the_currency_resolver_picks_a_row_when_two_share_one_known_at(tmp_path)
 
     resolve = sync_corporate_actions._equity_currency_resolver(root, known_at)
     assert resolve(symbol) == (currency, "security_master")
+
+
+# --- restore-yahoo-splits ----------------------------------------------------
+
+from tests.test_yahoo_basis import _AMC_ADJUSTED, _AMC_STEP, _amc_bronze_raw, _rows  # noqa: E402
+
+# IBM 2-for-1 split, 1968-04-23 (a yahoo row in the macmini store, checked 2026-09-23) -- pre-IB-floor (1993-01-29), restorable
+# from Yahoo's listing alone.
+_IBM_EX = date(1968, 4, 23)
+# Real AMC 2023-08-24 10:1 reverse split -- on/after the IB floor, so it needs an
+# IB-confirmed price step (frozen fixtures shared with test_yahoo_basis.py).
+_AMC_EX = date(2023, 8, 24)
+
+
+def _yahoo_chart_bytes(splits: list[YahooSplit]) -> bytes:
+    events = {
+        str(index): {
+            "date": int(datetime.combine(split.ex_date, datetime.min.time(), tzinfo=UTC).timestamp()),
+            "numerator": split.numerator,
+            "denominator": split.denominator,
+        }
+        for index, split in enumerate(splits)
+    }
+    return json.dumps({"chart": {"result": [{"events": {"splits": events}}]}}).encode()
+
+
+class _FakeYahooSplits:
+    def __init__(self, splits_by_symbol: dict[str, list[YahooSplit]]):
+        self._splits_by_symbol = splits_by_symbol
+
+    def get_split_events(self, symbol: str) -> tuple[bytes, list[YahooSplit]]:
+        splits = self._splits_by_symbol.get(symbol, [])
+        return _yahoo_chart_bytes(splits), splits
+
+
+class _FakeIB:
+    def __init__(self, *, fails: bool = False):
+        self.fails = fails
+        self.disconnected = False
+
+    def connect(self, **kwargs):
+        if self.fails:
+            raise ConnectionError("IB gateway unreachable")
+
+    def disconnect(self):
+        self.disconnected = True
+
+
+def _window_fetcher(rows: list[dict]):
+    def factory(client):
+        def fetch(symbol, start, end):
+            return [row for row in rows if start <= row["trade_date"] <= end]
+
+        return fetch
+
+    return factory
+
+
+def _seed_cancelled_yahoo_split(root: Path, symbol: str, ex_date: date, split_from: float, split_to: float) -> None:
+    fetched_at = datetime(2026, 7, 19, tzinfo=UTC)
+    store = CorporateActionStore(root)
+    store.apply_repairs(
+        symbol, add_splits=[SplitAddition(ex_date, split_from, split_to)], cancel_ex_dates=[], fetched_at=fetched_at
+    )
+    store.apply_repairs(symbol, add_splits=[], cancel_ex_dates=[ex_date], fetched_at=fetched_at)
+
+
+def _amc_ib_rows() -> list[dict]:
+    return _rows(_AMC_ADJUSTED)
+
+
+def test_restore_yahoo_splits_dry_run_writes_nothing_but_emits_the_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    _seed_cancelled_yahoo_split(tmp_path, "IBM", _IBM_EX, 1.0, 2.0)
+    store = CorporateActionStore(tmp_path)
+    before = store.path_for("IBM").read_bytes()
+
+    result = sync_corporate_actions.restore_yahoo_splits(
+        tickers=["IBM"],
+        apply=False,
+        ib_verify=False,
+        output_dir=tmp_path / "out",
+        lake_root=tmp_path,
+        now=datetime(2026, 9, 23, tzinfo=UTC),
+        yahoo_factory=lambda: _FakeYahooSplits({"IBM": [YahooSplit(_IBM_EX, 2.0, 1.0)]}),
+    )
+
+    assert result["restored"] == 0
+    assert result["counts"] == {"yahoo_only": 1}
+    assert result["exit_code"] == 0
+    assert store.path_for("IBM").read_bytes() == before  # no store mutation
+    assert not (tmp_path / "raw" / "shepherd").exists()  # no CAS evidence written
+    manifest = json.loads((tmp_path / "out" / "restore_yahoo_splits.json").read_text())
+    assert manifest["candidates"][0]["outcome"] == "yahoo_only"
+    assert manifest["candidates"][0]["applied"] is False
+    runs = ledger.query(
+        "select job, exit_code, verdict from runs where job = 'restore-yahoo-splits' and ended is not null"
+    )
+    assert len(runs) == 1 and runs[0]["exit_code"] == 0 and runs[0]["verdict"] == "OK"
+
+
+def test_restore_yahoo_splits_restores_a_pre_floor_candidate_as_yahoo_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    _seed_cancelled_yahoo_split(tmp_path, "IBM", _IBM_EX, 1.0, 2.0)
+
+    result = sync_corporate_actions.restore_yahoo_splits(
+        tickers=["IBM"],
+        apply=True,
+        ib_verify=True,
+        output_dir=None,
+        lake_root=tmp_path,
+        now=datetime(2026, 9, 23, tzinfo=UTC),
+        yahoo_factory=lambda: _FakeYahooSplits({"IBM": [YahooSplit(_IBM_EX, 2.0, 1.0)]}),
+    )
+
+    assert result["restored"] == 1
+    active = CorporateActionStore(tmp_path).latest_active("IBM")
+    assert len(active) == 1
+    revived = active[0]
+    assert revived.source_cursor_identity == "restore-yahoo-splits:yahoo_only"
+    evidence = SourceEvidenceStore(tmp_path)
+    envelope = json.loads(evidence.read(revived.source_ref))
+    assert (
+        envelope["kind"] == "yahoo-split-restoration" and envelope["grade"] == "yahoo_only" and envelope["ib"] is None
+    )
+
+
+def test_restore_yahoo_splits_restores_an_ib_verified_candidate(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    _seed_cancelled_yahoo_split(tmp_path, "AMC", _AMC_EX, 10.0, 1.0)
+    BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").replace_ticker_rows(
+        "AMC",
+        [
+            {
+                "trade_date": d,
+                "symbol_id": 1,
+                "open": c,
+                "high": c,
+                "low": c,
+                "close": c,
+                "adj_close": c,
+                "volume": 1_000,
+                "source": "legacy",
+                "price_basis": "unknown",
+            }
+            for row in _amc_bronze_raw()
+            for d, c in [(row["trade_date"].isoformat(), row["close"])]
+        ],
+    )
+
+    result = sync_corporate_actions.restore_yahoo_splits(
+        tickers=["AMC"],
+        apply=True,
+        ib_verify=True,
+        output_dir=None,
+        lake_root=tmp_path,
+        now=datetime(2026, 9, 23, tzinfo=UTC),
+        yahoo_factory=lambda: _FakeYahooSplits({"AMC": [YahooSplit(_AMC_EX, 1.0, 10.0)]}),
+        ib_factory=lambda: _FakeIB(),
+        ib_fetcher_factory=_window_fetcher(_amc_ib_rows()),
+    )
+
+    assert result["restored"] == 1
+    revived = CorporateActionStore(tmp_path).latest_active("AMC")[0]
+    assert revived.source_cursor_identity == "restore-yahoo-splits:ib_verified"
+    envelope = json.loads(SourceEvidenceStore(tmp_path).read(revived.source_ref))
+    assert envelope["grade"] == "ib_verified"
+    assert envelope["ib"]["step"] == pytest.approx(_AMC_STEP)
+
+
+def test_restore_yahoo_splits_ib_step_mismatch_stays_cancelled(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    _seed_cancelled_yahoo_split(tmp_path, "AMC", _AMC_EX, 10.0, 1.0)
+    bronze_rows = _amc_bronze_raw()
+    BronzeClient(tmp_path / "bronze/asset_class=equity", "equity").replace_ticker_rows(
+        "AMC",
+        [
+            {
+                "trade_date": row["trade_date"].isoformat(),
+                "symbol_id": 1,
+                "open": row["close"],
+                "high": row["close"],
+                "low": row["close"],
+                "close": row["close"],
+                "adj_close": row["close"],
+                "volume": 1_000,
+                "source": "legacy",
+                "price_basis": "unknown",
+            }
+            for row in bronze_rows
+        ],
+    )
+
+    result = sync_corporate_actions.restore_yahoo_splits(
+        tickers=["AMC"],
+        apply=True,
+        ib_verify=True,
+        output_dir=tmp_path / "out",
+        lake_root=tmp_path,
+        now=datetime(2026, 9, 23, tzinfo=UTC),
+        yahoo_factory=lambda: _FakeYahooSplits({"AMC": [YahooSplit(_AMC_EX, 1.0, 10.0)]}),
+        ib_factory=lambda: _FakeIB(),
+        # IB never adjusted -- same series as bronze, so the measured step is ~1,
+        # not the claimed 0.1.
+        ib_fetcher_factory=_window_fetcher(bronze_rows),
+    )
+
+    assert result["restored"] == 0
+    assert result["counts"] == {"left_cancelled:ib_step_mismatch": 1}
+    assert CorporateActionStore(tmp_path).latest_active("AMC") == []
+    manifest = json.loads((tmp_path / "out" / "restore_yahoo_splits.json").read_text())
+    assert manifest["candidates"][0]["outcome"] == "left_cancelled:ib_step_mismatch"
+
+
+def test_restore_yahoo_splits_ib_unavailable_exits_86_but_restores_pre_floor(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    _seed_cancelled_yahoo_split(tmp_path, "IBM", _IBM_EX, 1.0, 2.0)
+    _seed_cancelled_yahoo_split(tmp_path, "AMC", _AMC_EX, 10.0, 1.0)
+
+    result = sync_corporate_actions.restore_yahoo_splits(
+        tickers=["AMC", "IBM"],
+        apply=True,
+        ib_verify=True,
+        output_dir=tmp_path / "out",
+        lake_root=tmp_path,
+        now=datetime(2026, 9, 23, tzinfo=UTC),
+        yahoo_factory=lambda: _FakeYahooSplits(
+            {"IBM": [YahooSplit(_IBM_EX, 2.0, 1.0)], "AMC": [YahooSplit(_AMC_EX, 1.0, 10.0)]}
+        ),
+        ib_factory=lambda: _FakeIB(fails=True),
+        ib_fetcher_factory=_window_fetcher([]),
+    )
+
+    assert result["exit_code"] == GATEWAY_DOWN_EXIT_CODE
+    assert result["restored"] == 1  # IBM (pre-floor) still restored
+    runs = ledger.query("select verdict from runs where job = 'restore-yahoo-splits' and ended is not null")
+    assert [row["verdict"] for row in runs] == ["DEGRADED"]  # IB down is a skipped source, not a failure
+    assert CorporateActionStore(tmp_path).latest_active("IBM")
+    assert CorporateActionStore(tmp_path).latest_active("AMC") == []
+    manifest = {
+        row["symbol"]: row["outcome"]
+        for row in json.loads((tmp_path / "out" / "restore_yahoo_splits.json").read_text())["candidates"]
+    }
+    assert manifest["AMC"] == "left_cancelled:ib_unavailable"
+    assert manifest["IBM"] == "yahoo_only"
+
+
+def test_restore_yahoo_splits_yahoo_not_listing_stays_cancelled(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    _seed_cancelled_yahoo_split(tmp_path, "IBM", _IBM_EX, 1.0, 2.0)
+
+    result = sync_corporate_actions.restore_yahoo_splits(
+        tickers=["IBM"],
+        apply=True,
+        ib_verify=True,
+        output_dir=tmp_path / "out",
+        lake_root=tmp_path,
+        now=datetime(2026, 9, 23, tzinfo=UTC),
+        yahoo_factory=lambda: _FakeYahooSplits({"IBM": []}),  # Yahoo does not list this split at all
+    )
+
+    assert result["restored"] == 0
+    assert CorporateActionStore(tmp_path).latest_active("IBM") == []
+    manifest = json.loads((tmp_path / "out" / "restore_yahoo_splits.json").read_text())
+    assert manifest["candidates"][0]["outcome"] == "left_cancelled:yahoo_does_not_list"
+
+
+def test_restore_yahoo_splits_apply_without_ib_verify_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    _seed_cancelled_yahoo_split(tmp_path, "IBM", _IBM_EX, 1.0, 2.0)
+    with pytest.raises(ValueError, match="ib-verify"):
+        sync_corporate_actions.restore_yahoo_splits(
+            tickers=["IBM"],
+            apply=True,
+            ib_verify=False,
+            output_dir=None,
+            lake_root=tmp_path,
+            yahoo_factory=lambda: _FakeYahooSplits({"IBM": [YahooSplit(_IBM_EX, 2.0, 1.0)]}),
+        )
+
+
+def test_restore_yahoo_splits_cli_dispatches_through_livewire_ingest(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    _seed_cancelled_yahoo_split(tmp_path, "IBM", _IBM_EX, 1.0, 2.0)
+    monkeypatch.setattr(sync_corporate_actions, "data_lake_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        sync_corporate_actions,
+        "YahooClient",
+        lambda: _FakeYahooSplits({"IBM": [YahooSplit(_IBM_EX, 2.0, 1.0)]}),
+    )
+
+    exit_code = sync_corporate_actions.main(
+        ["restore-yahoo-splits", "--tickers", "IBM", "--output-dir", str(tmp_path / "out")]
+    )
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out.strip())
+    assert summary["counts"] == {"yahoo_only": 1}
+
+
+def test_restore_yahoo_splits_abandons_a_dangling_predecessor_run(tmp_path, monkeypatch, capsys):
+    import socket
+
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    stale_run_id = "restore-yahoo-splits-stale"
+    ledger.open_run(
+        {
+            "run_id": stale_run_id,
+            "job": "restore-yahoo-splits",
+            "host": socket.gethostname(),
+            "release_sha": None,
+            "presets_sha": None,
+            "registry_sha": None,
+            "started": datetime(2026, 9, 1, tzinfo=UTC),
+            "ended": None,
+            "exit_code": None,
+            "verdict": None,
+        }
+    )
+
+    result = sync_corporate_actions.restore_yahoo_splits(
+        tickers=["NOPE"],  # no cancelled yahoo split candidates -- no Yahoo/IB call at all
+        apply=False,
+        ib_verify=False,
+        output_dir=None,
+        lake_root=tmp_path,
+        now=datetime(2026, 9, 23, tzinfo=UTC),
+        yahoo_factory=lambda: _FakeYahooSplits({}),
+    )
+
+    assert result["candidates"] == 0
+    assert "abandoned 1 open run(s) of restore-yahoo-splits" in capsys.readouterr().out
+    closed = ledger.query(f"select verdict from runs where run_id = '{stale_run_id}' and ended is not null")
+    assert closed[0]["verdict"] == "ABANDONED"
+
+
+def test_restore_yahoo_splits_yahoo_fetch_error_leaves_it_cancelled(tmp_path, monkeypatch):
+    class _RaisingYahoo:
+        def get_split_events(self, symbol):
+            raise RuntimeError("yahoo request failed")
+
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    _seed_cancelled_yahoo_split(tmp_path, "IBM", _IBM_EX, 1.0, 2.0)
+
+    result = sync_corporate_actions.restore_yahoo_splits(
+        tickers=["IBM"],
+        apply=False,
+        ib_verify=False,
+        output_dir=None,
+        lake_root=tmp_path,
+        now=datetime(2026, 9, 23, tzinfo=UTC),
+        yahoo_factory=lambda: _RaisingYahoo(),
+    )
+
+    assert result["counts"] == {"left_cancelled:yahoo_error": 1}
+
+
+def test_restore_yahoo_splits_reuses_one_ib_connection_across_candidates(tmp_path, monkeypatch):
+    # Real IBM 2:1 splits, both on/after the IB floor -- two IB-window candidates for
+    # one symbol, so a second `get_ib_fetcher()` call must hit the lazy-connect cache.
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    _seed_cancelled_yahoo_split(tmp_path, "IBM", date(1997, 5, 28), 1.0, 2.0)
+    _seed_cancelled_yahoo_split(tmp_path, "IBM", date(1999, 5, 27), 1.0, 2.0)
+    connects = []
+
+    class _CountingIB(_FakeIB):
+        def connect(self, **kwargs):
+            connects.append(1)
+            super().connect(**kwargs)
+
+    result = sync_corporate_actions.restore_yahoo_splits(
+        tickers=["IBM"],
+        apply=True,
+        ib_verify=True,
+        output_dir=None,
+        lake_root=tmp_path,
+        now=datetime(2026, 9, 23, tzinfo=UTC),
+        yahoo_factory=lambda: _FakeYahooSplits(
+            {"IBM": [YahooSplit(date(1997, 5, 28), 2.0, 1.0), YahooSplit(date(1999, 5, 27), 2.0, 1.0)]}
+        ),
+        ib_factory=lambda: _CountingIB(),
+        # No bronze rows seeded for IBM -- both candidates grade insufficient overlap,
+        # which is irrelevant here; the point is the connection is made exactly once.
+        ib_fetcher_factory=_window_fetcher(_amc_ib_rows()),
+    )
+
+    assert len(connects) == 1
+    assert result["counts"] == {"left_cancelled:ib_insufficient_overlap": 2}
+
+
+def test_restore_yahoo_splits_ib_unavailable_skips_every_remaining_ib_window_candidate(tmp_path, monkeypatch):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    _seed_cancelled_yahoo_split(tmp_path, "IBM", date(1997, 5, 28), 1.0, 2.0)
+    _seed_cancelled_yahoo_split(tmp_path, "IBM", date(1999, 5, 27), 1.0, 2.0)
+
+    result = sync_corporate_actions.restore_yahoo_splits(
+        tickers=["IBM"],
+        apply=True,
+        ib_verify=True,
+        output_dir=None,
+        lake_root=tmp_path,
+        now=datetime(2026, 9, 23, tzinfo=UTC),
+        yahoo_factory=lambda: _FakeYahooSplits(
+            {"IBM": [YahooSplit(date(1997, 5, 28), 2.0, 1.0), YahooSplit(date(1999, 5, 27), 2.0, 1.0)]}
+        ),
+        ib_factory=lambda: _FakeIB(fails=True),
+        ib_fetcher_factory=_window_fetcher([]),
+    )
+
+    assert result["exit_code"] == GATEWAY_DOWN_EXIT_CODE
+    assert result["counts"] == {"left_cancelled:ib_unavailable": 2}
+
+
+def test_restore_yahoo_splits_ib_fetch_error_leaves_it_cancelled(tmp_path, monkeypatch):
+    def _raising_fetcher_factory(client):
+        def fetch(symbol, start, end):
+            raise RuntimeError("IB pacing violation")
+
+        return fetch
+
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    _seed_cancelled_yahoo_split(tmp_path, "AMC", _AMC_EX, 10.0, 1.0)
+
+    result = sync_corporate_actions.restore_yahoo_splits(
+        tickers=["AMC"],
+        apply=True,
+        ib_verify=True,
+        output_dir=None,
+        lake_root=tmp_path,
+        now=datetime(2026, 9, 23, tzinfo=UTC),
+        yahoo_factory=lambda: _FakeYahooSplits({"AMC": [YahooSplit(_AMC_EX, 1.0, 10.0)]}),
+        ib_factory=lambda: _FakeIB(),
+        ib_fetcher_factory=_raising_fetcher_factory,
+    )
+
+    assert result["counts"] == {"left_cancelled:ib_error": 1}
+
+
+def test_main_dispatches_generic_argv_to_run(monkeypatch):
+    monkeypatch.setattr(sync_corporate_actions, "run", lambda argv: 0)
+    assert sync_corporate_actions.main(["--dry-run"]) == 0
