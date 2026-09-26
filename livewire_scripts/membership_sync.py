@@ -837,6 +837,19 @@ _MEMBER_COUNT_DATES = (
 )
 
 
+# Rule 12g-3(a) successor registrant CIK -> predecessor CIK: the same common
+# stock under a new filer. R1 joins by CIK, so without this one company is two.
+_CIK_SUCCESSORS = {
+    # ExxonMobil Holdings Corp, 8-K12B 0001193125-26-291990: successor registrant
+    # of Exxon Mobil Corp's common stock, redomiciliation effective 2026-07-01.
+    "0002115436": "0000034088",
+}
+
+
+def _cik_root(cik: str | None) -> str | None:
+    return _CIK_SUCCESSORS.get(cik, cik) if cik else cik
+
+
 def _r1_reject_event_id(claim_event_id: str) -> str:
     return hashlib.sha256(f"repair-identity-r1-reject\x00{claim_event_id}".encode()).hexdigest()
 
@@ -851,6 +864,10 @@ def _r2_extend_event_id(claim_event_id: str) -> str:
 
 def _r1_repoint_event_id(event_id: str, canonical_id: str) -> str:
     return hashlib.sha256(f"repair-identity-r1-repoint\x00{event_id}\x00{canonical_id}".encode()).hexdigest()
+
+
+def _r5_relabel_event_id(claim_event_id: str, symbol: str) -> str:
+    return hashlib.sha256(f"repair-identity-r5-relabel\x00{claim_event_id}\x00{symbol}".encode()).hexdigest()
 
 
 def _r4_reject_event_id(rejected_event_id: str) -> str:
@@ -886,14 +903,35 @@ def _plan_r1(
     # (CIK + symbol); the merge then moves every claim the duplicate holds, so
     # a renamed ticker's older symbol moves too (Jacobs: JEC until 2019, then J).
     matched: dict[str, dict[str, tuple[str, str]]] = {}
+    roots = {
+        sid: next(iter(ciks)) if len(ciks := {_cik_root(c.cik) for c in claims if c.cik}) == 1 else None
+        for sid, claims in researched_by_id.items()
+    }
+    # A researched id filed under a predecessor CIK merges into the one filed
+    # under its successor when they share a symbol (Exxon Mobil 34088 -> 2115436).
+    predecessor_of: dict[str, str] = {}
+    for sid, claims in sorted(researched_by_id.items()):
+        if any(c.cik in _CIK_SUCCESSORS for c in claims):
+            symbols = {c.symbol for c in claims}
+            for other, other_claims in sorted(researched_by_id.items()):
+                if (
+                    other != sid
+                    and roots[sid] is not None
+                    and roots[other] == roots[sid]
+                    and not any(c.cik in _CIK_SUCCESSORS for c in other_claims)
+                    and symbols & {c.symbol for c in other_claims}
+                ):
+                    predecessor_of[other] = sid
+                    matched.setdefault(other, {})[sid] = (min(symbols & {c.symbol for c in other_claims}), roots[sid])
     for canonical_id, claims in sorted(researched_by_id.items()):
-        ciks = {c.cik for c in claims if c.cik}
-        cik_r = next(iter(ciks)) if len(ciks) == 1 else None
+        if canonical_id in predecessor_of:
+            continue  # merges into its successor's id, never a canonical of its own
+        cik_r = roots[canonical_id]
         for symbol in sorted({c.symbol for c in claims}):
             for candidate in massive:
                 if candidate.symbol != symbol or candidate.security_id == canonical_id:
                     continue
-                if cik_r is None or candidate.cik is None or candidate.cik != cik_r:
+                if cik_r is None or candidate.cik is None or _cik_root(candidate.cik) != cik_r:
                     conflicts.append(
                         {
                             "ticker": symbol,
@@ -1125,6 +1163,135 @@ def _plan_r2(
     return extensions, caps, out_events
 
 
+def _plan_r5(
+    identities: list[SecurityIdentityEvent],
+    current_tickers: set[str],
+    current_members: set[str],
+    revisions: dict[str, int],
+    now: datetime,
+) -> tuple[list[dict], list[dict], list[SecurityIdentityEvent]]:
+    """R5: a renamed security carries today's ticker across its whole history,
+    because that is the symbol bronze is keyed by (RVTY, GL, XOM and T hold
+    1980s bars; PKI, TMK and BHGE hold none, and SBC's bronze is another
+    company). Today's ticker is the security's claim symbol in the current
+    constituent lists that it holds open at `now` (Travelers Group: C, not
+    TRV), or, for a current index member holding none open, the one listed
+    symbol no other security and no placeholder member holds (AT&T: T; never
+    the old GM's GM). Each claim under another symbol is relabelled with its
+    window and evidence unchanged; one that would collide with another
+    security's claim once the whole plan is applied stays as it is. Anything
+    undecidable is reported, never guessed.
+
+    `current_members` holds today's index members: security ids, and
+    `unresolved:<ticker>` placeholders, whose tickers are taken.
+    """
+    active = [item for item in _active_identities(identities) if item.status == "verified"]
+    by_id: dict[str, list[SecurityIdentityEvent]] = {}
+    for item in active:
+        by_id.setdefault(item.security_id, []).append(item)
+
+    def open_now(item: SecurityIdentityEvent) -> bool:
+        return item.effective_from <= now and (item.effective_to is None or now < item.effective_to)
+
+    placeholder_tickers = {m.split(":", 1)[1] for m in current_members if m.startswith("unresolved:")}
+    skipped: list[dict] = []
+    targets: dict[str, str] = {}  # event_id of a claim to relabel -> today's ticker
+    for security_id, claims in sorted(by_id.items()):
+        symbols = {item.symbol for item in claims}
+        if len(symbols) < 2:
+            continue
+        listed = symbols & current_tickers
+        target_set = {item.symbol for item in claims if item.symbol in listed and open_now(item)}
+        if not target_set and security_id in current_members:
+            held = {other.symbol for other in active if other.security_id != security_id and open_now(other)}
+            target_set = listed - held - placeholder_tickers
+        if len(target_set) != 1:
+            reason = "no_current_ticker" if not target_set else "two_current_tickers"
+            skipped.append({"security_id": security_id, "symbols": sorted(symbols), "reason": reason})
+            continue
+        (target,) = target_set
+        targets.update({item.event_id: target for item in claims if item.symbol != target})
+
+    # Append order is the plan: a relabel goes in once no other security's
+    # claim, as the relabels before it leave the store, collides with it
+    # (`_validate_append` checks each row against the rows before it). What is
+    # still pending when nothing more fits collides for good, or is a swap.
+    state = {item.event_id: item for item in active}
+
+    def blockers(item: SecurityIdentityEvent, symbol: str) -> list[str]:
+        return sorted(
+            {
+                other.security_id
+                for other in state.values()
+                if other.security_id != item.security_id
+                and (other.provider, other.symbol, other.exchange_mic) == (item.provider, symbol, item.exchange_mic)
+                and _overlaps_interval(item.effective_from, item.effective_to, other.effective_from, other.effective_to)
+            }
+        )
+
+    relabels: list[dict] = []
+    events: list[SecurityIdentityEvent] = []
+    pending = sorted(
+        targets, key=lambda event_id: (state[event_id].security_id, state[event_id].effective_from, event_id)
+    )
+    while pending:
+        placed = [
+            event_id
+            for event_id in pending
+            if not blockers(state[event_id], targets[event_id])
+            and not any(  # two relabels to one ticker that overlap: neither is guessed
+                state[other].security_id != state[event_id].security_id
+                and targets[other] == targets[event_id]
+                and (state[other].provider, state[other].exchange_mic)
+                == (state[event_id].provider, state[event_id].exchange_mic)
+                and _overlaps_interval(
+                    state[event_id].effective_from,
+                    state[event_id].effective_to,
+                    state[other].effective_from,
+                    state[other].effective_to,
+                )
+                for other in pending
+            )
+        ][:1]
+        if not placed:
+            break
+        (event_id,) = placed
+        pending.remove(event_id)
+        item, target = state[event_id], targets[event_id]
+        revisions[item.security_id] = revisions.get(item.security_id, 0) + 1
+        relabelled = replace(
+            item,
+            event_id=_r5_relabel_event_id(item.event_id, target),
+            symbol=target,
+            revision=revisions[item.security_id],
+            known_at=now,
+            supersedes=item.event_id,
+        )
+        state[event_id] = relabelled
+        events.append(relabelled)
+        relabels.append(
+            {
+                "security_id": item.security_id,
+                "event_id": item.event_id,
+                "relabelled_event_id": relabelled.event_id,
+                "old_symbol": item.symbol,
+                "new_symbol": target,
+            }
+        )
+    for event_id in pending:
+        item = state[event_id]
+        skipped.append(
+            {
+                "security_id": item.security_id,
+                "event_id": event_id,
+                "symbols": sorted({c.symbol for c in by_id[item.security_id]}),
+                "reason": "collision",
+                "with": blockers(item, targets[event_id]),
+            }
+        )
+    return relabels, skipped, events
+
+
 def _membership_cover_end(
     own_by_index: dict[str, list[MembershipEvent]], claim_from: datetime, claim_to: datetime | None
 ) -> tuple[datetime | None, MembershipEvent | None]:
@@ -1310,14 +1477,17 @@ def repair_identity(
     now: datetime,
     apply: bool = False,
     output: Path | None = None,
+    current_tickers: set[str] | None = None,
 ) -> dict:
-    """R1 (CIK merge), R2 (researched-window extension), R4 (churn rejection).
+    """R1 (CIK merge), R5 (today's ticker), R2 (researched-window extension), R4 (churn rejection).
+
+    `current_tickers` defaults to the `presets/<index>.json` constituent lists.
 
     Dry run by default: computes the plan, writes the JSON manifest (if
     `output` is given) and one ledger run + its measurements, without
     touching a store. `member_counts_after` is computed by replaying the plan
     onto a scratch copy of the lake, which is discarded either way.
-    `--apply` appends security-master rows first (R1 then R2), then
+    `--apply` appends security-master rows first (R1, R5, then R2), then
     membership rejections (R4), to the real lake, in that order.
 
     Idempotent: every appended event id derives from the event it
@@ -1347,8 +1517,18 @@ def repair_identity(
     # removed id has only a narrow claim is missed and R1b re-points it instead.
     merges, conflicts, r1_events, merged_massive_ids = _plan_r1(identities, revisions, now)
     churn_ids_by_index = _detect_churn(events_by_index, active_identities, merged_massive_ids)
+    # R5 relabels on R1's result, and R2 plans on both: a predecessor CIK's
+    # researched claims extend under their new id, and a relabelled claim no
+    # longer caps another security holding that ticker today (St Paul's TRV).
+    relabels, relabels_skipped, r5_events = _plan_r5(
+        identities + r1_events,
+        _current_tickers(indexes) if current_tickers is None else current_tickers,
+        _current_member_ids(events_by_index, merged_massive_ids, now),
+        revisions,
+        now,
+    )
     extensions, caps, r2_events = _plan_r2(
-        identities, events_by_index, churn_ids_by_index, revisions, now, merged_massive_ids
+        identities + r1_events + r5_events, events_by_index, churn_ids_by_index, revisions, now, merged_massive_ids
     )
     rejections_by_index, r4_events_by_index, repoints = _plan_r4(
         events_by_index, churn_ids_by_index, now, merged_massive_ids
@@ -1389,6 +1569,8 @@ def repair_identity(
         "apply": apply,
         "merges": merges,
         "conflicts": conflicts,
+        "relabels": relabels,
+        "relabels_skipped": relabels_skipped,
         "extensions": extensions,
         "caps": caps,
         "rejections": [row for rows in rejections_by_index.values() for row in rows],
@@ -1396,7 +1578,7 @@ def repair_identity(
         "dangling_verified_references": dangling,
         "member_counts_before": _member_counts(root, indexes, now),
     }
-    security_master_events = r1_events + r2_events
+    security_master_events = r1_events + r5_events + r2_events
 
     def close(exit_code: int, verdict: str) -> None:
         ledger.emit(
@@ -1405,6 +1587,8 @@ def repair_identity(
         counts = {
             "identity_merges": len(merges),
             "identity_conflicts": len(conflicts),
+            "identity_relabels": len(relabels),
+            "identity_relabels_skipped": len(relabels_skipped),
             "identity_extensions": len(extensions),
             "identity_caps": len(caps),
             "membership_rejections": sum(len(rows) for rows in rejections_by_index.values()),
@@ -1452,6 +1636,27 @@ def repair_identity(
         raise
     close(0, "OK")
     return manifest
+
+
+def _current_member_ids(
+    events_by_index: dict[str, list[MembershipEvent]], merged_massive_ids: dict[str, str], now: datetime
+) -> set[str]:
+    members: set[str] = set()
+    for events in events_by_index.values():
+        current: set[str] = set()
+        for item in _replay_membership(events):
+            if item.effective_at <= now:
+                security_id = merged_massive_ids.get(item.security_id, item.security_id)
+                (current.add if item.action == "add" else current.discard)(security_id)
+        members |= current
+    return members
+
+
+def _current_tickers(indexes: list[str]) -> set[str]:
+    presets = Path(__file__).resolve().parents[1] / "presets"
+    return {
+        ticker for index_id in indexes for ticker in json.loads((presets / f"{index_id}.json").read_text())["tickers"]
+    }
 
 
 def _write_manifest(output: Path | None, manifest: dict) -> None:

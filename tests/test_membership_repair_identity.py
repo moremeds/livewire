@@ -1020,3 +1020,421 @@ def test_a_rename_across_merged_ids_keeps_the_member_and_a_second_pass_appends_n
     reader = _store(lake, writable=False)
     for day in ("2024-06-03", "2026-09-22"):
         assert researched in reader.members_effective_at("sp500", dt(day), REPAIR_NOW)
+
+
+def _covered(lake: Path, security_id: str, day: str) -> bool:
+    claims = [e for e in membership_sync._active_identities(_identities(lake)) if e.security_id == security_id]
+    return any(
+        e.status == "verified" and e.effective_from <= dt(day) and (e.effective_to is None or dt(day) < e.effective_to)
+        for e in claims
+    )
+
+
+def test_a_successor_registrant_cik_is_one_security_with_its_predecessor(tmp_path):
+    """Exxon as the mini holds it (2026-09-26): sp500's researched id carries
+    ExxonMobil Holdings Corp's CIK 0002115436 (successor registrant, 8-K12B
+    0001193125-26-291990, effective 2026-07-01); djia's carries Exxon's own
+    0000034088 (add 1991-05-06, remove 2020-08-31), and the Massive XOM claim
+    from 2020-08-31 carries 34088 too. Joined by raw CIK, sp500's claim was
+    capped at 2020-08-30 and XOM had no identity after it."""
+    lake = tmp_path / "lake"
+    evidence = SourceEvidenceStore(lake)
+    refs = _evidence(evidence, "exxon-wiki", "https://en.wikipedia.org/wiki/ExxonMobil", T0)
+    successor, predecessor, massive = (SecurityMaster.new_security_id() for _ in range(3))
+    master = _master(lake)
+    for event_id, security_id, revision, provider, cik, name, start, end in (
+        (
+            "xom-1991",
+            predecessor,
+            1,
+            "wikipedia_sec_research",
+            "0000034088",
+            "Exxon Corporation",
+            "1991-05-05",
+            "1991-05-07",
+        ),
+        (
+            "xom-2020",
+            predecessor,
+            2,
+            "wikipedia_sec_research",
+            "0000034088",
+            "Exxon Mobil Corporation",
+            "2020-08-30",
+            "2020-09-01",
+        ),
+        ("xom-1996", successor, 1, "wikipedia_sec_research", "0002115436", "ExxonMobil", "1996-01-01", "1996-01-03"),
+        ("xom-massive", massive, 1, "massive", "0000034088", "Exxon Mobil Corp", "2020-08-31", None),
+    ):
+        master.append(
+            _identity(
+                refs,
+                event_id=event_id,
+                security_id=security_id,
+                revision=revision,
+                symbol="XOM",
+                provider=provider,
+                exchange_mic="XNYS",
+                cik=cik,
+                effective_from=dt(start),
+                effective_to=dt(end) if end else None,
+                known_at=T0,
+                issuer_name=name,
+            )
+        )
+    store = _store(lake)
+    for event_id, index_id, security_id, action, at, revision in (
+        ("sp500-add-XOM", "sp500", successor, "add", "1996-01-02", 1),
+        ("djia-add-XOM", "djia", predecessor, "add", "1991-05-06", 1),
+        ("djia-remove-XOM", "djia", predecessor, "remove", "2020-08-31", 2),
+    ):
+        store.append(
+            _membership(
+                refs,
+                event_id=event_id,
+                index_id=index_id,
+                security_id=security_id,
+                action=action,
+                effective_at=dt(at),
+                known_at=T0,
+                revision=revision,
+            )
+        )
+
+    manifest = membership_sync.repair_identity(
+        indexes=["sp500", "djia"], data_lake_root=lake, now=REPAIR_NOW, apply=True
+    )
+
+    assert {(m["massive_security_id"], m["researched_security_id"]) for m in manifest["merges"]} == {
+        (predecessor, successor),
+        (massive, successor),
+    }
+    assert manifest["conflicts"] == []
+    for day in ("1991-06-03", "2005-06-01", "2020-09-15", "2026-09-22"):
+        assert _covered(lake, successor, day), day
+    reader = _store(lake, writable=False)
+    assert successor in reader.members_effective_at("djia", dt("2000-01-03"), REPAIR_NOW)
+    assert successor in reader.members_effective_at("sp500", dt("2026-09-22"), REPAIR_NOW)
+    counts = (len(_identities(lake)), len(_membership_events(lake, "djia")))
+    membership_sync.repair_identity(indexes=["sp500", "djia"], data_lake_root=lake, now=REPAIR_NOW, apply=True)
+    assert (len(_identities(lake)), len(_membership_events(lake, "djia"))) == counts
+
+
+def _seed(lake: Path, claims, memberships=()) -> dict[str, str]:
+    """Seed `(security, provider, symbol, mic, cik, issuer, start, end)` claims
+    and `(index, security, action, day)` memberships; returns name -> security_id."""
+    evidence = SourceEvidenceStore(lake)
+    refs = _evidence(evidence, "seed", "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", T0)
+    ids: dict[str, str] = {}
+    revisions: dict[str, int] = {}
+    master = _master(lake)
+    for n, (name, provider, symbol, mic, cik, issuer, start, end) in enumerate(claims):
+        security_id = ids.setdefault(name, SecurityMaster.new_security_id())
+        revisions[name] = revisions.get(name, 0) + 1
+        master.append(
+            _identity(
+                refs,
+                event_id=f"{name}-{n}",
+                security_id=security_id,
+                revision=revisions[name],
+                symbol=symbol,
+                provider=provider,
+                exchange_mic=mic,
+                cik=cik,
+                effective_from=dt(start),
+                effective_to=dt(end) if end else None,
+                known_at=MASSIVE_KNOWN if provider == "massive" else T0,
+                issuer_name=issuer,
+            )
+        )
+    store = _store(lake)
+    member_revisions: dict[tuple[str, str], int] = {}
+    for index_id, name, action, day in memberships:
+        member_revisions[index_id, name] = member_revisions.get((index_id, name), 0) + 1
+        store.append(
+            _membership(
+                refs,
+                event_id=f"{index_id}-{action}-{name}-{day}",
+                index_id=index_id,
+                security_id=ids[name],
+                action=action,
+                effective_at=dt(day),
+                known_at=MASSIVE_KNOWN,  # after every seeded claim, Massive's included
+                revision=member_revisions[index_id, name],
+            )
+        )
+    return ids
+
+
+def _symbols_open(lake: Path, security_id: str, day: str) -> set[str]:
+    return {
+        e.symbol
+        for e in membership_sync._active_identities(_identities(lake))
+        if e.security_id == security_id
+        and e.status == "verified"
+        and e.effective_from <= dt(day)
+        and (e.effective_to is None or dt(day) < e.effective_to)
+    }
+
+
+W = "wikipedia_sec_research"
+
+
+def test_r5_a_renamed_security_carries_todays_ticker_not_the_rename_day_probe(tmp_path):
+    """Baker Hughes (CIK 0001701605), BHGE -> BKR on 2019-10-18: the Massive
+    probe taken on the rename day still said BHGE, open-ended, so after R1 it
+    was the latest claim and BHGE read as current (mini, 2026-09-26). Bronze
+    holds BKR from 2017-07-05 and no BHGE at all."""
+    lake = tmp_path / "lake"
+    ids = _seed(
+        lake,
+        [
+            ("bkr", W, "BHGE", "XNYS", "0001701605", "Baker Hughes, a GE company", "2019-10-17", "2019-10-19"),
+            ("bkr", W, "BKR", "XNYS", "0001701605", "Baker Hughes", "2019-10-17", "2019-10-19"),
+            ("bkr", W, "BKR", "XNAS", "0001701605", "Baker Hughes Company", "2022-12-18", "2022-12-20"),
+            ("probe", "massive", "BHGE", "XNYS", "0001701605", "Baker Hughes Co", "2019-10-18", None),
+        ],
+        [("sp500", "bkr", "add", "2019-10-18"), ("ndx100", "bkr", "add", "2022-12-19")],
+    )
+    manifest = membership_sync.repair_identity(
+        indexes=["sp500", "ndx100"], data_lake_root=lake, now=REPAIR_NOW, apply=True, current_tickers={"BKR"}
+    )
+
+    assert {(r["old_symbol"], r["new_symbol"]) for r in manifest["relabels"]} == {("BHGE", "BKR")}
+    for day in ("2019-10-18", "2021-06-01", "2026-09-22"):
+        assert _symbols_open(lake, ids["bkr"], day) == {"BKR"}, day
+    counts = len(_identities(lake))
+    membership_sync.repair_identity(
+        indexes=["sp500", "ndx100"], data_lake_root=lake, now=REPAIR_NOW, apply=True, current_tickers={"BKR"}
+    )
+    assert len(_identities(lake)) == counts
+
+
+def test_r5_frees_todays_ticker_for_the_security_that_holds_it_now(tmp_path):
+    """St Paul (CIK 0000086312, TRV today) and Travelers Group (CIK
+    0000831001, C since 1998): both researched as TRV in 1997-99, so St
+    Paul's sp500 claim was capped at 1997-03-16 and sp500 PIT could not
+    publish (identity gap 1997-03-16 .. 2009-06-08, mini 2026-09-24)."""
+    lake = tmp_path / "lake"
+    ids = _seed(
+        lake,
+        [
+            ("citi", W, "C", "XNYS", "0000831001", "Citigroup Inc.", "1996-01-01", "1996-01-03"),
+            ("citi", W, "TRV", "XNYS", "0000831001", "Travelers Group Inc.", "1997-03-16", "1997-03-18"),
+            ("citi", W, "C", "XNYS", "0000831001", "Citigroup Inc.", "1999-10-31", "1999-11-02"),
+            ("citi", W, "TRV", "XNYS", "0000831001", "Travelers Group Inc.", "1999-10-31", "1999-11-02"),
+            ("citi", W, "C", "XNYS", "0000831001", "Citigroup Inc.", "2009-06-07", "2009-06-09"),
+            ("citi", "massive", "C", "XNYS", "0000831001", "Citigroup Inc.", "2009-06-08", None),
+            ("stpaul", W, "TRV", "XNYS", "0000086312", "St Paul Cos Inc.", "1996-01-01", "1996-01-03"),
+            ("stpaul", "massive", "TRV", "XNYS", "0000086312", "The Travelers Companies, Inc.", "2009-06-08", None),
+        ],
+        [
+            ("sp500", "citi", "add", "1996-01-02"),
+            ("sp500", "stpaul", "add", "1996-01-02"),
+            ("djia", "citi", "add", "1997-03-17"),
+            ("djia", "citi", "remove", "2009-06-08"),
+            ("djia", "stpaul", "add", "2009-06-08"),
+        ],
+    )
+    manifest = membership_sync.repair_identity(
+        indexes=["sp500", "djia"], data_lake_root=lake, now=REPAIR_NOW, apply=True, current_tickers={"C", "TRV"}
+    )
+
+    assert {(r["security_id"], r["old_symbol"], r["new_symbol"]) for r in manifest["relabels"]} == {
+        (ids["citi"], "TRV", "C")
+    }
+    for day in ("1997-03-17", "2005-06-01", "2026-09-22"):
+        assert _symbols_open(lake, ids["stpaul"], day) == {"TRV"}, day
+        assert _symbols_open(lake, ids["citi"], day) == {"C"}, day
+
+
+def test_r5_never_hands_a_security_a_ticker_another_holds_today(tmp_path):
+    """The old GM (CIK 0000040730, Motors Liquidation after 2009) left sp500
+    on 2009-06-03; GM today is General Motors Company (CIK 0001467858), a
+    different security. The old one has no ticker of its own today."""
+    lake = tmp_path / "lake"
+    ids = _seed(
+        lake,
+        [
+            ("oldgm", W, "GM", "XNYS", "0000040730", "General Motors Corporation", "1991-05-05", "1991-05-07"),
+            ("oldgm", W, "MTLQQ", "XNYS", "0000040730", "General Motors Corporation", "1996-01-01", "1996-01-03"),
+            ("oldgm", W, "MTLQQ", "XNYS", "0000040730", "General Motors Corporation", "2009-06-02", "2009-06-04"),
+            ("oldgm", W, "GM", "XNYS", "0000040730", "General Motors Corporation", "2009-06-07", "2009-06-09"),
+            ("newgm", "massive", "GM", "XNYS", "0001467858", "General Motors Company", "2013-06-07", None),
+        ],
+        [
+            ("sp500", "oldgm", "add", "1996-01-02"),
+            ("sp500", "oldgm", "remove", "2009-06-03"),
+            ("sp500", "newgm", "add", "2013-06-07"),
+        ],
+    )
+    manifest = membership_sync.repair_identity(
+        indexes=["sp500"], data_lake_root=lake, now=REPAIR_NOW, apply=True, current_tickers={"GM"}
+    )
+
+    assert manifest["relabels"] == []
+    assert [(r["security_id"], r["reason"]) for r in manifest["relabels_skipped"]] == [
+        (ids["oldgm"], "no_current_ticker")
+    ]
+
+
+def test_r5_relabels_claim_by_claim_and_keeps_the_one_that_collides(tmp_path):
+    """AT&T Inc. (SBC Communications, CIK 0000732717) took T in 2005 from
+    AT&T Corp. (CIK 0000005907). Its 1999 SBC claim overlaps AT&T Corp.'s T
+    and stays SBC; the rest become T, so T, not SBC, reads as current
+    (claims as the mini holds them after the 2026-09-24 repair)."""
+    lake = tmp_path / "lake"
+    ids = _seed(
+        lake,
+        [
+            ("attcorp", W, "T", "XNYS", "0000005907", "AT&T Corp.", "1991-05-05", "1996-01-01"),
+            ("attcorp", W, "T", "XNYS", "0000005907", "AT&T Corp.", "2004-04-07", "2004-04-09"),
+            ("att", W, "T", "XNYS", "0000732717", "S B C Communications Inc.", "1996-01-01", "2004-04-07"),
+            ("att", W, "SBC", "XNYS", "0000732717", "SBC Communications Inc.", "1999-10-31", "2015-03-19"),
+            ("att", W, "T", "XNYS", "0000732717", "AT&T Inc.", "2005-11-20", "2015-03-19"),
+            ("att", W, "SBC", "XNYS", "0000732717", "SBC Communications Inc.", "2005-11-20", "2015-03-19"),
+            ("att", "massive", "SBC", "XNYS", "0000732717", "AT&T Inc.", "2005-11-21", None),
+            ("att", W, "T", "XNYS", "0000732717", "AT&T Inc.", "2015-03-18", "2015-03-20"),
+        ],
+        [("sp500", "att", "add", "1996-01-02")],
+    )
+    manifest = membership_sync.repair_identity(
+        indexes=["sp500"], data_lake_root=lake, now=REPAIR_NOW, apply=True, current_tickers={"T"}
+    )
+
+    assert [(r["event_id"], r["reason"]) for r in manifest["relabels_skipped"]] == [("att-3", "collision")]
+    assert len(manifest["relabels"]) == 2
+    assert _symbols_open(lake, ids["att"], "2026-09-22") == {"T"}
+    assert _symbols_open(lake, ids["att"], "2004-04-08") == {"SBC"}
+
+
+def test_r5_prefers_the_listed_ticker_the_security_holds_open_today(tmp_path):
+    """Alphabet class A (CIK 0001652044) traded as GOOG until the 2014-04-03
+    share-class split; GOOG and GOOGL are both sp500 tickers today, and only
+    GOOGL is open on this id (claims as on the mini, 2026-09-23)."""
+    lake = tmp_path / "lake"
+    ids = _seed(
+        lake,
+        [
+            ("alphabet", W, "GOOGL", "XNAS", GOOGL_CIK, "Alphabet Inc.", "2005-12-18", "2005-12-20"),
+            ("alphabet", W, "GOOGL", "XNAS", GOOGL_CIK, "Alphabet Inc.", "2006-04-02", "2006-04-04"),
+            ("alphabet", W, "GOOG", "XNAS", GOOGL_CIK, "Alphabet Inc.", "2014-04-02", "2014-04-04"),
+            ("alphabet", "massive", "GOOGL", "XNAS", GOOGL_CIK, "Alphabet Inc.", "2026-06-29", None),
+        ],
+    )
+    manifest = membership_sync.repair_identity(
+        indexes=["sp500"], data_lake_root=lake, now=REPAIR_NOW, apply=True, current_tickers={"GOOG", "GOOGL"}
+    )
+
+    assert {(r["old_symbol"], r["new_symbol"]) for r in manifest["relabels"]} == {("GOOG", "GOOGL")}
+    assert _symbols_open(lake, ids["alphabet"], "2014-04-03") == {"GOOGL"}
+
+
+# The next three tests are algorithm scaffolding (filler CIKs, real tickers in
+# made-up histories), per the module docstring: no claim about these companies.
+
+
+def test_r5_judges_each_relabel_against_the_whole_plan(tmp_path):
+    """One security's relabel frees the ticker another's needs: judged claim
+    by claim against the store as it stands, the outcome depended on
+    `security_id` order and a second run appended the skipped relabel."""
+    lake = tmp_path / "lake"
+    ids = _seed(
+        lake,
+        [
+            ("first", W, "SBC", "XNYS", "0000000001", "scaffold", "1996-01-01", "2000-01-01"),
+            ("first", W, "T", "XNYS", "0000000001", "scaffold", "2000-01-01", None),
+            ("second", W, "T", "XNYS", "0000000002", "scaffold", "1996-01-01", "2000-01-01"),
+            ("second", W, "VZ", "XNYS", "0000000002", "scaffold", "2000-01-01", None),
+        ],
+    )
+    manifest = membership_sync.repair_identity(
+        indexes=["sp500"], data_lake_root=lake, now=REPAIR_NOW, apply=True, current_tickers={"T", "VZ"}
+    )
+
+    assert {(r["security_id"], r["new_symbol"]) for r in manifest["relabels"]} == {
+        (ids["first"], "T"),
+        (ids["second"], "VZ"),
+    }
+    counts = len(_identities(lake))
+    membership_sync.repair_identity(
+        indexes=["sp500"], data_lake_root=lake, now=REPAIR_NOW, apply=True, current_tickers={"T", "VZ"}
+    )
+    assert len(_identities(lake)) == counts
+
+
+def test_r5_two_relabels_that_collide_with_each_other_are_both_reported_and_apply_succeeds(tmp_path):
+    lake = tmp_path / "lake"
+    _seed(
+        lake,
+        [
+            ("first", "massive", "T", "XNYS", "0000000001", "scaffold", "2010-01-01", None),
+            ("first", W, "SBC", "XNYS", "0000000001", "scaffold", "2000-01-01", "2002-01-01"),
+            ("second", W, "T", "XNAS", "0000000002", "scaffold", "2010-01-01", None),
+            ("second", W, "BLS", "XNYS", "0000000002", "scaffold", "2001-01-01", "2003-01-01"),
+        ],
+    )
+    manifest = membership_sync.repair_identity(
+        indexes=["sp500"], data_lake_root=lake, now=REPAIR_NOW, apply=True, current_tickers={"T"}
+    )
+
+    assert manifest["relabels"] == []
+    assert sorted(r["reason"] for r in manifest["relabels_skipped"]) == ["collision", "collision"]
+
+
+def test_r5_by_elimination_only_for_a_current_member_and_never_a_placeholders_ticker(tmp_path):
+    """Holding no listed ticker open, a security takes today's ticker by
+    elimination only while it is an index member, and a placeholder member's
+    ticker is taken: neither is visible as an open identity claim."""
+    lake = tmp_path / "lake"
+    ids = _seed(
+        lake,
+        [
+            ("delisted", W, "KO", "XNYS", "0000000001", "scaffold", "1996-01-01", "2000-01-01"),
+            ("delisted", W, "PEP", "XNYS", "0000000001", "scaffold", "2000-01-01", "2005-01-01"),
+            ("member", W, "MO", "XNYS", "0000000002", "scaffold", "1996-01-01", "2000-01-01"),
+            ("member", W, "PM", "XNYS", "0000000002", "scaffold", "2000-01-01", "2005-01-01"),
+        ],
+        [
+            ("sp500", "delisted", "add", "1996-01-02"),
+            ("sp500", "delisted", "remove", "2005-01-03"),
+            ("sp500", "member", "add", "1996-01-02"),
+        ],
+    )
+    refs = _evidence(SourceEvidenceStore(lake), "placeholder", "https://www.slickcharts.com/sp500", CHURN_T)
+    _store(lake).append(
+        _membership(
+            refs,
+            event_id="sp500-add-unresolved-PM",
+            index_id="sp500",
+            security_id="unresolved:PM",
+            action="add",
+            effective_at=CHURN_T,
+            known_at=CHURN_T,
+            status="candidate",
+        )
+    )
+    manifest = membership_sync.repair_identity(
+        indexes=["sp500"], data_lake_root=lake, now=REPAIR_NOW, apply=True, current_tickers={"KO", "MO", "PM"}
+    )
+
+    assert {(r["security_id"], r["new_symbol"]) for r in manifest["relabels"]} == {(ids["member"], "MO")}
+    assert {r["security_id"] for r in manifest["relabels_skipped"]} == {ids["delisted"]}
+
+
+def test_r1_never_joins_two_researched_ids_whose_ciks_are_both_ambiguous(tmp_path):
+    lake = tmp_path / "lake"
+    _seed(
+        lake,
+        [
+            ("successor", W, "XOM", "XNYS", "0002115436", "scaffold", "1996-01-01", "1996-01-03"),
+            ("successor", W, "XOM", "XNYS", "0000000003", "scaffold", "1997-01-01", "1997-01-03"),
+            ("other", W, "XOM", "XNYS", "0000000004", "scaffold", "1991-05-05", "1991-05-07"),
+            ("other", W, "XOM", "XNYS", "0000000005", "scaffold", "1992-05-05", "1992-05-07"),
+        ],
+    )
+    manifest = membership_sync.repair_identity(
+        indexes=["sp500"], data_lake_root=lake, now=REPAIR_NOW, apply=False, current_tickers={"XOM"}
+    )
+
+    assert manifest["merges"] == []
