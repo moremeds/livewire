@@ -1324,18 +1324,24 @@ python scripts/livewire_ingest.py membership-sync repair-identity [--index sp500
 - **`repair-identity`** merges a `massive` identity into its researched
   (`wikipedia_sec_research`) twin by CIK (R1), extends a researched claim's
   narrow `[add-1d, add+1d)` window to the next non-churn `remove` (R2, capped
-  and reported on collision, never forced), and rejects a same-timestamp
-  remove+add churn pair in one index (R4) — the fix for the 2026-09-17
-  narrow-identity churn (`docs/superpowers/specs/2026-09-23-membership-identity-continuity-design.md`).
-  Dry run by default; `--apply` writes security-master rows (R1 then R2) then
+  and reported on collision, never forced), relabels a renamed security's
+  claims to today's ticker from `presets/<index>.json` (R5; ambiguous or
+  colliding claims are reported in `relabels_skipped`, never guessed), and
+  rejects a same-timestamp remove+add churn pair in one index (R4) — the fix
+  for the 2026-09-17 narrow-identity churn
+  (`docs/superpowers/specs/2026-09-23-membership-identity-continuity-design.md`).
+  A successor registrant's CIK joins its predecessor's through
+  `_CIK_SUCCESSORS` (ExxonMobil Holdings 0002115436 → Exxon Mobil 0000034088).
+  Dry run by default; `--apply` writes security-master rows (R1, R5, then R2) then
   membership rejections (R4) in one run; `--output` writes the JSON manifest
-  (merges, conflicts, extensions, caps, rejections, dangling references,
+  (merges, conflicts, relabels, relabels_skipped, extensions, caps, rejections, dangling references,
   before/after member counts). Idempotent — event ids derive from the event
   they supersede, so a rerun appends nothing. A verified membership event
   still referencing a rejected duplicate after R1 fails the run rather than
   guessing.
 - **Ledger:** `runs` rows `job='membership-repair-identity'`; measurements
-  `identity_merges`, `identity_conflicts`, `identity_extensions`,
+  `identity_merges`, `identity_conflicts`, `identity_relabels`,
+  `identity_relabels_skipped`, `identity_extensions`,
   `identity_caps`, `membership_rejections`, `identity_dangling_references`.
 - **Ledger:** `runs` rows `job='membership-reresolve'` — deliberately not
   `membership-sync`, so a later OK pass cannot hide the night's FAILED
