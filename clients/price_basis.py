@@ -269,7 +269,7 @@ def classify_source_seam_breaks(
     """
     ordered = sorted(rows, key=lambda row: coerce_date(row["trade_date"]))
     result: list[tuple[date, SplitClassification]] = []
-    for previous, current in zip(ordered, ordered[1:]):
+    for previous, current in zip(ordered, ordered[1:], strict=False):
         previous_is_ib = previous.get("source") == "ib"
         if previous_is_ib == (current.get("source") == "ib"):
             continue
