@@ -156,32 +156,49 @@ def _classify_seam_group(
     last_ib_date: date,
     tolerance: float,
     min_margin: float,
+    *,
+    before_is_ib: bool = True,
 ) -> list[SplitClassification]:
-    """Classify splits after the incoming IB window from the incoming/existing seam.
+    """Classify splits after a seam from the row before it and the row after.
 
-    A split whose ``ex_date`` falls in the gap itself — after the last incoming
-    row but on or before the first existing row past it — behaves like an
-    in-window split measured at the seam: it has already actually happened by
-    the time the existing series resumes, so the existing side already carries
-    its real raw jump (raw target = its factor, adjusted target = 1, same as
-    the in-window case). A split whose ``ex_date`` is later still, after the
-    existing series has already resumed, has NOT happened by the first
-    existing row — only IB's own pre-adjustment for it can appear, inverted,
-    at the seam (raw target = 1, adjusted target = 1/factor). The two groups'
-    contributions are combined by simple multiplication of each group's own
-    target — an approximation that ignores any cross-term between the two
-    hypotheses, acceptable because a group whose gap/later split is close
-    enough to make that interaction matter also drives raw_target and
-    adjusted_target close together, which the shared ambiguous check below
-    already refuses to call.
+    Model: IB divides raw historical prices by the product of every split
+    factor with ``ex_date`` after that date, ``F(t)``, evaluated as of fetch
+    time — so ``adjusted_price(t) = raw_price(t) * F(t)`` (see
+    :func:`normalize_ib_rows`, which reverses this by dividing by the same
+    factor). A split whose ``ex_date`` falls in the gap itself (after
+    ``last_ib_date`` but on or before the first row past it) has already
+    actually happened by the time the other side resumes, so that side's raw
+    price already carries the real jump; a split later still has NOT
+    happened yet by the first row past the seam, and only appears through
+    whichever side is IB being pre-adjusted for it.
+
+    This is exact under that model, not an approximation, but it is NOT
+    symmetric in which side is IB — the two derivations below differ,
+    because ``F`` cancels against the real gap jump on one side and
+    compounds with it on the other:
+
+    ``before_is_ib=True`` (ib -> non-ib, e.g. an incoming backfill batch
+    ending before existing data): ``before = raw(t0)*f_gap*f_later``
+    (adjusted) or ``raw(t0)`` (raw); ``after = raw(t1)`` always (raw(t1) =
+    raw(t0)*f_gap, the real gap jump). ``observed = after/before`` gives
+    ``f_gap`` (raw) or ``1/f_later`` (adjusted) — ``f_gap`` cancels out of
+    the adjusted target entirely.
+
+    ``before_is_ib=False`` (non-ib -> ib, e.g. an existing block followed by
+    a later IB fetch): ``before = raw(t0)`` always; ``after = raw(t1)``
+    (raw) or ``raw(t1)*f_later`` (adjusted, since only splits after ``t1``
+    are still unaccounted for in IB's own row). ``observed`` gives ``f_gap``
+    (raw, same as the other direction) or ``f_gap*f_later`` (adjusted) —
+    here ``f_gap`` does NOT cancel, because it is baked into ``raw(t1)``
+    (a real historical fact) rather than into a factor being undone.
     """
     # Every action here was only added to seam_actions by the caller after
     # confirming it has a row at/after its own ex_date, and ex_date >
     # last_ib_date, so at least one row after the seam always exists. Look up
-    # by date, not by source=='ib': combined_by_date lets an incoming row win
-    # over an existing row dated the same day, so the row at last_ib_date is
-    # always the incoming one regardless of what source label it carries.
-    last_ib_row = next(row for row in ordered if coerce_date(row["trade_date"]) == last_ib_date)
+    # by date, not by source: combined_by_date lets the incoming row win over
+    # an existing row dated the same day for the ib-before case, so the row
+    # at last_ib_date is the right one regardless of what label it carries.
+    before_row = next(row for row in ordered if coerce_date(row["trade_date"]) == last_ib_date)
     after_seam = [row for row in ordered if coerce_date(row["trade_date"]) > last_ib_date]
     first_existing_date = coerce_date(after_seam[0]["trade_date"])
 
@@ -205,13 +222,14 @@ def _classify_seam_group(
         else:
             later_factor *= float(factor)
 
-    before = float(_decimal(last_ib_row["close"], "seam ib close"))
-    after = float(_decimal(after_seam[0]["close"], "seam existing close"))
+    before = float(_decimal(before_row["close"], "seam before close"))
+    after = float(_decimal(after_seam[0]["close"], "seam after close"))
     if before <= 0 or after <= 0:
         raise ValueError("split-boundary closes must be positive")
     observed = after / before
+    adjusted_target = (1.0 / later_factor) if before_is_ib else (gap_factor * later_factor)
     treatment, raw_error, adjusted_error, margin = _classify_ratio(
-        observed, gap_factor, 1.0 / later_factor, tolerance, min_margin
+        observed, gap_factor, adjusted_target, tolerance, min_margin
     )
     return [
         SplitClassification(
@@ -252,13 +270,16 @@ def classify_source_seam_breaks(
     ordered = sorted(rows, key=lambda row: coerce_date(row["trade_date"]))
     result: list[tuple[date, SplitClassification]] = []
     for previous, current in zip(ordered, ordered[1:]):
-        if (previous.get("source") == "ib") == (current.get("source") == "ib"):
+        previous_is_ib = previous.get("source") == "ib"
+        if previous_is_ib == (current.get("source") == "ib"):
             continue
         boundary_date = coerce_date(previous["trade_date"])
         seam_actions = [(a, f) for a, f in _effective_splits(actions, as_of_date) if a.ex_date > boundary_date]
         if not seam_actions:
             continue
-        for classification in _classify_seam_group(seam_actions, ordered, boundary_date, tolerance, min_margin):
+        for classification in _classify_seam_group(
+            seam_actions, ordered, boundary_date, tolerance, min_margin, before_is_ib=previous_is_ib
+        ):
             result.append((boundary_date, classification))
     return result
 

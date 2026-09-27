@@ -6,6 +6,7 @@ import pytest
 
 from clients.corporate_action_store import CorporateAction
 from clients.price_basis import (
+    classify_source_seam_breaks,
     classify_split_events,
     normalize_ib_rows,
     normalize_split_adjusted_rows,
@@ -547,3 +548,56 @@ def test_health_check_shaped_gap_fill_reverses_post_gap_split():
 
     assert result[1]["price_basis"] == "raw"
     assert result[1]["close"] == pytest.approx(54.09, abs=0.01)
+
+
+# ── classify_source_seam_breaks: both transition directions ─────────────
+#
+# _classify_seam_group is not symmetric in which side is IB: adjusted_target
+# is 1/f_later for an ib->non-ib seam (f_gap cancels against the real gap
+# jump) but f_gap*f_later for a non-ib->ib seam (f_gap does not cancel — it
+# is baked into the real raw price on the "after" side, not into a factor
+# being undone). Using the ib->non-ib formula for both directions used to
+# make a non-ib->ib seam land ambiguous and get silently dropped.
+
+
+def test_source_seam_ib_before_non_ib_after_matches_prior_direction():
+    """ib -> non-ib (an incoming backfill batch ending before existing data,
+    SVXY-shaped): adjusted_target = 1/f_later, unchanged from before this fix.
+    """
+    rows = [
+        _row(date(2021, 6, 9), 26.290),
+        _row(date(2021, 6, 10), 27.045),
+        _existing_row(date(2021, 6, 11), 54.830),
+        _existing_row(date(2021, 6, 14), 54.570),
+    ]
+    actions = [_split("svxy-2024", date(2024, 4, 11), 1, 2)]
+
+    result = classify_source_seam_breaks(rows, actions, date(2026, 1, 1))
+
+    assert len(result) == 1
+    boundary_date, classification = result[0]
+    assert boundary_date == date(2021, 6, 10)
+    assert classification.treatment == "adjusted"
+    assert classification.observed_ratio == pytest.approx(54.83 / 27.045)
+
+
+def test_source_seam_non_ib_before_ib_after_uses_mirrored_target():
+    """non-ib -> ib (existing data followed by a later IB fetch): the IB row
+    is the one pre-adjusted for the later split, so adjusted_target =
+    f_gap*f_later = 0.5 here (f_gap=1, no gap-group split) — NOT 1/f_later
+    (=2.0), which is what the un-mirrored formula used to compare against
+    and would have called this seam ambiguous.
+    """
+    rows = [
+        _existing_row(date(2021, 6, 10), 27.10),
+        {**_row(date(2021, 6, 11), 13.55), "source": "ib"},
+    ]
+    actions = [_split("later-2024", date(2024, 4, 11), 1, 2)]
+
+    result = classify_source_seam_breaks(rows, actions, date(2026, 1, 1))
+
+    assert len(result) == 1
+    boundary_date, classification = result[0]
+    assert boundary_date == date(2021, 6, 10)
+    assert classification.treatment == "adjusted"
+    assert classification.observed_ratio == pytest.approx(13.55 / 27.10, rel=0.001)
