@@ -401,21 +401,149 @@ def test_post_window_split_out_of_scope_without_existing_rows_past_it():
 def test_qld_in_window_split_with_real_ib_values_classifies_cleanly():
     """QLD's 2015-05-20 1:2 split is IN-WINDOW (both boundary rows are
     incoming IB rows, not a seam case) — the production run raised
-    'ambiguous split classifications: 40a5b16c...' for exactly this action.
-    Re-fetched read-only from IB (2026-09-27, single continuous request, no
-    bronze write) the real 2015-05-19/20 closes are smooth (4.8078 ->
-    4.8131, an ordinary ~0.1% daily move) and classify cleanly as
-    'adjusted' — the opposite of what production saw. This rules out the
-    seam/future-split misclassification fixed above as QLD's cause: the
-    real values IB serves for that date pair are not ambiguous. The
-    production failure most likely came from a discontinuity introduced by
-    QLD's 15-window chunked historical fetch (2006-06-21 -> 2021-06-11,
-    logs/volETF-ib-backfill-20260927T1414Z.log:212) landing near this
-    split, not from classify_split_events itself — a separate, unfixed
-    issue tracked in the post-mortem.
+    'ambiguous split classifications: 40a5b16c...' for exactly this action,
+    with no SplitClassification fields logged
+    (logs/volETF-ib-backfill-20260927T1414Z.log:286-317).
+
+    Reconstructed read-only from IB (2026-09-27, no bronze write), replaying
+    the EXACT backfill chunk call for the window covering this date
+    (duration='1 Y', end_date='20150613-00:00:00', matching
+    compute_date_windows for QLD's real 2006-06-21 -> 2021-06-11 backfill
+    range) the row pair the classifier would compare is 2015-05-19 close
+    4.8078 / 2015-05-20 close 4.8131 — an ordinary ~0.1% daily move, and it
+    classifies cleanly as 'adjusted', the opposite of what production saw.
+    This rules out both the seam/future-split misclassification fixed above
+    AND a window-chunk-boundary artifact (2015-05-20 sits mid-window, 11
+    months from the near boundary and 3+ weeks from the far one) as QLD's
+    cause. The real cause is unresolved: production's actual fetch used
+    concurrent `asyncio.gather` over all 15 windows, which this read-only,
+    sequential re-fetch cannot replay — a pacing/dedup artifact under
+    concurrency remains the only unruled-out explanation, tracked as an open
+    follow-up in the post-mortem rather than assumed.
     """
     rows = [_row(date(2015, 5, 19), 4.8078), _row(date(2015, 5, 20), 4.8131)]
 
     result = classify_split_events(rows, [_split("qld-2015", date(2015, 5, 20), 1, 2)], date(2015, 5, 20))
 
     assert result[0].treatment == "adjusted"
+
+
+# ── Seam group refinement: gap splits vs. later splits ─────────────────
+#
+# Follow-up fix: a split whose ex_date falls in the gap itself (after the
+# last incoming row but on/before the first existing row past it) has
+# already actually happened by the time the existing series resumes — its
+# real jump is already embedded on the existing side, same as an in-window
+# split observed at the seam. The original seam formula treated it as if it
+# were a purely-future split, which classified it "raw" and left the IB
+# rows unreversed — the original defect again.
+
+
+def test_gap_split_classified_like_in_window_not_purely_future():
+    """Coordinator's failing case: IB ends 2024-04-10 already IB-adjusted for
+    a 1:2 split whose ex_date (2024-04-11) is the very next existing row —
+    the gap step IS the split boundary, so it must classify like an
+    in-window split (raw target = factor, adjusted target = 1), not the
+    purely-future formula (raw target = 1, adjusted target = 1/factor),
+    which would wrongly read this observed ratio (~1.0) as raw.
+    """
+    incoming = [_row(date(2024, 4, 9), 27.10), _row(date(2024, 4, 10), 27.00)]
+    existing = [_existing_row(date(2024, 4, 11), 27.03), _existing_row(date(2024, 4, 12), 26.90)]
+    actions = [_split("gap-split", date(2024, 4, 11), 1, 2)]
+
+    result = prepare_ib_rows_for_publish(
+        incoming, existing_rows=existing, actions=actions, as_of_date=date(2024, 4, 10)
+    )
+
+    assert result[1]["price_basis"] == "raw"
+    assert result[1]["close"] == pytest.approx(27.00 / 0.5, rel=0.01)  # 54.0-scale
+
+
+def test_existing_rows_sourced_ib_after_seam_still_widen_and_classify():
+    """B1: recent bronze equity rows are commonly source='ib' too (IB is the
+    primary daily provider) — an existing row dated after the split must not
+    be mistaken for part of the incoming batch when computing last_ib_date,
+    or the seam branch never fires and the original defect returns.
+    """
+    incoming = [_row(date(2021, 6, 9), 26.290), _row(date(2021, 6, 10), 27.045)]
+    existing = [
+        _existing_row(date(2021, 6, 11), 54.830),
+        {**_existing_row(date(2024, 4, 10), 109.170), "source": "ib"},
+        {**_existing_row(date(2024, 4, 11), 55.080), "source": "ib"},
+    ]
+    actions = [_split("svxy-2024", date(2024, 4, 11), 1, 2)]
+
+    result = prepare_ib_rows_for_publish(
+        incoming, existing_rows=existing, actions=actions, as_of_date=date(2021, 6, 10)
+    )
+
+    assert result[1]["price_basis"] == "raw"
+    assert result[1]["close"] == pytest.approx(54.09, abs=0.01)
+
+
+def test_mixed_gap_and_later_splits_partition_independently():
+    """One split lands in the gap (ex_date on the first existing row, real
+    factor 0.5) and shows its real raw jump at the seam; a second, unrelated
+    4:1 reverse split lands later (existing series has already resumed well
+    before it). The gap split's own real jump must classify this seam
+    'raw' using ONLY the gap group's factor — if the later split's factor
+    leaked into the raw target too (0.5 * 4 = 2.0 instead of 0.5), the fit
+    would be far worse and could misclassify or flip to ambiguous.
+    """
+    incoming = [_row(date(2024, 4, 9), 27.10), _row(date(2024, 4, 10), 27.00)]
+    existing = [
+        _existing_row(date(2024, 4, 11), 13.50),  # real 1:2 raw jump: 27.00 * 0.5
+        _existing_row(date(2024, 4, 12), 13.45),
+        _existing_row(date(2025, 12, 5), 53.00),  # later 4:1 reverse split, already resumed on the existing side
+        _existing_row(date(2025, 12, 8), 52.80),
+    ]
+    actions = [
+        _split("gap-split", date(2024, 4, 11), 1, 2),
+        _split("later-split", date(2025, 12, 5), 4, 1),
+    ]
+
+    result = prepare_ib_rows_for_publish(
+        incoming, existing_rows=existing, actions=actions, as_of_date=date(2024, 4, 10)
+    )
+
+    assert result[1]["price_basis"] == "raw"
+    assert result[1]["close"] == pytest.approx(27.00, rel=0.01)  # already raw — not reversed
+
+
+def test_long_gap_seam_is_ambiguous():
+    """More than 5 trading days between the last incoming row and the first
+    existing row past it makes the seam ratio a multi-period return, not a
+    single boundary step — indistinguishable from a genuine large move.
+    """
+    incoming = [_row(date(2024, 4, 1), 27.10), _row(date(2024, 4, 2), 27.00)]
+    existing = [_existing_row(date(2024, 4, 20), 27.03)]  # > 5 trading days later
+    actions = [_split("gap-split", date(2024, 4, 11), 1, 2)]
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        prepare_ib_rows_for_publish(incoming, existing_rows=existing, actions=actions, as_of_date=date(2024, 4, 2))
+
+
+def test_health_check_shaped_gap_fill_reverses_post_gap_split():
+    """health_check.py's IB gap-fill path: existing rows sit on BOTH sides of
+    the incoming block (an interior gap, not a trailing backfill). The
+    effective-as-of widening must still reach the post-gap split using the
+    existing rows *after* the gap.
+    """
+    existing_before = [_existing_row(date(2021, 6, 1), 25.50)]
+    incoming = [_row(date(2021, 6, 9), 26.290), _row(date(2021, 6, 10), 27.045)]
+    existing_after = [
+        _existing_row(date(2021, 6, 11), 54.830),
+        _existing_row(date(2024, 4, 10), 109.170),
+        _existing_row(date(2024, 4, 11), 55.080),
+    ]
+    actions = [_split("svxy-2024", date(2024, 4, 11), 1, 2)]
+
+    result = prepare_ib_rows_for_publish(
+        incoming,
+        existing_rows=existing_before + existing_after,
+        actions=actions,
+        as_of_date=date(2021, 6, 10),
+    )
+
+    assert result[1]["price_basis"] == "raw"
+    assert result[1]["close"] == pytest.approx(54.09, abs=0.01)

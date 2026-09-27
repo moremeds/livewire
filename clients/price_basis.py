@@ -10,6 +10,7 @@ from typing import Literal
 
 from clients.corporate_action_store import CorporateAction
 from clients.timeutils import coerce_date
+from clients.trading_calendar import trading_days_between
 
 ONE = Decimal("1")
 VOLUME_MODES = frozenset({"raw", "split_adjusted"})
@@ -71,6 +72,7 @@ def classify_split_events(
     *,
     tolerance: float = 0.15,
     min_margin: float = 0.10,
+    last_ib_date: date | None = None,
 ) -> list[SplitClassification]:
     """Classify each effective split as raw, adjusted, or ambiguous.
 
@@ -83,12 +85,22 @@ def classify_split_events(
     incoming IB row and the first existing row after it (see
     :func:`_classify_seam_group`), since IB back-adjusts an entire returned
     window for every split up to fetch time, including ones after the window.
+
+    ``last_ib_date`` should be the last date of the *incoming* IB batch, passed
+    explicitly by :func:`prepare_ib_rows_for_publish`. Recent bronze equity
+    rows are commonly ``source='ib'`` too (IB is the primary daily provider),
+    so inferring it from every ``source == 'ib'`` row in ``rows`` (the default,
+    kept for callers like ``audit_split_basis.py`` that stage their entire
+    existing history as ``source='ib'`` and have no separate incoming batch)
+    would pick up an existing IB-sourced row dated after the split and never
+    route it to the seam at all.
     """
     if tolerance <= 0 or min_margin < 0:
         raise ValueError("classification tolerances must be positive")
     ordered = sorted(rows, key=lambda row: coerce_date(row["trade_date"]))
-    ib_dates = [coerce_date(row["trade_date"]) for row in ordered if row.get("source") == "ib"]
-    last_ib_date = max(ib_dates) if ib_dates else None
+    if last_ib_date is None:
+        ib_dates = [coerce_date(row["trade_date"]) for row in ordered if row.get("source") == "ib"]
+        last_ib_date = max(ib_dates) if ib_dates else None
     result: list[SplitClassification] = []
     seam_actions: list[tuple[CorporateAction, Decimal]] = []
     for action, factor in _effective_splits(actions, as_of_date):
@@ -147,32 +159,59 @@ def _classify_seam_group(
 ) -> list[SplitClassification]:
     """Classify splits after the incoming IB window from the incoming/existing seam.
 
-    ``observed`` is the ratio between the first existing row after the seam and
-    the last incoming IB row. If IB returned raw prices, that ratio is an
-    ordinary daily move (~1); if IB back-adjusted the whole incoming block for
-    these future splits, the existing (unadjusted) row is out of scale with the
-    incoming block by the product of the group's split factors, so the ratio is
-    ~1 / combined_factor — the inverse of the in-window ratio, because here the
-    factor already priced into ``before`` is being undone by ``after`` rather
-    than appearing as a jump between two homogeneous rows.
+    A split whose ``ex_date`` falls in the gap itself — after the last incoming
+    row but on or before the first existing row past it — behaves like an
+    in-window split measured at the seam: it has already actually happened by
+    the time the existing series resumes, so the existing side already carries
+    its real raw jump (raw target = its factor, adjusted target = 1, same as
+    the in-window case). A split whose ``ex_date`` is later still, after the
+    existing series has already resumed, has NOT happened by the first
+    existing row — only IB's own pre-adjustment for it can appear, inverted,
+    at the seam (raw target = 1, adjusted target = 1/factor). The two groups'
+    contributions are combined by simple multiplication of each group's own
+    target — an approximation that ignores any cross-term between the two
+    hypotheses, acceptable because a group whose gap/later split is close
+    enough to make that interaction matter also drives raw_target and
+    adjusted_target close together, which the shared ambiguous check below
+    already refuses to call.
     """
     # Every action here was only added to seam_actions by the caller after
     # confirming it has a row at/after its own ex_date, and ex_date >
-    # last_ib_date, so at least one row after the seam always exists.
-    last_ib_row = next(
-        row for row in ordered if row.get("source") == "ib" and coerce_date(row["trade_date"]) == last_ib_date
-    )
+    # last_ib_date, so at least one row after the seam always exists. Look up
+    # by date, not by source=='ib': combined_by_date lets an incoming row win
+    # over an existing row dated the same day, so the row at last_ib_date is
+    # always the incoming one regardless of what source label it carries.
+    last_ib_row = next(row for row in ordered if coerce_date(row["trade_date"]) == last_ib_date)
     after_seam = [row for row in ordered if coerce_date(row["trade_date"]) > last_ib_date]
-    combined_factor = 1.0
-    for _, factor in seam_actions:
-        combined_factor *= float(factor)
+    first_existing_date = coerce_date(after_seam[0]["trade_date"])
+
+    # A seam step spans more than a handful of trading days only when the
+    # incoming batch and the existing series don't actually meet — the ratio
+    # is then a multi-period return, not a single boundary step, and a
+    # genuine ~50% move is indistinguishable from a 2:1 split. 5 trading days
+    # is generous slack for a short weekend/holiday gap while still catching
+    # a real multi-week hole.
+    if trading_days_between(last_ib_date, first_existing_date) > 5:
+        return [
+            SplitClassification(action.action_id, action.ex_date, factor, "ambiguous", None, math.inf, math.inf, 0.0)
+            for action, factor in seam_actions
+        ]
+
+    gap_factor = 1.0
+    later_factor = 1.0
+    for action, factor in seam_actions:
+        if action.ex_date <= first_existing_date:
+            gap_factor *= float(factor)
+        else:
+            later_factor *= float(factor)
+
     before = float(_decimal(last_ib_row["close"], "seam ib close"))
     after = float(_decimal(after_seam[0]["close"], "seam existing close"))
     if before <= 0 or after <= 0:
         raise ValueError("split-boundary closes must be positive")
     observed = after / before
     treatment, raw_error, adjusted_error, margin = _classify_ratio(
-        observed, 1.0, 1.0 / combined_factor, tolerance, min_margin
+        observed, gap_factor, 1.0 / later_factor, tolerance, min_margin
     )
     return [
         SplitClassification(
@@ -242,15 +281,22 @@ def prepare_ib_rows_for_publish(
         {**row, "source": "ib", "price_basis": "split_adjusted"} if row.get("source") == "ib" else dict(row)
         for row in incoming_rows
     ]
-    if not any(row.get("source") == "ib" for row in staged):
+    incoming_ib_dates = [coerce_date(row["trade_date"]) for row in staged if row.get("source") == "ib"]
+    if not incoming_ib_dates:
         return staged
-    earliest_ib_date = min(coerce_date(row["trade_date"]) for row in staged if row.get("source") == "ib")
+    earliest_ib_date = min(incoming_ib_dates)
+    latest_incoming_ib_date = max(incoming_ib_dates)
     relevant_actions = [action for action in actions if action.ex_date > earliest_ib_date]
     combined_by_date = {str(row["trade_date"]): row for row in existing_rows}
     combined_by_date.update({str(row["trade_date"]): row for row in staged})
     existing_dates = [coerce_date(row["trade_date"]) for row in existing_rows]
     effective_as_of = max(as_of_date, *existing_dates) if existing_dates else as_of_date
-    classifications = classify_split_events(list(combined_by_date.values()), relevant_actions, effective_as_of)
+    classifications = classify_split_events(
+        list(combined_by_date.values()),
+        relevant_actions,
+        effective_as_of,
+        last_ib_date=latest_incoming_ib_date,
+    )
     normalized_ib = iter(normalize_ib_rows([row for row in staged if row.get("source") == "ib"], classifications))
     return [next(normalized_ib) if row.get("source") == "ib" else row for row in staged]
 
