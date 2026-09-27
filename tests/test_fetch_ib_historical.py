@@ -19,6 +19,7 @@ import pytest
 from ib_async import Contract, Forex, Future, Index, Stock
 
 from clients.bronze_client import BronzeClient
+from clients.corporate_action_store import CorporateAction
 from clients.massive_client import MassiveAPIError
 from livewire_scripts.fetch_ib_historical import (
     IB_EARLIEST_DATE,
@@ -1358,6 +1359,82 @@ class TestBackfillTicker:
         assert inserted == 1
         assert rows[0]["close"] == pytest.approx(1 / 1.28)
         assert rows[0]["volume"] == 0
+
+
+class TestBackfillTickerSplitBasis:
+    """backfill_ticker exercised end-to-end (real BronzeClient, real
+    prepare_ib_rows_for_publish) for the 2026-09-27 SVXY incident: an IB
+    backfill batch that ends well before existing bronze rows begin, with a
+    real corporate-action split dated after the batch. Real close values
+    pulled read-only from macmini bronze, as of 2026-09-27.
+    """
+
+    def _split(self, action_id, ex_date, split_from, split_to):
+        return CorporateAction(
+            action_id=action_id,
+            provider="massive",
+            provider_event_id=action_id,
+            event_revision=1,
+            supersedes_action_id=None,
+            symbol="SVXY",
+            action_type="split",
+            ex_date=ex_date,
+            split_from=split_from,
+            split_to=split_to,
+            cash_amount=None,
+            currency=None,
+            declaration_date=None,
+            record_date=None,
+            pay_date=None,
+            status="active",
+            fetched_at=datetime(2026, 1, 1, tzinfo=UTC),
+            payload_hash=action_id,
+        )
+
+    @pytest.mark.integration
+    def test_backfill_reverses_split_after_incoming_window(self, bronze):
+        bronze.replace_ticker_rows(
+            "SVXY",
+            [
+                {
+                    "trade_date": "2021-06-11",
+                    "symbol_id": bronze.get_symbol_id("SVXY"),
+                    "open": 54.83,
+                    "high": 54.83,
+                    "low": 54.83,
+                    "close": 54.83,
+                    "adj_close": 54.83,
+                    "volume": 100,
+                    "source": "legacy",
+                    "price_basis": "raw",
+                },
+                {
+                    "trade_date": "2024-04-11",
+                    "symbol_id": bronze.get_symbol_id("SVXY"),
+                    "open": 55.08,
+                    "high": 55.08,
+                    "low": 55.08,
+                    "close": 55.08,
+                    "adj_close": 55.08,
+                    "volume": 100,
+                    "source": "legacy",
+                    "price_basis": "raw",
+                },
+            ],
+        )
+
+        bars = [
+            _make_bar(date="2021-06-09", close=26.290),
+            _make_bar(date="2021-06-10", close=27.045),
+        ]
+        actions = [self._split("svxy-2024", date(2024, 4, 11), 1, 2)]
+
+        inserted = backfill_ticker("SVXY", bars, bronze, corporate_actions=actions)
+        assert inserted == 2
+
+        rows = {row["trade_date"]: row for row in bronze.read_symbol_rows("SVXY")}
+        assert rows["2021-06-10"]["close"] == pytest.approx(54.09, abs=0.01)
+        assert rows["2021-06-10"]["price_basis"] == "raw"
 
 
 class TestRunBackfillZeroNewRows:

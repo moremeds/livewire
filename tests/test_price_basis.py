@@ -279,3 +279,143 @@ def test_prepare_does_not_require_old_split_before_incoming_window():
 
     assert result[0]["close"] == 200.0
     assert result[0]["price_basis"] == "raw"
+
+
+# ── Seam classification: splits after the incoming IB window ──────────
+#
+# Production incident 2026-09-27: an IB backfill of SVXY/VXX/XLK/... inserted
+# rows for dates that end well before existing bronze rows begin. Splits whose
+# ex_date falls in that gap can't be measured at their own boundary (both
+# adjacent rows are existing, already-raw data) — they must be read off the
+# seam between the last incoming IB row and the first existing row after it.
+# Real bronze values below (source=legacy/ib), pulled read-only from macmini
+# `data-lake/bronze/asset_class=equity/symbol=<SYM>/1d.parquet`, as of 2026-09-27.
+
+
+def _existing_row(trade_date: date, close: float) -> dict:
+    return {**_row(trade_date, close), "source": "legacy", "price_basis": "raw"}
+
+
+def test_svxy_post_window_split_classified_from_seam():
+    """SVXY 1:2 split on 2024-04-11 falls after the incoming IB window (ends
+    2021-06-10). IB already back-adjusted the whole incoming block for it —
+    the seam step (2021-06-11 existing / 2021-06-10 incoming) is ~2.03x, not
+    an ordinary daily move.
+    """
+    incoming = [
+        _row(date(2021, 6, 9), 26.290),
+        _row(date(2021, 6, 10), 27.045),
+    ]
+    existing = [
+        _existing_row(date(2021, 6, 11), 54.830),
+        _existing_row(date(2021, 6, 14), 54.570),
+        _existing_row(date(2024, 4, 10), 109.170),
+        _existing_row(date(2024, 4, 11), 55.080),
+    ]
+    actions = [_split("svxy-2024", date(2024, 4, 11), 1, 2)]
+
+    # Real callers (backfill_ticker) pass as_of_date=max(incoming dates), not
+    # real today — prepare_ib_rows_for_publish must widen the effective as-of
+    # date using the existing rows it already has, not rely on the caller.
+    result = prepare_ib_rows_for_publish(
+        incoming, existing_rows=existing, actions=actions, as_of_date=date(2021, 6, 10)
+    )
+
+    assert result[0]["price_basis"] == "raw"
+    assert result[1]["close"] == pytest.approx(54.09, abs=0.01)  # 27.045 * 2
+    # Seam step is now an ordinary daily move, not an artificial fold.
+    seam_ratio = existing[0]["close"] / result[1]["close"]
+    assert seam_ratio == pytest.approx(1.0137, abs=0.001)
+
+
+def test_vxx_two_post_window_reverse_splits_classified_from_seam():
+    """VXX has two 4:1 reverse splits (2023-03-07, 2024-07-24) after the
+    incoming IB window (ends 2021-06-10) — combined fold 16x.
+    """
+    incoming = [
+        _row(date(2021, 6, 9), 538.88),
+        _row(date(2021, 6, 10), 507.68),
+    ]
+    existing = [
+        _existing_row(date(2021, 6, 11), 30.82),
+        _existing_row(date(2021, 6, 14), 31.11),
+        _existing_row(date(2024, 7, 24), 49.19),
+        _existing_row(date(2024, 7, 25), 49.59),
+    ]
+    actions = [
+        _split("vxx-2023", date(2023, 3, 7), 4, 1),
+        _split("vxx-2024", date(2024, 7, 24), 4, 1),
+    ]
+
+    result = prepare_ib_rows_for_publish(
+        incoming, existing_rows=existing, actions=actions, as_of_date=date(2021, 6, 10)
+    )
+
+    assert result[0]["price_basis"] == "raw"
+    assert result[1]["close"] == pytest.approx(507.68 / 16, rel=0.01)
+    seam_ratio = existing[0]["close"] / result[1]["close"]
+    assert seam_ratio == pytest.approx(0.971, abs=0.02)
+
+
+def test_xlk_post_window_split_classified_from_seam():
+    """Sector-ETF case: XLK 1:2 split on 2025-12-05, same 2021-06 seam shape
+    as SVXY/VXX (issue157 sector backfill hit this too).
+    """
+    incoming = [
+        _row(date(2021, 6, 9), 70.050),
+        _row(date(2021, 6, 10), 70.565),
+    ]
+    existing = [
+        _existing_row(date(2021, 6, 11), 141.970),
+        _existing_row(date(2021, 6, 14), 143.410),
+        _existing_row(date(2025, 12, 5), 146.60),
+        _existing_row(date(2025, 12, 8), 147.63),
+    ]
+    actions = [_split("xlk-2025", date(2025, 12, 5), 1, 2)]
+
+    result = prepare_ib_rows_for_publish(
+        incoming, existing_rows=existing, actions=actions, as_of_date=date(2021, 6, 10)
+    )
+
+    assert result[0]["price_basis"] == "raw"
+    assert result[1]["close"] == pytest.approx(70.565 * 2, rel=0.01)
+
+
+def test_post_window_split_out_of_scope_without_existing_rows_past_it():
+    """A split after the incoming window, with no existing rows extending
+    past it, has no evidence it has already happened — the effective as-of
+    date widening only reaches as far as the existing rows actually go, so
+    this split is left out of scope entirely (matching the pre-widening
+    behaviour for a split truly in the caller's future), not flagged
+    ambiguous.
+    """
+    incoming = [_row(date(2021, 6, 9), 26.290), _row(date(2021, 6, 10), 27.045)]
+    actions = [_split("svxy-2024", date(2024, 4, 11), 1, 2)]
+
+    result = prepare_ib_rows_for_publish(incoming, existing_rows=[], actions=actions, as_of_date=date(2021, 6, 10))
+
+    assert result[1]["close"] == 27.045
+    assert result[1]["price_basis"] == "raw"
+
+
+def test_qld_in_window_split_with_real_ib_values_classifies_cleanly():
+    """QLD's 2015-05-20 1:2 split is IN-WINDOW (both boundary rows are
+    incoming IB rows, not a seam case) — the production run raised
+    'ambiguous split classifications: 40a5b16c...' for exactly this action.
+    Re-fetched read-only from IB (2026-09-27, single continuous request, no
+    bronze write) the real 2015-05-19/20 closes are smooth (4.8078 ->
+    4.8131, an ordinary ~0.1% daily move) and classify cleanly as
+    'adjusted' — the opposite of what production saw. This rules out the
+    seam/future-split misclassification fixed above as QLD's cause: the
+    real values IB serves for that date pair are not ambiguous. The
+    production failure most likely came from a discontinuity introduced by
+    QLD's 15-window chunked historical fetch (2006-06-21 -> 2021-06-11,
+    logs/volETF-ib-backfill-20260927T1414Z.log:212) landing near this
+    split, not from classify_split_events itself — a separate, unfixed
+    issue tracked in the post-mortem.
+    """
+    rows = [_row(date(2015, 5, 19), 4.8078), _row(date(2015, 5, 20), 4.8131)]
+
+    result = classify_split_events(rows, [_split("qld-2015", date(2015, 5, 20), 1, 2)], date(2015, 5, 20))
+
+    assert result[0].treatment == "adjusted"
