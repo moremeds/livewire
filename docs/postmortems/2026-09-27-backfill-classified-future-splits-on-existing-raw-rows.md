@@ -67,6 +67,24 @@ fetch (chunk-boundary is ruled out; a pacing/dedup artifact is the only
 untested candidate). XLF has a separate, unrelated published break (a
 2016-09-19 spin-off double-counted in corporate actions) — out of scope here.
 
+**Offline detection.** `audit_legacy_basis.py`'s existing `seed_boundary`
+check already caught this incident's exact 7 symbols (SVXY, VXX, XLB, XLK,
+XLU, XLY, XLE) because every one's bad basis sits at the fixed 2021-06 bulk-
+seed boundary. `classify_source_seam_breaks` generalizes the same seam math
+to every ib/non-ib source transition anywhere in a symbol's history, wired
+into the audit as a `source_seam_basis_break` klass, for a future mis-basis
+block that doesn't happen to land on that one window. Verified read-only
+against production (`/tmp/extended_audit_2026-09-27.json` on the mini):
+identical 7-symbol result, still all via `seed_boundary` (the new detector
+never needed to fire for this incident); OUST/NCMI stayed clean.
+livewire1's independent `basis-scan2` additionally flagged EEM
+(`split_not_reversed`, both boundary rows `source='ib'` — a different bug
+class, out of scope here) and SPWR (`source_seam` with an empty `splits`
+list — no corroborating corporate action, so this audit correctly leaves it
+clean rather than flag an unexplained residual); scan2 itself does not list
+XLE, though this audit and the earlier fix both independently confirm XLE's
+break is the same shape as XLB/XLK/XLU/XLY.
+
 **Test:** `tests/test_price_basis.py::test_svxy_post_window_split_classified_from_seam`,
 `::test_vxx_two_post_window_reverse_splits_classified_from_seam`,
 `::test_xlk_post_window_split_classified_from_seam`,
@@ -77,4 +95,6 @@ untested candidate). XLF has a separate, unrelated published break (a
 `::test_mixed_gap_and_later_splits_partition_independently`,
 `::test_long_gap_seam_is_ambiguous`,
 `::test_health_check_shaped_gap_fill_reverses_post_gap_split`,
-`tests/test_fetch_ib_historical.py::TestBackfillTickerSplitBasis::test_backfill_reverses_split_after_incoming_window`.
+`tests/test_fetch_ib_historical.py::TestBackfillTickerSplitBasis::test_backfill_reverses_split_after_incoming_window`,
+`tests/test_audit_legacy_basis.py::test_source_seam_detects_future_split_outside_seed_window`,
+`::test_source_seam_does_not_flag_a_real_split_at_the_transition`.

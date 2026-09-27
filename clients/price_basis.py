@@ -228,6 +228,41 @@ def _classify_seam_group(
     ]
 
 
+def classify_source_seam_breaks(
+    rows: list[dict],
+    actions: list[CorporateAction],
+    as_of_date: date,
+    *,
+    tolerance: float = 0.15,
+    min_margin: float = 0.10,
+) -> list[tuple[date, SplitClassification]]:
+    """Classify every ib/non-ib source transition in a symbol's full series.
+
+    Generalizes the seam check in :func:`prepare_ib_rows_for_publish` — built
+    for one incoming/existing boundary — to every adjacent-row pair in a
+    symbol's stored history whose ``source`` crosses the ib/non-ib line,
+    classified the same way against the splits active after it (see
+    :func:`_classify_seam_group`). Used by the offline basis audit
+    (``audit_legacy_basis.py``) to catch a mis-basis block whose splits lie
+    entirely after it: a split-boundary-only check (continuity) never looks
+    there, and the fixed 2021-06 seed-boundary check only looks at that one
+    location. Returns ``(boundary_date, classification)`` pairs so a caller
+    can report where each seam sits, not just which action it implicates.
+    """
+    ordered = sorted(rows, key=lambda row: coerce_date(row["trade_date"]))
+    result: list[tuple[date, SplitClassification]] = []
+    for previous, current in zip(ordered, ordered[1:]):
+        if (previous.get("source") == "ib") == (current.get("source") == "ib"):
+            continue
+        boundary_date = coerce_date(previous["trade_date"])
+        seam_actions = [(a, f) for a, f in _effective_splits(actions, as_of_date) if a.ex_date > boundary_date]
+        if not seam_actions:
+            continue
+        for classification in _classify_seam_group(seam_actions, ordered, boundary_date, tolerance, min_margin):
+            result.append((boundary_date, classification))
+    return result
+
+
 def normalize_ib_rows(rows: list[dict], classifications: list[SplitClassification]) -> list[dict]:
     """Reverse only split events that IB already incorporated."""
     ambiguous = [item.action_id for item in classifications if item.treatment == "ambiguous"]

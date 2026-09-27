@@ -21,6 +21,7 @@ from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.ingestion_common import load_preset
 from clients.parquet_io import write_json_atomic
+from clients.price_basis import classify_source_seam_breaks
 from clients.seed_boundary import classify_seed_boundary
 from clients.silver_continuity import ContinuityBreak, check_adjusted_continuity
 from clients.silver_window import find_breaks
@@ -82,6 +83,31 @@ def _classify(bronze: BronzeClient, store: CorporateActionStore, symbol: str, as
         entry["detector"] = "seed_boundary"
         entry["break_date"] = seed["date"]
         entry["max_ratio"] = seed["observed"]
+        return entry
+    # Source-seam: seed_boundary only looks at the one fixed 2021-06 window;
+    # this generalizes to every ib/non-ib source transition in the symbol's
+    # own history, catching a mis-basis block whose splits lie entirely
+    # after it — invisible to a split-boundary-only check (continuity).
+    seam_hits = [
+        (boundary_date, classification)
+        for boundary_date, classification in classify_source_seam_breaks(rows, actions, as_of)
+        if classification.treatment == "adjusted"
+    ]
+    if seam_hits:
+        boundary_date, hit = seam_hits[0]
+        entry["klass"] = "mixed"
+        entry["detector"] = "source_seam_basis_break"
+        entry["break_date"] = boundary_date.isoformat()
+        entry["max_ratio"] = hit.observed_ratio
+        entry["breaks"] = [
+            {
+                "boundary_date": bd.isoformat(),
+                "action_id": c.action_id,
+                "ex_date": c.ex_date.isoformat(),
+                "observed": c.observed_ratio,
+            }
+            for bd, c in seam_hits
+        ]
         return entry
     try:
         intervals = build_factor_intervals(rows, actions, as_of)
