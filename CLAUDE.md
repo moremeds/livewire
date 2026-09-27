@@ -25,7 +25,7 @@ livewire/                       # git repo
 ├── launchd/                    # *.plist.example templates for the 8 scheduled jobs
 ├── tests/                      # pytest; 95% coverage gate (clients/ib_client.py exempt)
 └── docs/
-    ├── postmortems/            # one file per incident: rule + what it cost + date (74 as of 2026-09-23)
+    ├── postmortems/            # one file per incident: rule + what it cost + date (75 as of 2026-09-27)
     ├── runbook.md              # every operator command, flag and env var, by task
     ├── superpowers/specs/      # designs; 2026-09-02-livewire-ledger-design.md is current
     └── audits/                 # dated read-only findings
@@ -161,6 +161,7 @@ gap      = expected − actual
 - Two trims, in order: the deterministic 2021-06 seed-boundary check on raw bronze (trims to the post-seed window, never quarantines), then the blind >6.0 continuity scan on the adjusted series with durable triage verdicts exempting confirmed real moves. Everything published is silver grade _at the 6.0 definition_. → test: `tests/test_rebuild_silver.py::test_seed_corrupt_symbol_publishes_its_post_seed_window_rather_than_quarantining` · pm:2026-07-18-silver-seed-floor-blind-heuristic
 - Quarantine omits a failed in-scope symbol from the next manifest; old immutable generations remain for already-pinned readers. Readers select daily and factors from the same pinned manifest. Factor intervals stay wider than the daily window. → test: `tests/test_silver_atomic_publication.py`
 - Two active splits on one ex-date: equal ratios collapse to one, unequal ratios fail closed. Count affected stored rows, not action records (16 symbols → 5 in history → 0 published). → test: `tests/test_adjustment_engine.py::test_one_split_restated_at_another_scale_is_collapsed_not_doubled`, `::test_conflicting_active_splits_on_one_ex_date_fail_closed` · pm:2026-08-02-two-active-splits-one-ex-date
+- A split dated after an incoming IB backfill batch is classified from the seam between the batch's last row and the first existing row after it, never at its own ex_date (both sides are existing data there and only reproduce the already-correct raw jump); `prepare_ib_rows_for_publish` widens the caller's `as_of_date` to the existing rows' own latest date rather than trusting a batch-max cutoff. 7 symbols, ~3,300 rows mislabeled `raw` (SVXY, VXX, XLK, XLY, XLB, XLU, XLE). → test: `tests/test_price_basis.py::test_svxy_post_window_split_classified_from_seam`, `::test_vxx_two_post_window_reverse_splits_classified_from_seam` · pm:2026-09-27-backfill-classified-future-splits-on-existing-raw-rows
 - Cancellation inference is provider-scoped: a Massive full reconcile never cancels a yahoo-sourced action (507 repairs undone over two Sundays before this). → test: `tests/test_corporate_action_store.py::test_full_reconcile_leaves_another_provider_alone` · pm:2026-07-19-cancellation-inference-provider-scoped
 - A carried generation reference retains the committed manifest hash; a mismatch fails the publish rather than blessing bytes from disk. → test: `tests/test_silver_atomic_publication.py`
 - A manifest left by SIGKILL before the `current.json` swap is uncommitted: retry quarantines its metadata, retains its generation, and uses a new attempt id. → test: `tests/test_silver_atomic_publication.py`
