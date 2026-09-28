@@ -478,3 +478,28 @@ def test_identity_claims_sharing_a_start_do_not_crash_the_coverage_check(tmp_pat
     )
 
     assert revision.status == "PROVEN"
+
+
+def test_a_claim_covering_no_session_is_not_published_as_an_empty_member_scope(tmp_path: Path) -> None:
+    # 2026-08-02 is a Sunday: the first claim holds no session, so it maps to session window [08-03, 08-03).
+    _seed(
+        tmp_path,
+        [
+            ("AAPL", datetime(2026, 8, 2, tzinfo=UTC), datetime(2026, 8, 3, tzinfo=UTC)),
+            ("AAPL", datetime(2026, 8, 3, tzinfo=UTC), None),
+        ],
+        membership_effective=datetime(2026, 8, 2, tzinfo=UTC),
+    )
+    _silver(tmp_path)
+    _verified_empty_fetch(tmp_path, "AAPL")
+
+    revision = PitSilverRevisionPublisher(tmp_path).publish(
+        index_id="sp500",
+        membership_revision=1,
+        as_of=AS_OF,
+        actions_receipt=export_actions(["AAPL"], AS_OF, data_lake_root=tmp_path),
+    )
+    members = json.loads(revision.manifest_path.read_text())["members"]
+
+    assert revision.status == "PROVEN"
+    assert [(m["session_from"], m["session_to"]) for m in members] == [("2026-08-03", None)]

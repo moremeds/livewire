@@ -361,6 +361,11 @@ class PitSilverRevisionPublisher:
                         break
                 if cursor < required_end:
                     raise ValueError("verified security identity has a gap inside membership interval")
+        # A claim spanning only non-session time (Sunday 00:00 -> Monday 00:00) still counts toward coverage
+        # above, but publishing it would write an empty [d, d) session window that readers reject.
+        member_scopes = [
+            item for item in member_scopes if item["session_to"] is None or item["session_to"] > item["session_from"]
+        ]
         member_scopes.sort(key=lambda item: (item["security_id"], item["effective_from"], item["symbol"]))
         return prefix, identity_prefix, security_revision, member_scopes
 
