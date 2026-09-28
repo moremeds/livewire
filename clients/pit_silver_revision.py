@@ -234,7 +234,9 @@ class PitSilverRevisionPublisher:
         """The symbols a publish at these inputs scopes, so its action receipt can name exactly them."""
         if as_of.tzinfo is None or as_of.utcoffset() is None:
             raise ValueError("as-of must be timezone-aware")
-        return sorted({item["symbol"] for item in self._member_scopes(index_id, membership_revision, as_of.astimezone(UTC))[3]})
+        return sorted(
+            {item["symbol"] for item in self._member_scopes(index_id, membership_revision, as_of.astimezone(UTC))[3]}
+        )
 
     def _member_scopes(
         self,
@@ -361,7 +363,6 @@ class PitSilverRevisionPublisher:
                     raise ValueError("verified security identity has a gap inside membership interval")
         member_scopes.sort(key=lambda item: (item["security_id"], item["effective_from"], item["symbol"]))
         return prefix, identity_prefix, security_revision, member_scopes
-
 
     def _build_core(
         self,
