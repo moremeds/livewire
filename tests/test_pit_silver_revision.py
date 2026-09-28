@@ -455,3 +455,26 @@ def test_a_current_version_revision_that_no_longer_replays_still_blocks_the_next
         publisher.publish(
             index_id="sp500", membership_revision=1, as_of=AS_OF + timedelta(hours=1), actions_receipt=receipt
         )
+
+
+def test_identity_claims_sharing_a_start_do_not_crash_the_coverage_check(tmp_path: Path) -> None:
+    # A closed and an open claim on one start: sorting (start, end) tuples compared None with a datetime.
+    _seed(
+        tmp_path,
+        [
+            ("AAPL", datetime(2026, 8, 1, tzinfo=UTC), datetime(2026, 8, 10, tzinfo=UTC)),
+            ("AAPL", datetime(2026, 8, 1, tzinfo=UTC), None),
+        ],
+        membership_effective=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+    _silver(tmp_path)
+    _verified_empty_fetch(tmp_path, "AAPL")
+
+    revision = PitSilverRevisionPublisher(tmp_path).publish(
+        index_id="sp500",
+        membership_revision=1,
+        as_of=AS_OF,
+        actions_receipt=export_actions(["AAPL"], AS_OF, data_lake_root=tmp_path),
+    )
+
+    assert revision.status == "PROVEN"

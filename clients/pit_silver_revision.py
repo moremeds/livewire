@@ -230,25 +230,23 @@ class PitSilverRevisionPublisher:
             "changedPaths": [],
         }
 
-    def _build_core(
+    def member_symbols(self, index_id: str, membership_revision: int, as_of: datetime) -> list[str]:
+        """The symbols a publish at these inputs scopes, so its action receipt can name exactly them."""
+        if as_of.tzinfo is None or as_of.utcoffset() is None:
+            raise ValueError("as-of must be timezone-aware")
+        return sorted(
+            {item["symbol"] for item in self._member_scopes(index_id, membership_revision, as_of.astimezone(UTC))[3]}
+        )
+
+    def _member_scopes(
         self,
         index_id: str,
         membership_revision: int,
         as_of: datetime,
-        actions_receipt: dict[str, Any],
         *,
         security_revision: int | None = None,
-        silver_revision: int | None = None,
-    ) -> dict[str, Any]:
-        receipt = dict(actions_receipt)
-        claimed_receipt_hash = str(receipt.pop("receiptHash", ""))
-        actual_receipt_hash = f"sha256:{digest_bytes(canonical_bytes(receipt))}"
-        if claimed_receipt_hash != actual_receipt_hash:
-            raise ValueError("corporate-action receipt hash mismatch")
-        if actions_receipt.get("mutated") is not False:
-            raise ValueError("corporate-action receipt must be read-only")
-        receipt_as_of = datetime.fromisoformat(str(actions_receipt.get("asOf", "")))
-
+    ) -> tuple[list[Any], list[Any], int, list[dict[str, Any]]]:
+        """Membership prefix, identity prefix, security revision and the per-symbol member scopes."""
         evidence = SourceEvidenceStore(self.root)
 
         def verify(ref: str, digest: str) -> bool:
@@ -348,7 +346,12 @@ class PitSilverRevisionPublisher:
             for member_from, member_to, membership_event_id in spans:
                 required_end = min(member_to, as_of) if member_to is not None else as_of
                 cursor = member_from
-                for interval_from, interval_to in sorted(scopes_by_membership.get(membership_event_id, [])):
+                # An open end (None) sorts after any closed end on the same start.
+                intervals = sorted(
+                    scopes_by_membership.get(membership_event_id, []),
+                    key=lambda span: (span[0], span[1] is None, span[1] or span[0]),
+                )
+                for interval_from, interval_to in intervals:
                     if interval_from > cursor:
                         raise ValueError("verified security identity has a gap inside membership interval")
                     interval_end = min(interval_to, as_of) if interval_to is not None else as_of
@@ -359,6 +362,30 @@ class PitSilverRevisionPublisher:
                 if cursor < required_end:
                     raise ValueError("verified security identity has a gap inside membership interval")
         member_scopes.sort(key=lambda item: (item["security_id"], item["effective_from"], item["symbol"]))
+        return prefix, identity_prefix, security_revision, member_scopes
+
+    def _build_core(
+        self,
+        index_id: str,
+        membership_revision: int,
+        as_of: datetime,
+        actions_receipt: dict[str, Any],
+        *,
+        security_revision: int | None = None,
+        silver_revision: int | None = None,
+    ) -> dict[str, Any]:
+        receipt = dict(actions_receipt)
+        claimed_receipt_hash = str(receipt.pop("receiptHash", ""))
+        actual_receipt_hash = f"sha256:{digest_bytes(canonical_bytes(receipt))}"
+        if claimed_receipt_hash != actual_receipt_hash:
+            raise ValueError("corporate-action receipt hash mismatch")
+        if actions_receipt.get("mutated") is not False:
+            raise ValueError("corporate-action receipt must be read-only")
+        receipt_as_of = datetime.fromisoformat(str(actions_receipt.get("asOf", "")))
+
+        prefix, identity_prefix, security_revision, member_scopes = self._member_scopes(
+            index_id, membership_revision, as_of, security_revision=security_revision
+        )
         expected_symbols = {item["symbol"] for item in member_scopes}
         receipt_symbols = {str(item["symbol"]) for item in actions_receipt.get("symbols", [])}
         if receipt_symbols != expected_symbols:

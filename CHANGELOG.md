@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `shepherd-silver publish` takes its action-receipt symbols from the publisher's own member scope instead of `plan_daily`, which read identities as of the bar-cutoff session end rather than `as_of`: an identity repair landing between the two made every publish fail with `action receipt symbol scope does not match`. The identity-coverage check no longer crashes with a `TypeError` when two claims share a start and one of them is open-ended.
+
+### Fixed
+
 - A split on an ex-date that carried a real market move beyond the 15% tolerance can be listed in `clients.price_basis.TOLERANCE_EXEMPT_SPLITS`, citing its evidence, and is then classified by margin alone. First entry: UVXY 2014-01-24 1:4 (a real +17.7% move on the VIX spike), which failed the UVXY IB backfill closed.
 
 ### Added
