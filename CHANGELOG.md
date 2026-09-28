@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A PIT member scope that holds no trading session (an identity claim from Sunday 00:00 to Monday 00:00) is no longer published as an empty `[d, d)` session window; it still counts toward identity coverage. PIT revisions 5 and 6 carried 9 and 1 such scopes and apex rejected both.
 - `shepherd-silver publish` takes its action-receipt symbols from the publisher's own member scope instead of `plan_daily`, which read identities as of the bar-cutoff session end rather than `as_of`: an identity repair landing between the two made every publish fail with `action receipt symbol scope does not match`. The identity-coverage check no longer crashes with a `TypeError` when two claims share a start and one of them is open-ended.
 
 ### Fixed
