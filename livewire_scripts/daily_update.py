@@ -976,6 +976,7 @@ def main():  # pragma: no cover — only exercised by integration tests
                             )
                             rows = prepare_ib_rows_for_publish(
                                 rows,
+                                symbol=ticker,
                                 existing_rows=(
                                     bronze.read_symbol_rows(ticker) if hasattr(bronze, "read_symbol_rows") else []
                                 ),

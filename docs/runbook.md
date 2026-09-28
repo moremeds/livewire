@@ -589,6 +589,18 @@ python scripts/livewire_ingest.py corporate-actions convert-dividend-currency --
 python scripts/livewire_ingest.py corporate-actions convert-dividend-currency --apply --output-dir ~/market-warehouse/grok_index/gaps/
 ```
 
+`corporate-actions cancel-reviewed-splits [--apply]` cancels each Massive "split" listed in
+`REVIEWED_NOT_SPLITS` (`livewire_scripts/sync_corporate_actions.py`, each entry with its
+evidence; today XLF 2016-09-19, the XLRE spin-off). Dry-run by default; both modes file a
+`reviewed-split-cancel` run and a `reviewed_split_cancelled` measurement. The cancel row is
+provider `review`, so a reconcile of the same payload keeps it; a restated payload re-inserts
+and needs a new review.
+
+```bash
+python scripts/livewire_ingest.py corporate-actions cancel-reviewed-splits            # dry-run
+python scripts/livewire_ingest.py corporate-actions cancel-reviewed-splits --apply
+```
+
 `--resume` is what the nightly lane passes, every night. It continues the
 per-symbol cursor for this exact scope (lake root, ticker set, `--full-reconcile`,
 `--dry-run`); a cursor from a different scope, a finished pass, or an unreadable
@@ -714,6 +726,9 @@ python scripts/livewire_store.py repair-legacy-basis \
     --audit-manifest <.../audit.json> --output-dir <.../repair-batch1> --priority-only --dry-run
 python scripts/livewire_store.py repair-legacy-basis \
     --audit-manifest <.../audit.json> --output-dir <.../repair-batch1> --priority-only --resume
+# --symbols XLF rescales the rows before an IB_DISTRIBUTION_FACTORS ex-date (clients/price_basis.py)
+# by the one factor fresh IB agrees on (fails closed under 99%); nothing from the ex-date on changes. Every run files a `repair-legacy-basis` ledger run and
+# `legacy_basis_<status>` measurements.
 # Every mutated parquet is copied verbatim to <output-dir>/backup/ FIRST; the sidecar
 # records backup_sha256. To undo the batch (or one symbol):
 python scripts/livewire_store.py rollback-legacy-basis --output-dir <.../repair-batch1> [--tickers NVDA]

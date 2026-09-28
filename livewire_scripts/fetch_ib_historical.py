@@ -536,6 +536,7 @@ def fetch_ticker(
         rows = bars_to_rows(bars, symbol_id, source="ib", price_basis="split_adjusted")
         rows = prepare_ib_rows_for_publish(
             rows,
+            symbol=ticker,
             existing_rows=[],
             actions=corporate_actions or [],
             as_of_date=max(date.fromisoformat(row["trade_date"]) for row in rows),
@@ -618,6 +619,7 @@ def backfill_ticker(
         if source == "ib":
             rows = prepare_ib_rows_for_publish(
                 rows,
+                symbol=ticker,
                 existing_rows=(bronze.read_symbol_rows(ticker) if hasattr(bronze, "read_symbol_rows") else []),
                 actions=corporate_actions or [],
                 as_of_date=max(date.fromisoformat(row["trade_date"]) for row in rows),

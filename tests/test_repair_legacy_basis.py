@@ -1070,3 +1070,97 @@ def test_main_delegates_to_run(monkeypatch):
     monkeypatch.setattr(repair_legacy_basis, "run", _fake_run)
     assert repair_legacy_basis.main(["--audit-manifest", "a.json", "--output-dir", "out"]) == 0
     assert seen["argv"] == ["--audit-manifest", "a.json", "--output-dir", "out"]
+
+
+def test_a_reviewed_symbol_is_rewritten_before_its_distribution_only_and_ledgered(tmp_path):
+    from clients import ledger
+
+    def row(d, close, volume, source, basis="raw"):
+        return {
+            "trade_date": d,
+            "symbol_id": 0,
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "adj_close": close,
+            "volume": volume,
+            "source": source,
+            "price_basis": basis,
+            "currency": "USD",
+        }
+
+    # Bronze XLF on the mini before the fix: IB 19.1794 un-adjusted by the spurious 1:1.139146 split.
+    bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
+    bronze.replace_ticker_rows(
+        "XLF",
+        [
+            row("2016-09-16", 21.8481367924, 60713502, "ib"),
+            row("2016-09-19", 19.31, 43866824, "legacy"),
+            row("2026-09-25", 54.84, 29108388, "massive"),
+        ],
+    )
+    manifest = tmp_path / "audit.json"
+    manifest.write_text(json.dumps({"schema_version": 1, "data_lake_root": str(tmp_path.resolve()), "symbols": []}))
+    ib_rows = [
+        row(date(2016, 9, 16), 19.1794, 69161543.10344827, "ib", "split_adjusted"),
+        row(date(2016, 9, 19), 19.31, 43866824, "ib", "split_adjusted"),
+        row(date(2026, 9, 25), 54.84, 25893144, "ib", "split_adjusted"),
+    ]
+
+    rc = repair_legacy_basis.run(
+        ["--audit-manifest", str(manifest), "--output-dir", str(tmp_path / "out"), "--symbols", "XLF"],
+        data_lake_root=tmp_path,
+        ib_factory=lambda: object(),
+        ib_fetcher_factory=_clean_ib_fetcher({"XLF": ib_rows}),
+        as_of_date=date(2026, 9, 25),
+    )
+
+    assert rc == 0
+    by_date = {r["trade_date"]: r for r in bronze.read_symbol_rows("XLF")}
+    assert by_date["2016-09-16"]["close"] == pytest.approx(23.62, abs=1e-4)
+    assert by_date["2016-09-16"]["volume"] == 56159173
+    # From the ex-date on, Bronze is kept: same prices, and Massive's volume (IB reports 25893144).
+    assert [(by_date[d]["source"], by_date[d]["volume"]) for d in ("2016-09-19", "2026-09-25")] == [
+        ("legacy", 43866824),
+        ("massive", 29108388),
+    ]
+    assert ledger.query("select verdict from runs where job = 'repair-legacy-basis' and ended is not null") == [
+        {"verdict": "OK"}
+    ]
+    assert {r["name"]: r["value"] for r in ledger.query("select name, value from measurements")}[
+        "legacy_basis_done"
+    ] == 1.0
+
+
+def test_symbols_refuses_a_symbol_with_no_declared_distribution(tmp_path):
+    manifest = tmp_path / "audit.json"
+    manifest.write_text(json.dumps({"schema_version": 1, "data_lake_root": str(tmp_path.resolve()), "symbols": []}))
+
+    with pytest.raises(ValueError, match="no IB_DISTRIBUTION_FACTORS entry"):
+        repair_legacy_basis.run(
+            ["--audit-manifest", str(manifest), "--output-dir", str(tmp_path / "out"), "--symbols", "XLK"],
+            data_lake_root=tmp_path,
+        )
+
+
+def test_rescale_fails_closed_when_fresh_ib_disagrees_with_the_factor():
+    # Mini, 2026-09-28: fresh IB XLF 2004-01-29 sits 8% off its neighbours (Bronze 26.852).
+    k = 250 / 203 / 1.139146
+
+    def bar(d, close):
+        return {
+            "trade_date": d,
+            "close": close,
+            "open": close,
+            "high": close,
+            "low": close,
+            "adj_close": close,
+            "volume": 1,
+        }
+
+    existing = [bar("2004-01-26", 27.296), bar("2004-01-29", 26.852), bar("2016-09-16", 21.8481367924)]
+    fresh = [bar("2004-01-26", 27.315 * k), bar("2004-01-29", 26.852), bar("2016-09-16", 23.619950738916256)]
+
+    with pytest.raises(ValueError, match="1 of 3 closes disagree"):
+        repair_legacy_basis._rescale_to_ib(existing, fresh, date(2016, 9, 19))
