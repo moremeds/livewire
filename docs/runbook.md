@@ -727,7 +727,9 @@ python scripts/livewire_store.py repair-legacy-basis \
 python scripts/livewire_store.py repair-legacy-basis \
     --audit-manifest <.../audit.json> --output-dir <.../repair-batch1> --priority-only --resume
 # --symbols XLF rescales the rows before an IB_DISTRIBUTION_FACTORS ex-date (clients/price_basis.py)
-# by the one factor fresh IB agrees on (fails closed under 99%); nothing from the ex-date on changes. Every run files a `repair-legacy-basis` ledger run and
+# by the one factor fresh IB agrees on (fails closed under 99%); nothing from the ex-date on changes.
+# An audit item {"klass": "chunk", "chunks": [{"start", "end", "factor"}]} rescales only rows in [start, end), when
+# fresh IB measures that factor against 20 rows each side (1%) and both sides agree; otherwise `ambiguous`. Every run files a `repair-legacy-basis` ledger run and
 # `legacy_basis_<status>` measurements.
 # Every mutated parquet is copied verbatim to <output-dir>/backup/ FIRST; the sidecar
 # records backup_sha256. To undo the batch (or one symbol):
