@@ -162,6 +162,37 @@ def test_classification_is_ambiguous_when_neither_hypothesis_is_close():
     assert result[0].treatment == "ambiguous"
 
 
+# UVXY around its 2014-01-24 1:4 reverse split, IB TRADES daily fetched 2026-09-28
+# (split-adjusted closes). The +17.7% ex-date move is real, so only the exemption lets it through.
+_UVXY_2014_01 = [(date(2014, 1, 23), 386500000.0), (date(2014, 1, 24), 455062500.0)]
+_UVXY_SPLIT = "c65fe6154f36c5d954452c6549045978"
+
+
+def test_a_real_move_beyond_tolerance_is_ambiguous_without_an_exemption():
+    rows = [_row(d, c) for d, c in _UVXY_2014_01]
+
+    result = classify_split_events(rows, [_split("uvxy-unlisted", date(2014, 1, 24), 4, 1)], date(2014, 1, 24))
+
+    assert result[0].treatment == "ambiguous"
+
+
+def test_an_exempt_split_is_classified_by_margin_alone():
+    adjusted = [_row(d, c) for d, c in _UVXY_2014_01]
+    raw = [_row(date(2014, 1, 23), 386500000.0), _row(date(2014, 1, 24), 455062500.0 * 4)]
+    action = [_split(_UVXY_SPLIT, date(2014, 1, 24), 4, 1)]
+
+    assert classify_split_events(adjusted, action, date(2014, 1, 24))[0].treatment == "adjusted"
+    assert classify_split_events(raw, action, date(2014, 1, 24))[0].treatment == "raw"
+
+
+def test_an_exempt_split_still_fails_closed_on_a_thin_margin():
+    rows = [_row(date(2014, 1, 23), 100.0), _row(date(2014, 1, 24), 200.0)]
+
+    result = classify_split_events(rows, [_split(_UVXY_SPLIT, date(2014, 1, 24), 4, 1)], date(2014, 1, 24))
+
+    assert result[0].treatment == "ambiguous"
+
+
 def test_classification_is_ambiguous_without_bars_on_both_sides():
     result = classify_split_events(
         [_row(date(2026, 1, 2), 100.0)],
