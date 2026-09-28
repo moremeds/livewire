@@ -31,6 +31,15 @@ def _is_legacy_receipt(receipt: dict[str, Any]) -> bool:
     return isinstance(version, int) and version < RECEIPT_VERSION
 
 
+def _has_empty_session_scope(payload: dict[str, Any]) -> bool:
+    # Revisions published before PR #164 could carry a [d, d) member scope; the current rule
+    # no longer emits one, so their replay can never match (sp500 rev 5, ndx100 rev 6).
+    return any(
+        member["session_to"] is not None and member["session_to"] <= member["session_from"]
+        for member in payload["members"]
+    )
+
+
 def daily_bar_cutoff(as_of: datetime) -> date:
     """Return the latest conservatively closed US equity daily session."""
     if as_of.tzinfo is None or as_of.utcoffset() is None:
@@ -495,10 +504,10 @@ class PitSilverRevisionPublisher:
                 raise ValueError("PIT Silver current pointer does not match its immutable revision")
             # A receipt from an older rule cannot be replayed (v1 copied the store's mutable
             # status column), so a legacy current is checked for integrity only and then
-            # superseded. A current-version receipt that fails replay still blocks: that is
-            # drift or tampering, never age.
-            _, _, receipt = self._verified_integrity(immutable, pointer=False)
-            if not _is_legacy_receipt(receipt):
+            # superseded, and so is a current holding an empty session scope. A current-version
+            # receipt that fails replay otherwise still blocks: that is drift or tampering, never age.
+            payload, _, receipt = self._verified_integrity(immutable, pointer=False)
+            if not _is_legacy_receipt(receipt) and not _has_empty_session_scope(payload):
                 self.verify(immutable)
         candidates = sorted(
             (
