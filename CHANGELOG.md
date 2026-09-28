@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A split on an ex-date that carried a real market move beyond the 15% tolerance can be listed in `clients.price_basis.TOLERANCE_EXEMPT_SPLITS`, citing its evidence, and is then classified by margin alone. First entry: UVXY 2014-01-24 1:4 (a real +17.7% move on the VIX spike), which failed the UVXY IB backfill closed.
+
 ### Added
 
 - `membership-sync repair-identity` R5: a renamed security's identity claims are relabelled to today's ticker (the one bronze is keyed by) from the current `presets/<index>.json` lists. A claim that would collide with another security's, a security with no listed ticker, and a ticker another security holds today are reported in `relabels_skipped`, never guessed. R1 joins a successor registrant to its predecessor's CIK through a cited `_CIK_SUCCESSORS` entry (ExxonMobil Holdings → Exxon Mobil). R2 now plans on R1 and R5's result. This closes the XOM and TRV identity gaps that blocked the sp500 PIT republish.

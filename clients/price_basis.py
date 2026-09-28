@@ -13,6 +13,16 @@ from clients.timeutils import coerce_date
 from clients.trading_calendar import trading_days_between
 
 ONE = Decimal("1")
+# Splits whose ex-date carried a real market move larger than the tolerance.
+# They are classified by margin alone; each entry cites the evidence the move is real.
+# ponytail: an id list in code; a restated action gets a new id and fails closed again.
+TOLERANCE_EXEMPT_SPLITS = frozenset(
+    {
+        # UVXY 2014-01-24 1:4 reverse. IB close 386.5M -> 455.06M (+17.7%, VIX spike; open gap +5.8%),
+        # macmini:~/market-warehouse/logs/uvxy-ib-2014-01-readonly-2026-09-28.txt
+        "c65fe6154f36c5d954452c6549045978",
+    }
+)
 VOLUME_MODES = frozenset({"raw", "split_adjusted"})
 
 
@@ -130,8 +140,9 @@ def classify_split_events(
         if before <= 0 or after <= 0:
             raise ValueError("split-boundary closes must be positive")
         observed = after / before
+        action_tolerance = math.inf if action.action_id in TOLERANCE_EXEMPT_SPLITS else tolerance
         treatment, raw_error, adjusted_error, margin = _classify_ratio(
-            observed, float(factor), 1.0, tolerance, min_margin
+            observed, float(factor), 1.0, action_tolerance, min_margin
         )
         result.append(
             SplitClassification(
