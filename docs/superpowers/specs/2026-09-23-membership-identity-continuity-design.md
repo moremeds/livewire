@@ -46,6 +46,16 @@ A `massive` identity with the same CIK and symbol is a duplicate:
 The CIK is the join key and the only one. If the CIKs differ (HOLX), or either
 side lacks a CIK, nothing is merged and the pair is reported.
 
+A successor registrant is joined to its predecessor by one table,
+`_CIK_SUCCESSORS`, each entry citing the filing that establishes the
+succession. Its one entry is ExxonMobil Holdings Corp (0002115436), which
+became the successor registrant of Exxon Mobil Corp's (0000034088) common stock
+under Rule 12g-3(a) on 2026-07-01 (8-K12B 0001193125-26-291990). The research
+put the successor's CIK on sp500's 1996 add and the predecessor's on djia's, so
+XOM had no identity after 2020-08-30 and sp500 PIT could not publish. A
+researched id filed under the predecessor merges into the successor's id when
+the two share a symbol (added 2026-09-26).
+
 **R1b — history under a merged duplicate moves with it.** An active,
 non-churn membership event under a merged Massive duplicate is the same
 company's history, joined by CIK. The first dry run on the mini found 105 such
@@ -99,14 +109,41 @@ active gets a `rejected` row that supersedes it (revision + 1). A verified
 membership event that still references a rejected Massive duplicate after R1b
 fails the run and is reported; it is never guessed.
 
+**R5 — a renamed security carries today's ticker.** Bronze is keyed by the
+current ticker: RVTY, GL, XOM and T hold bars from the 1980s, while PKI, TMK
+and BHGE hold none, and SBC's bronze is a different company (listed 2022).
+A security whose active claims carry more than one symbol is therefore
+relabelled to today's ticker: the claim symbol in the current constituent lists
+(`presets/<index>.json`) that it holds open at `now`, or, for a current index
+member holding none open, the one listed symbol that no other security and no
+placeholder member holds (decided by the user, 2026-09-26; measured on the mini
+the same day):
+
+- each claim under another symbol is superseded by the same claim with
+  today's ticker, window and evidence unchanged (BHGE → BKR, PKI → RVTY,
+  TMK → GL, Travelers Group TRV → C);
+- a claim whose relabel would collide with another security's claim, judged
+  against the state after the whole plan, stays as it is and is reported
+  (AT&T's 1999 SBC claim overlaps AT&T Corp's T);
+- no listed ticker (NCR/VYX, delisted share classes), a listed ticker that
+  another security holds today (the old GM: GM is General Motors Company's),
+  or a security that is not a member today (COR, ELV and EG until issue #158's
+  missing members are restored) relabels nothing and is reported.
+
+R5 runs on R1's result and R2 on both, so a relabelled claim no longer caps
+another security that holds the ticker today: St Paul's TRV claim now extends
+over 1997–2009 and closes sp500's last PIT gap. The rename-day Massive
+probes are why the latest claim cannot decide: BHGE 2019-10-18, TMK
+2019-08-08, PKI 2023-05-16 and SBC 2005-11-21 all returned the old ticker.
+
 ## 3. Entrypoint
 
 `livewire_ingest.py membership-sync repair-identity [--index sp500 ndx100 djia] [--apply]`:
 
-- Dry run by default: computes R1, R1b, R2 and R4, and writes a JSON manifest
-  (merges, repoints, extensions, caps, rejections, conflicts, before/after member counts
+- Dry run by default: computes R1, R1b, R5, R2 and R4, and writes a JSON manifest
+  (merges, repoints, relabels, extensions, caps, rejections, conflicts, before/after member counts
   at fixed dates) plus one ledger `runs` row and its `measurements`.
-- `--apply` appends security-master rows first (R1, then R2), then membership
+- `--apply` appends security-master rows first (R1, R5, then R2), then membership
   rejections and re-points (R4, R1b), in one run. It is idempotent: event ids derive from the
   superseded id, so a rerun appends nothing.
 - It lives in `membership_sync.py`, next to `reresolve`. No new script.
