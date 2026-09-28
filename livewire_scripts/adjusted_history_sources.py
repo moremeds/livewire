@@ -234,6 +234,7 @@ def fetch_ib_evidence(
             return SourceEvidence("ib", symbol, start, end, None, None, False, (), {}, "empty")
         canonical_raw = prepare_ib_rows_for_publish(
             staged,
+            symbol=symbol,
             existing_rows=[],
             actions=actions,
             as_of_date=as_of_date,

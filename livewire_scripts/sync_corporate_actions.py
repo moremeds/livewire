@@ -977,10 +977,80 @@ def convert_dividend_currency_main(argv: Sequence[str]) -> int:
     return 0
 
 
+# --- cancel-reviewed-splits ---------------------------------------------------
+
+# Massive splits that are not splits, each with the evidence that it is not. The cancellation
+# is filed under provider "review", which a reconcile of the same payload leaves in place.
+# ponytail: a list in code, like TOLERANCE_EXEMPT_SPLITS; a restated payload re-inserts and
+# needs a new review.
+REVIEWED_NOT_SPLITS: dict[tuple[str, date], str] = {
+    ("XLF", date(2016, 9, 19)): (
+        "XLRE spin-off: 0.139146 XLRE per XLF, already the $4.44356 cash_dividend on the same date; "
+        "IB applies 203/250 once, macmini:~/market-warehouse/logs/xlf-ib-2016-09-readonly-2026-09-28.txt"
+    ),
+}
+
+
+def cancel_reviewed_splits(*, apply: bool, lake_root: Path, now: datetime | None = None) -> dict:
+    """Cancel each split in ``REVIEWED_NOT_SPLITS``; dry-run by default, ledgered either way."""
+    now = now or datetime.now(UTC)
+    store = CorporateActionStore(Path(lake_root))
+    run_id = os.environ.get("LW_RUN_ID") or ledger.new_run_id("reviewed-split-cancel")
+    run_row = {
+        "run_id": run_id,
+        "job": "reviewed-split-cancel",
+        "host": socket.gethostname(),
+        "release_sha": os.environ.get("LW_RELEASE_SHA"),
+        "presets_sha": None,
+        "registry_sha": None,
+        "started": now,
+        "ended": None,
+        "exit_code": None,
+        "verdict": None,
+    }
+    ledger.open_run(run_row)
+    cancelled: list[dict] = []
+    try:
+        for (symbol, ex_date), evidence in sorted(REVIEWED_NOT_SPLITS.items()):
+            result = store.apply_repairs(
+                symbol, add_splits=[], cancel_ex_dates=[ex_date], fetched_at=now, provider="review", dry_run=not apply
+            )
+            if result.cancelled:
+                cancelled.append({"symbol": symbol, "ex_date": ex_date.isoformat(), "evidence": evidence})
+        _emit_measurements(
+            [
+                {
+                    "name": "reviewed_split_cancelled",
+                    "scope": "apply" if apply else "dry_run",
+                    "measured_at": now,
+                    "value": float(len(cancelled)),
+                    "unit": "count",
+                    "source": "measured",
+                    "run_id": run_id,
+                }
+            ],
+            run_id,
+            strict=True,
+        )
+        ledger.emit("runs", [run_row | {"ended": datetime.now(UTC), "exit_code": 0, "verdict": "OK"}], run_id=run_id)
+    except BaseException:
+        ledger.emit(
+            "runs", [run_row | {"ended": datetime.now(UTC), "exit_code": 1, "verdict": "FAILED"}], run_id=run_id
+        )
+        raise
+    return {"apply": apply, "cancelled": cancelled, "run_id": run_id}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     argv = list(argv) if argv is not None else sys.argv[1:]
     if argv[:1] == ["convert-dividend-currency"]:
         return convert_dividend_currency_main(argv[1:])
+    if argv[:1] == ["cancel-reviewed-splits"]:
+        apply = argv[1:] == ["--apply"]
+        if argv[1:] not in ([], ["--apply"]):
+            raise SystemExit("usage: corporate-actions cancel-reviewed-splits [--apply]")
+        print(json.dumps(cancel_reviewed_splits(apply=apply, lake_root=data_lake_dir()), sort_keys=True))
+        return 0
     return run(argv)
 
 

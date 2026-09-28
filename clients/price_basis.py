@@ -23,6 +23,15 @@ TOLERANCE_EXEMPT_SPLITS = frozenset(
         "c65fe6154f36c5d954452c6549045978",
     }
 )
+
+# Non-split distributions IB folds into its adjusted history, as (symbol, ex_date) -> factor in the
+# split_from/split_to convention (raw = IB / factor before ex_date, volume * factor). IB volumes on
+# these dates are exact multiples of 1/factor, which is how each factor was read.
+IB_DISTRIBUTION_FACTORS: dict[tuple[str, date], Decimal] = {
+    # XLF 2016-09-19 XLRE spin-off: IB 2016-09-16 close 19.1794 = raw 23.62 * 203/250; all 4,462 IB volumes
+    # 1998-12-22..2016-09-16 are integer * 250/203. macmini:~/market-warehouse/logs/xlf-ib-full-readonly-2026-09-28.json
+    ("XLF", date(2016, 9, 19)): Decimal(203) / Decimal(250),
+}
 VOLUME_MODES = frozenset({"raw", "split_adjusted"})
 
 
@@ -295,8 +304,14 @@ def classify_source_seam_breaks(
     return result
 
 
-def normalize_ib_rows(rows: list[dict], classifications: list[SplitClassification]) -> list[dict]:
-    """Reverse only split events that IB already incorporated."""
+def normalize_ib_rows(
+    rows: list[dict], classifications: list[SplitClassification], *, symbol: str | None
+) -> list[dict]:
+    """Reverse the split events and declared distributions IB already incorporated.
+
+    ``symbol`` selects the ``IB_DISTRIBUTION_FACTORS`` to reverse; ``None`` reverses none, for
+    callers staging existing Bronze rather than an IB fetch (the factor is known only for IB).
+    """
     ambiguous = [item.action_id for item in classifications if item.treatment == "ambiguous"]
     if ambiguous:
         raise ValueError(f"ambiguous split classifications: {', '.join(ambiguous)}")
@@ -309,6 +324,9 @@ def normalize_ib_rows(rows: list[dict], classifications: list[SplitClassificatio
         for item in classifications:
             if item.treatment == "adjusted" and item.ex_date > trade_date:
                 factor *= item.split_factor
+        for (distribution_symbol, ex_date), distribution_factor in IB_DISTRIBUTION_FACTORS.items():
+            if distribution_symbol == symbol and ex_date > trade_date:
+                factor *= distribution_factor
         output = dict(row)
         for column in ("open", "high", "low", "close", "adj_close"):
             raw_price = _decimal(row[column], column) / factor
@@ -324,6 +342,7 @@ def normalize_ib_rows(rows: list[dict], classifications: list[SplitClassificatio
 def prepare_ib_rows_for_publish(
     incoming_rows: list[dict],
     *,
+    symbol: str,
     existing_rows: list[dict],
     actions: list[CorporateAction],
     as_of_date: date,
@@ -364,7 +383,9 @@ def prepare_ib_rows_for_publish(
         effective_as_of,
         last_ib_date=latest_incoming_ib_date,
     )
-    normalized_ib = iter(normalize_ib_rows([row for row in staged if row.get("source") == "ib"], classifications))
+    normalized_ib = iter(
+        normalize_ib_rows([row for row in staged if row.get("source") == "ib"], classifications, symbol=symbol)
+    )
     return [next(normalized_ib) if row.get("source") == "ib" else row for row in staged]
 
 

@@ -232,7 +232,7 @@ def test_selective_normalization_reverses_only_adjusted_events():
         date(2026, 1, 3),
     )
 
-    result = normalize_ib_rows(rows, classifications)
+    result = normalize_ib_rows(rows, classifications, symbol="TEST")
 
     assert [item.treatment for item in classifications] == ["raw", "adjusted"]
     assert result[0]["close"] == pytest.approx(100.0)
@@ -248,7 +248,7 @@ def test_selective_normalization_rejects_ambiguous_event():
     )
 
     with pytest.raises(ValueError, match="ambiguous"):
-        normalize_ib_rows([_row(date(2026, 1, 2), 100.0)], classifications)
+        normalize_ib_rows([_row(date(2026, 1, 2), 100.0)], classifications, symbol="TEST")
 
 
 def test_prepare_full_ib_history_normalizes_adjusted_rows_to_raw():
@@ -262,6 +262,7 @@ def test_prepare_full_ib_history_normalizes_adjusted_rows_to_raw():
         existing_rows=[],
         actions=[_split("aapl", date(2020, 8, 31), 1, 4)],
         as_of_date=date(2020, 8, 31),
+        symbol="TEST",
     )
 
     assert result[0]["close"] == pytest.approx(499.24)
@@ -279,6 +280,7 @@ def test_prepare_incremental_post_split_row_uses_existing_raw_boundary():
         existing_rows=existing,
         actions=[_split("nvda", date(2024, 6, 10), 1, 10)],
         as_of_date=date(2024, 6, 10),
+        symbol="TEST",
     )
 
     assert result[0]["close"] == pytest.approx(121.79)
@@ -290,10 +292,7 @@ def test_prepare_preserves_non_ib_recovery_rows():
     massive = {**_row(date(2026, 1, 2), 100.0), "source": "massive", "price_basis": "raw"}
 
     result = prepare_ib_rows_for_publish(
-        [massive],
-        existing_rows=[],
-        actions=[],
-        as_of_date=date(2026, 1, 2),
+        [massive], existing_rows=[], actions=[], as_of_date=date(2026, 1, 2), symbol="TEST"
     )
 
     assert result == [massive]
@@ -307,6 +306,7 @@ def test_prepare_does_not_require_old_split_before_incoming_window():
         existing_rows=[],
         actions=[_split("old", date(2020, 8, 31), 1, 4)],
         as_of_date=date(2025, 1, 2),
+        symbol="TEST",
     )
 
     assert result[0]["close"] == 200.0
@@ -350,7 +350,7 @@ def test_svxy_post_window_split_classified_from_seam():
     # real today — prepare_ib_rows_for_publish must widen the effective as-of
     # date using the existing rows it already has, not rely on the caller.
     result = prepare_ib_rows_for_publish(
-        incoming, existing_rows=existing, actions=actions, as_of_date=date(2021, 6, 10)
+        incoming, existing_rows=existing, actions=actions, as_of_date=date(2021, 6, 10), symbol="SVXY"
     )
 
     assert result[0]["price_basis"] == "raw"
@@ -380,7 +380,7 @@ def test_vxx_two_post_window_reverse_splits_classified_from_seam():
     ]
 
     result = prepare_ib_rows_for_publish(
-        incoming, existing_rows=existing, actions=actions, as_of_date=date(2021, 6, 10)
+        incoming, existing_rows=existing, actions=actions, as_of_date=date(2021, 6, 10), symbol="VXX"
     )
 
     assert result[0]["price_basis"] == "raw"
@@ -406,7 +406,7 @@ def test_xlk_post_window_split_classified_from_seam():
     actions = [_split("xlk-2025", date(2025, 12, 5), 1, 2)]
 
     result = prepare_ib_rows_for_publish(
-        incoming, existing_rows=existing, actions=actions, as_of_date=date(2021, 6, 10)
+        incoming, existing_rows=existing, actions=actions, as_of_date=date(2021, 6, 10), symbol="XLK"
     )
 
     assert result[0]["price_basis"] == "raw"
@@ -424,7 +424,9 @@ def test_post_window_split_out_of_scope_without_existing_rows_past_it():
     incoming = [_row(date(2021, 6, 9), 26.290), _row(date(2021, 6, 10), 27.045)]
     actions = [_split("svxy-2024", date(2024, 4, 11), 1, 2)]
 
-    result = prepare_ib_rows_for_publish(incoming, existing_rows=[], actions=actions, as_of_date=date(2021, 6, 10))
+    result = prepare_ib_rows_for_publish(
+        incoming, existing_rows=[], actions=actions, as_of_date=date(2021, 6, 10), symbol="TEST"
+    )
 
     assert result[1]["close"] == 27.045
     assert result[1]["price_basis"] == "raw"
@@ -484,7 +486,7 @@ def test_gap_split_classified_like_in_window_not_purely_future():
     actions = [_split("gap-split", date(2024, 4, 11), 1, 2)]
 
     result = prepare_ib_rows_for_publish(
-        incoming, existing_rows=existing, actions=actions, as_of_date=date(2024, 4, 10)
+        incoming, existing_rows=existing, actions=actions, as_of_date=date(2024, 4, 10), symbol="TEST"
     )
 
     assert result[1]["price_basis"] == "raw"
@@ -506,7 +508,7 @@ def test_existing_rows_sourced_ib_after_seam_still_widen_and_classify():
     actions = [_split("svxy-2024", date(2024, 4, 11), 1, 2)]
 
     result = prepare_ib_rows_for_publish(
-        incoming, existing_rows=existing, actions=actions, as_of_date=date(2021, 6, 10)
+        incoming, existing_rows=existing, actions=actions, as_of_date=date(2021, 6, 10), symbol="TEST"
     )
 
     assert result[1]["price_basis"] == "raw"
@@ -535,7 +537,7 @@ def test_mixed_gap_and_later_splits_partition_independently():
     ]
 
     result = prepare_ib_rows_for_publish(
-        incoming, existing_rows=existing, actions=actions, as_of_date=date(2024, 4, 10)
+        incoming, existing_rows=existing, actions=actions, as_of_date=date(2024, 4, 10), symbol="TEST"
     )
 
     assert result[1]["price_basis"] == "raw"
@@ -552,7 +554,9 @@ def test_long_gap_seam_is_ambiguous():
     actions = [_split("gap-split", date(2024, 4, 11), 1, 2)]
 
     with pytest.raises(ValueError, match="ambiguous"):
-        prepare_ib_rows_for_publish(incoming, existing_rows=existing, actions=actions, as_of_date=date(2024, 4, 2))
+        prepare_ib_rows_for_publish(
+            incoming, existing_rows=existing, actions=actions, as_of_date=date(2024, 4, 2), symbol="TEST"
+        )
 
 
 def test_health_check_shaped_gap_fill_reverses_post_gap_split():
@@ -575,6 +579,7 @@ def test_health_check_shaped_gap_fill_reverses_post_gap_split():
         existing_rows=existing_before + existing_after,
         actions=actions,
         as_of_date=date(2021, 6, 10),
+        symbol="TEST",
     )
 
     assert result[1]["price_basis"] == "raw"
@@ -632,3 +637,19 @@ def test_source_seam_non_ib_before_ib_after_uses_mirrored_target():
     assert boundary_date == date(2021, 6, 10)
     assert classification.treatment == "adjusted"
     assert classification.observed_ratio == pytest.approx(13.55 / 27.10, rel=0.001)
+
+
+def test_xlf_ib_rows_before_the_xlre_spin_off_are_restored_to_raw():
+    # IB XLF 2016-09-16 close 19.1794 volume 69161543.10344827 (adjusted by 203/250 for the XLRE
+    # spin-off) and 2016-09-19 close 19.31 volume 43866824, macmini:~/market-warehouse/logs/
+    # xlf-ib-2016-09-readonly-2026-09-28.txt. Raw 2016-09-16 close was 23.62.
+    before = _row(date(2016, 9, 16), 19.1794, 69161543.10344827)
+    after = _row(date(2016, 9, 19), 19.31, 43866824)
+
+    xlf = normalize_ib_rows([before, after], [], symbol="XLF")
+    xlk = normalize_ib_rows([before, after], [], symbol="XLK")
+
+    assert xlf[0]["close"] == pytest.approx(23.62, abs=1e-4)  # IB rounds to 4 decimals: 0.00005 / 0.812
+    assert xlf[0]["volume"] == 56159173
+    assert (xlf[1]["close"], xlf[1]["volume"]) == (19.31, 43866824)
+    assert (xlk[0]["close"], xlk[1]["close"]) == (19.1794, 19.31)
