@@ -144,7 +144,7 @@ def _last_session(scope, session: date):
     )
 
 
-def _measurement(name, scope, value, *, measured_at=NOW):
+def _measurement(name, scope, value, *, measured_at=NOW, run_id=RUN):
     ledger.emit(
         "measurements",
         [
@@ -155,10 +155,10 @@ def _measurement(name, scope, value, *, measured_at=NOW):
                 "value": float(value),
                 "unit": "ratio" if name == "coverage_pct" else "symbols",
                 "source": "measured",
-                "run_id": RUN,
+                "run_id": run_id,
             }
         ],
-        run_id=RUN,
+        run_id=run_id,
     )
 
 
@@ -548,6 +548,8 @@ def test_an_ib_only_lane_days_behind_warns_and_names_its_blocker():
     assert section.verdict is Verdict.WARN
     body = "\n".join(section.lines)
     assert "futures" in body and "ib_unreachable" in body
+    assert "calendar_days_behind=" in body
+    assert "sessions_behind=" not in body
 
 
 def test_an_ib_only_lane_current_is_ok():
@@ -611,9 +613,51 @@ def test_coverage_a_zero_denominator_scope_is_unknown_not_one_hundred():
     assert section.verdict is Verdict.UNKNOWN
     assert "1d=UNKNOWN(expected=0)" in "\n".join(section.lines)
     _measurement("coverage_pct", "1m", 0.36, measured_at=NOW + timedelta(seconds=1))
+    _measurement("coverage_total", "1m", 100, measured_at=NOW + timedelta(seconds=1))
     section = _section("Coverage")
     assert section.verdict is Verdict.BAD
     assert "1d=UNKNOWN(expected=0)" in "\n".join(section.lines)
+
+
+def test_coverage_latest_incomplete_observation_does_not_join_older_total():
+    for timeframe in ("1d", "1m", "1h", "5m", "30m"):
+        _measurement("coverage_pct", timeframe, 1.0)
+        _measurement("coverage_total", timeframe, 100)
+    _measurement("coverage_pct", "1d", 1.0, measured_at=NOW + timedelta(seconds=1))
+    section = _section("Coverage")
+    assert section.verdict is Verdict.UNKNOWN
+    assert "1d=UNKNOWN(incomplete)" in "\n".join(section.lines)
+
+
+def test_coverage_pair_requires_same_run_id():
+    for timeframe in ("1d", "1m", "1h", "5m", "30m"):
+        _measurement("coverage_pct", timeframe, 1.0)
+        _measurement("coverage_total", timeframe, 100)
+    _measurement("coverage_pct", "1d", 1.0, run_id="other-run")
+    section = _section("Coverage")
+    assert section.verdict is Verdict.UNKNOWN
+    assert "1d=UNKNOWN(incomplete)" in "\n".join(section.lines)
+
+
+def test_coverage_one_stale_scope_is_bad_with_newer_peer():
+    for timeframe in ("1d", "1m", "1h", "5m", "30m"):
+        at = NOW - timedelta(days=5) if timeframe == "1d" else NOW
+        _measurement("coverage_pct", timeframe, 1.0, measured_at=at)
+        _measurement("coverage_total", timeframe, 100, measured_at=at)
+    section = _section("Coverage")
+    assert section.verdict is Verdict.BAD
+    assert "1d=100.0%" in "\n".join(section.lines)
+
+
+def test_coverage_rounded_percent_displays_derived_missing_count():
+    for timeframe in ("1d", "1m", "1h", "5m", "30m"):
+        total = 12004 if timeframe == "1h" else 100
+        pct = 12003 / 12004 if timeframe == "1h" else 1.0
+        _measurement("coverage_pct", timeframe, pct)
+        _measurement("coverage_total", timeframe, total)
+    section = _section("Coverage")
+    assert section.verdict is Verdict.OK
+    assert "1h=100.0% (estimated_missing=1/12004)" in "\n".join(section.lines)
 
 
 def test_coverage_ran_today_is_bad_after_the_deadline():
@@ -724,9 +768,9 @@ def test_a_broken_check_never_takes_the_report_down(monkeypatch):
     assert any(section.verdict is Verdict.UNKNOWN for section in sections)
 
 
-def test_every_check_is_a_name_and_a_select():
+def test_every_check_is_a_name_and_a_query():
     assert status.CHECKS
-    assert all(sql.strip().lower().startswith("select") for _, sql in status.CHECKS)
+    assert all(sql.strip().lower().startswith(("select", "with")) for _, sql in status.CHECKS)
 
 
 def test_section_is_frozen() -> None:
@@ -944,7 +988,9 @@ def test_complete_current_catalog_is_ok(monkeypatch):
     headline = {name: (10, NOW.date()) for name in status._CATALOG_LANE_FIX}
     monkeypatch.setattr(status, "_coverage_headline", lambda _db: headline)
 
-    assert status._duckdb_section(NOW.date()).verdict is status.Verdict.OK
+    section = status._duckdb_section(NOW.date())
+    assert section.verdict is status.Verdict.OK
+    assert "freshest_member_last=" in "\n".join(section.lines)
 
 
 @pytest.mark.parametrize("target", [date(2026, 9, 5), date(2026, 9, 6), date(2026, 9, 7)])
