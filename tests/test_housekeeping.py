@@ -1,13 +1,14 @@
 """Retention must never be able to eat something unrecoverable.
 
-Four categories are protected by name, and the tests assert each survives a run
+Three lake categories are protected by name, and the tests assert each survives a run
 with retention set aggressively enough to delete everything else:
 
   raw/            older than the rolling 5-year GET floor cannot be refetched
   repairs/triage/ a verdict obtainable today may be unobtainable next year
   repairs/*/backup/ the only basis for rollback-legacy-basis
-  the release `current` points at — deleting it leaves current dangling and
-                  promote then refuses to rebuild
+
+Release trees are previewed, not deleted, even by housekeeping --apply: an
+in-flight job may still need an older physical release.
 """
 
 from __future__ import annotations
@@ -250,6 +251,43 @@ class TestMainIsDryRunUnlessTold:
 
         assert seen == {"keep": housekeeping.KEEP_RELEASES, "dry_run": True}
         assert "would prune release deadbeef" in caplog.text
+
+    def test_apply_still_only_previews_release_candidates(self, tmp_path, monkeypatch, caplog):
+        seen: dict = {}
+
+        def fake_prune(keep, dry_run):
+            seen.update(keep=keep, dry_run=dry_run)
+            return ["old-active-release"]
+
+        monkeypatch.setattr(housekeeping, "prune_releases", fake_prune)
+
+        with caplog.at_level("INFO"):
+            assert (
+                housekeeping.main(
+                    ["--apply", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path / "lake")]
+                )
+                == 0
+            )
+
+        assert seen == {"keep": housekeeping.KEEP_RELEASES, "dry_run": True}
+        assert "would prune release old-active-release" in caplog.text
+
+    def test_apply_keeps_an_old_release_even_when_it_is_a_gc_candidate(self, tmp_path, monkeypatch):
+        releases = tmp_path / "releases"
+        releases.mkdir()
+        for index, sha in enumerate(["old-active", "mid", "new", "newest"]):
+            path = releases / sha
+            path.mkdir()
+            os.utime(path, (1_000.0 + index, 1_000.0 + index))
+        monkeypatch.setenv("MDW_RELEASES_DIR", str(releases))
+        monkeypatch.setenv("MDW_CURRENT_LINK", str(tmp_path / "current"))
+
+        assert (
+            housekeeping.main(["--apply", "--log-dir", str(tmp_path / "logs"), "--data-lake", str(tmp_path / "lake")])
+            == 0
+        )
+
+        assert (releases / "old-active").exists()
 
 
 def test_a_directory_named_like_a_log_is_never_planned(tmp_path):

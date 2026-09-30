@@ -676,8 +676,11 @@ killed and the next lane still starts; an unreachable Gateway skips the IB lanes
 python scripts/livewire_ops.py run-daily-job
 ```
 
-Eight launchd jobs run on the mini. Every template except `universe-refresh`
-points at the release `<warehouse>/current`, never a checkout:
+Eight launchd jobs run on the mini. The six market-data and reporting jobs
+point at the release `<warehouse>/current`; `release-promote` and
+`universe-refresh` run from the checkout. Promotion never deletes older
+releases, and the nightly housekeeping tail only previews release GC. The
+operator procedure for deleting old releases is in `docs/runbook.md`:
 
 | Job | Target (UTC) |
 | --- | --- |
