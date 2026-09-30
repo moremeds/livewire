@@ -200,13 +200,16 @@ def _by_recency(root: Path) -> list[Path]:
     )
 
 
-def prune(keep: int, *, dry_run: bool = False) -> list[str]:
-    """Drop all but the ``keep`` newest releases, never the one being served.
+def prune(keep: int, *, dry_run: bool = True, maintenance_window: bool = False) -> list[str]:
+    """Preview old releases, or remove them in an explicit maintenance window.
 
-    ``dry_run`` returns what would go without removing it — the housekeeping
-    review this exists for is worthless if the one category that deletes
-    422 MB at a time is invisible until --apply.
+    A process scan alone cannot protect a job that starts between scan and
+    deletion. Before a destructive call, the operator must stop new launchers
+    and let all jobs using old releases exit; this function cannot prove that
+    external quiescence. Default calls only list candidates.
     """
+    if not dry_run and not maintenance_window:
+        raise ReleaseError("release deletion requires an explicit maintenance window")
     active = current_sha()
     removed = []
     for path in _by_recency(releases_dir())[keep:]:
@@ -274,7 +277,7 @@ def promote(
     flip_current(target_sha)
     LOGGER.info("current -> %s", target_sha)
     for name in prune(keep):
-        LOGGER.info("pruned %s", name)
+        LOGGER.info("would prune %s (maintenance GC only)", name)
     return 0
 
 
@@ -325,8 +328,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     sub.add_parser("list", help="List built releases")
 
-    gc_parser = sub.add_parser("gc", help="Drop all but the newest releases")
+    gc_parser = sub.add_parser("gc", help="Preview old releases; deletion requires a maintenance window")
     gc_parser.add_argument("--keep", type=int, default=DEFAULT_KEEP)
+    gc_parser.add_argument("--apply", action="store_true", help="Delete candidates after the maintenance gate")
+    gc_parser.add_argument(
+        "--maintenance-window",
+        action="store_true",
+        help="Assert new launchers are stopped and old-release jobs have exited (not checked automatically)",
+    )
 
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -346,8 +355,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return rollback(args.to)
         if args.command == "list":
             return list_releases()
-        for name in prune(args.keep):
-            LOGGER.info("pruned %s", name)
+        for name in prune(args.keep, dry_run=not args.apply, maintenance_window=args.maintenance_window):
+            LOGGER.info("%s %s", "pruned" if args.apply else "would prune", name)
         return 0
     except ReleaseError as exc:
         LOGGER.error("%s", exc)

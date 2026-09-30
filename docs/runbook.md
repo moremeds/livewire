@@ -1110,6 +1110,7 @@ python scripts/livewire_ops.py release promote            # build+serve origin/m
 python scripts/livewire_ops.py release promote --dry-run  # decide without building
 python scripts/livewire_ops.py release list               # `*` marks what is served
 python scripts/livewire_ops.py release rollback           # serve the previous one
+python scripts/livewire_ops.py release gc --keep 3       # preview old releases; no deletion
 ```
 
 - **`git checkout main && git pull` before promoting anything that changes the
@@ -1119,6 +1120,17 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
 - `--allow-unverified` bypasses the CI gate; needed exactly once, to bootstrap the
   first release from a SHA predating the push trigger.
 - `promote` runs `npm ci --omit=dev` between `build_venv` and `freeze`.
+- Promotion previews old release candidates but never deletes them. A job already
+  running from an older physical release may still need its virtualenv and code.
+- Release deletion is a separate maintenance action. Before the first rollout
+  of this policy, pause scheduled launchers and allow old-code jobs to finish:
+  their old housekeeping tail can still prune releases. For later GC, keep new
+  launches paused, verify every old-release job and child process has exited,
+  review the `gc --keep 3` candidate list, then use
+  `gc --keep 3 --apply --maintenance-window` only with the required operator authorization. Resume
+  launchers afterwards. `--maintenance-window` is the operator's assertion of
+  quiescence; it does not scan processes or prevent a new manual launch. A
+  process snapshot without paused launchers is insufficient.
 
 ### launchd install
 
@@ -1393,17 +1405,18 @@ python scripts/livewire_ingest.py membership-sync repair-identity [--index sp500
 
 ## 10. Housekeeping
 
-`housekeeping` prunes logs (60d), releases (keep 3) and superseded evicted silver
-revisions (keep 2). It also rotates `logs/launchd/<label>.<stream>.log`: the day
+`housekeeping` prunes logs (60d) and superseded evicted silver revisions (keep 2),
+and previews release candidates (keep 3) without deleting them, even with
+`--apply`. It also rotates `logs/launchd/<label>.<stream>.log`: the day
 after a job last wrote, the live file is renamed `…<YYYY-MM-DD>.log` by its mtime
 (appended to if the dated name already exists) and tagged files are kept 14 days.
-**Dry run is the default**; `release.prune` previews in it too.
+**Dry run is the default**; release GC is preview-only here in both modes.
 `raw/` and `repairs/` are protected **by name**, never by an age rule.
 
 ```bash
 python scripts/livewire_ops.py housekeeping                      # dry run (default)
 python scripts/livewire_ops.py housekeeping --dry-run            # same, explicit
-python scripts/livewire_ops.py housekeeping --apply              # actually delete
+python scripts/livewire_ops.py housekeeping --apply              # delete eligible logs/evicted artifacts, not releases
 python scripts/livewire_ops.py housekeeping --log-retention-days 60
 python scripts/livewire_ops.py housekeeping --keep-releases 3
 python scripts/livewire_ops.py housekeeping --keep-evicted 2
