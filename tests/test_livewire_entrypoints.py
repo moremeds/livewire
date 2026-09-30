@@ -1053,10 +1053,8 @@ def test_cboe_vol_propagates_a_failure_exit_code_to_its_caller(tmp_path, monkeyp
     assert livewire_ingest.main(["cboe-vol", "--symbols", "VXHYG", "--warehouse", str(tmp_path)]) == 1
 
 
-def test_cboe_vol_still_exits_zero_when_cboe_has_retired_the_index(tmp_path, monkeypatch) -> None:
-    """A 404 is CBOE's claim about the index, surfaced by `Stale non-equity`;
-    failing the phase for it would page nightly for a retired symbol
-    (pm:2026-09-07-retired-cboe-index-alerted-forever)."""
+def test_cboe_vol_reports_unverified_404_as_failed_fetch(tmp_path, monkeypatch, capsys) -> None:
+    """A 404 alone does not establish retirement; the entrypoint must fail visibly."""
     import httpx
 
     monkeypatch.setattr("clients.http_retry.time.sleep", lambda _seconds: None)
@@ -1064,4 +1062,8 @@ def test_cboe_vol_still_exits_zero_when_cboe_has_retired_the_index(tmp_path, mon
     gone = httpx.Response(404, request=request)
     monkeypatch.setattr("livewire_scripts.fetch_cboe_volatility.httpx.get", lambda *a, **k: gone)
 
-    assert livewire_ingest.main(["cboe-vol", "--symbols", "VIXTLT", "--warehouse", str(tmp_path)]) == 0
+    assert livewire_ingest.main(["cboe-vol", "--symbols", "VIXTLT", "--warehouse", str(tmp_path)]) == 1
+    output = capsys.readouterr().out
+    assert "CBOE HTTP 404" in output
+    assert "Unfetched after retries: VIXTLT" in output
+    assert "Not offered by CBOE" not in output
