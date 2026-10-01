@@ -57,15 +57,14 @@ def _symbol_id(symbol: str) -> int:
 def fetch_cboe_historical(symbol: str) -> list[dict[str, Any]]:
     """Fetch historical OHLCV data from CBOE's public API.
 
-    A 5xx or a timeout is retried (`clients.http_retry`, the same policy FRED
-    uses); a 4xx is raised on the first attempt, because a retired index is a
-    fact about CBOE and no number of retries will bring it back.
+    A 5xx or a timeout is retried by `clients.http_retry`; other HTTP errors
+    are raised immediately. An HTTP status alone does not establish retirement.
     """
     url = CBOE_HISTORICAL_URL.format(symbol=symbol)
     console.print(f"  Fetching {symbol} from {url}")
 
     resp = get_with_retry(
-        lambda: httpx.get(url, timeout=30),
+        lambda: httpx.get(url, timeout=30, follow_redirects=True),
         attempts=declared("cboe_retry_attempts"),
         backoff_s=declared("cboe_retry_backoff_s"),
     )
@@ -83,7 +82,7 @@ def fetch_cboe_official_csv_backup(symbol: str) -> list[dict[str, Any]]:
         return []
 
     console.print(f"  Fetching {symbol} official CSV backup from {url}")
-    resp = httpx.get(url, timeout=30)
+    resp = httpx.get(url, timeout=30, follow_redirects=True)
     resp.raise_for_status()
 
     rows = []
@@ -272,8 +271,6 @@ def main() -> int:
     console.print(f"\n[bold]Fetching CBOE volatility indices: {symbols}[/bold]\n")
 
     unfetched: list[str] = []
-    retired: list[str] = []
-
     for symbol in symbols:
         try:
             bars = fetch_cboe_historical(symbol)
@@ -284,7 +281,8 @@ def main() -> int:
                 backup_bars = []
             bars = append_official_backup_bars(symbol, bars, backup_bars)
             if not bars:
-                console.print(f"  [yellow]{symbol}: no data returned[/yellow]")
+                unfetched.append(symbol)
+                console.print(f"  [red]{symbol}: no data returned from CBOE JSON or official CSV[/red]")
                 continue
 
             table = bars_to_table(symbol, bars)
@@ -295,21 +293,12 @@ def main() -> int:
             console.print(f"  {symbol}: {min(dates)} → {max(dates)}\n")
 
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code < 500:
-                # CBOE saying the index is gone is a claim about CBOE, surfaced
-                # by the "Stale non-equity" check, not a livewire failure
-                # (pm:2026-09-07-retired-cboe-index-alerted-forever).
-                retired.append(symbol)
-                console.print(f"  [yellow]{symbol}: {exc.response.status_code} from CBOE — not fetched[/yellow]")
-            else:
-                unfetched.append(symbol)
-                console.print(f"  [red]{symbol}: error - {exc}[/red]")
+            unfetched.append(symbol)
+            console.print(f"  [red]{symbol}: CBOE HTTP {exc.response.status_code} - {exc}[/red]")
         except Exception as e:
             unfetched.append(symbol)
             console.print(f"  [red]{symbol}: error - {e}[/red]")
 
-    if retired:
-        console.print(f"[yellow]Not offered by CBOE: {', '.join(retired)}[/yellow]")
     if unfetched:
         # Without this the phase exited 0 however much was missing, so a total
         # CBOE outage was indistinguishable from a clean night

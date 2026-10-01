@@ -79,8 +79,30 @@ class TestFetchCboeHistorical:
 
         assert bars == []
 
+    def test_follows_chart_json_redirect(self):
+        def respond(request):
+            if request.url.path.endswith("_TESTIDX.json"):
+                return httpx.Response(307, headers={"Location": "/redirected.json"})
+            assert request.url.path == "/redirected.json"
+            return httpx.Response(200, json={"data": []})
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+            with patch("livewire_scripts.fetch_cboe_volatility.httpx.get", side_effect=client.get):
+                assert fetch_cboe_historical("TESTIDX") == []
+
 
 class TestOfficialCsvBackup:
+    def test_follows_official_csv_redirect(self):
+        def respond(request):
+            if request.url.path.endswith("VIX_History.csv"):
+                return httpx.Response(307, headers={"Location": "/redirected.csv"})
+            assert request.url.path == "/redirected.csv"
+            return httpx.Response(200, text="DATE,OPEN,HIGH,LOW,CLOSE\n")
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+            with patch("livewire_scripts.fetch_cboe_volatility.httpx.get", side_effect=client.get):
+                assert fetch_cboe_official_csv_backup("VIX") == []
+
     def test_fetches_vix_ohlc_csv_backup(self):
         mock_response = MagicMock()
         mock_response.text = "DATE,OPEN,HIGH,LOW,CLOSE\n05/19/2026,18.010000,18.360000,17.660000,18.060000\n"
@@ -533,7 +555,7 @@ class TestFetchCboeHistoricalRetry:
 
         with patch("livewire_scripts.fetch_cboe_volatility.httpx.get", mock_get):
             with pytest.raises(httpx.HTTPStatusError) as excinfo:
-                fetch_cboe_historical("RETIRED")
+                fetch_cboe_historical("TESTIDX")
 
         assert excinfo.value.response.status_code == 404
         mock_get.assert_called_once()
@@ -567,22 +589,55 @@ class TestMainExitCode:
 
         assert "Unfetched after retries: VXHYG" in capsys.readouterr().out
 
-    def test_returns_0_when_a_symbol_404s_and_names_it_in_the_output(self, tmp_path, monkeypatch, capsys):
+    @pytest.mark.parametrize("status_code", [307, 403, 404, 429])
+    def test_indeterminate_http_status_fails_without_retiring(self, tmp_path, monkeypatch, capsys, status_code):
         monkeypatch.setattr("clients.http_retry.time.sleep", lambda _seconds: None)
 
         with (
             patch("sys.argv", ["prog", "--symbols", "VXTLT", "--warehouse", str(tmp_path)]),
-            patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=_status_response(404)),
+            patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=_status_response(status_code)),
         ):
-            assert main() == 0
+            assert main() == 1
 
-        assert "Not offered by CBOE: VXTLT" in capsys.readouterr().out
+        output = capsys.readouterr().out
+        assert f"{status_code}" in output
+        assert "Unfetched after retries: VXTLT" in output
+        assert "Not offered by CBOE" not in output
 
-    def test_a_symbol_with_no_bars_does_not_fail_the_run(self, tmp_path, monkeypatch):
+    def test_a_symbol_with_no_bars_fails_the_run(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr("clients.http_retry.time.sleep", lambda _seconds: None)
 
         with (
             patch("sys.argv", ["prog", "--symbols", "NODATA", "--warehouse", str(tmp_path)]),
             patch("livewire_scripts.fetch_cboe_volatility.httpx.get", return_value=_bars_response([])),
         ):
+            assert main() == 1
+
+        assert "no data returned" in capsys.readouterr().out
+
+    def test_valid_json_survives_csv_failure(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("clients.http_retry.time.sleep", lambda _seconds: None)
+        # Observed VIX row as of 2026-09-29:
+        # docs/evidence/systematic-ops/cboe-provider-probe-20260930.jsonl:1.
+        bars = [
+            {
+                "date": "2026-09-29",
+                "open": "16.170000",
+                "high": "16.440000",
+                "low": "15.730000",
+                "close": "16.040000",
+                "volume": "0.0",
+            }
+        ]
+        with (
+            patch("sys.argv", ["prog", "--symbols", "VIX", "--warehouse", str(tmp_path)]),
+            patch(
+                "livewire_scripts.fetch_cboe_volatility.httpx.get",
+                side_effect=[_bars_response(bars), _status_response(503)],
+            ),
+        ):
             assert main() == 0
+
+        parquet = tmp_path / "data-lake" / "bronze" / "asset_class=volatility" / "symbol=VIX" / "1d.parquet"
+        assert _read_single_parquet(parquet).num_rows == 1
+        assert "official CSV backup skipped" in capsys.readouterr().out

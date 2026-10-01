@@ -3058,3 +3058,73 @@ class TestComputeIntradayChunks:
 
         with pytest.raises(ValueError, match="unsupported"):
             compute_intraday_chunks(timeframe="2m", years_back=1)
+
+
+def test_a_bar_for_the_session_still_trading_is_never_stored(tmp_path, monkeypatch):
+    # Mini Bronze, seeded 2026-09-23 ~04Z: COIL_202612 09-23 was the in-progress ICE session
+    # (Massive BZ settle 98.12); 09-22 settled 95.41 on 179,604 contracts.
+    import livewire_scripts.fetch_ib_historical as fib
+
+    class _Seeded(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 23, 4, 10, tzinfo=tz)
+
+    monkeypatch.setattr(fib, "datetime", _Seeded)
+    monkeypatch.setattr(fib, "UNSETTLED_DROPPED", [0])
+    monkeypatch.setattr(fib, "run_detection", lambda **kwargs: None)
+    bars = [
+        _make_bar(date="2026-09-22", open=96.26, high=97.91, low=93.68, close=95.41, volume=179604),
+        _make_bar(date="2026-09-23", open=94.5, high=95.51, low=94.27, close=94.31, volume=7801),
+    ]
+
+    with BronzeClient(bronze_dir=tmp_path, asset_class="futures") as bronze:
+        fib.fetch_ticker("COIL_202612", bars, bronze, asset_class="futures")
+        rows = bronze.read_symbol_rows("COIL_202612")
+
+    assert [str(r["trade_date"])[:10] for r in rows] == ["2026-09-22"]
+    assert fib.UNSETTLED_DROPPED == [1]
+
+
+def test_historical_is_one_ledger_run_and_a_crash_reads_failed(monkeypatch):
+    import livewire_scripts.fetch_ib_historical as fib
+    from clients import ledger
+
+    monkeypatch.delenv("LW_RUN_ID", raising=False)  # another test's lane may have minted one
+    monkeypatch.setattr(fib, "UNSETTLED_DROPPED", [2])
+    monkeypatch.setattr(fib, "_main", lambda: None)
+    fib.main()
+
+    def boom():
+        raise RuntimeError("gateway")
+
+    monkeypatch.setattr(fib, "_main", boom)
+    with pytest.raises(RuntimeError):
+        fib.main()
+
+    assert sorted(
+        r["verdict"] for r in ledger.query("select verdict from runs where job = 'historical' and ended is not null")
+    ) == ["FAILED", "OK"]
+    assert ledger.query("select value from measurements where name = 'historical_unsettled_bars_dropped'") == [
+        {"value": 2.0}
+    ]
+
+
+def test_under_the_daily_lane_historical_never_writes_the_parents_run_row(monkeypatch):
+    import livewire_scripts.fetch_ib_historical as fib
+    from clients import ledger
+
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-20260924T050000Z-1")
+    monkeypatch.setattr(fib, "UNSETTLED_DROPPED", [0])
+    monkeypatch.setattr(fib, "_main", lambda: None)
+    fib.main()
+
+    def boom():
+        raise RuntimeError("gateway")
+
+    monkeypatch.setattr(fib, "_main", boom)
+    with pytest.raises(RuntimeError):
+        fib.main()
+
+    assert ledger.query("select run_id from runs") == []
+    assert [r["run_id"] for r in ledger.query("select run_id from measurements")] == ["daily-update-20260924T050000Z-1"]

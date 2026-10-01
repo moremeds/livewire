@@ -262,7 +262,7 @@ def test_prune_keeps_the_newest_and_drops_the_rest(warehouse):
     for index, sha in enumerate(["old", "mid", "new"]):
         make_release(warehouse, sha, 1_000.0 + index)
 
-    assert release.prune(keep=2) == ["old"]
+    assert release.prune(keep=2, dry_run=False, maintenance_window=True) == ["old"]
     assert not (warehouse / "releases" / "old").exists()
     assert (warehouse / "releases" / "new").exists()
 
@@ -272,11 +272,11 @@ def test_prune_never_drops_the_release_being_served(warehouse):
         make_release(warehouse, sha, 1_000.0 + index)
     release.flip_current("served")
 
-    assert release.prune(keep=2) == []
+    assert release.prune(keep=2, dry_run=False, maintenance_window=True) == []
     assert (warehouse / "releases" / "served").exists()
 
 
-def test_prune_dry_run_names_what_would_go_without_removing_it(warehouse):
+def test_prune_defaults_to_preview_and_names_what_would_go(warehouse):
     """The housekeeping review is worthless if the largest category is invisible.
 
     Releases are 422 MB each — by far the biggest thing the sweep deletes — so
@@ -285,8 +285,17 @@ def test_prune_dry_run_names_what_would_go_without_removing_it(warehouse):
     for index, sha in enumerate(["old", "mid", "new"]):
         make_release(warehouse, sha, 1_000.0 + index)
 
-    assert release.prune(keep=2, dry_run=True) == ["old"]
+    assert release.prune(keep=2) == ["old"]
     assert (warehouse / "releases" / "old").exists(), "dry run must not delete"
+
+
+def test_prune_refuses_deletion_without_maintenance_window(warehouse):
+    for index, sha in enumerate(["old", "mid", "new"]):
+        make_release(warehouse, sha, 1_000.0 + index)
+
+    with pytest.raises(release.ReleaseError, match="maintenance window"):
+        release.prune(keep=2, dry_run=False)
+    assert (warehouse / "releases" / "old").exists()
 
 
 def test_prune_is_a_noop_without_a_releases_directory(tmp_path, monkeypatch):
@@ -384,15 +393,17 @@ def test_promote_reuses_a_release_that_is_already_built(warehouse, monkeypatch):
     assert release.current_sha() == "aaa111"
 
 
-def test_promote_prunes_after_flipping(warehouse, monkeypatch, no_build):
+def test_promote_previews_prune_candidates_without_deleting(warehouse, monkeypatch, no_build, caplog):
     for index, sha in enumerate(["one", "two", "three"]):
         make_release(warehouse, sha, 1_000.0 + index)
     monkeypatch.setattr(release, "resolve_main_sha", lambda: "aaa111")
     monkeypatch.setattr(release, "ci_is_green", lambda sha: True)
 
-    assert release.promote(keep=2) == 0
+    with caplog.at_level("INFO"):
+        assert release.promote(keep=2) == 0
     assert release.current_sha() == "aaa111"
-    assert not (warehouse / "releases" / "one").exists()
+    assert (warehouse / "releases" / "one").exists()
+    assert "would prune one" in caplog.text
 
 
 def test_promote_dry_run_builds_nothing(warehouse, monkeypatch, caplog):
@@ -494,11 +505,17 @@ def test_main_dispatches_list(warehouse, capsys):
     assert "no releases under" in capsys.readouterr().out
 
 
-def test_main_dispatches_gc(warehouse):
+def test_main_gc_previews_then_requires_explicit_maintenance_gate(warehouse):
     for index, sha in enumerate(["one", "two"]):
         make_release(warehouse, sha, 1_000.0 + index)
 
     assert release.main(["gc", "--keep", "1"]) == 0
+    assert (warehouse / "releases" / "one").exists()
+
+    assert release.main(["gc", "--keep", "1", "--apply"]) == 1
+    assert (warehouse / "releases" / "one").exists()
+
+    assert release.main(["gc", "--keep", "1", "--apply", "--maintenance-window"]) == 0
     assert not (warehouse / "releases" / "one").exists()
 
 
@@ -519,5 +536,5 @@ def test_prune_does_not_report_a_release_it_failed_to_remove(warehouse, monkeypa
 
     monkeypatch.setattr(release, "_discard", lambda path: None)  # simulate a silent failure
 
-    assert release.prune(keep=2) == []
+    assert release.prune(keep=2, dry_run=False, maintenance_window=True) == []
     assert (warehouse / "releases" / "stuck").exists()

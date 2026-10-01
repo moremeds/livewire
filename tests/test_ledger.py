@@ -281,6 +281,7 @@ def test_every_module_that_opens_a_run_is_one_we_know_about() -> None:
 
     assert callers == {
         "livewire_scripts/fetch_eia.py",
+        "livewire_scripts/fetch_ib_historical.py",
         "livewire_scripts/fetch_researched_evidence.py",
         "livewire_scripts/import_researched_identities.py",
         "livewire_scripts/membership_sync.py",
@@ -300,6 +301,7 @@ def test_every_module_that_opens_a_run_closes_it_on_a_keyboard_interrupt() -> No
 
     for name in (
         "fetch_eia.py",
+        "fetch_ib_historical.py",
         "fetch_researched_evidence.py",
         "import_researched_identities.py",
         "membership_sync.py",
