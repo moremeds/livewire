@@ -101,6 +101,7 @@ gap      = expected − actual
 - A preflight belongs to the phase that needs IB, never to the orchestrator: an orchestrator-level preflight lost Friday 2026-08-07 warehouse-wide (equity 0/13311, rates 0/4). → pm:2026-08-08-ib-down-must-not-fail-the-run
 - Equity daily falls back to Massive on a down Gateway; futures/cmdty have no fallback and stay degraded — a manufactured success is worse than a gap. → test: `tests/test_run_daily_update_job.py::test_futures_and_cmdty_get_no_fallback`
 - `IB_EARLIEST_DATE` is IB's floor, never an instrument's inception; `expected_start` has no default. → test: `tests/test_quality_detector.py::test_range_shortfall_no_head_ts_uses_expected_diff_only` · pm:2026-07-27-ib-earliest-date-false-range-shortfall
+- A seed or backfill never stores a bar dated on or after its own UTC run date: IB returns the session still trading, and the daily lane never refetches a date it holds (COIL ×14 + CT_202612 on 2026-09-23 at 1–4% volume for eight days). `historical` is a ledger run. → test: `tests/test_fetch_ib_historical.py::test_a_bar_for_the_session_still_trading_is_never_stored` · pm:2026-10-01-seed-stored-the-session-still-trading
 - `fetch_batch` maps a raised fetch to the exception, never to `[]` — otherwise a total outage reads as `no_trade`, `errors=0`, exit 0. → test: `tests/test_daily_update.py::TestFetchBatch::test_handles_error`, `::test_no_bars_is_still_an_empty_list`
 
 ### Providers — floors roll; re-measure before trusting a number
