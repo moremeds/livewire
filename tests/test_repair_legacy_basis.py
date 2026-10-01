@@ -8,6 +8,7 @@ import pytest
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.massive_client import MassiveSplit
+from clients.source_evidence import sha256_file
 from livewire_scripts import repair_legacy_basis, rollback_legacy_basis
 
 
@@ -1164,3 +1165,94 @@ def test_rescale_fails_closed_when_fresh_ib_disagrees_with_the_factor():
 
     with pytest.raises(ValueError, match="1 of 3 closes disagree"):
         repair_legacy_basis._rescale_to_ib(existing, fresh, date(2016, 9, 19))
+
+
+# Mini, 2026-09-28: POWI Bronze (date, close, volume) and fresh IB normalized to raw across the
+# 2020-08-19 2:1 split. The chunk 2013-05-23..2014-05-22 was downloaded split-adjusted.
+_POWI = [
+    ("2013-05-15", 44.24, 82600, 44.24),
+    ("2013-05-16", 44.16, 173200, 44.15),
+    ("2013-05-17", 44.6, 139800, 44.59),
+    ("2013-05-20", 44.8, 139500, 44.8),
+    ("2013-05-21", 45.18, 196000, 45.18),
+    ("2013-05-22", 43.7, 199600, 43.69),
+    ("2013-05-23", 22.020000457763672, 264400, 44.04),
+    ("2013-05-24", 21.969999313354492, 440000, 43.94),
+    ("2013-05-28", 21.579999923706055, 500800, 43.16),
+    ("2014-05-20", 24.565000534057617, 688400, 49.13),
+    ("2014-05-21", 24.479999542236328, 458000, 48.96),
+    ("2014-05-22", 24.545000076293945, 390400, 49.09),
+    ("2014-05-23", 49.84, 236300, 49.84),
+    ("2014-05-27", 50.64, 283100, 50.63),
+    ("2014-05-28", 50.46, 197800, 50.46),
+    ("2014-05-29", 50.74, 206300, 50.74),
+    ("2014-05-30", 50.3, 246700, 50.29),
+    ("2014-06-02", 49.1, 221100, 49.1),
+]
+_POWI_CHUNK = {"start": "2013-05-23", "end": "2014-05-23", "factor": 2.0}
+
+
+def _powi_rows(source, basis):
+    return [
+        {
+            "trade_date": date.fromisoformat(d) if source == "ib" else d,
+            "symbol_id": 0,
+            **{column: ib if source == "ib" else close for column in ("open", "high", "low", "close", "adj_close")},
+            "volume": volume,
+            "source": source,
+            "price_basis": basis,
+            "currency": "USD",
+        }
+        for d, close, volume, ib in _POWI
+    ]
+
+
+def test_a_legacy_chunk_is_rescaled_inside_its_window_only():
+    existing = _powi_rows("legacy", "raw")
+    fresh = _powi_rows("ib", "raw")
+
+    rows, report = repair_legacy_basis._rescale_chunks(existing, fresh, [_POWI_CHUNK])
+
+    assert [(r["trade_date"], r["close"], r["volume"]) for r in rows][0] == ("2013-05-23", 44.040000915527344, 132200)
+    assert {r["trade_date"] for r in rows} == {d for d, *_ in _POWI[6:12]}
+    assert report["chunks"][0]["ib_factor"] == pytest.approx(2.0, abs=1e-3)
+
+
+def test_a_chunk_ib_does_not_measure_fails_closed():
+    existing = _powi_rows("legacy", "raw")
+    fresh = _powi_rows("ib", "raw")
+
+    with pytest.raises(ValueError, match="not the declared 3.0"):
+        repair_legacy_basis._rescale_chunks(existing, fresh, [{**_POWI_CHUNK, "factor": 3.0}])
+
+
+def test_a_chunk_item_rewrites_bronze_through_the_ledgered_run(tmp_path):
+    from clients import ledger
+
+    bronze = BronzeClient(tmp_path / "bronze/asset_class=equity", "equity")
+    bronze.replace_ticker_rows("POWI", _powi_rows("legacy", "raw"))
+    item = {
+        "symbol": "POWI",
+        "klass": "chunk",
+        "source_sha256": sha256_file(bronze.symbol_path("POWI")),
+        "chunks": [_POWI_CHUNK],
+    }
+    manifest = tmp_path / "audit.json"
+    manifest.write_text(json.dumps({"schema_version": 1, "data_lake_root": str(tmp_path.resolve()), "symbols": [item]}))
+
+    rc = repair_legacy_basis.run(
+        ["--audit-manifest", str(manifest), "--output-dir", str(tmp_path / "out")],
+        data_lake_root=tmp_path,
+        ib_factory=lambda: object(),
+        ib_fetcher_factory=_clean_ib_fetcher({"POWI": _powi_rows("ib", "split_adjusted")}),
+        as_of_date=date(2026, 9, 28),
+    )
+
+    assert rc == 0
+    by_date = {r["trade_date"]: r for r in bronze.read_symbol_rows("POWI")}
+    assert by_date["2013-05-22"]["close"] == 43.7
+    assert by_date["2014-05-22"]["close"] == pytest.approx(49.09, abs=1e-4)
+    assert by_date["2014-05-23"]["close"] == 49.84
+    assert ledger.query("select verdict from runs where job = 'repair-legacy-basis' and ended is not null") == [
+        {"verdict": "OK"}
+    ]

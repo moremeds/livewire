@@ -18,7 +18,7 @@ import statistics
 import sys
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -227,6 +227,78 @@ def _rescale_to_ib(existing: list[dict], fresh: list[dict], before: date) -> tup
     return rows, {"price_factor": factor, "rows": len(old), "disagree": disagree, "missing_from_ib": missing}
 
 
+# A chunk is judged by its neighbours: this many IB-confirmed rows each side.
+_CHUNK_NEIGHBOURS = 20
+_CHUNK_TOLERANCE = 0.01
+
+
+def _rescale_chunks(existing: list[dict], fresh: list[dict], chunks: list[dict]) -> tuple[list[dict], dict]:
+    """Rows inside each ``[start, end)`` legacy chunk times its declared ``factor``.
+
+    A legacy chunk downloaded at another adjustment vintage sits a constant split ratio off
+    the rows on both sides (PZZA 2004-05-25 x0.5, 2005-05-25 x2). Fresh IB is the gate: the
+    IB/Bronze ratio inside the chunk must be ``factor`` times the ratio either side, and the
+    two sides must agree with each other, so a real split next to the chunk fails closed.
+    """
+    fresh_by_date = {str(row["trade_date"]): row for row in fresh}
+    ordered = sorted(existing, key=lambda row: str(row["trade_date"]))
+
+    def ratios(rows: list[dict]) -> list[float]:
+        return [
+            fresh_by_date[str(r["trade_date"])]["close"] / r["close"]
+            for r in rows
+            if str(r["trade_date"]) in fresh_by_date
+        ]
+
+    rewritten: list[dict] = []
+    report: list[dict] = []
+    prices = ("open", "high", "low", "close", "adj_close")
+    for chunk in sorted(chunks, key=lambda c: c["start"]):
+        start, end, factor = date.fromisoformat(chunk["start"]), date.fromisoformat(chunk["end"]), chunk["factor"]
+        day = lambda row: date.fromisoformat(str(row["trade_date"]))  # noqa: E731
+        inside = [row for row in ordered if start <= day(row) < end]
+        left = ratios([row for row in ordered if day(row) < start][-_CHUNK_NEIGHBOURS:])
+        right = ratios([row for row in ordered if day(row) >= end][:_CHUNK_NEIGHBOURS])
+        within = ratios(inside)
+        if len(left) < 5 or len(right) < 5 or not within:
+            raise ValueError(f"chunk {start}..{end}: too few IB-confirmed rows to judge it")
+        f_left, f_right, f_in = statistics.median(left), statistics.median(right), statistics.median(within)
+        measured = f_in / f_left
+        entry = {
+            "start": str(start),
+            "end": str(end),
+            "factor": factor,
+            "ib_factor": measured,
+            "neighbours_agree": f_left / f_right,
+            "rows": len(inside),
+            "missing_from_ib": len(inside) - len(within),
+        }
+        report.append(entry)
+        if abs(f_left / f_right - 1) > _CHUNK_TOLERANCE:
+            raise ValueError(f"chunk {start}..{end}: the rows either side disagree with IB by {f_left / f_right}")
+        if abs(measured / factor - 1) > _CHUNK_TOLERANCE:
+            raise ValueError(f"chunk {start}..{end}: IB measures {measured}, not the declared {factor}")
+        # A date IB never printed (thin names: PLBC 84 of 252) is unconfirmed, not a disagreement;
+        # the chunk is one file segment, so half of it confirmed carries the rest.
+        off = [r for r in within if abs(r / (f_left * factor) - 1) > _CHUNK_TOLERANCE]
+        if len(off) > 0.01 * len(within) or len(within) < 0.5 * len(inside):
+            raise ValueError(
+                f"chunk {start}..{end}: {len(off)} of {len(within)} closes disagree, of {len(inside)} rows"
+            )
+        fixed = {
+            str(row["trade_date"]): {
+                **row,
+                **{column: row[column] * factor for column in prices},
+                "volume": round(row["volume"] / factor),
+            }
+            for row in inside
+        }
+        # A later chunk is judged against this one corrected (OPCH's chunks touch).
+        ordered = [fixed.get(str(row["trade_date"]), row) for row in ordered]
+        rewritten += fixed.values()
+    return rewritten, {"chunks": report}
+
+
 def _repair_one(
     symbol: str,
     *,
@@ -238,6 +310,7 @@ def _repair_one(
     backup_dir: Path | None,
     audit_sha256: str | None,
     replace_before: date | None = None,
+    chunks: list[dict] | None = None,
 ) -> tuple[str, dict]:
     """Return (status, sidecar). status in {'done','would-repair','ambiguous','failed'}."""
     path = bronze.symbol_path(symbol)
@@ -256,7 +329,12 @@ def _repair_one(
     # existing rows, not extending history. Fetching from an absolute 1980 floor
     # would issue ~46 empty yearly IB requests per symbol and hammer the gateway.
     start = min(date.fromisoformat(str(r["trade_date"])) for r in existing)
-    ib_rows = fetcher(symbol, start, as_of)
+    stop = as_of
+    if chunks:
+        # A chunk is judged on its own window and neighbours, not the whole history.
+        start = max(start, min(date.fromisoformat(c["start"]) for c in chunks) - timedelta(days=60))
+        stop = min(as_of, max(date.fromisoformat(c["end"]) for c in chunks) + timedelta(days=60))
+    ib_rows = fetcher(symbol, start, stop)
     if not ib_rows:
         return "failed", {"symbol": symbol, "reason": "ib_no_data"}
     try:
@@ -272,6 +350,11 @@ def _repair_one(
             ib_only, rescale = _rescale_to_ib(existing, ib_only, replace_before)
         except ValueError as exc:
             return "ambiguous", {"symbol": symbol, "reason": f"rescale: {exc}"}
+    if chunks:
+        try:
+            ib_only, rescale = _rescale_chunks(existing, ib_only, chunks)
+        except ValueError as exc:
+            return "ambiguous", {"symbol": symbol, "reason": f"chunk: {exc}"}
     if not ib_only:
         return "failed", {"symbol": symbol, "reason": "no_ib_rows_after_normalize"}
     # Self-check on the POST-MERGE series (existing rows overwritten by IB per date),
@@ -292,7 +375,7 @@ def _repair_one(
     except ValueError as exc:
         return "ambiguous", {"symbol": symbol, "reason": f"post_merge_discontinuous: {exc}"}
     if backup_dir is None:
-        return "would-repair", {"symbol": symbol, "rows_would_write": len(ib_only)}
+        return "would-repair", {"symbol": symbol, "rows_would_write": len(ib_only), **rescale}
     with symbol_lock(action_path), symbol_lock(path):
         current_source = sha256_file(path) if path.is_file() else None
         current_actions = sha256_file(action_path) if action_path.is_file() else None
@@ -386,7 +469,9 @@ def _run(
         raise ValueError("audit manifest has no data_lake_root: refusing to mutate bronze")
     if manifest_root != str(root.resolve()):
         raise ValueError(f"audit manifest data_lake_root {manifest_root} does not match active root {root.resolve()}")
-    mixed = [item["symbol"] for item in audit["symbols"] if item.get("klass") == "mixed"]
+    mixed = [item["symbol"] for item in audit["symbols"] if item.get("klass") in {"mixed", "chunk"}]
+    # A chunk item names legacy windows at another vintage; only rows inside them are rewritten.
+    chunked = {item["symbol"]: item["chunks"] for item in audit["symbols"] if item.get("klass") == "chunk"}
     # A reviewed symbol is one with a declared IB distribution; only rows before it are rewritten.
     reviewed: dict[str, date] = {}
     for symbol in map(canonical_symbol, args.symbols):
@@ -467,6 +552,7 @@ def _run(
                     backup_dir=None if args.dry_run else args.output_dir / "backup",
                     audit_sha256=next((i["source_sha256"] for i in audit["symbols"] if i["symbol"] == symbol), None),
                     replace_before=reviewed.get(symbol),
+                    chunks=chunked.get(symbol),
                 )
             except (IBConnectionError, ConnectionError, OSError, TimeoutError) as exc:
                 # IB session dropped mid-run. Aborting mirrors the initial-connect
