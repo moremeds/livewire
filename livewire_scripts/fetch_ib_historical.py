@@ -41,9 +41,10 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from ib_async import Contract, Forex, Future, Index, Stock  # noqa: F401
@@ -61,7 +62,7 @@ from rich.progress import (
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from clients import quality_detector
+from clients import ledger, quality_detector
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateAction
 from clients.ib_client import IBClient, IBError
@@ -498,6 +499,10 @@ def _bronze_parquet_path(ticker: str, bronze: BronzeClient) -> Path:
     return Path(base) / f"symbol={ticker}" / "1d.parquet"
 
 
+# Bars dropped this process for a session not yet settled; one ledger measurement per run.
+UNSETTLED_DROPPED = [0]
+
+
 def fetch_ticker(
     ticker: str,
     bars: list,
@@ -509,6 +514,12 @@ def fetch_ticker(
     corporate_actions: list[CorporateAction] | None = None,
 ) -> int:
     """Persist pre-fetched bars for *ticker* into bronze parquet."""
+    # IB returns the session still trading as a bar dated today (ICE Brent opens 00:00Z):
+    # stored, it reads complete and the daily lane never refetches it (COIL 2026-09-23).
+    today = datetime.now(UTC).date()
+    settled = [bar for bar in bars if date.fromisoformat(str(bar.date)[:10]) < today]
+    UNSETTLED_DROPPED[0] += len(bars) - len(settled)
+    bars = settled
     if not bars:
         console.print(f"  [yellow]No bar data for {ticker}[/yellow]")
         return 0
@@ -633,7 +644,55 @@ def backfill_ticker(
 # ── Main ──────────────────────────────────────────────────────────────
 
 
-def main():  # pragma: no cover — only exercised by integration tests
+def main() -> None:
+    """Run the fetch as one ``historical`` ledger run: a seed or backfill writes Bronze."""
+    # Under the daily lane (its rolling-futures seed) LW_RUN_ID is the parent's and the parent
+    # owns the run row; opening one here would close it. Standalone, this process owns its run.
+    inherited = os.environ.get("LW_RUN_ID")
+    run_id = inherited or ledger.new_run_id("historical")
+    started = datetime.now(UTC)
+    run_row = {
+        "run_id": run_id,
+        "job": "historical",
+        "host": socket.gethostname(),
+        "release_sha": os.environ.get("LW_RELEASE_SHA"),
+        "presets_sha": None,
+        "registry_sha": None,
+        "started": started,
+        "ended": None,
+        "exit_code": None,
+        "verdict": None,
+    }
+    if not inherited:
+        ledger.open_run(run_row)
+    try:
+        _main()
+    except BaseException:
+        if not inherited:
+            ledger.emit(
+                "runs", [run_row | {"ended": datetime.now(UTC), "exit_code": 1, "verdict": "FAILED"}], run_id=run_id
+            )
+        raise
+    ledger.emit(
+        "measurements",
+        [
+            {
+                "name": "historical_unsettled_bars_dropped",
+                "scope": "1d",
+                "measured_at": started,
+                "value": float(UNSETTLED_DROPPED[0]),
+                "unit": "bars",
+                "source": "measured",
+                "run_id": run_id,
+            }
+        ],
+        run_id=run_id,
+    )
+    if not inherited:
+        ledger.emit("runs", [run_row | {"ended": datetime.now(UTC), "exit_code": 0, "verdict": "OK"}], run_id=run_id)
+
+
+def _main():  # pragma: no cover — only exercised by integration tests
     parser = argparse.ArgumentParser(description="Fetch historical OHLCV from Interactive Brokers")
     ticker_group = parser.add_mutually_exclusive_group()
     ticker_group.add_argument(
