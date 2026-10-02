@@ -158,6 +158,49 @@ def test_view_names_covers_every_spec() -> None:
     assert "bronze_equity_1m" in view_names()  # intraday is view-only, never materialised
 
 
+def test_one_energy_view_reads_datasets_partitioned_by_month_and_by_year(tmp_path: Path) -> None:
+    # Real rows, read from the mini's lake 2026-09-25.
+    energy = tmp_path / "bronze" / "asset_class=energy"
+    region = energy / "product=electricity" / "dataset=region" / "month=2026-09"
+    spot = energy / "product=petroleum" / "dataset=spot_price" / "year=2026"
+    region.mkdir(parents=True)
+    spot.mkdir(parents=True)
+    pq.write_table(
+        pa.table({"period": [date(2026, 9, 1)], "respondent": ["PJM"], "type": ["D"], "value": [3021061.0]}),
+        region / "1d.parquet",
+    )
+    pq.write_table(
+        pa.table({"period": [date(2026, 1, 2)], "series": ["EER_EPD2DC_PF4_Y05LA_DPG"], "value": [2.12]}),
+        spot / "1d.parquet",
+    )
+    (spot / "._1d.parquet").write_bytes(b"\0" * 4096)  # exFAT AppleDouble sidecar
+    # Every 1h file is month-partitioned; left to auto-detect, DuckDB would add
+    # its own hive `product` beside the one read off the path.
+    pq.write_table(
+        pa.table(
+            {
+                "period": pa.array([datetime(2026, 9, 1, tzinfo=UTC)], pa.timestamp("ms", tz="UTC")),
+                "respondent": ["PJM"],
+                "type": ["D"],
+                "value": [132084.0],
+            }
+        ),
+        region / "1h.parquet",
+    )
+
+    with connect(views=["bronze_energy_1d", "bronze_energy_1h"], lake_root=tmp_path) as con:
+        rows = con.sql(
+            "SELECT product, dataset, period, respondent, series, value FROM bronze_energy_1d ORDER BY period"
+        ).fetchall()
+        hourly = [column for column, *_ in con.sql("DESCRIBE bronze_energy_1h").fetchall()]
+
+    assert rows == [
+        ("petroleum", "spot_price", date(2026, 1, 2), None, "EER_EPD2DC_PF4_Y05LA_DPG", 2.12),
+        ("electricity", "region", date(2026, 9, 1), "PJM", None, 3021061.0),
+    ]
+    assert hourly == ["period", "respondent", "type", "value", "product", "dataset"]
+
+
 def test_unknown_view_raises() -> None:
     with pytest.raises(KeyError):
         view_spec("bronze_equity_7y")
