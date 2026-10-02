@@ -81,6 +81,44 @@ def _lane_values(lanes: tuple[str, ...]) -> str:
     return ", ".join(f"('{lane}')" for lane in lanes)
 
 
+def _eia_freshness_sql() -> str:
+    """EIA API datasets: the newest `eia_staleness_days` per dataset against its declared lag.
+
+    Generated from `fetch_eia.DATASETS`, so a new dataset cannot be fetched but ungraded.
+    """
+    from livewire_scripts.fetch_eia import DATASETS
+
+    expected = ", ".join(f"('{d.id}', {d.max_lag_days})" for d in DATASETS.values() if d.max_lag_days is not None)
+    return (
+        "select case when m.behind is null then 'UNKNOWN' else 'WARN' end as verdict, "
+        "e.dataset, m.behind as days_behind, e.max_lag "
+        f"from (values {expected}) as e(dataset, max_lag) "
+        "left join (select scope as dataset, arg_max(value, measured_at) as behind from measurements "
+        "  where name = 'eia_staleness_days' and measured_at >= timestamp '$now' - interval 4 day "
+        "  group by scope) m using (dataset) "
+        "where m.behind is null or m.behind > e.max_lag order by e.dataset"
+    )
+
+
+def _eia_bulk_sql() -> str:
+    """EIA bulk families: days behind EIA's manifest, against twice the refresh interval."""
+    from livewire_scripts.fetch_eia import BULK_FAMILIES, EBA
+
+    limits = ", ".join(
+        f"('{code}', {2 * float(constants.declared('eia_eba_refresh_days' if code == EBA else 'eia_bulk_refresh_days'))})"
+        for code in [*BULK_FAMILIES, EBA]
+    )
+    return (
+        "select case when m.behind is null then 'UNKNOWN' else 'WARN' end as verdict, "
+        "e.family, m.behind as days_behind, e.limit_days "
+        f"from (values {limits}) as e(family, limit_days) "
+        "left join (select scope as family, arg_max(value, measured_at) as behind from measurements "
+        "  where name = 'eia_bulk_behind_days' and measured_at >= timestamp '$now' - interval 4 day "
+        "  group by scope) m using (family) "
+        "where m.behind is null or m.behind > e.limit_days order by e.family"
+    )
+
+
 #: Every operational check is one SQL statement over the ledger plus one test.
 CHECKS: list[tuple[str, str]] = [
     (
@@ -236,21 +274,38 @@ CHECKS: list[tuple[str, str]] = [
     ),
     (
         "Coverage",
-        "select case when count(*) < 5 then 'UNKNOWN' "
+        # coverage_report.emit_coverage_measurements emits all five scopes with
+        # one run_id and measured_at. A partial/newer observation cannot borrow
+        # an older total or let four fresh scopes hide one stale scope.
+        "with expected(scope) as (values ('1d'),('1m'),('1h'),('5m'),('30m')), "
+        "latest as (select scope, run_id, measured_at from measurements "
+        "  where name in ('coverage_pct','coverage_total') "
+        "  and scope in ('1d','1m','1h','5m','30m') "
+        "  qualify row_number() over (partition by scope order by measured_at desc, run_id desc) = 1), "
+        "paired as (select e.scope, l.run_id, l.measured_at, "
+        "  max(m.value) filter (where m.name = 'coverage_pct') as pct, "
+        "  max(m.value) filter (where m.name = 'coverage_total') as total "
+        "  from expected e left join latest l using (scope) "
+        "  left join measurements m on m.scope = e.scope and m.run_id = l.run_id "
+        "    and m.measured_at = l.measured_at "
+        "    and m.name in ('coverage_pct','coverage_total') "
+        "  group by e.scope, l.run_id, l.measured_at) "
+        "select case "
         "when min(pct) filter (where total > 0) < $coverage_threshold then 'BAD' "
-        "when date_diff('day', date(max(measured_at)), date '$today') > $coverage_stale_days then 'BAD' "
-        "when count(*) filter (where total = 0) > 0 then 'UNKNOWN' else 'OK' end as verdict, "
-        "string_agg(scope || '=' || case when total = 0 then 'UNKNOWN(expected=0)' "
-        "else format('{:.1f}%', 100*pct) end, ' ' order by scope) as scopes, "
-        "min(pct) filter (where total > 0) as worst_ratio, max(measured_at) as measured_at from ("
-        "  select p.scope, p.value as pct, t.value as total, p.measured_at from "
-        "  (select scope, value, measured_at from measurements where name = 'coverage_pct' "
-        "   and scope in ('1d','1m','1h','5m','30m') "
-        "   qualify row_number() over (partition by scope order by measured_at desc) = 1) p "
-        "  join (select scope, value from measurements where name = 'coverage_total' "
-        "   and scope in ('1d','1m','1h','5m','30m') "
-        "   qualify row_number() over (partition by scope order by measured_at desc) = 1) t "
-        "  using (scope))",
+        "when max(date_diff('day', date(measured_at), date '$today')) "
+        "  filter (where pct is not null and total > 0) > $coverage_stale_days then 'BAD' "
+        "when count(*) filter (where pct is null or total is null or total <= 0) > 0 "
+        "  or count(distinct run_id) > 1 "
+        "  or min(measured_at) <> max(measured_at) then 'UNKNOWN' else 'OK' end as verdict, "
+        "string_agg(scope || '=' || case "
+        "  when pct is null or total is null then 'UNKNOWN(incomplete)' "
+        "  when total <= 0 then 'UNKNOWN(expected=0)' "
+        "  else format('{:.1f}% (estimated_missing={}/{})', 100*pct, "
+        "    cast(round(total*(1-pct)) as bigint), cast(total as bigint)) end "
+        "  || coalesce('@' || cast(measured_at as varchar), ''), ' ' order by scope) as scopes, "
+        "min(pct) filter (where total > 0) as worst_ratio, "
+        "min(measured_at) as oldest_measured_at, max(measured_at) as latest_measured_at "
+        "from paired",
     ),
     (
         "Coverage ran today",
@@ -360,7 +415,7 @@ CHECKS: list[tuple[str, str]] = [
         f"select case when count(last_session) < {len(constants.IB_ONLY_LANES)} then 'UNKNOWN' "
         "when max(behind) > $ib_slack_days then 'WARN' else 'OK' end as verdict, "
         "string_agg(lane || '@' || last_session || case when blocker is null then '' "
-        "else ' (' || blocker || ')' end, ', ') as lanes, max(behind) as sessions_behind, "
+        "else ' (' || blocker || ')' end, ', ') as lanes, max(behind) as calendar_days_behind, "
         "string_agg(lane, ', ' order by lane) filter (where last_session is null or behind > $ib_slack_days) "
         "as affected_lanes, string_agg(blocker, ', ' order by blocker) "
         "filter (where last_session is null or behind > $ib_slack_days) as blockers from ("
@@ -393,9 +448,13 @@ CHECKS: list[tuple[str, str]] = [
         "  when declared_value > 2 * measured_p95 or measured_p95 > 2 * declared_value "
         "  then 0 else 2 end, name, scope limit 1",
     ),
+    ("EIA freshness", _eia_freshness_sql()),
+    ("EIA bulk imports", _eia_bulk_sql()),
 ]
 
 _EMPTY_IS_OK = {
+    "EIA freshness",
+    "EIA bulk imports",
     "Undelivered notifications",
     "Stale non-equity",
     "Lanes within budget",
@@ -410,6 +469,8 @@ _FIXES = {
         "from lane_results where run_id = '$open_run'\"   # which lane is still open"
     ),
     "Intraday catch-up ran": "launchctl start com.livewire.intraday-catchup",
+    "EIA freshness": "python scripts/livewire_ingest.py eia --dataset <dataset>   # then check the dataset's release day",
+    "EIA bulk imports": "python scripts/livewire_ingest.py eia --bulk <family>",
     "Silver failures": _SILVER_FIX,
     "Silver window regressions": _SILVER_FIX,
     "Coverage": "launchctl start com.livewire.coverage",
@@ -1678,7 +1739,7 @@ def _duckdb_section(target: date, database: Path | None = None, data_lake: Path 
         f"  oldest view {laggard} last_date={oldest.isoformat()}  ({behind} session(s) behind {target})",
     ]
     for view_name, (count, last) in sorted(headline.items()):
-        lines.append(f"  {view_name:<24} {count:>7,} symbols  last={last}")
+        lines.append(f"  {view_name:<24} {count:>7,} symbols  freshest_member_last={last}")
     lines.append(receipt_line)
     # The fix must name the lane that OWNS the laggard, not the catalog. This
     # docstring already says catalog staleness is a symptom of an upstream lane,

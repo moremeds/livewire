@@ -280,9 +280,12 @@ def test_every_module_that_opens_a_run_is_one_we_know_about() -> None:
     }
 
     assert callers == {
+        "livewire_scripts/fetch_eia.py",
+        "livewire_scripts/fetch_ib_historical.py",
         "livewire_scripts/fetch_researched_evidence.py",
         "livewire_scripts/import_researched_identities.py",
         "livewire_scripts/membership_sync.py",
+        "livewire_scripts/repair_legacy_basis.py",
         "livewire_scripts/run_daily_update_job.py",
         "livewire_scripts/security_master_sync.py",
         "livewire_scripts/sync_corporate_actions.py",
@@ -297,9 +300,12 @@ def test_every_module_that_opens_a_run_closes_it_on_a_keyboard_interrupt() -> No
     offenders: list[str] = []
 
     for name in (
+        "fetch_eia.py",
+        "fetch_ib_historical.py",
         "fetch_researched_evidence.py",
         "import_researched_identities.py",
         "membership_sync.py",
+        "repair_legacy_basis.py",
         "run_daily_update_job.py",
         "security_master_sync.py",
         "sync_corporate_actions.py",

@@ -1,23 +1,37 @@
 {
   "name": "futures-metals",
-  "description": "COMEX Metals Futures — GC, SI",
+  "description": "IB-qualified first and second live delivery months for COMEX metals",
   "asset_class": "futures",
   "contracts": [
-    {"root": "GC", "exchange": "COMEX", "expiry": "202606"},
-    {"root": "GC", "exchange": "COMEX", "expiry": "202609"},
-    {"root": "GC", "exchange": "COMEX", "expiry": "202612"},
-    {"root": "GC", "exchange": "COMEX", "expiry": "202703"},
-    {"root": "GC", "exchange": "COMEX", "expiry": "202706"},
-    {"root": "GC", "exchange": "COMEX", "expiry": "202709"},
-    {"root": "GC", "exchange": "COMEX", "expiry": "202712"},
-    {"root": "GC", "exchange": "COMEX", "expiry": "202803"},
-    {"root": "SI", "exchange": "COMEX", "expiry": "202606"},
-    {"root": "SI", "exchange": "COMEX", "expiry": "202609"},
-    {"root": "SI", "exchange": "COMEX", "expiry": "202612"},
-    {"root": "SI", "exchange": "COMEX", "expiry": "202703"},
-    {"root": "SI", "exchange": "COMEX", "expiry": "202706"},
-    {"root": "SI", "exchange": "COMEX", "expiry": "202709"},
-    {"root": "SI", "exchange": "COMEX", "expiry": "202712"},
-    {"root": "SI", "exchange": "COMEX", "expiry": "202803"}
+    {
+      "root": "GC",
+      "exchange": "COMEX",
+      "expiry": "202609"
+    },
+    {
+      "root": "GC",
+      "exchange": "COMEX",
+      "expiry": "202610"
+    },
+    {
+      "root": "SI",
+      "exchange": "COMEX",
+      "expiry": "202609"
+    },
+    {
+      "root": "SI",
+      "exchange": "COMEX",
+      "expiry": "202610"
+    },
+    {
+      "root": "HG",
+      "exchange": "COMEX",
+      "expiry": "202609"
+    },
+    {
+      "root": "HG",
+      "exchange": "COMEX",
+      "expiry": "202610"
+    }
   ]
 }

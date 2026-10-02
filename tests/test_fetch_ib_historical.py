@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 from datetime import UTC, date, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,6 +19,7 @@ import pytest
 from ib_async import Contract, Forex, Future, Index, Stock
 
 from clients.bronze_client import BronzeClient
+from clients.corporate_action_store import CorporateAction
 from clients.massive_client import MassiveAPIError
 from livewire_scripts.fetch_ib_historical import (
     IB_EARLIEST_DATE,
@@ -238,6 +240,61 @@ class TestComputeDateWindows:
 
 
 class TestLoadPreset:
+    def test_active_futures_preset_retires_bz_and_selects_coil(self):
+        preset = Path(__file__).resolve().parents[1] / "presets" / "futures-active.json"
+        name, tickers, exchange_map = load_preset(preset)
+
+        assert name == "futures-active"
+        assert not any(ticker.startswith("BZ_") for ticker in tickers)
+        assert "COIL_202611" in tickers
+        assert "COIL_202712" in tickers
+        assert {exchange_map[ticker] for ticker in tickers if ticker.startswith("COIL_")} == {"IPE"}
+
+    def test_commodity_backfill_presets_match_ib_manifest(self):
+        repo = Path(__file__).resolve().parents[1]
+        manifest = json.loads(
+            (repo / "docs/audits/price-discovery/COMMODITY_BACKFILL_MANIFEST_2026-09-23.json").read_text()
+        )
+        groups = {
+            "futures-active": {
+                "CL",
+                "NG",
+                "COIL",
+                "RB",
+                "HO",
+                "GC",
+                "SI",
+                "HG",
+                "SB",
+                "KC",
+                "CC",
+                "CT",
+                "OJ",
+                "ZS",
+                "ZM",
+                "ZL",
+                "ZC",
+                "ZW",
+                "LE",
+                "HE",
+            },
+            "futures-energy": {"CL", "NG", "COIL", "RB", "HO"},
+            "futures-metals": {"GC", "SI", "HG"},
+            "futures-agriculture": {"SB", "KC", "CC", "CT", "OJ", "ZS", "ZM", "ZL", "ZC", "ZW", "LE", "HE"},
+        }
+
+        for preset_name, roots in groups.items():
+            name, tickers, exchanges = load_preset(repo / f"presets/{preset_name}.json")
+            expected = {
+                contract["ticker"] for contract in manifest["contracts"] if contract["ticker"].split("_", 1)[0] in roots
+            }
+            assert name == preset_name
+            assert set(tickers) == expected
+            assert all(
+                exchanges[ticker] == next(c["exchange"] for c in manifest["contracts"] if c["ticker"] == ticker)
+                for ticker in tickers
+            )
+
     def test_loads_preset_file(self, tmp_path):
         preset = {"name": "test-preset", "tickers": ["AAPL", "MSFT", "NVDA"]}
         preset_file = tmp_path / "test.json"
@@ -690,6 +747,41 @@ class TestMakeContract:
         assert isinstance(contract_explicit, Future)
         assert contract_explicit.exchange == "GLOBEX"
 
+    @pytest.mark.parametrize(
+        ("ticker", "exchange"),
+        [
+            ("COIL_202610", "IPE"),
+            ("RB_202610", "NYMEX"),
+            ("HO_202611", "NYMEX"),
+            ("HG_202612", "COMEX"),
+            ("SB_202609", "NYBOT"),
+            ("KC_202612", "NYBOT"),
+            ("CC_202612", "NYBOT"),
+            ("CT_202610", "NYBOT"),
+            ("OJ_202611", "NYBOT"),
+            ("ZS_202611", "CBOT"),
+            ("ZM_202612", "CBOT"),
+            ("ZL_202612", "CBOT"),
+            ("ZC_202612", "CBOT"),
+            ("ZW_202612", "CBOT"),
+            ("LE_202610", "CME"),
+            ("HE_202610", "CME"),
+        ],
+    )
+    def test_make_contract_maps_new_commodity_roots(self, ticker, exchange):
+        assert _make_contract(ticker, "futures").exchange == exchange
+
+    def test_make_contract_rejects_retired_bz(self):
+        with pytest.raises(ValueError, match="retired for ingestion"):
+            _make_contract("BZ_202610", "futures")
+
+    def test_make_contract_selects_standard_si_contract_over_sil(self):
+        contract = _make_contract("SI_202609", "futures")
+
+        assert contract.exchange == "COMEX"
+        assert contract.multiplier == "5000"
+        assert contract.tradingClass == "SI"
+
 
 # ══════════════════════════════════════════════════════════════════════
 # fetch_ticker_bars (async)
@@ -871,6 +963,48 @@ class TestFetchTickerBars:
         head_dt_arg = call_args[0]
         assert head_dt_arg.year == 1980
 
+    def test_include_expired_sets_contract_flag_before_qualification(self):
+        """include_expired=True sets Contract.includeExpired on the qualified contract."""
+        mock_ib = MagicMock()
+        mock_ib.ib.qualifyContractsAsync = AsyncMock(return_value=[Future("CL", "202610", "NYMEX", currency="USD")])
+        mock_ib.get_head_timestamp_async = AsyncMock(return_value="20180124-00:00:00")
+        mock_ib.get_historical_data_async = AsyncMock(return_value=[_make_bar()])
+
+        sem = asyncio.Semaphore(6)
+
+        with patch("livewire_scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+            mock_cdw.return_value = [("1 Y", "20250101-00:00:00")]
+            ticker, bars = asyncio.run(
+                fetch_ticker_bars(
+                    "CL_202610",
+                    mock_ib,
+                    sem,
+                    asset_class="futures",
+                    include_expired=True,
+                )
+            )
+
+        contract = mock_ib.ib.qualifyContractsAsync.await_args.args[0]
+        assert contract.includeExpired is True
+        assert ticker == "CL_202610"
+        assert len(bars) == 1
+
+    def test_include_expired_defaults_off(self):
+        """Without the flag the qualified contract keeps includeExpired=False."""
+        mock_ib = MagicMock()
+        mock_ib.ib.qualifyContractsAsync = AsyncMock(return_value=[Future("CL", "202611", "NYMEX", currency="USD")])
+        mock_ib.get_head_timestamp_async = AsyncMock(return_value="20180124-00:00:00")
+        mock_ib.get_historical_data_async = AsyncMock(return_value=[_make_bar()])
+
+        sem = asyncio.Semaphore(6)
+
+        with patch("livewire_scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+            mock_cdw.return_value = [("1 Y", "20250101-00:00:00")]
+            asyncio.run(fetch_ticker_bars("CL_202611", mock_ib, sem, asset_class="futures"))
+
+        contract = mock_ib.ib.qualifyContractsAsync.await_args.args[0]
+        assert contract.includeExpired is False
+
 
 # ══════════════════════════════════════════════════════════════════════
 # fetch_all_tickers (async)
@@ -954,6 +1088,31 @@ class TestFetchAllTickers:
 
         assert captured_kwargs["AAPL"]["end_dt_override"] == datetime(2020, 6, 15)
         assert captured_kwargs["NVDA"]["end_dt_override"] is None
+
+    def test_passes_include_expired(self):
+        """include_expired is forwarded to fetch_ticker_bars."""
+        captured_kwargs = {}
+
+        async def mock_fetch_ticker_bars(ticker, ib, sem, **kwargs):
+            captured_kwargs[ticker] = kwargs
+            return (ticker, [_make_bar()])
+
+        mock_ib = MagicMock()
+
+        with patch(
+            "livewire_scripts.fetch_ib_historical.fetch_ticker_bars",
+            side_effect=mock_fetch_ticker_bars,
+        ):
+            asyncio.run(
+                fetch_all_tickers(
+                    ["CL_202610"],
+                    mock_ib,
+                    asset_class="futures",
+                    include_expired=True,
+                )
+            )
+
+        assert captured_kwargs["CL_202610"]["include_expired"] is True
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1200,6 +1359,82 @@ class TestBackfillTicker:
         assert inserted == 1
         assert rows[0]["close"] == pytest.approx(1 / 1.28)
         assert rows[0]["volume"] == 0
+
+
+class TestBackfillTickerSplitBasis:
+    """backfill_ticker exercised end-to-end (real BronzeClient, real
+    prepare_ib_rows_for_publish) for the 2026-09-27 SVXY incident: an IB
+    backfill batch that ends well before existing bronze rows begin, with a
+    real corporate-action split dated after the batch. Real close values
+    pulled read-only from macmini bronze, as of 2026-09-27.
+    """
+
+    def _split(self, action_id, ex_date, split_from, split_to):
+        return CorporateAction(
+            action_id=action_id,
+            provider="massive",
+            provider_event_id=action_id,
+            event_revision=1,
+            supersedes_action_id=None,
+            symbol="SVXY",
+            action_type="split",
+            ex_date=ex_date,
+            split_from=split_from,
+            split_to=split_to,
+            cash_amount=None,
+            currency=None,
+            declaration_date=None,
+            record_date=None,
+            pay_date=None,
+            status="active",
+            fetched_at=datetime(2026, 1, 1, tzinfo=UTC),
+            payload_hash=action_id,
+        )
+
+    @pytest.mark.integration
+    def test_backfill_reverses_split_after_incoming_window(self, bronze):
+        bronze.replace_ticker_rows(
+            "SVXY",
+            [
+                {
+                    "trade_date": "2021-06-11",
+                    "symbol_id": bronze.get_symbol_id("SVXY"),
+                    "open": 54.83,
+                    "high": 54.83,
+                    "low": 54.83,
+                    "close": 54.83,
+                    "adj_close": 54.83,
+                    "volume": 100,
+                    "source": "legacy",
+                    "price_basis": "raw",
+                },
+                {
+                    "trade_date": "2024-04-11",
+                    "symbol_id": bronze.get_symbol_id("SVXY"),
+                    "open": 55.08,
+                    "high": 55.08,
+                    "low": 55.08,
+                    "close": 55.08,
+                    "adj_close": 55.08,
+                    "volume": 100,
+                    "source": "legacy",
+                    "price_basis": "raw",
+                },
+            ],
+        )
+
+        bars = [
+            _make_bar(date="2021-06-09", close=26.290),
+            _make_bar(date="2021-06-10", close=27.045),
+        ]
+        actions = [self._split("svxy-2024", date(2024, 4, 11), 1, 2)]
+
+        inserted = backfill_ticker("SVXY", bars, bronze, corporate_actions=actions)
+        assert inserted == 2
+
+        rows = {row["trade_date"]: row for row in bronze.read_symbol_rows("SVXY")}
+        assert rows["2021-06-10"]["close"] == pytest.approx(54.09, abs=0.01)
+        assert rows["2021-06-10"]["price_basis"] == "raw"
 
 
 class TestRunBackfillZeroNewRows:
@@ -1593,6 +1828,61 @@ def _mock_massive_instance(ticker_bars):
 
 
 class TestMain:
+    def test_main_rejects_explicit_retired_bz_ingestion(self, monkeypatch):
+        monkeypatch.setattr(
+            "sys.argv",
+            ["fetch_ib_historical.py", "--tickers", "BZ_202610", "--asset-class", "futures"],
+        )
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
+    def test_main_rejects_include_expired_for_non_futures(self, monkeypatch):
+        monkeypatch.setattr(
+            "sys.argv",
+            ["fetch_ib_historical.py", "--tickers", "AAPL", "--include-expired"],
+        )
+        with pytest.raises(SystemExit, match="2"):
+            main()
+
+    @pytest.mark.integration
+    def test_main_include_expired_threads_flag_to_fetch(self, tmp_path, monkeypatch):
+        """--include-expired reaches fetch_all_tickers through _run_normal."""
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "fetch_ib_historical.py",
+                "--tickers",
+                "CL_202610",
+                "--asset-class",
+                "futures",
+                "--include-expired",
+            ],
+        )
+        mock_ib = _mock_ib_instance({"CL_202610": []})
+        captured: dict = {}
+
+        def fake_fetch(tickers, ib, **kw):
+            captured.update(kw)
+
+            async def _empty():
+                return {t: [] for t in tickers}
+
+            return _empty()
+
+        with (
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch(
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
+                lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
+            ),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", tmp_path / "cursors"),
+            patch("livewire_scripts.fetch_ib_historical.fetch_all_tickers", fake_fetch),
+        ):
+            main()
+
+        assert captured["include_expired"] is True
+
     @pytest.mark.integration
     def test_main_end_to_end(self, tmp_path, monkeypatch):
         """Full integration: main() with mocked IB client and bronze parquet."""
@@ -1633,7 +1923,7 @@ class TestMain:
 
     @pytest.mark.integration
     def test_main_handles_empty_bars(self, tmp_path, monkeypatch):
-        """main() marks ticker done when IB returns empty bars (no data available)."""
+        """Equity tickers with no data keep the existing terminal cursor behavior."""
         monkeypatch.setattr("sys.argv", ["fetch_ib_historical.py", "--tickers", "FAIL"])
 
         mock_ib = _mock_ib_instance({"FAIL": []})
@@ -1655,6 +1945,35 @@ class TestMain:
         assert cursor_file.exists()
         data = json.loads(cursor_file.read_text())
         assert "FAIL" in data["completed"]
+
+    @pytest.mark.integration
+    def test_main_futures_empty_bars_do_not_complete_cursor(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "sys.argv",
+            ["fetch_ib_historical.py", "--tickers", "CL_202611", "--asset-class", "futures"],
+        )
+        cursor_dir = tmp_path / "cursors"
+        cursor_dir.mkdir()
+        cursor_file = cursor_dir / "cursor_custom.json"
+        cursor_file.write_text(json.dumps({"completed": {"CL_202611": ["1d"]}}))
+        mock_ib = _mock_ib_instance({"CL_202611": []})
+
+        with (
+            patch("livewire_scripts.fetch_ib_historical.IBClient", return_value=mock_ib),
+            patch(
+                "livewire_scripts.fetch_ib_historical.BronzeClient",
+                lambda **kw: BronzeClient(bronze_dir=tmp_path / "bronze"),
+            ),
+            patch("livewire_scripts.fetch_ib_historical.BRONZE_DIR", tmp_path / "bronze"),
+            patch("livewire_scripts.fetch_ib_historical.CURSOR_DIR", cursor_dir),
+        ):
+            main()
+            main()
+
+        assert mock_ib.ib.run.called
+        assert mock_ib.ib.run.call_count == 2
+        assert not (tmp_path / "bronze" / "symbol=CL_202611" / "1d.parquet").exists()
+        assert json.loads(cursor_file.read_text())["completed"]["CL_202611"] == ["1d"]
 
     @pytest.mark.integration
     def test_main_custom_args(self, tmp_path, monkeypatch):
@@ -2739,3 +3058,73 @@ class TestComputeIntradayChunks:
 
         with pytest.raises(ValueError, match="unsupported"):
             compute_intraday_chunks(timeframe="2m", years_back=1)
+
+
+def test_a_bar_for_the_session_still_trading_is_never_stored(tmp_path, monkeypatch):
+    # Mini Bronze, seeded 2026-09-23 ~04Z: COIL_202612 09-23 was the in-progress ICE session
+    # (Massive BZ settle 98.12); 09-22 settled 95.41 on 179,604 contracts.
+    import livewire_scripts.fetch_ib_historical as fib
+
+    class _Seeded(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 23, 4, 10, tzinfo=tz)
+
+    monkeypatch.setattr(fib, "datetime", _Seeded)
+    monkeypatch.setattr(fib, "UNSETTLED_DROPPED", [0])
+    monkeypatch.setattr(fib, "run_detection", lambda **kwargs: None)
+    bars = [
+        _make_bar(date="2026-09-22", open=96.26, high=97.91, low=93.68, close=95.41, volume=179604),
+        _make_bar(date="2026-09-23", open=94.5, high=95.51, low=94.27, close=94.31, volume=7801),
+    ]
+
+    with BronzeClient(bronze_dir=tmp_path, asset_class="futures") as bronze:
+        fib.fetch_ticker("COIL_202612", bars, bronze, asset_class="futures")
+        rows = bronze.read_symbol_rows("COIL_202612")
+
+    assert [str(r["trade_date"])[:10] for r in rows] == ["2026-09-22"]
+    assert fib.UNSETTLED_DROPPED == [1]
+
+
+def test_historical_is_one_ledger_run_and_a_crash_reads_failed(monkeypatch):
+    import livewire_scripts.fetch_ib_historical as fib
+    from clients import ledger
+
+    monkeypatch.delenv("LW_RUN_ID", raising=False)  # another test's lane may have minted one
+    monkeypatch.setattr(fib, "UNSETTLED_DROPPED", [2])
+    monkeypatch.setattr(fib, "_main", lambda: None)
+    fib.main()
+
+    def boom():
+        raise RuntimeError("gateway")
+
+    monkeypatch.setattr(fib, "_main", boom)
+    with pytest.raises(RuntimeError):
+        fib.main()
+
+    assert sorted(
+        r["verdict"] for r in ledger.query("select verdict from runs where job = 'historical' and ended is not null")
+    ) == ["FAILED", "OK"]
+    assert ledger.query("select value from measurements where name = 'historical_unsettled_bars_dropped'") == [
+        {"value": 2.0}
+    ]
+
+
+def test_under_the_daily_lane_historical_never_writes_the_parents_run_row(monkeypatch):
+    import livewire_scripts.fetch_ib_historical as fib
+    from clients import ledger
+
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-20260924T050000Z-1")
+    monkeypatch.setattr(fib, "UNSETTLED_DROPPED", [0])
+    monkeypatch.setattr(fib, "_main", lambda: None)
+    fib.main()
+
+    def boom():
+        raise RuntimeError("gateway")
+
+    monkeypatch.setattr(fib, "_main", boom)
+    with pytest.raises(RuntimeError):
+        fib.main()
+
+    assert ledger.query("select run_id from runs") == []
+    assert [r["run_id"] for r in ledger.query("select run_id from measurements")] == ["daily-update-20260924T050000Z-1"]

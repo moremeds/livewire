@@ -141,7 +141,8 @@ def run(
         error = None
         if eligible and classifications:
             try:
-                proposed = normalize_ib_rows(staged, classifications)
+                # symbol=None: these rows are Bronze, whose distribution basis nothing observes.
+                proposed = normalize_ib_rows(staged, classifications, symbol=None)
             except ValueError as exc:
                 eligible = False
                 error = str(exc)

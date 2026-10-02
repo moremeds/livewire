@@ -567,6 +567,7 @@ def main() -> None:
                         if rows:
                             rows = prepare_ib_rows_for_publish(
                                 rows,
+                                symbol=symbol,
                                 existing_rows=bronze.read_symbol_rows(symbol),
                                 actions=CorporateActionStore(bronze_dir.parent.parent).latest_active(symbol),
                                 as_of_date=max(date.fromisoformat(row["trade_date"]) for row in rows),

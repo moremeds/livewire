@@ -37,10 +37,17 @@ def test_every_row_names_a_dispatchable_check():
 
 def test_every_row_resolves_to_a_nonempty_universe():
     """A row whose presets resolve to no symbols is a silent zero denominator."""
+    import json
+
     from clients.ingestion_common import load_preset
 
     empty = []
     for row in _rows():
+        if row.asset_class == "futures":
+            rolling = json.loads((REPO / "presets" / f"{row.universe[0]}.json").read_text())
+            if not rolling.get("rolling_contracts"):
+                empty.append((row.id, list(row.universe)))
+            continue
         symbols = set()
         for name in row.universe:
             symbols |= set(load_preset(REPO / "presets" / f"{name}.json")[1])

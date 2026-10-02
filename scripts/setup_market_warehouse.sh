@@ -10,13 +10,10 @@ RAW_DIR="${DATA_LAKE_DIR}/raw"
 BRONZE_DIR="${DATA_LAKE_DIR}/bronze"
 SILVER_DIR="${DATA_LAKE_DIR}/silver"
 GOLD_DIR="${DATA_LAKE_DIR}/gold"
-CLICKHOUSE_DIR="${ROOT_DIR}/clickhouse"
 PY_ENV_DIR="${ROOT_DIR}/.venv"
 SCRIPTS_DIR="${ROOT_DIR}/scripts"
 LOG_DIR="${ROOT_DIR}/logs"
 
-INIT_CLICKHOUSE=0
-START_CLICKHOUSE=0
 WITH_SAMPLE_DATA=0
 SMOKE_TEST=0
 
@@ -36,8 +33,6 @@ usage() {
 Usage: $0 [flags]
 
 Flags:
-  --start-clickhouse    Start ClickHouse after setup
-  --init-clickhouse     Initialize ClickHouse schema after setup
   --with-sample-data    Generate sample Parquet data after setup
   --smoke-test          Run validation queries/import tests after setup
   --help                Show this help
@@ -45,8 +40,6 @@ Flags:
 Examples:
   $0
   $0 --with-sample-data --smoke-test
-  $0 --start-clickhouse --init-clickhouse
-  $0 --start-clickhouse --init-clickhouse --with-sample-data --smoke-test
 EOF
 }
 
@@ -55,15 +48,6 @@ EOF
 ########################################
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --start-clickhouse)
-      START_CLICKHOUSE=1
-      shift
-      ;;
-    --init-clickhouse)
-      INIT_CLICKHOUSE=1
-      START_CLICKHOUSE=1
-      shift
-      ;;
     --with-sample-data)
       WITH_SAMPLE_DATA=1
       shift
@@ -127,7 +111,6 @@ brew update
 ########################################
 green "Installing base packages..."
 brew install \
-  clickhouse \
   python@3.13 \
   uv \
   jq \
@@ -172,7 +155,6 @@ mkdir -p \
   "${GOLD_DIR}/asset_class=equity" \
   "${GOLD_DIR}/asset_class=option" \
   "${GOLD_DIR}/asset_class=future" \
-  "${CLICKHOUSE_DIR}" \
   "${SCRIPTS_DIR}" \
   "${LOG_DIR}"
 
@@ -199,7 +181,6 @@ uv pip install --python "${PY_ENV_DIR}/bin/python" \
   pandas \
   pyarrow \
   "psycopg[binary]" \
-  clickhouse-connect \
   numpy \
   scipy \
   python-dotenv \
@@ -210,117 +191,8 @@ uv pip install --python "${PY_ENV_DIR}/bin/python" \
   jupyterlab
 
 ########################################
-# Create ClickHouse bootstrap SQL
-########################################
-cat > "${SCRIPTS_DIR}/bootstrap_clickhouse.sql" <<'SQL'
-CREATE DATABASE IF NOT EXISTS md;
-
-CREATE TABLE IF NOT EXISTS md.equities_daily
-(
-    trade_date Date,
-    symbol_id UInt64,
-    open Float64,
-    high Float64,
-    low Float64,
-    close Float64,
-    adj_close Float64,
-    volume UInt64
-)
-ENGINE = MergeTree
-PARTITION BY toYYYYMM(trade_date)
-ORDER BY (symbol_id, trade_date);
-
-CREATE TABLE IF NOT EXISTS md.futures_daily
-(
-    trade_date Date,
-    contract_id UInt64,
-    root_symbol LowCardinality(String),
-    expiry_date Date,
-    open Float64,
-    high Float64,
-    low Float64,
-    close Float64,
-    settlement Float64,
-    volume UInt64,
-    open_interest UInt64
-)
-ENGINE = MergeTree
-PARTITION BY toYYYYMM(trade_date)
-ORDER BY (root_symbol, expiry_date, trade_date, contract_id);
-
-CREATE TABLE IF NOT EXISTS md.options_daily
-(
-    trade_date Date,
-    contract_id UInt64,
-    underlier_id UInt64,
-    expiry_date Date,
-    strike Float64,
-    option_right Enum8('C' = 1, 'P' = 2),
-    open Float64,
-    high Float64,
-    low Float64,
-    close Float64,
-    volume UInt64,
-    open_interest UInt64,
-    implied_vol Float64
-)
-ENGINE = MergeTree
-PARTITION BY toYYYYMM(trade_date)
-ORDER BY (underlier_id, expiry_date, strike, option_right, trade_date);
-SQL
-
-########################################
 # Helper scripts
 ########################################
-cat > "${SCRIPTS_DIR}/start_clickhouse.sh" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-
-DATA_DIR="${HOME}/market-warehouse/clickhouse/data"
-LOG_DIR="${HOME}/market-warehouse/logs"
-mkdir -p "${DATA_DIR}" "${LOG_DIR}"
-
-if pgrep -f "clickhouse server" >/dev/null 2>&1; then
-  echo "ClickHouse server already running."
-  exit 0
-fi
-
-clickhouse server --daemon -- --path "${DATA_DIR}"
-sleep 3
-
-if pgrep -f "clickhouse server" >/dev/null 2>&1; then
-  echo "ClickHouse server started."
-else
-  echo "ClickHouse server failed to start."
-  exit 1
-fi
-SH
-chmod +x "${SCRIPTS_DIR}/start_clickhouse.sh"
-
-cat > "${SCRIPTS_DIR}/stop_clickhouse.sh" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-pkill -f "clickhouse server" || true
-echo "ClickHouse server stopped."
-SH
-chmod +x "${SCRIPTS_DIR}/stop_clickhouse.sh"
-
-cat > "${SCRIPTS_DIR}/init_clickhouse.sh" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-
-ROOT="${HOME}/market-warehouse"
-SQL_FILE="${ROOT}/scripts/bootstrap_clickhouse.sql"
-
-if ! pgrep -f "clickhouse server" >/dev/null 2>&1; then
-  "${ROOT}/scripts/start_clickhouse.sh"
-fi
-
-clickhouse client --multiquery < "${SQL_FILE}"
-echo "ClickHouse schema initialized."
-SH
-chmod +x "${SCRIPTS_DIR}/init_clickhouse.sh"
-
 cat > "${SCRIPTS_DIR}/activate_env.sh" <<SH
 #!/usr/bin/env bash
 source "${PY_ENV_DIR}/bin/activate"
@@ -371,13 +243,10 @@ cat > "${ROOT_DIR}/README.md" <<'MD'
 # Market Warehouse Setup
 
 ## What this installs
-- ClickHouse for production-like local benchmarking
-- Python environment with Polars, Pandas, PyArrow, psycopg, ClickHouse Connect
+- Python environment with Polars, Pandas, PyArrow, psycopg
 - Canonical Parquet-based data lake layout
 
 ## Flags
-- `--start-clickhouse`
-- `--init-clickhouse`
 - `--with-sample-data`
 - `--smoke-test`
 
@@ -385,43 +254,12 @@ cat > "${ROOT_DIR}/README.md" <<'MD'
 ```bash
 ./setup_market_warehouse.sh
 ./setup_market_warehouse.sh --with-sample-data --smoke-test
-./setup_market_warehouse.sh --start-clickhouse --init-clickhouse
-./setup_market_warehouse.sh --start-clickhouse --init-clickhouse --with-sample-data --smoke-test
-```
-
-## Troubleshooting
-
-### macOS Gatekeeper blocks ClickHouse
-
-If you see an error like **"clickhouse-macos-aarch64" Not Opened** — Apple could not
-verify the binary is free of malware — click **Done** (do not move to trash), then
-remove the quarantine attribute:
-
-```bash
-xattr -d com.apple.quarantine $(which clickhouse)
-```
-
-If `which clickhouse` returns nothing or the above gives a "no such xattr" error,
-try removing it from the Homebrew Cellar directly:
-
-```bash
-xattr -dr com.apple.quarantine /opt/homebrew/Cellar/clickhouse
 ```
 MD
 
 ########################################
 # Execute optional steps based on flags
 ########################################
-if [[ "${START_CLICKHOUSE}" -eq 1 ]]; then
-  green "Starting ClickHouse..."
-  bash "${SCRIPTS_DIR}/start_clickhouse.sh"
-fi
-
-if [[ "${INIT_CLICKHOUSE}" -eq 1 ]]; then
-  green "Initializing ClickHouse schema..."
-  bash "${SCRIPTS_DIR}/init_clickhouse.sh"
-fi
-
 if [[ "${WITH_SAMPLE_DATA}" -eq 1 ]]; then
   green "Generating sample Parquet data..."
   python "${SCRIPTS_DIR}/write_sample_parquet.py"
@@ -444,16 +282,6 @@ PY
       exit 1
     fi
     green "  Parquet sample data OK (${PARQUET_COUNT} rows)."
-  fi
-
-  # ClickHouse: if started, verify schema
-  if [[ "${INIT_CLICKHOUSE}" -eq 1 ]]; then
-    CH_TABLES=$(clickhouse client --query "SELECT count() FROM system.tables WHERE database = 'md';")
-    if [[ "${CH_TABLES}" -eq 0 ]]; then
-      red "FAIL: ClickHouse has no tables in database 'md'."
-      exit 1
-    fi
-    green "  ClickHouse schema OK (${CH_TABLES} tables in md)."
   fi
 
   green "All smoke tests passed."

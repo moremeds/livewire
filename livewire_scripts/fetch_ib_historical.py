@@ -41,9 +41,10 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from ib_async import Contract, Forex, Future, Index, Stock  # noqa: F401
@@ -61,7 +62,7 @@ from rich.progress import (
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from clients import quality_detector
+from clients import ledger, quality_detector
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateAction
 from clients.ib_client import IBClient, IBError
@@ -72,6 +73,7 @@ from clients.ingestion_common import (
     bars_to_futures_rows,
     bars_to_midpoint_rows,
     bars_to_rows,
+    is_retired_futures_ticker,
     load_preset,
 )
 from clients.ingestion_common import (
@@ -359,15 +361,20 @@ async def fetch_ticker_bars(
     end_dt_override: datetime | None = None,
     asset_class: str = "equity",
     exchange: str | None = None,
+    include_expired: bool = False,
 ) -> tuple[str, list]:
     """Fetch historical daily bars for *ticker*.
 
     When *max_years* > 0, caps lookback to that many years instead of inception.
     When *end_dt_override* is set, uses it as the end date and ignores *max_years*.
+    When *include_expired* is set, the contract carries ``includeExpired`` so IB
+    can qualify expired futures contracts (futures only; enforced by the CLI).
     Returns ``(ticker, bars)`` where bars are deduplicated IB BarData objects.
     """
     t0 = time.monotonic()
     contract = _make_contract(ticker, asset_class, exchange=exchange)
+    if include_expired:
+        contract.includeExpired = True
     await ib.ib.qualifyContractsAsync(contract)
 
     head_ts = await ib.get_head_timestamp_async(contract)
@@ -436,6 +443,7 @@ async def fetch_all_tickers(
     end_dt_overrides: dict[str, datetime] | None = None,
     asset_class: str = "equity",
     exchange_map: dict[str, str] | None = None,
+    include_expired: bool = False,
 ) -> dict[str, list | None]:
     """Fetch historical bars for all *tickers* concurrently.
 
@@ -463,6 +471,7 @@ async def fetch_all_tickers(
                 end_dt_override=edt,
                 asset_class=asset_class,
                 exchange=exch,
+                include_expired=include_expired,
             )
         except (IBError, Exception) as exc:
             console.print(f"    [red]{ticker}: {type(exc).__name__} — {exc}[/red]")
@@ -490,6 +499,10 @@ def _bronze_parquet_path(ticker: str, bronze: BronzeClient) -> Path:
     return Path(base) / f"symbol={ticker}" / "1d.parquet"
 
 
+# Bars dropped this process for a session not yet settled; one ledger measurement per run.
+UNSETTLED_DROPPED = [0]
+
+
 def fetch_ticker(
     ticker: str,
     bars: list,
@@ -501,6 +514,12 @@ def fetch_ticker(
     corporate_actions: list[CorporateAction] | None = None,
 ) -> int:
     """Persist pre-fetched bars for *ticker* into bronze parquet."""
+    # IB returns the session still trading as a bar dated today (ICE Brent opens 00:00Z):
+    # stored, it reads complete and the daily lane never refetches it (COIL 2026-09-23).
+    today = datetime.now(UTC).date()
+    settled = [bar for bar in bars if date.fromisoformat(str(bar.date)[:10]) < today]
+    UNSETTLED_DROPPED[0] += len(bars) - len(settled)
+    bars = settled
     if not bars:
         console.print(f"  [yellow]No bar data for {ticker}[/yellow]")
         return 0
@@ -528,6 +547,7 @@ def fetch_ticker(
         rows = bars_to_rows(bars, symbol_id, source="ib", price_basis="split_adjusted")
         rows = prepare_ib_rows_for_publish(
             rows,
+            symbol=ticker,
             existing_rows=[],
             actions=corporate_actions or [],
             as_of_date=max(date.fromisoformat(row["trade_date"]) for row in rows),
@@ -610,6 +630,7 @@ def backfill_ticker(
         if source == "ib":
             rows = prepare_ib_rows_for_publish(
                 rows,
+                symbol=ticker,
                 existing_rows=(bronze.read_symbol_rows(ticker) if hasattr(bronze, "read_symbol_rows") else []),
                 actions=corporate_actions or [],
                 as_of_date=max(date.fromisoformat(row["trade_date"]) for row in rows),
@@ -623,7 +644,55 @@ def backfill_ticker(
 # ── Main ──────────────────────────────────────────────────────────────
 
 
-def main():  # pragma: no cover — only exercised by integration tests
+def main() -> None:
+    """Run the fetch as one ``historical`` ledger run: a seed or backfill writes Bronze."""
+    # Under the daily lane (its rolling-futures seed) LW_RUN_ID is the parent's and the parent
+    # owns the run row; opening one here would close it. Standalone, this process owns its run.
+    inherited = os.environ.get("LW_RUN_ID")
+    run_id = inherited or ledger.new_run_id("historical")
+    started = datetime.now(UTC)
+    run_row = {
+        "run_id": run_id,
+        "job": "historical",
+        "host": socket.gethostname(),
+        "release_sha": os.environ.get("LW_RELEASE_SHA"),
+        "presets_sha": None,
+        "registry_sha": None,
+        "started": started,
+        "ended": None,
+        "exit_code": None,
+        "verdict": None,
+    }
+    if not inherited:
+        ledger.open_run(run_row)
+    try:
+        _main()
+    except BaseException:
+        if not inherited:
+            ledger.emit(
+                "runs", [run_row | {"ended": datetime.now(UTC), "exit_code": 1, "verdict": "FAILED"}], run_id=run_id
+            )
+        raise
+    ledger.emit(
+        "measurements",
+        [
+            {
+                "name": "historical_unsettled_bars_dropped",
+                "scope": "1d",
+                "measured_at": started,
+                "value": float(UNSETTLED_DROPPED[0]),
+                "unit": "bars",
+                "source": "measured",
+                "run_id": run_id,
+            }
+        ],
+        run_id=run_id,
+    )
+    if not inherited:
+        ledger.emit("runs", [run_row | {"ended": datetime.now(UTC), "exit_code": 0, "verdict": "OK"}], run_id=run_id)
+
+
+def _main():  # pragma: no cover — only exercised by integration tests
     parser = argparse.ArgumentParser(description="Fetch historical OHLCV from Interactive Brokers")
     ticker_group = parser.add_mutually_exclusive_group()
     ticker_group.add_argument(
@@ -696,11 +765,18 @@ def main():  # pragma: no cover — only exercised by integration tests
         help="Asset class to fetch (default: equity).",
     )
     parser.add_argument(
+        "--include-expired",
+        action="store_true",
+        help="Qualify expired futures contracts via IB includeExpired (requires --asset-class futures; default off).",
+    )
+    parser.add_argument(
         "--no-quality",
         action="store_true",
         help="Disable the post-fetch quality detection hook (debug only).",
     )
     args = parser.parse_args()
+    if args.include_expired and args.asset_class != "futures":
+        parser.error("--include-expired is only valid with --asset-class futures")
     quality_detector.QUALITY_ENABLED = not args.no_quality
     resolved_source = _resolve_historical_source(
         args.source,
@@ -724,6 +800,11 @@ def main():  # pragma: no cover — only exercised by integration tests
         all_tickers = args.tickers if args.tickers else MAG7
         console.print(f"\n[bold]Tickers:[/bold] {' '.join(all_tickers)}")
 
+    if args.asset_class == "futures":
+        retired = [ticker for ticker in all_tickers if is_retired_futures_ticker(ticker)]
+        if retired:
+            parser.error(f"retired futures contracts cannot be ingested: {', '.join(retired)}")
+
     cursor_name_display = f"backfill_{cursor_name}" if args.backfill else cursor_name
     console.print(f"[bold]Cursor:[/bold]  {_cursor_path(cursor_name_display)}")
     years_label = f"{args.years}Y" if args.years else "inception"
@@ -733,6 +814,10 @@ def main():  # pragma: no cover — only exercised by integration tests
         f"  host={args.host}  port={args.port}  years={years_label}  skip_existing={args.skip_existing}"
         f"  mode={mode_label}  source={args.source}->{resolved_source}"
     )
+    if args.include_expired:
+        console.print(
+            "[yellow]includeExpired enabled: expired futures contracts are eligible for qualification[/yellow]"
+        )
 
     # ── Cursor management ────────────────────────────────────────────
     effective_cursor = f"backfill_{cursor_name}" if args.backfill else cursor_name
@@ -742,6 +827,13 @@ def main():  # pragma: no cover — only exercised by integration tests
         console.print("[yellow]Cursor reset.[/yellow]")
 
     completed = load_cursor(effective_cursor)
+    bronze_dir = _resolved_bronze_dir(args.asset_class)
+    if args.asset_class == "futures":
+        # A cursor without its Parquet file is not proof that a contract was
+        # seeded. Futures that have no trades yet must be retried on later runs.
+        for ticker in all_tickers:
+            if not (bronze_dir / f"symbol={ticker}" / "1d.parquet").exists():
+                completed.pop(ticker, None)
     remaining = [t for t in all_tickers if not is_ticker_complete(completed, t, ("1d",))]
 
     n_completed = sum(1 for t in all_tickers if is_ticker_complete(completed, t, ("1d",)))
@@ -764,8 +856,6 @@ def main():  # pragma: no cover — only exercised by integration tests
     # ── Live bronze publication ───────────────────────────────────────
     run_t0 = time.monotonic()
     asset_class = args.asset_class
-    bronze_dir = _resolved_bronze_dir(asset_class)
-
     with _storage_client()(bronze_dir=bronze_dir, asset_class=asset_class) as bronze:
         if args.backfill and resolved_source == "massive":
             with MassiveClient() as massive:
@@ -798,6 +888,7 @@ def main():  # pragma: no cover — only exercised by integration tests
                         asset_class=asset_class,
                         bronze_dir=bronze_dir,
                         exchange_map=exchange_map,
+                        include_expired=args.include_expired,
                     )
                 else:
                     _run_normal(
@@ -812,6 +903,7 @@ def main():  # pragma: no cover — only exercised by integration tests
                         asset_class=asset_class,
                         bronze_dir=bronze_dir,
                         exchange_map=exchange_map,
+                        include_expired=args.include_expired,
                     )
 
         run_elapsed = time.monotonic() - run_t0
@@ -841,6 +933,7 @@ def _run_backfill(
     asset_class="equity",
     bronze_dir=None,
     exchange_map=None,
+    include_expired=False,
 ):
     """Backfill mode: fetch only missing older data for tickers already in bronze."""
     oldest_dates = get_oldest_dates(bronze)
@@ -893,6 +986,7 @@ def _run_backfill(
                 end_dt_overrides=batch_overrides,
                 asset_class=asset_class,
                 exchange_map=exchange_map,
+                include_expired=include_expired,
             )
         )
 
@@ -1099,6 +1193,7 @@ def _run_normal(
     asset_class="equity",
     bronze_dir=None,
     exchange_map=None,
+    include_expired=False,
 ):
     """Normal fetch mode: replace the per-ticker bronze snapshot."""
     if args.skip_existing:
@@ -1141,6 +1236,7 @@ def _run_normal(
                 max_years=args.years,
                 asset_class=asset_class,
                 exchange_map=exchange_map,
+                include_expired=include_expired,
             )
         )
 
@@ -1179,9 +1275,12 @@ def _run_normal(
                     console.print(f"  [green]{ticker}[/green]: {count:,} rows inserted")
                     batch_ok += 1
                 elif not bars:
-                    mark_timeframe_done(completed, ticker, "1d")
-                    save_cursor(cursor_name, completed, started_at)
-                    console.print(f"  [dim]{ticker}[/dim]: no data available (done)")
+                    if asset_class == "futures":
+                        console.print(f"  [dim]{ticker}[/dim]: no data yet (will retry next run)")
+                    else:
+                        mark_timeframe_done(completed, ticker, "1d")
+                        save_cursor(cursor_name, completed, started_at)
+                        console.print(f"  [dim]{ticker}[/dim]: no data available (done)")
                     batch_ok += 1
                 else:
                     console.print(f"  [yellow]{ticker}[/yellow]: 0 rows (will retry next run)")

@@ -66,6 +66,7 @@ def build_denominator(
     end: date,
     as_of: datetime,
     lag_days: int = 1,
+    tickers_override: list[str] | None = None,
 ) -> list[ExpectedSeries]:
     if as_of.tzinfo is None:
         raise ValueError("as_of must be tz-aware; a naive local datetime silently shifts the due rule")
@@ -80,17 +81,19 @@ def build_denominator(
     window_month = end.replace(day=1)
     out: list[ExpectedSeries] = []
     seen: set[str] = set()
-    for preset_path in preset_paths:
-        _name, tickers, _exchange_map = load_preset(preset_path)
-        for ticker in tickers:
-            # Presets overlap (sp500 n ndx100 = 87 symbols). Without this the
-            # symbol is scanned twice and every gap it has lands in the Tier A
-            # manifest twice — two repair instructions for one parquet path.
-            if ticker in seen:
-                continue
-            seen.add(ticker)
-            expiry = _contract_expiry(ticker)
-            if expiry is not None and expiry < window_month:
-                continue
-            out.append(ExpectedSeries(ticker, asset_class, timeframe, sessions))
+    if tickers_override is None:
+        tickers = [ticker for path in preset_paths for ticker in load_preset(path)[1]]
+    else:
+        tickers = tickers_override
+    for ticker in tickers:
+        # Presets overlap (sp500 n ndx100 = 87 symbols). Without this the
+        # symbol is scanned twice and every gap it has lands in the Tier A
+        # manifest twice — two repair instructions for one parquet path.
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        expiry = _contract_expiry(ticker)
+        if expiry is not None and expiry < window_month:
+            continue
+        out.append(ExpectedSeries(ticker, asset_class, timeframe, sessions))
     return out

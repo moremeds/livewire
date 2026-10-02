@@ -1,9 +1,8 @@
 # Livewire
 
 Local-first market data warehouse for quantitative research. The Parquet lake is
-the system of record, DuckDB the query layer, ClickHouse optional for
-benchmarking. Repo `livewire/`; data tree `~/market-warehouse/` (rebranded from
-market-data-warehouse 2026-05-17).
+the system of record, DuckDB the query layer. Repo `livewire/`; data tree
+`~/market-warehouse/` (rebranded from market-data-warehouse 2026-05-17).
 
 This file is the rulebook and it is short on purpose. Every rule is one line and
 points at the test that enforces it (`→ test:`) and/or the incident that earned
@@ -23,20 +22,25 @@ livewire/                       # git repo
 ├── presets/                    # universe definitions (sp500, ndx100-*, r2k-*, futures-*, fx-pairs, …)
 ├── registry/gaps.json          # the coverage denominator rows (see "The one contract")
 ├── livewire_node/              # nodemailer SMTP (Resend) transport for notify (tests: npm run test:alerts)
-├── launchd/                    # *.plist.example templates for the 7 scheduled jobs
+├── launchd/                    # *.plist.example templates for the 8 scheduled jobs
 ├── tests/                      # pytest; 95% coverage gate (clients/ib_client.py exempt)
 └── docs/
-    ├── postmortems/            # one file per incident: rule + what it cost + date (55 as of 2026-09-06)
+    ├── postmortems/            # one file per incident: rule + what it cost + date (76 as of 2026-09-28)
     ├── runbook.md              # every operator command, flag and env var, by task
     ├── superpowers/specs/      # designs; 2026-09-02-livewire-ledger-design.md is current
     └── audits/                 # dated read-only findings
 
 ~/market-warehouse/             # data tree (scripts/setup_market_warehouse.sh)
-├── data-lake -> /Volumes/DATA_LAKE   # exFAT external volume; a cold cache is the normal morning state
+├── data-lake/                 # local dir; bronze*, silver, repairs, quarantine, gold, security_master,
+│   │                           #   index_membership, catalog are symlinks onto /Volumes/DATA_LAKE (exFAT;
+│   │                           #   a cold cache is the normal morning state); ledger, raw, cursors stay local
 │   ├── bronze/asset_class=<equity|futures|rates|volatility|fx|cmdty|corporate_action>/symbol=<S>/{1d,1m,5m,30m,1h}.parquet
+│   ├── bronze/asset_class=energy/product=<p>/dataset=<d>/<month|year|vintage>/<tf>.parquet   # EIA, not symbol-keyed; zips in raw/eia/bulk/
 │   ├── bronze-delisted/        # archived symbols; NOT authoritative for the denominator
 │   ├── silver/                 # adjusted daily + factor intervals; revisions/current.json is the commit record
 │   ├── raw/massive/…           # provider flat files; below the rolling GET floor they can never be refetched
+│   ├── raw/shepherd/           # source-evidence CAS (local only — diagnostics root at `data_lake_dir()`)
+│   ├── catalog/analytics.duckdb  # read-only DuckDB snapshot published after each `duckdb build` (apex reads it)
 │   ├── repairs/                # triage verdicts, unresolved ledger, rollback backups — protected by name
 │   └── quarantine/<stamp>/     # corrupt per-symbol parquet moved aside by the publisher
 ├── releases/<sha>/ + current   # immutable release artifacts; scheduled jobs run `current`
@@ -54,9 +58,9 @@ verified on the mini or it is not verified.
 - Bronze = normalized provider rows at raw prices, per-ticker parquet published `temp → validate → os.replace()`, serialized per path with `fcntl.flock` (`clients/parquet_io.py`).
 - Silver = fully back-adjusted daily bars + factor intervals, derived from bronze equity and the corporate-action store — both Massive-backed. Bronze is read-only to it; IB is never an input.
 - DuckDB reads parquet in place; its only durable artifact is a small coverage table. It is never a second store.
-- Providers: equity daily IB → Massive fallback; equity intraday Massive flat files only; futures/cmdty daily and volatility intraday IB; CBOE vol indices CBOE API; rates FRED; fx/DXY Yahoo (+ Massive intraday).
-- Seven launchd jobs on the mini: daily-update 05:00Z → intraday-catchup 10:00Z → watchdog 10:30Z and 12:00Z → coverage 15:05Z (waits on upstream runs + session_due_at, ≤6h; no timeout) → digest 15:45Z (waits ≤4h for the coverage fact) → release-promote; universe-refresh weekly, from the repo.
-- Apex is the consumer. Its adapter must pin one committed Silver manifest and resolve only its immutable artifact references; it must fail closed for a missing or corrupt reference. The producer-to-adapter boundary is in `docs/plans/2026-09-08-silver-atomic-publication.md`.
+- Providers: equity daily Massive by default (`--source ib` forces IB; a down Gateway then falls back to Massive); equity intraday Massive flat files only; futures/cmdty daily and volatility intraday IB (futures contracts are selected by IB delivery month per root, `clients/ingestion_common.py`; a newly selected contract is full-history seeded first); CBOE vol indices CBOE API; rates FRED; fx/DXY Yahoo (+ Massive intraday); energy EIA API + bulk files (`asset_class=energy/product=<p>/dataset=<d>/…`, not symbol-keyed: graded by `status` freshness checks, not the coverage denominator).
+- Eight launchd jobs on the mini: membership-sync 01:00Z weekdays → daily-update 05:00Z → intraday-catchup 10:00Z → watchdog 10:30Z and 12:00Z → coverage 15:05Z (waits on upstream runs + session_due_at, ≤6h; no timeout) → digest 15:45Z (waits ≤4h for the coverage fact) → release-promote; universe-refresh weekly, from the repo.
+- Apex is the consumer: its `apex-signal-server` API runs on the mini in colima (`localhost:8322`, `/health` reports the Silver revision it has applied) and reads the lake read-only — bronze, pinned Silver, PIT membership, corporate actions. Its adapter must pin one committed Silver manifest and resolve only its immutable artifact references; it must fail closed for a missing or corrupt reference. The producer-to-adapter boundary is in `docs/plans/2026-09-08-silver-atomic-publication.md`.
 
 ## The one contract
 
@@ -84,6 +88,8 @@ gap      = expected − actual
 - IB is a gate, never a source, for basis reconstruction: publish only what a post-last-split IB window confirms (`resolve-yahoo-basis --apply` requires `--ib-verify`). → pm:2026-07-18-unknown-price-basis-population
 - A PIT action receipt (v2) proves each event's head at as-of against the latest verified page — id + payload hash, or a split's date + ratio (Massive re-ids splits) — and never copies the store's live `status`, which `reconcile` rewrites in place: v1 demanded provenance on July rows that can never get it (43/458 sp500) and stopped replaying when AXON was revised two hours after publish. A v1 receipt is refused, not replayed; a v1 *current* revision is integrity-checked and superseded. The action store is append-only — no superseded row is ever rewritten. → test: `tests/test_pit_silver_revision.py::test_a_legacy_current_revision_is_superseded_after_an_integrity_check`, `tests/test_shepherd_actions.py::test_a_provider_revision_after_as_of_does_not_change_the_replay` · pm:2026-09-23-pit-action-receipt-proved-lineage-not-the-answer
 - An index membership resolves through the security master or not at all: `security-master sync` fetches Massive identities and `membership-sync reresolve` rewrites each placeholder onto its `security_id` — resolved event first, rejection second (restart-safe), and the replay guard is filtered to the status it would append, because PIT Silver replays verified events only. Massive never returns `list_date`, so `effective_from` comes from the `date=` probe or nothing, and a FIGI-less `candidate` is re-fetched every run. → test: `tests/test_membership_sync.py::test_an_interrupted_pass_is_completed_by_the_retry_with_no_duplicate`, `::test_a_candidate_add_then_a_remove_at_confidence_b_fails_closed`
+- A researched identity's narrow `[add-1d, add+1d)` window does not cover `now`, so the live diff must compare tickers, not ids — comparing ids churned 523 sp500 rows on 2026-09-17, one `security_id` per company restored by `membership-sync repair-identity` (R1 CIK merge and R1b re-point of the duplicate's history, R2 window extension to the cross-index membership cover, R4 churn rejection). → test: `tests/test_membership_repair_identity.py`, `tests/test_membership_sync.py::test_sync_appends_one_add_and_one_remove` · spec `2026-09-23-membership-identity-continuity-design.md` · pm:2026-09-23-narrow-identity-window-churned-membership
+- A renamed security's identity carries today's ticker, the one bronze is keyed by (R5; PKI/TMK/BHGE hold no bronze and SBC's is another company); the latest claim never decides it, because Massive's rename-day probes return the old ticker. A successor registrant joins its predecessor's CIK only through a `_CIK_SUCCESSORS` entry that cites the filing (XOM, 8-K12B 2026-07-01). → test: `tests/test_membership_repair_identity.py::test_r5_a_renamed_security_carries_todays_ticker_not_the_rename_day_probe`, `::test_a_successor_registrant_cik_is_one_security_with_its_predecessor` · pm:2026-09-26-identity-carried-the-pre-rename-ticker
 
 ## Hard rules
 
@@ -95,6 +101,7 @@ gap      = expected − actual
 - A preflight belongs to the phase that needs IB, never to the orchestrator: an orchestrator-level preflight lost Friday 2026-08-07 warehouse-wide (equity 0/13311, rates 0/4). → pm:2026-08-08-ib-down-must-not-fail-the-run
 - Equity daily falls back to Massive on a down Gateway; futures/cmdty have no fallback and stay degraded — a manufactured success is worse than a gap. → test: `tests/test_run_daily_update_job.py::test_futures_and_cmdty_get_no_fallback`
 - `IB_EARLIEST_DATE` is IB's floor, never an instrument's inception; `expected_start` has no default. → test: `tests/test_quality_detector.py::test_range_shortfall_no_head_ts_uses_expected_diff_only` · pm:2026-07-27-ib-earliest-date-false-range-shortfall
+- A seed or backfill never stores a bar dated on or after its own UTC run date: IB returns the session still trading, and the daily lane never refetches a date it holds (COIL ×14 + CT_202612 on 2026-09-23 at 1–4% volume for eight days). `historical` is a ledger run. → test: `tests/test_fetch_ib_historical.py::test_a_bar_for_the_session_still_trading_is_never_stored` · pm:2026-10-01-seed-stored-the-session-still-trading
 - `fetch_batch` maps a raised fetch to the exception, never to `[]` — otherwise a total outage reads as `no_trade`, `errors=0`, exit 0. → test: `tests/test_daily_update.py::TestFetchBatch::test_handles_error`, `::test_no_bars_is_still_an_empty_list`
 
 ### Providers — floors roll; re-measure before trusting a number
@@ -111,7 +118,7 @@ gap      = expected − actual
 
 ### Scheduled jobs
 
-- The warehouse plists point at `<warehouse>/current`, never a checkout or worktree — no `.env` there, so every credential resolves to nothing, including the alert that would report it. `universe-refresh` is the one exception (it writes `presets/`, and the release is `chmod -R a-w`); launchd starts it cold, so `livewire_ingest.py` loads the scheduled env for `universe-sync`/`shepherd-universe` itself — without it the dead-ticker check skipped silently and the denominator only ever grew. → test: `tests/test_launchd_templates.py::test_the_scheduled_jobs_run_the_release_not_a_checkout`, `::test_no_other_template_reads_the_repo` (all seven templates; a new template with no entry fails), `tests/test_livewire_entrypoints.py::test_ingest_universe_refresh_commands_load_scheduled_env` · pm:2026-07-27-launchd-pointed-at-worktree-no-env, pm:2026-09-01-universe-refresh-runs-from-repo
+- The warehouse plists point at `<warehouse>/current`, never a checkout or worktree — no `.env` there, so every credential resolves to nothing, including the alert that would report it. `universe-refresh` is the one exception (it writes `presets/`, and the release is `chmod -R a-w`); launchd starts it cold, so `livewire_ingest.py` loads the scheduled env for `universe-sync`/`shepherd-universe` itself — without it the dead-ticker check skipped silently and the denominator only ever grew. → test: `tests/test_launchd_templates.py::test_the_scheduled_jobs_run_the_release_not_a_checkout`, `::test_no_other_template_reads_the_repo` (all eight templates; a new template with no entry fails), `tests/test_livewire_entrypoints.py::test_ingest_universe_refresh_commands_load_scheduled_env` · pm:2026-07-27-launchd-pointed-at-worktree-no-env, pm:2026-09-01-universe-refresh-runs-from-repo
 - A scheduled command is verified with the argv its plist actually produces, and a repair the lake needs nightly is called by a lane: `membership-sync` died every weekday on `unrecognized arguments: ndx100 djia` (`--index` was `action="append"`), `convert-dividend-currency` was wired to nothing (~30 Silver symbols failed on currency mismatch), and "Foreign-currency dividends" graded Sunday's manual row as today's OK. → test: `tests/test_livewire_entrypoints.py::test_the_scheduled_membership_sync_argv_parses_and_covers_every_index`, `tests/test_sync_corporate_actions.py::test_the_lane_converts_foreign_currency_dividends_and_emits_its_measurements`, `tests/test_status.py::test_foreign_currency_dividends_without_a_measurement_today_is_unknown` A repair called by a lane is measured at the lane's scope: a `--tickers` pass files `scope='subset'`, and per-symbol work hoisted out of the loop stays out (the conversion read the whole `security_master` log once per symbol). → test: `tests/test_status.py::test_foreign_currency_dividends_ignores_a_targeted_repairs_subset_row`, `tests/test_sync_corporate_actions.py::test_a_resumed_pass_finishes_its_tail_then_opens_a_new_cycle` · pm:2026-09-14-membership-sync-argv-and-unwired-dividend-fx
 - `promote` exports `origin/main` but runs the checkout's own builder: `git checkout main && git pull` before promoting anything that touches the promoter. Never `rm -rf` the release `current` points at; recover with `release rollback` then `promote`. → pm:2026-07-29-promote-runs-checkout-builder, pm:2026-07-29-rm-rf-release-current-dangling
 - Releases are `git archive` exports (a `git worktree` export keeps a `.git` tether to the checkout) with their own frozen venv. `promote` gates on a completed CI run for that exact SHA — `ci.yml` runs on push to main because a squash merge is a commit no PR run covered; `--allow-unverified` was for bootstrap only. Flipping `current` mid-run is safe (`os.getcwd()` is physical). The lake is deliberately **not** isolated per release: dev and prod share one `fcntl.flock` domain, and containerizing would split it.
@@ -142,7 +149,7 @@ gap      = expected − actual
 - Alert values are passed single-token (`--key=value`); a value beginning with `--` used to be unsendable. → test: `tests/node/send_mail.test.mjs` (`"a value beginning with -- survives"`) · pm:2026-08-08-alert-value-starting-with-dashes
 - Every email is an `executions(script='notify')` row, success or failure; the only dedup is a successful row with the same fingerprint in 24h. → test: `tests/test_notify.py` · pm:2026-09-12-email-was-a-side-effect-not-a-record
 - The watchdog never restates a page a lane already sent: one FRED 502 mailed twice (10:36Z by the lane, 12:00Z by the watchdog) because the two fingerprint in unrelated namespaces. `page_from_sections` drops a BAD section whose `run_id` already paged — only on a delivered send, never for a section belonging to no run, and one suppressed section never silences its neighbours. → test: `tests/test_check_daily_update_watchdog.py::TestTheWatchdogDoesNotRestateALanesOwnPage` · pm:2026-09-16-one-failure-paged-twice
-- The digest is unconditional, daily, 12:15Z after coverage, and reports today's scan; "Digest sent today" is BAD after 12:45Z. → test: `tests/test_nightly_digest.py`, `tests/test_status.py::test_digest_sent_today_is_bad_after_its_deadline`
+- The digest is unconditional, daily, 15:45Z after coverage (waits ≤4h for the coverage fact), and reports today's scan; "Digest sent today" is BAD after ~19:45Z. → test: `tests/test_nightly_digest.py`, `tests/test_status.py::test_digest_sent_today_is_bad_after_its_deadline`
 - A zero denominator is UNKNOWN per scope, never 100%. → test: `tests/test_status.py::test_coverage_a_zero_denominator_scope_is_unknown_not_one_hundred`
 - Recovery deferred on two consecutive scans is BAD. → test: `tests/test_status.py::test_coverage_recovery_deferred_twice_is_bad`
 - The coverage 1d gate calls a session due at next-day 15:00Z; the 11:00Z scan therefore reads `0/0` on weekdays — a schedule-vs-rule gap, disposition open. → pm:2026-09-12-coverage-1d-due-gate-vs-schedule
@@ -156,6 +163,7 @@ gap      = expected − actual
 - Two trims, in order: the deterministic 2021-06 seed-boundary check on raw bronze (trims to the post-seed window, never quarantines), then the blind >6.0 continuity scan on the adjusted series with durable triage verdicts exempting confirmed real moves. Everything published is silver grade _at the 6.0 definition_. → test: `tests/test_rebuild_silver.py::test_seed_corrupt_symbol_publishes_its_post_seed_window_rather_than_quarantining` · pm:2026-07-18-silver-seed-floor-blind-heuristic
 - Quarantine omits a failed in-scope symbol from the next manifest; old immutable generations remain for already-pinned readers. Readers select daily and factors from the same pinned manifest. Factor intervals stay wider than the daily window. → test: `tests/test_silver_atomic_publication.py`
 - Two active splits on one ex-date: equal ratios collapse to one, unequal ratios fail closed. Count affected stored rows, not action records (16 symbols → 5 in history → 0 published). → test: `tests/test_adjustment_engine.py::test_one_split_restated_at_another_scale_is_collapsed_not_doubled`, `::test_conflicting_active_splits_on_one_ex_date_fail_closed` · pm:2026-08-02-two-active-splits-one-ex-date
+- A split dated after an incoming IB backfill batch is classified from the seam between the batch's last row and the first existing row after it, never at its own ex_date (both sides are existing data there and only reproduce the already-correct raw jump); `prepare_ib_rows_for_publish` widens the caller's `as_of_date` to the existing rows' own latest date rather than trusting a batch-max cutoff. 7 symbols, ~3,300 rows mislabeled `raw` (SVXY, VXX, XLK, XLY, XLB, XLU, XLE). → test: `tests/test_price_basis.py::test_svxy_post_window_split_classified_from_seam`, `::test_vxx_two_post_window_reverse_splits_classified_from_seam` · pm:2026-09-27-backfill-classified-future-splits-on-existing-raw-rows
 - Cancellation inference is provider-scoped: a Massive full reconcile never cancels a yahoo-sourced action (507 repairs undone over two Sundays before this). → test: `tests/test_corporate_action_store.py::test_full_reconcile_leaves_another_provider_alone` · pm:2026-07-19-cancellation-inference-provider-scoped
 - A carried generation reference retains the committed manifest hash; a mismatch fails the publish rather than blessing bytes from disk. → test: `tests/test_silver_atomic_publication.py`
 - A manifest left by SIGKILL before the `current.json` swap is uncommitted: retry quarantines its metadata, retains its generation, and uses a new attempt id. → test: `tests/test_silver_atomic_publication.py`

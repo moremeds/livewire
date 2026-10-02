@@ -139,6 +139,7 @@ budget emits no measurement — its `lane_results` row (`outcome='blocked'`,
 | ----------------- | ------------------------------------------------------------------- |
 | `MASSIVE_API_KEY` | `MassiveClient` (daily REST equity, splits/dividends, break triage) |
 | `FRED_API_KEY`    | `livewire_ingest.py fred-rates`                                     |
+| `EIA_API_KEY`     | `livewire_ingest.py eia`                                            |
 
 ---
 
@@ -224,6 +225,11 @@ python scripts/livewire_ingest.py historical --preset presets/futures-index.json
 python scripts/livewire_ingest.py historical --preset presets/futures-energy.json --asset-class futures  # NYMEX energy futures
 python scripts/livewire_ingest.py historical --host 192.168.1.50 --port 4001 --tickers AAPL            # Remote IB Gateway
 ```
+
+`BZ` is retired from new futures ingestion: daily directory discovery skips
+stored BZ contracts and historical/daily BZ requests fail before IB access.
+Stored BZ parquet remains readable. `COIL` is maintained as its own IPE series;
+the two roots are never merged, relabeled, or treated as continuous history.
 
 **Backfill mode** (`--backfill`) fetches only missing older data for tickers
 already in bronze parquet:
@@ -332,6 +338,71 @@ a 4xx is raised on the first attempt. One series failing does not skip the
 others, and the command exits 1 if any series is still unfetched — so a
 nonzero exit can still mean some series were written.
 
+### EIA energy (petroleum, natural gas, nuclear, electricity, and every EIA bulk family)
+
+Uses `EIA_API_KEY`. One command, two channels, both declared in `livewire_scripts/fetch_eia.py`:
+
+**API datasets** (`DATASETS`, ids like `petroleum/stocks/1w`, `electricity/region/1h`):
+
+| product | datasets | frequency | file |
+|---|---|---|---|
+| `petroleum` | `spot_price` · `retail_price` · `weekly_supply` (full WPSR) · `stocks` · `refiner_production` · `blender_production` · `imports_by_country` · `heating_oil_propane` | daily / weekly | `year=<YYYY>/1d\|1w.parquet`, keyed `period, series` |
+| `natural_gas` | `spot_price` (Henry Hub `RNGWHHD`) · `storage` | daily / weekly | `year=<YYYY>/…`, keyed `period, series` |
+| `nuclear` | `outages_us` · `outages_facility` · `outages_generator` | daily | `year=<YYYY>/1d.parquet` |
+| `electricity` | `region` · `fuel_type` · `sub_ba` · `interchange` | daily + hourly (UTC) | `month=<YYYY-MM>/1d.parquet` + `1h.parquet` |
+
+**Bulk families** (`BULK_FAMILIES`; `https://www.eia.gov/opendata/bulk/<code>.zip`), every
+series at monthly (`1mo`), quarterly (`1q`), annual (`1y`) and PET's 4-week (`4w`)
+frequency, as `product=<p>/dataset=<code>/year=<YYYY>/<tf>.parquet` keyed `period, series`
+(`period` = the period's first day) plus `series.parquet` (name, units, geography, …):
+`PET`, `PET_IMPORTS` → petroleum · `NG` → natural_gas · `ELEC` → electricity · `COAL` ·
+`TOTAL` → total_energy · `SEDS` → state_energy · `INTL` → international · `EMISS` → emissions
+(discontinued upstream) · `STEO` → steo, kept whole per release as `vintage=<YYYY-MM-DD>/`
+(a forecast is rewritten by every release). PET/NG daily and weekly stay on the API.
+A value EIA publishes as a marker (`NA`, `W`, `--`, `ie`, …) is stored null with the marker
+in `value_flag`. `EBA` is the hourly grid monitor: mapped onto the four hourly API datasets.
+AEO/IEO (long-range outlooks) are not imported.
+
+Measured on the mini, 2026-09-23: ELEC (60M points) 164 s, 2.0 GB peak; PET + PET_IMPORTS
++ COAL + SEDS + INTL + STEO 76 s; NG + TOTAL + EMISS 20 s.
+
+```bash
+python scripts/livewire_ingest.py eia                                   # scheduled (sync_runner phase 2b): API lookback, then the bulk families that are due
+python scripts/livewire_ingest.py eia --dataset petroleum natural_gas nuclear --start 1980-01-01   # API backfill; each dataset clamps to its first period
+python scripts/livewire_ingest.py eia --dataset electricity/region/1d --start 2024-03-01 --end 2024-03-31   # rerun one failed window
+python scripts/livewire_ingest.py eia --bulk PET ELEC                   # import these families now, due or not
+python scripts/livewire_ingest.py eia --bulk EBA                        # hourly electricity history (691 MB)
+```
+
+A bulk family is **due** when its manifest (`https://api.eia.gov/bulk/manifest.txt`)
+`last_updated` moved and its last import is at least `eia_bulk_refresh_days` old
+(`eia_eba_refresh_days` for EBA). The last import is the newest ledger row
+`evidence(kind='eia_bulk', subject=<code>)`, whose payload names the zip
+(`raw/eia/bulk/<code>/<last_updated>.zip` — `raw/eia` is a symlink onto the lake volume,
+like `raw/massive`) and the rows published. A family with any failed partition writes
+no evidence row, so it stays due. The first EBA import also fetches from the API every
+facet value the bulk file lacks (on 2026-09-23: BA `SWPW`, fuel types `BAT`/`SNB`/`PS`,
+several sub-BAs); afterwards the daily lookback keeps them.
+
+**Bulk vs API.** Every upsert counts the stored values it replaces with a different
+value as `eia_values_revised` (scope `<dataset>:<window>`). That one measurement answers
+both open questions: whether EIA revises history older than the lookback (a bulk
+re-import changing old rows), and how far the two channels disagree (an API fetch over
+bulk-imported rows). `source` says which channel wrote a row: `eia_bulk` or `eia`.
+
+**Status.** `EIA freshness`: each API dataset's newest `eia_staleness_days` against its
+declared `max_lag_days` (provisional, from one observation plus EIA's release days);
+none measured in 4 days is UNKNOWN. `EIA bulk imports`: `eia_bulk_behind_days` (0 when
+current with the manifest, else the age of the last import) against twice the refresh
+interval.
+
+EIA's published limit is < ~9,000 requests/hour and < 5/s; requests are spaced
+`eia_min_request_interval_s` apart, and a 429 (a temporary key suspension) is
+retried like a 5xx (`eia_retry_attempts`, `eia_retry_backoff_s`). A failed
+window is filed as `eia_fetch_failed`, scope `<dataset id>:<YYYY-MM>:<status>` or
+`bulk/<code>:<status>`, and the command exits 1; the rest still publishes. `eia.gov` is
+unreachable from the MacBook's network — run it on the mini.
+
 ### FX and DXY
 
 `scripts/livewire_ingest.py fx` is the only writer of `asset_class=fx`. It is not
@@ -377,6 +448,17 @@ python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --asset-class
 - `--asset-class futures` uses `Future(root, expiry, exchange)` contracts with
   composite tickers (`ES_202506`), writes to `data-lake/bronze/asset_class=futures/`,
   and uses the futures parquet schema.
+- The scheduled `daily --asset-class futures` lane resolves `presets/futures-rolling.json`
+  against IB ContractDetails on each run. It tracks all listed energy delivery
+  months through the current month plus 15 months, and the first two live delivery contracts for metals,
+  agriculture, index (ES/NQ/RTY/YM) and treasury (ZN/ZB/ZF) roots. Missing selected contracts are full-history seeded through the
+  robust IB runner before the daily scan. The subsequent scan still visits all
+  existing non-retired futures directories; BZ is excluded while its parquet
+  remains stored. The dated
+  `futures-active.json` is a reproducible seed snapshot, not the rolling rule.
+  The coverage report resolves this same live list for its futures denominator.
+  If IB is unavailable, futures coverage is `UNKNOWN`; equity coverage and
+  recovery continue, and the rolling-resolution failure is recorded in the log.
 
 ---
 
@@ -505,6 +587,18 @@ budget emits nothing at all, so no row can speak for it.
 python scripts/livewire_ingest.py corporate-actions convert-dividend-currency                       # dry-run, all CA-store symbols
 python scripts/livewire_ingest.py corporate-actions convert-dividend-currency --tickers ACR         # dry-run, one symbol
 python scripts/livewire_ingest.py corporate-actions convert-dividend-currency --apply --output-dir ~/market-warehouse/grok_index/gaps/
+```
+
+`corporate-actions cancel-reviewed-splits [--apply]` cancels each Massive "split" listed in
+`REVIEWED_NOT_SPLITS` (`livewire_scripts/sync_corporate_actions.py`, each entry with its
+evidence; today XLF 2016-09-19, the XLRE spin-off). Dry-run by default; both modes file a
+`reviewed-split-cancel` run and a `reviewed_split_cancelled` measurement. The cancel row is
+provider `review`, so a reconcile of the same payload keeps it; a restated payload re-inserts
+and needs a new review.
+
+```bash
+python scripts/livewire_ingest.py corporate-actions cancel-reviewed-splits            # dry-run
+python scripts/livewire_ingest.py corporate-actions cancel-reviewed-splits --apply
 ```
 
 `--resume` is what the nightly lane passes, every night. It continues the
@@ -655,6 +749,11 @@ python scripts/livewire_store.py repair-legacy-basis \
     --audit-manifest <.../audit.json> --output-dir <.../repair-batch1> --priority-only --dry-run
 python scripts/livewire_store.py repair-legacy-basis \
     --audit-manifest <.../audit.json> --output-dir <.../repair-batch1> --priority-only --resume
+# --symbols XLF rescales the rows before an IB_DISTRIBUTION_FACTORS ex-date (clients/price_basis.py)
+# by the one factor fresh IB agrees on (fails closed under 99%); nothing from the ex-date on changes.
+# An audit item {"klass": "chunk", "chunks": [{"start", "end", "factor"}]} rescales only rows in [start, end), when
+# fresh IB measures that factor against 20 rows each side (1%) and both sides agree; otherwise `ambiguous`. Every run files a `repair-legacy-basis` ledger run and
+# `legacy_basis_<status>` measurements.
 # Every mutated parquet is copied verbatim to <output-dir>/backup/ FIRST; the sidecar
 # records backup_sha256. To undo the batch (or one symbol):
 python scripts/livewire_store.py rollback-legacy-basis --output-dir <.../repair-batch1> [--tickers NVDA]
@@ -1017,6 +1116,7 @@ python scripts/livewire_store.py duckdb sql "SELECT ... FROM bronze_equity_1d"
 - Symbol-scoped reads bypass views entirely — `duckdb bars` constructs
   `symbol=<TICKER>/<tf>.parquet` paths directly.
 - Coverage is **daily-only**.
+- Energy (EIA) is `bronze_energy_<tf>`: one view per timeframe across all datasets, filter on `product`/`dataset`; a column another dataset lacks reads NULL. Not in the coverage table.
 - `build` publishes by writing a staging database and `os.replace()`-ing it into
   place; concurrent `read_only` readers are fine.
 
@@ -1036,6 +1136,7 @@ python scripts/livewire_ops.py release promote            # build+serve origin/m
 python scripts/livewire_ops.py release promote --dry-run  # decide without building
 python scripts/livewire_ops.py release list               # `*` marks what is served
 python scripts/livewire_ops.py release rollback           # serve the previous one
+python scripts/livewire_ops.py release gc --keep 3       # preview old releases; no deletion
 ```
 
 - **`git checkout main && git pull` before promoting anything that changes the
@@ -1045,6 +1146,17 @@ python scripts/livewire_ops.py release rollback           # serve the previous o
 - `--allow-unverified` bypasses the CI gate; needed exactly once, to bootstrap the
   first release from a SHA predating the push trigger.
 - `promote` runs `npm ci --omit=dev` between `build_venv` and `freeze`.
+- Promotion previews old release candidates but never deletes them. A job already
+  running from an older physical release may still need its virtualenv and code.
+- Release deletion is a separate maintenance action. Before the first rollout
+  of this policy, pause scheduled launchers and allow old-code jobs to finish:
+  their old housekeeping tail can still prune releases. For later GC, keep new
+  launches paused, verify every old-release job and child process has exited,
+  review the `gc --keep 3` candidate list, then use
+  `gc --keep 3 --apply --maintenance-window` only with the required operator authorization. Resume
+  launchers afterwards. `--maintenance-window` is the operator's assertion of
+  quiescence; it does not scan processes or prevent a new manual launch. A
+  process snapshot without paused launchers is insufficient.
 
 ### launchd install
 
@@ -1229,6 +1341,7 @@ python scripts/livewire_ingest.py membership-sync [--index sp500 ndx100 ...] [--
 python scripts/livewire_ingest.py membership-sync import --index sp500 \
     --events grok_index/pit_membership/sp500/events.jsonl --source <file>...        # one-time panel import
 python scripts/livewire_ingest.py membership-sync reresolve --index sp500 --confidence B   # placeholder → security_id
+python scripts/livewire_ingest.py membership-sync repair-identity [--index sp500 ndx100 djia] [--apply] [--output <json>]
 ```
 
 - **Live sync** fetches each index's current source — Wikipedia
@@ -1261,6 +1374,28 @@ python scripts/livewire_ingest.py membership-sync reresolve --index sp500 --conf
   `known_at = now`, so an `as_of` before the pass still sees the placeholder.
   Idempotent; an interrupted pass is completed by the retry. Run
   `security-master sync` first — a ticker with no identity stays a placeholder.
+- **`repair-identity`** merges a `massive` identity into its researched
+  (`wikipedia_sec_research`) twin by CIK (R1), extends a researched claim's
+  narrow `[add-1d, add+1d)` window to the next non-churn `remove` (R2, capped
+  and reported on collision, never forced), relabels a renamed security's
+  claims to today's ticker from `presets/<index>.json` (R5; ambiguous or
+  colliding claims are reported in `relabels_skipped`, never guessed), and
+  rejects a same-timestamp remove+add churn pair in one index (R4) — the fix
+  for the 2026-09-17 narrow-identity churn
+  (`docs/superpowers/specs/2026-09-23-membership-identity-continuity-design.md`).
+  A successor registrant's CIK joins its predecessor's through
+  `_CIK_SUCCESSORS` (ExxonMobil Holdings 0002115436 → Exxon Mobil 0000034088).
+  Dry run by default; `--apply` writes security-master rows (R1, R5, then R2) then
+  membership rejections (R4) in one run; `--output` writes the JSON manifest
+  (merges, conflicts, relabels, relabels_skipped, extensions, caps, rejections, dangling references,
+  before/after member counts). Idempotent — event ids derive from the event
+  they supersede, so a rerun appends nothing. A verified membership event
+  still referencing a rejected duplicate after R1 fails the run rather than
+  guessing.
+- **Ledger:** `runs` rows `job='membership-repair-identity'`; measurements
+  `identity_merges`, `identity_conflicts`, `identity_relabels`,
+  `identity_relabels_skipped`, `identity_extensions`,
+  `identity_caps`, `membership_rejections`, `identity_dangling_references`.
 - **Ledger:** `runs` rows `job='membership-reresolve'` — deliberately not
   `membership-sync`, so a later OK pass cannot hide the night's FAILED
   scheduled run. Measurements `membership_reresolve_conflict` and
@@ -1296,17 +1431,18 @@ python scripts/livewire_ingest.py membership-sync reresolve --index sp500 --conf
 
 ## 10. Housekeeping
 
-`housekeeping` prunes logs (60d), releases (keep 3) and superseded evicted silver
-revisions (keep 2). It also rotates `logs/launchd/<label>.<stream>.log`: the day
+`housekeeping` prunes logs (60d) and superseded evicted silver revisions (keep 2),
+and previews release candidates (keep 3) without deleting them, even with
+`--apply`. It also rotates `logs/launchd/<label>.<stream>.log`: the day
 after a job last wrote, the live file is renamed `…<YYYY-MM-DD>.log` by its mtime
 (appended to if the dated name already exists) and tagged files are kept 14 days.
-**Dry run is the default**; `release.prune` previews in it too.
+**Dry run is the default**; release GC is preview-only here in both modes.
 `raw/` and `repairs/` are protected **by name**, never by an age rule.
 
 ```bash
 python scripts/livewire_ops.py housekeeping                      # dry run (default)
 python scripts/livewire_ops.py housekeeping --dry-run            # same, explicit
-python scripts/livewire_ops.py housekeeping --apply              # actually delete
+python scripts/livewire_ops.py housekeeping --apply              # delete eligible logs/evicted artifacts, not releases
 python scripts/livewire_ops.py housekeeping --log-retention-days 60
 python scripts/livewire_ops.py housekeeping --keep-releases 3
 python scripts/livewire_ops.py housekeeping --keep-evicted 2

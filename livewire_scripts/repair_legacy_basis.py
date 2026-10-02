@@ -13,20 +13,23 @@ import argparse
 import hashlib
 import json
 import os
+import socket
+import statistics
 import sys
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from clients import ledger
 from clients.adjustment_engine import adjust_daily_rows, build_factor_intervals
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore
 from clients.ib_client import IBClient, IBConnectionError
 from clients.ingestion_common import load_preset
 from clients.parquet_io import publish_parquet, restore_parquet_exact, symbol_lock, write_json_atomic
-from clients.price_basis import prepare_ib_rows_for_publish
+from clients.price_basis import IB_DISTRIBUTION_FACTORS, prepare_ib_rows_for_publish
 from clients.seed_boundary import check_seed_boundary
 from clients.silver_continuity import check_adjusted_continuity
 from clients.source_evidence import sha256_file
@@ -54,6 +57,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="repair only sp500/ndx100/r2k members; defer the tail to a later full run",
     )
     parser.add_argument("--dry-run", action="store_true", help="fetch, classify and self-check, but never write bronze")
+    parser.add_argument(
+        "--symbols",
+        nargs="+",
+        default=[],
+        help="symbols with an IB_DISTRIBUTION_FACTORS entry: rescale their rows before its ex-date to IB's basis",
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -176,6 +185,120 @@ def _order_symbols(symbols: list[str], rank: dict[str, int]) -> list[str]:
     return sorted(symbols, key=lambda s: (rank.get(s, len(_PRIORITY_PRESETS)), s))
 
 
+def _rescale_to_ib(existing: list[dict], fresh: list[dict], before: date) -> tuple[list[dict], dict]:
+    """Existing rows before ``before`` times the one price factor fresh IB agrees on.
+
+    A reviewed distribution is wrong only before its ex-date, and there by one constant
+    factor. The fresh fetch is the gate, not the source: IB's own history drifts (fresh XLF
+    2004-01-26 low 15.02 under 26.87 neighbours; 2004-01-29/30 8% off), and after the
+    ex-date its volume is ~11% under Massive's. Fails closed unless 99% of closes agree.
+    """
+    fresh_by_date = {str(row["trade_date"]): row for row in fresh}
+    old = [row for row in existing if date.fromisoformat(str(row["trade_date"])) < before]
+    if not old:
+        raise ValueError("no rows before the distribution to rescale")
+    # An IB fetch can omit a date the previous one held; unconfirmed counts against the budget.
+    missing = [str(row["trade_date"]) for row in old if str(row["trade_date"]) not in fresh_by_date]
+    ratios = [
+        (fresh_by_date[str(row["trade_date"])]["close"] / row["close"], row)
+        for row in old
+        if str(row["trade_date"]) in fresh_by_date
+    ]
+    factor = statistics.median(ratio for ratio, _ in ratios)
+    disagree = [
+        {"trade_date": str(row["trade_date"]), "old": row["close"], "ib": row["close"] * ratio}
+        for ratio, row in ratios
+        if abs(ratio / factor - 1) > 1e-3
+    ]
+    if len(disagree) + len(missing) > 0.01 * len(old):
+        raise ValueError(
+            f"{len(disagree)} of {len(old)} closes disagree with the factor {factor}, {len(missing)} missing from IB"
+        )
+    prices = ("open", "high", "low", "close", "adj_close")
+    rows = [
+        {
+            **row,
+            **{column: row[column] * factor for column in prices},
+            "volume": round(row["volume"] / factor),
+            "price_basis": "raw",
+        }
+        for row in old
+    ]
+    return rows, {"price_factor": factor, "rows": len(old), "disagree": disagree, "missing_from_ib": missing}
+
+
+# A chunk is judged by its neighbours: this many IB-confirmed rows each side.
+_CHUNK_NEIGHBOURS = 20
+_CHUNK_TOLERANCE = 0.01
+
+
+def _rescale_chunks(existing: list[dict], fresh: list[dict], chunks: list[dict]) -> tuple[list[dict], dict]:
+    """Rows inside each ``[start, end)`` legacy chunk times its declared ``factor``.
+
+    A legacy chunk downloaded at another adjustment vintage sits a constant split ratio off
+    the rows on both sides (PZZA 2004-05-25 x0.5, 2005-05-25 x2). Fresh IB is the gate: the
+    IB/Bronze ratio inside the chunk must be ``factor`` times the ratio either side, and the
+    two sides must agree with each other, so a real split next to the chunk fails closed.
+    """
+    fresh_by_date = {str(row["trade_date"]): row for row in fresh}
+    ordered = sorted(existing, key=lambda row: str(row["trade_date"]))
+
+    def ratios(rows: list[dict]) -> list[float]:
+        return [
+            fresh_by_date[str(r["trade_date"])]["close"] / r["close"]
+            for r in rows
+            if str(r["trade_date"]) in fresh_by_date
+        ]
+
+    rewritten: list[dict] = []
+    report: list[dict] = []
+    prices = ("open", "high", "low", "close", "adj_close")
+    for chunk in sorted(chunks, key=lambda c: c["start"]):
+        start, end, factor = date.fromisoformat(chunk["start"]), date.fromisoformat(chunk["end"]), chunk["factor"]
+        day = lambda row: date.fromisoformat(str(row["trade_date"]))  # noqa: E731
+        inside = [row for row in ordered if start <= day(row) < end]
+        left = ratios([row for row in ordered if day(row) < start][-_CHUNK_NEIGHBOURS:])
+        right = ratios([row for row in ordered if day(row) >= end][:_CHUNK_NEIGHBOURS])
+        within = ratios(inside)
+        if len(left) < 5 or len(right) < 5 or not within:
+            raise ValueError(f"chunk {start}..{end}: too few IB-confirmed rows to judge it")
+        f_left, f_right, f_in = statistics.median(left), statistics.median(right), statistics.median(within)
+        measured = f_in / f_left
+        entry = {
+            "start": str(start),
+            "end": str(end),
+            "factor": factor,
+            "ib_factor": measured,
+            "neighbours_agree": f_left / f_right,
+            "rows": len(inside),
+            "missing_from_ib": len(inside) - len(within),
+        }
+        report.append(entry)
+        if abs(f_left / f_right - 1) > _CHUNK_TOLERANCE:
+            raise ValueError(f"chunk {start}..{end}: the rows either side disagree with IB by {f_left / f_right}")
+        if abs(measured / factor - 1) > _CHUNK_TOLERANCE:
+            raise ValueError(f"chunk {start}..{end}: IB measures {measured}, not the declared {factor}")
+        # A date IB never printed (thin names: PLBC 84 of 252) is unconfirmed, not a disagreement;
+        # the chunk is one file segment, so half of it confirmed carries the rest.
+        off = [r for r in within if abs(r / (f_left * factor) - 1) > _CHUNK_TOLERANCE]
+        if len(off) > 0.01 * len(within) or len(within) < 0.5 * len(inside):
+            raise ValueError(
+                f"chunk {start}..{end}: {len(off)} of {len(within)} closes disagree, of {len(inside)} rows"
+            )
+        fixed = {
+            str(row["trade_date"]): {
+                **row,
+                **{column: row[column] * factor for column in prices},
+                "volume": round(row["volume"] / factor),
+            }
+            for row in inside
+        }
+        # A later chunk is judged against this one corrected (OPCH's chunks touch).
+        ordered = [fixed.get(str(row["trade_date"]), row) for row in ordered]
+        rewritten += fixed.values()
+    return rewritten, {"chunks": report}
+
+
 def _repair_one(
     symbol: str,
     *,
@@ -186,6 +309,8 @@ def _repair_one(
     threshold: float,
     backup_dir: Path | None,
     audit_sha256: str | None,
+    replace_before: date | None = None,
+    chunks: list[dict] | None = None,
 ) -> tuple[str, dict]:
     """Return (status, sidecar). status in {'done','would-repair','ambiguous','failed'}."""
     path = bronze.symbol_path(symbol)
@@ -204,14 +329,32 @@ def _repair_one(
     # existing rows, not extending history. Fetching from an absolute 1980 floor
     # would issue ~46 empty yearly IB requests per symbol and hammer the gateway.
     start = min(date.fromisoformat(str(r["trade_date"])) for r in existing)
-    ib_rows = fetcher(symbol, start, as_of)
+    stop = as_of
+    if chunks:
+        # A chunk is judged on its own window and neighbours, not the whole history.
+        start = max(start, min(date.fromisoformat(c["start"]) for c in chunks) - timedelta(days=60))
+        stop = min(as_of, max(date.fromisoformat(c["end"]) for c in chunks) + timedelta(days=60))
+    ib_rows = fetcher(symbol, start, stop)
     if not ib_rows:
         return "failed", {"symbol": symbol, "reason": "ib_no_data"}
     try:
-        canonical = prepare_ib_rows_for_publish(ib_rows, existing_rows=existing, actions=actions, as_of_date=as_of)
+        canonical = prepare_ib_rows_for_publish(
+            ib_rows, symbol=symbol, existing_rows=existing, actions=actions, as_of_date=as_of
+        )
     except ValueError as exc:
         return "ambiguous", {"symbol": symbol, "reason": f"classification: {exc}"}
     ib_only = [r for r in canonical if r.get("source") == "ib"]
+    rescale: dict = {}
+    if replace_before is not None:
+        try:
+            ib_only, rescale = _rescale_to_ib(existing, ib_only, replace_before)
+        except ValueError as exc:
+            return "ambiguous", {"symbol": symbol, "reason": f"rescale: {exc}"}
+    if chunks:
+        try:
+            ib_only, rescale = _rescale_chunks(existing, ib_only, chunks)
+        except ValueError as exc:
+            return "ambiguous", {"symbol": symbol, "reason": f"chunk: {exc}"}
     if not ib_only:
         return "failed", {"symbol": symbol, "reason": "no_ib_rows_after_normalize"}
     # Self-check on the POST-MERGE series (existing rows overwritten by IB per date),
@@ -232,7 +375,7 @@ def _repair_one(
     except ValueError as exc:
         return "ambiguous", {"symbol": symbol, "reason": f"post_merge_discontinuous: {exc}"}
     if backup_dir is None:
-        return "would-repair", {"symbol": symbol, "rows_would_write": len(ib_only)}
+        return "would-repair", {"symbol": symbol, "rows_would_write": len(ib_only), **rescale}
     with symbol_lock(action_path), symbol_lock(path):
         current_source = sha256_file(path) if path.is_file() else None
         current_actions = sha256_file(action_path) if action_path.is_file() else None
@@ -247,6 +390,7 @@ def _repair_one(
             sidecar_fields={
                 "inserted": inserted,
                 "repaired_rows": len(ib_only),
+                **({"rescale": rescale} if rescale else {}),
                 "action_path": str(action_path.resolve()),
                 "action_sha256": action_hash,
             },
@@ -254,15 +398,63 @@ def _repair_one(
     return "done", sidecar
 
 
-def run(
-    argv: Sequence[str] | None = None,
+def run(argv: Sequence[str] | None = None, **kwargs: Any) -> int:
+    """Run the repair as one ledger run: its counts are measurements, its exit the run verdict."""
+    args = parse_args(argv)
+    run_id = os.environ.get("LW_RUN_ID") or ledger.new_run_id("repair-legacy-basis")
+    started = datetime.now(UTC)
+    run_row = {
+        "run_id": run_id,
+        "job": "repair-legacy-basis",
+        "host": socket.gethostname(),
+        "release_sha": os.environ.get("LW_RELEASE_SHA"),
+        "presets_sha": None,
+        "registry_sha": None,
+        "started": started,
+        "ended": None,
+        "exit_code": None,
+        "verdict": None,
+    }
+    ledger.open_run(run_row)
+    try:
+        exit_code, counts = _run(args, **kwargs)
+        scope = "dry_run" if args.dry_run else "apply"
+        ledger.emit(
+            "measurements",
+            [
+                {
+                    "name": f"legacy_basis_{status}",
+                    "scope": scope,
+                    "measured_at": started,
+                    "value": float(count),
+                    "unit": "count",
+                    "source": "measured",
+                    "run_id": run_id,
+                }
+                for status, count in sorted(counts.items())
+            ],
+            run_id=run_id,
+        )
+    except BaseException:
+        ledger.emit(
+            "runs", [run_row | {"ended": datetime.now(UTC), "exit_code": 1, "verdict": "FAILED"}], run_id=run_id
+        )
+        raise
+    verdict = "OK" if exit_code == 0 else "FAILED"
+    ledger.emit(
+        "runs", [run_row | {"ended": datetime.now(UTC), "exit_code": exit_code, "verdict": verdict}], run_id=run_id
+    )
+    return exit_code
+
+
+def _run(
+    args: argparse.Namespace,
     *,
     data_lake_root: Path | None = None,
     ib_factory: Callable[[], Any] = IBClient,
     ib_fetcher_factory: Callable[[Any], Callable[[str, date, date], list[dict]]] = IBHistoryFetcher,
     as_of_date: date | None = None,
-) -> int:
-    args = parse_args(argv)
+) -> tuple[int, dict[str, int]]:
     root = Path(data_lake_root) if data_lake_root is not None else (args.data_lake_root or data_lake_dir())
     as_of = as_of_date or datetime.now(UTC).date()
     bronze = BronzeClient(root / "bronze/asset_class=equity", "equity")
@@ -277,7 +469,17 @@ def run(
         raise ValueError("audit manifest has no data_lake_root: refusing to mutate bronze")
     if manifest_root != str(root.resolve()):
         raise ValueError(f"audit manifest data_lake_root {manifest_root} does not match active root {root.resolve()}")
-    mixed = [item["symbol"] for item in audit["symbols"] if item.get("klass") == "mixed"]
+    mixed = [item["symbol"] for item in audit["symbols"] if item.get("klass") in {"mixed", "chunk"}]
+    # A chunk item names legacy windows at another vintage; only rows inside them are rewritten.
+    chunked = {item["symbol"]: item["chunks"] for item in audit["symbols"] if item.get("klass") == "chunk"}
+    # A reviewed symbol is one with a declared IB distribution; only rows before it are rewritten.
+    reviewed: dict[str, date] = {}
+    for symbol in map(canonical_symbol, args.symbols):
+        ex_dates = [ex_date for (declared, ex_date) in IB_DISTRIBUTION_FACTORS if declared == symbol]
+        if not ex_dates:
+            raise ValueError(f"--symbols {symbol}: no IB_DISTRIBUTION_FACTORS entry to repair")
+        reviewed[symbol] = max(ex_dates)
+    mixed += [symbol for symbol in reviewed if symbol not in mixed]
     rank = _priority_rank(args.presets_dir) if args.priority_only else {}
     ordered = _order_symbols(mixed, rank) if rank else sorted(mixed)
     if args.priority_only:
@@ -349,6 +551,8 @@ def run(
                     threshold=args.continuity_threshold,
                     backup_dir=None if args.dry_run else args.output_dir / "backup",
                     audit_sha256=next((i["source_sha256"] for i in audit["symbols"] if i["symbol"] == symbol), None),
+                    replace_before=reviewed.get(symbol),
+                    chunks=chunked.get(symbol),
                 )
             except (IBConnectionError, ConnectionError, OSError, TimeoutError) as exc:
                 # IB session dropped mid-run. Aborting mirrors the initial-connect
@@ -408,7 +612,7 @@ def run(
         },
     )
     print(json.dumps({"counts": counts, "symbols": len(ordered), "aborted": aborted}, sort_keys=True))
-    return 0 if counts["failed"] == 0 and not aborted else 1
+    return (0 if counts["failed"] == 0 and not aborted else 1), counts
 
 
 def summarize_progress(audit_manifest: dict, batch_summary: dict, *, cursor: dict | None = None) -> dict:

@@ -7,8 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `repair-legacy-basis` repairs a legacy chunk downloaded at another adjustment vintage: an audit item of `klass: chunk` names `[start, end)` windows and a split factor, and only rows inside them are rescaled, when fresh IB measures that factor against the rows on both sides and those sides agree with each other. Silver showed these chunks as a step and its inverse a year or more apart (PZZA x0.5 on 2004-05-25, x2 on 2005-05-25), most of them on a late-May download boundary.
+- An IB seed or backfill no longer stores the session still trading. The 2026-09-23 commodity seed stored partial 09-23 bars for all 14 COIL contracts and CT_202612, and the daily lane, which fetches only past the latest stored date, never replaced them. `historical` now runs as a ledger run and measures the bars it drops.
+- A current PIT revision holding an empty session scope is integrity-checked and superseded by the next publish instead of replayed: its replay can never match under the rule above, so `shepherd-silver publish` failed with `PIT Silver input hash mismatch` while revision 6 was current.
+- XLF before 2016-09-19 was published 31% too high across the XLRE spin-off. Massive records the spin-off twice, as a $4.44356 cash dividend and as a 1:1.139146 split. IB adjusts its history once, by 203/250. The split is cancelled by `corporate-actions cancel-reviewed-splits` under provider `review`, and a reconcile of the same payload now keeps that cancellation. IB fetches are normalized with the declared `IB_DISTRIBUTION_FACTORS`. `repair-legacy-basis --symbols XLF` rescales the rows before the ex-date by the one factor a fresh IB fetch agrees on; it fails closed unless 99% of closes agree. It does not copy IB's rows: fresh IB XLF has a 15.02 low on 2004-01-26 against 26.87 in Bronze. The command now files ledger runs and measurements.
+- A PIT member scope that holds no trading session (an identity claim from Sunday 00:00 to Monday 00:00) is no longer published as an empty `[d, d)` session window; it still counts toward identity coverage. PIT revisions 5 and 6 carried 9 and 1 such scopes and apex rejected both.
+- `shepherd-silver publish` takes its action-receipt symbols from the publisher's own member scope instead of `plan_daily`, which read identities as of the bar-cutoff session end rather than `as_of`: an identity repair landing between the two made every publish fail with `action receipt symbol scope does not match`. The identity-coverage check no longer crashes with a `TypeError` when two claims share a start and one of them is open-ended.
+
+### Fixed
+
+- A split on an ex-date that carried a real market move beyond the 15% tolerance can be listed in `clients.price_basis.TOLERANCE_EXEMPT_SPLITS`, citing its evidence, and is then classified by margin alone. First entry: UVXY 2014-01-24 1:4 (a real +17.7% move on the VIX spike), which failed the UVXY IB backfill closed.
+
 ### Added
 
+- DuckDB views `bronze_energy_<tf>` (1h, 1d, 1w, 4w, 1mo, 1q, 1y) over the EIA tree, one per timeframe across every dataset, with `product` and `dataset` read off the path. EIA partitions by month, year or vintage, which DuckDB's hive reader refuses to mix. Energy stays out of the coverage table; `status` grades it by the EIA freshness checks.
+- `membership-sync repair-identity` R5: a renamed security's identity claims are relabelled to today's ticker (the one bronze is keyed by) from the current `presets/<index>.json` lists. A claim that would collide with another security's, a security with no listed ticker, and a ticker another security holds today are reported in `relabels_skipped`, never guessed. R1 joins a successor registrant to its predecessor's CIK through a cited `_CIK_SUCCESSORS` entry (ExxonMobil Holdings → Exxon Mobil). R2 now plans on R1 and R5's result. This closes the XOM and TRV identity gaps that blocked the sp500 PIT republish.
+- Index (ES/NQ/RTY/YM) and treasury (ZN/ZB/ZF) futures join the rolling IB futures selection: the first two live quarterly contracts per root, full-history seeded when first selected and counted by futures coverage. They were declared in static presets but no lane ever read them.
+- `membership-sync repair-identity`: one `security_id` per company after the 2026-09-17 narrow-identity-window churn. R1 merges a `massive` duplicate into its researched twin by CIK and moves all its claims; R1b re-points the duplicate's membership history; R2 extends a researched claim to the end of its cross-index membership stretch, citing the index record; R4 rejects the live-diff remove+add churn pairs and same-date renames across merged ids, while backfilled renames stay history. Dry run by default (copies only the two stores); `--apply` writes a JSON manifest and a ledger run and is idempotent. The live diff (`membership-sync`) now compares tickers rather than `security_id`s, and a renamed member (FLT → CPAY) is neither removed nor added.
+- Retired the BZ futures root from new ingestion while preserving stored BZ history. COIL is configured as a separate IPE series.
+- Added verified exchange mappings for the new commodity roots and rolling futures selection: energy through the current month plus 15 months, and the first two live delivery months for GC/SI/HG and 12 agricultural roots. Newly selected contracts are full-history seeded before daily updates.
+- Futures coverage now uses that same live rolling selection; when IB is unavailable it reports futures as UNKNOWN and continues equity coverage and recovery.
+
+- EIA energy lane (`livewire_ingest.py eia`, `clients/eia_client.py`): petroleum
+  (spot, retail, the weekly supply report incl. inventories, refinery, imports),
+  natural gas (Henry Hub spot, storage), nuclear outages, and grid-monitor
+  electricity daily + hourly, into
+  `bronze/asset_class=energy/product=<p>/dataset=<d>/…`. Raw pages in source
+  evidence, `runs`/`measurements` in the ledger, and a `sync_runner` phase that
+  re-fetches the last 14 days of every dataset on each intraday-catchup. Hourly
+  history loads from EIA's bulk `EBA.zip`, with the facets the bulk file lacks
+  filled from the API. Every monthly/quarterly/annual series of EIA's bulk
+  families (PET, PET_IMPORTS, NG, ELEC, COAL, TOTAL, SEDS, INTL, EMISS; STEO kept
+  per release) is imported and re-imported when EIA's manifest moves; each import
+  is a ledger `evidence(kind='eia_bulk')` row, the zip is kept under `raw/eia/bulk`,
+  and replaced values are counted as `eia_values_revised`. `status` grades
+  `EIA freshness` and `EIA bulk imports`.
+  `publish_parquet` accepts a composite sort key; `get_with_retry` takes an
+  opt-in `retry_statuses` (EIA opts into 429 — no other caller does).
+  The EIA catalog and plan are in `docs/audits/eia/`.
+  EIA's `total` overcounts facility nuclear outages (it counts generator rows), so
+  that dataset reads until a short page instead of to `total`.
 - `clients/http_retry.py`: the repo's one definition of a transient HTTP
   failure. A 5xx or a transport error retries with a bounded linear backoff; a
   4xx raises on the first attempt. FRED's local copy was replaced by it and
@@ -132,6 +172,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   committed`; the watchdog paged 4.5h later and Silver never rebuilt.
 
 ### Changed
+
+- Removed the unused ClickHouse bootstrap (`setup_market_warehouse.sh` flags, schema, helper scripts, `clickhouse-connect`). Nothing ran it and the mini never installed it.
+- Refreshed `CLAUDE.md`, `AGENTS.md` and `README.md` against the code and the mini: eight launchd jobs, digest at 15:45Z, equity daily from Massive by default, Gateway 10.50, the lake's per-subtree symlinks, rolling futures selection, and how Apex consumes the lake.
 
 - `massive_requests_per_minute/reference` is 600/min, not the 5/min inherited
   from the free Currencies FX tier. Massive documents no cap on a paid plan and

@@ -16,7 +16,7 @@ from clients import ledger
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateActionStore, SplitAddition
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
-from clients.massive_client import MassiveAuthError, MassiveDividend, MassiveResponseCapture
+from clients.massive_client import MassiveAuthError, MassiveDividend, MassiveResponseCapture, MassiveSplit
 from clients.source_evidence import SourceEvidenceStore
 from clients.telemetry import MassiveTelemetry
 from clients.yahoo_client import YahooSplit
@@ -2203,3 +2203,36 @@ def test_restore_yahoo_splits_ib_fetch_error_leaves_it_cancelled(tmp_path, monke
 def test_main_dispatches_generic_argv_to_run(monkeypatch):
     monkeypatch.setattr(sync_corporate_actions, "run", lambda argv: 0)
     assert sync_corporate_actions.main(["--dry-run"]) == 0
+
+
+def test_cancel_reviewed_splits_cancels_the_xlf_spin_off_split_only_on_apply(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
+    store = CorporateActionStore(tmp_path)
+    split = MassiveSplit(
+        provider_event_id="E07ab08a4b89a9996d2a836c4db3f451ce1fbcb3ad823b99e583be75dcf8ad0d8",
+        ticker="XLF",
+        execution_date=date(2016, 9, 19),
+        split_from=Decimal("1"),
+        split_to=Decimal("1.139146"),
+        payload_hash="d7b277b00aafcaaecda5f9b57425478ae376b6da8e32e93bfb53ed27ad3d261a",
+    )
+    store.reconcile("XLF", [split], datetime(2026, 9, 28, 4, tzinfo=UTC))
+
+    assert sync_corporate_actions.main(["cancel-reviewed-splits"]) == 0
+    assert [a.split_to for a in store.latest_active("XLF")] == [1.139146]
+    assert sync_corporate_actions.main(["cancel-reviewed-splits", "--apply"]) == 0
+
+    assert store.latest_active("XLF") == []
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["cancelled"][0]["symbol"] == "XLF"
+    assert {(r["scope"], r["value"]) for r in ledger.query("select scope, value from measurements")} == {
+        ("dry_run", 1.0),
+        ("apply", 1.0),
+    }
+    assert [
+        r["verdict"]
+        for r in ledger.query("select verdict from runs where job = 'reviewed-split-cancel' and ended is not null")
+    ] == [
+        "OK",
+        "OK",
+    ]

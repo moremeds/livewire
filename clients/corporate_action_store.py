@@ -267,6 +267,10 @@ class CorporateActionStore:
                     # and re-insert the foreign-currency row, silently reverting
                     # the repair every Sunday.
                     unchanged += 1
+                elif previous.provider != RECONCILE_PROVIDER and previous.payload_hash == event.payload_hash:
+                    # A reviewed cancellation of this exact payload (apply_repairs). A restated
+                    # payload falls through and re-inserts: the review covered the old one only.
+                    unchanged += 1
                 else:
                     # Append only: a superseded row is never rewritten. Rewriting its status
                     # to "corrected" changed rows an earlier as-of had already exported, and
@@ -400,14 +404,17 @@ class CorporateActionStore:
                 previous = active_split_by_exdate.get(ex_date)
                 if previous is None:
                     continue
+                # Filed under the repairing provider, so a reconcile re-fed the same Massive
+                # payload reads the cancellation as the current answer instead of reverting it.
                 cancelled_row = replace(
                     previous,
                     action_id=self._action_id(
-                        previous.provider,
+                        provider,
                         previous.provider_event_id,
                         previous.event_revision + 1,
                         previous.payload_hash,
                     ),
+                    provider=provider,
                     event_revision=previous.event_revision + 1,
                     supersedes_action_id=previous.action_id,
                     status="cancelled",

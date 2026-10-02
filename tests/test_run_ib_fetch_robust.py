@@ -2,6 +2,8 @@ import json
 import subprocess
 from unittest.mock import MagicMock
 
+import pytest
+
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts.run_ib_fetch_robust import (
     OutcomeCategory,
@@ -102,6 +104,43 @@ def test_build_worker_cmd_backfill():
 def test_build_worker_cmd_accepts_forced_source():
     cmd = _build_worker_cmd("AAPL", "backfill", "equity", source="massive")
     assert cmd[cmd.index("--source") + 1] == "massive"
+
+
+def test_parse_args_include_expired_defaults_off():
+    args = parse_args(["--preset", "presets/sp500.json", "--mode", "seed"])
+    assert args.include_expired is False
+
+
+def test_parse_args_include_expired_requires_futures():
+    with pytest.raises(SystemExit):
+        parse_args(["--tickers", "AAPL", "--mode", "seed", "--include-expired"])
+
+
+def test_parse_args_include_expired_parses_for_futures():
+    args = parse_args(
+        [
+            "--tickers",
+            "CL_202610",
+            "--mode",
+            "backfill",
+            "--asset-class",
+            "futures",
+            "--include-expired",
+        ]
+    )
+    assert args.include_expired is True
+    assert args.asset_class == "futures"
+
+
+def test_build_worker_cmd_include_expired_off_by_default():
+    cmd = _build_worker_cmd("CL_202610", "backfill", "futures")
+    assert "--include-expired" not in cmd
+
+
+def test_build_worker_cmd_include_expired_appends_flag():
+    cmd = _build_worker_cmd("CL_202610", "backfill", "futures", include_expired=True)
+    assert "--include-expired" in cmd
+    assert cmd[cmd.index("--asset-class") + 1] == "futures"
 
 
 def test_count_rows_reads_parquet(tmp_path):
@@ -329,6 +368,80 @@ def test_seed_exit_zero_without_bronze_is_fail(tmp_path, monkeypatch):
     assert outcome.note == "exit 0 but no bronze written"
 
 
+def test_futures_seed_without_history_is_skipped_for_retry(tmp_path, monkeypatch):
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: MagicMock(returncode=0))
+    outcome = run_one_ticker(
+        ticker="CL_202611",
+        mode="seed",
+        asset_class="futures",
+        bronze_dir=tmp_path,
+        timeout=10,
+        max_attempts=1,
+        cooldown=0,
+    )
+    assert outcome.code == OutcomeCategory.SKIP
+    assert outcome.note == "no futures history yet"
+
+
+def test_run_one_ticker_forwards_include_expired_to_worker_cmd(tmp_path, monkeypatch):
+    parquet = tmp_path / "asset_class=futures" / "symbol=CL_202610" / "1d.parquet"
+    parquet.parent.mkdir(parents=True)
+    parquet.write_bytes(b"existing")
+    captured: dict = {}
+
+    def fake_run(cmd, *a, **kw):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "livewire_scripts.run_ib_fetch_robust._count_rows",
+        lambda p: 100,
+    )
+    outcome = run_one_ticker(
+        ticker="CL_202610",
+        mode="backfill",
+        asset_class="futures",
+        bronze_dir=tmp_path,
+        timeout=10,
+        max_attempts=1,
+        cooldown=0,
+        include_expired=True,
+    )
+    assert "--include-expired" in captured["cmd"]
+    assert outcome.code == OutcomeCategory.OK_NOOP
+
+
+def test_main_forwards_include_expired_to_run_one_ticker(tmp_path, monkeypatch):
+    captured: dict = {}
+
+    def fake_run_one_ticker(**kwargs):
+        captured.update(kwargs)
+        return TickerOutcome("CL_202610", OutcomeCategory.SKIP, 0, 0.0, 0, 0)
+
+    monkeypatch.setattr(
+        "livewire_scripts.run_ib_fetch_robust.run_one_ticker",
+        fake_run_one_ticker,
+    )
+    rc = main(
+        [
+            "--tickers",
+            "CL_202610",
+            "--mode",
+            "backfill",
+            "--asset-class",
+            "futures",
+            "--include-expired",
+            "--log-dir",
+            str(tmp_path),
+            "--bronze-dir",
+            str(tmp_path / "bronze"),
+        ]
+    )
+    assert rc == 0
+    assert captured["include_expired"] is True
+
+
 def test_summary_line_format():
     outcomes = [
         TickerOutcome("AAPL", OutcomeCategory.OK, 1, 12.0, 0, 6000),
@@ -413,3 +526,58 @@ def test_main_returns_fail_status_for_timeout(tmp_path, monkeypatch, capsys):
 
     assert rc == 1
     assert "[1/1 timeout] HOOD" in capsys.readouterr().out
+
+
+def test_main_returns_gateway_down_when_seed_only_hits_temporary_unavailability(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "livewire_scripts.run_ib_fetch_robust.run_one_ticker",
+        lambda **kwargs: TickerOutcome(
+            "CL_202611", OutcomeCategory.TEMPORARY_UNAVAILABLE, 1, 0.1, 0, 0, "ib-gateway-unavailable"
+        ),
+    )
+
+    rc = main(
+        [
+            "--tickers",
+            "CL_202611",
+            "--mode",
+            "seed",
+            "--asset-class",
+            "futures",
+            "--log-dir",
+            str(tmp_path),
+            "--bronze-dir",
+            str(tmp_path / "bronze"),
+        ]
+    )
+
+    assert rc == GATEWAY_DOWN_EXIT_CODE
+    assert "temporary-unavailable" in capsys.readouterr().out
+
+
+def test_main_returns_failure_if_gateway_loss_coincides_with_hard_failure(tmp_path, monkeypatch):
+    outcomes = iter(
+        [
+            TickerOutcome("CL_202611", OutcomeCategory.TEMPORARY_UNAVAILABLE, 1, 0.1, 0, 0, "ib-gateway-unavailable"),
+            TickerOutcome("HO_202611", OutcomeCategory.FAIL, 3, 2.0, 0, 0, "invalid contract"),
+        ]
+    )
+    monkeypatch.setattr("livewire_scripts.run_ib_fetch_robust.run_one_ticker", lambda **kwargs: next(outcomes))
+
+    rc = main(
+        [
+            "--tickers",
+            "CL_202611",
+            "HO_202611",
+            "--mode",
+            "seed",
+            "--asset-class",
+            "futures",
+            "--log-dir",
+            str(tmp_path),
+            "--bronze-dir",
+            str(tmp_path / "bronze"),
+        ]
+    )
+
+    assert rc == 1

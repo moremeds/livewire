@@ -542,3 +542,44 @@ def test_full_reconcile_after_conversion_leaves_the_eod_fx_row_active(tmp_path):
     assert len(active) == 1
     assert active[0].provider == "eod_fx" and active[0].cash_amount == _ACR_CONVERTED
     assert store.path_for("ACR").read_bytes() == rows_before  # nothing appended
+
+
+# The XLF 2016-09-19 XLRE spin-off as Massive publishes it (mini store, 2026-09-28): a real
+# $4.44356 distribution and a 1:1.139146 "split" of the same event.
+_XLF_SPIN_OFF_SPLIT = _split(
+    provider_event_id="E07ab08a4b89a9996d2a836c4db3f451ce1fbcb3ad823b99e583be75dcf8ad0d8",
+    ticker="XLF",
+    execution_date=date(2016, 9, 19),
+    split_from=Decimal("1"),
+    split_to=Decimal("1.139146"),
+    payload_hash="d7b277b00aafcaaecda5f9b57425478ae376b6da8e32e93bfb53ed27ad3d261a",
+)
+
+
+def test_a_reviewed_split_cancellation_survives_a_full_reconcile_of_the_same_payload(tmp_path):
+    store = CorporateActionStore(tmp_path)
+    store.reconcile("XLF", [_XLF_SPIN_OFF_SPLIT], FETCHED_AT, full_reconcile=True)
+
+    store.apply_repairs(
+        "XLF", add_splits=[], cancel_ex_dates=[date(2016, 9, 19)], fetched_at=_FIXED_AT, provider="review"
+    )
+    again = store.reconcile("XLF", [_XLF_SPIN_OFF_SPLIT], FETCHED_AT, full_reconcile=True)
+
+    cancelled = [r for r in pq.ParquetFile(store.path_for("XLF")).read().to_pylist() if r["status"] == "cancelled"]
+    assert [(r["provider"], r["payload_hash"]) for r in cancelled] == [("review", _XLF_SPIN_OFF_SPLIT.payload_hash)]
+    assert (again.inserted, again.revised, again.cancelled, again.unchanged) == (0, 0, 0, 1)
+    assert store.latest_active("XLF") == []
+
+
+def test_a_restated_payload_after_a_reviewed_cancellation_is_inserted_again(tmp_path):
+    store = CorporateActionStore(tmp_path)
+    store.reconcile("XLF", [_XLF_SPIN_OFF_SPLIT], FETCHED_AT)
+    store.apply_repairs(
+        "XLF", add_splits=[], cancel_ex_dates=[date(2016, 9, 19)], fetched_at=_FIXED_AT, provider="review"
+    )
+
+    restated = replace(_XLF_SPIN_OFF_SPLIT, split_to=Decimal("1.2"), payload_hash="restated")
+    result = store.reconcile("XLF", [restated], FETCHED_AT)
+
+    assert result.revised == 1
+    assert [(a.provider, a.split_to) for a in store.latest_active("XLF")] == [("massive", 1.2)]

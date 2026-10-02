@@ -236,3 +236,90 @@ def test_main_wraps_run_with_explicit_data_lake_root(tmp_path):
         audit_legacy_basis.main(["--tickers", "MSFT", "--output", str(output), "--data-lake-root", str(tmp_path)]) == 0
     )
     assert json.loads(output.read_text())["symbols"][0]["klass"] == "clean"
+
+
+# ── source-seam detector ────────────────────────────────────────────────
+#
+# Generalizes the seam check in prepare_ib_rows_for_publish/classify_source_seam_breaks
+# beyond the one fixed 2021-06 seed window: any ib/non-ib source transition in a
+# symbol's own history, with a split entirely after it, is a candidate mis-basis
+# block the split-boundary-only continuity check and the seed_boundary window can't
+# see.
+
+
+def _seed_mixed_source(root, ticker, ib_rows, non_ib_rows, *, non_ib_source="legacy"):
+    """Bronze rows spanning an ib -> non-ib source transition, both price_basis='raw'."""
+    rows = [
+        {
+            "trade_date": d,
+            "symbol_id": 1,
+            "open": c,
+            "high": c,
+            "low": c,
+            "close": c,
+            "adj_close": c,
+            "volume": 100,
+            "source": "ib",
+            "price_basis": "raw",
+        }
+        for d, c in ib_rows
+    ] + [
+        {
+            "trade_date": d,
+            "symbol_id": 1,
+            "open": c,
+            "high": c,
+            "low": c,
+            "close": c,
+            "adj_close": c,
+            "volume": 100,
+            "source": non_ib_source,
+            "price_basis": "raw",
+        }
+        for d, c in non_ib_rows
+    ]
+    bronze = root / "bronze/asset_class=equity"
+    BronzeClient(bronze, "equity").replace_ticker_rows(ticker, rows)
+    return bronze / f"symbol={ticker}/1d.parquet"
+
+
+def test_source_seam_detects_future_split_outside_seed_window(tmp_path):
+    """The transition (2015-03-09 -> 2015-03-11) and the split (2016-01-04) are
+    both well outside the fixed 2021-06 seed window — seed_boundary cannot see
+    this, only the general source-seam check can. The IB block was already
+    adjusted for the 1:2 split (110.0 = true raw 220.0 / 2), matching the
+    existing legacy side (221.0, an ordinary next-day move).
+    """
+    _seed_mixed_source(tmp_path, "ETF1", [("2015-03-09", 100.0), ("2015-03-10", 110.0)], [("2015-03-11", 221.0)])
+    _seed_split(tmp_path, "ETF1", "2016-01-04", 1, 2)
+    output = tmp_path / "audit.json"
+
+    assert (
+        audit_legacy_basis.run(
+            ["--tickers", "ETF1", "--output", str(output)], data_lake_root=tmp_path, as_of_date=date(2026, 1, 1)
+        )
+        == 0
+    )
+    entry = _entry(output, "ETF1")
+    assert entry["klass"] == "mixed"
+    assert entry["detector"] == "source_seam_basis_break"
+    assert entry["break_date"] == "2015-03-10"
+
+
+def test_source_seam_does_not_flag_a_real_split_at_the_transition(tmp_path):
+    """OUST/NCMI shape: the source transition sits exactly on a real split's
+    ex_date and the existing side already shows that split's real raw jump —
+    not a basis artifact, must stay clean.
+    """
+    _seed_mixed_source(tmp_path, "REAL1", [("2023-04-18", 10.0), ("2023-04-19", 9.8)], [("2023-04-20", 98.0)])
+    _seed_split(tmp_path, "REAL1", "2023-04-20", 10, 1)
+    output = tmp_path / "audit.json"
+
+    assert (
+        audit_legacy_basis.run(
+            ["--tickers", "REAL1", "--output", str(output)], data_lake_root=tmp_path, as_of_date=date(2026, 1, 1)
+        )
+        == 0
+    )
+    entry = _entry(output, "REAL1")
+    assert entry["klass"] == "clean"
