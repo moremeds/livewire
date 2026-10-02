@@ -9,11 +9,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from clients.pit_silver_revision import PitSilverRevisionPublisher, daily_bar_cutoff
+from clients.pit_silver_revision import PitSilverRevisionPublisher
 from clients.silver_revision import SilverRevisionPublisher
 from livewire_scripts.paths import data_lake_dir
 from livewire_scripts.shepherd_actions import export_actions
-from livewire_scripts.shepherd_daily import plan_daily
 
 
 def publish_pit(
@@ -24,13 +23,15 @@ def publish_pit(
     data_lake_root: Path,
 ) -> dict[str, Any]:
     root = Path(data_lake_root).expanduser()
-    daily = plan_daily(index_id, membership_revision, daily_bar_cutoff(as_of), data_lake_root=root)
-    symbols = sorted({unit["symbol"] for unit in daily["workUnits"]})
+    # The receipt must name exactly the publisher's own scope; plan_daily reads identities as of the
+    # bar-cutoff session, not as_of, so its symbol set drifted whenever a repair landed in between.
+    publisher = PitSilverRevisionPublisher(root)
+    symbols = publisher.member_symbols(index_id, membership_revision, as_of)
     silver = SilverRevisionPublisher(root / "silver").read_current()
     if silver is None:
         raise ValueError("missing current Silver revision")
     actions = export_actions(symbols, silver.corporate_actions_as_of, data_lake_root=root)
-    revision = PitSilverRevisionPublisher(root).publish(
+    revision = publisher.publish(
         index_id=index_id,
         membership_revision=membership_revision,
         as_of=as_of,

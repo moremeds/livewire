@@ -79,6 +79,11 @@ Use this file for:
 
 ## Durable Workflow Rules
 
+- Release promotion and nightly housekeeping only preview release GC. Deleting
+  old release trees requires explicit `release gc --apply --maintenance-window`
+  after new launchers are paused and old-release jobs have exited; the flag is
+  an operator assertion, not automatic process detection.
+
 - For non-trivial work, write a fresh plan to `tasks/todo.md` before editing.
 - Every plan must include a dependency graph and `depends_on: []` task annotations.
 - If the user corrects an assumption or prior answer, update `tasks/lessons.md`.

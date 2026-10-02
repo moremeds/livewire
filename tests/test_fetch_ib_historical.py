@@ -19,6 +19,7 @@ import pytest
 from ib_async import Contract, Forex, Future, Index, Stock
 
 from clients.bronze_client import BronzeClient
+from clients.corporate_action_store import CorporateAction
 from clients.massive_client import MassiveAPIError
 from livewire_scripts.fetch_ib_historical import (
     IB_EARLIEST_DATE,
@@ -1358,6 +1359,82 @@ class TestBackfillTicker:
         assert inserted == 1
         assert rows[0]["close"] == pytest.approx(1 / 1.28)
         assert rows[0]["volume"] == 0
+
+
+class TestBackfillTickerSplitBasis:
+    """backfill_ticker exercised end-to-end (real BronzeClient, real
+    prepare_ib_rows_for_publish) for the 2026-09-27 SVXY incident: an IB
+    backfill batch that ends well before existing bronze rows begin, with a
+    real corporate-action split dated after the batch. Real close values
+    pulled read-only from macmini bronze, as of 2026-09-27.
+    """
+
+    def _split(self, action_id, ex_date, split_from, split_to):
+        return CorporateAction(
+            action_id=action_id,
+            provider="massive",
+            provider_event_id=action_id,
+            event_revision=1,
+            supersedes_action_id=None,
+            symbol="SVXY",
+            action_type="split",
+            ex_date=ex_date,
+            split_from=split_from,
+            split_to=split_to,
+            cash_amount=None,
+            currency=None,
+            declaration_date=None,
+            record_date=None,
+            pay_date=None,
+            status="active",
+            fetched_at=datetime(2026, 1, 1, tzinfo=UTC),
+            payload_hash=action_id,
+        )
+
+    @pytest.mark.integration
+    def test_backfill_reverses_split_after_incoming_window(self, bronze):
+        bronze.replace_ticker_rows(
+            "SVXY",
+            [
+                {
+                    "trade_date": "2021-06-11",
+                    "symbol_id": bronze.get_symbol_id("SVXY"),
+                    "open": 54.83,
+                    "high": 54.83,
+                    "low": 54.83,
+                    "close": 54.83,
+                    "adj_close": 54.83,
+                    "volume": 100,
+                    "source": "legacy",
+                    "price_basis": "raw",
+                },
+                {
+                    "trade_date": "2024-04-11",
+                    "symbol_id": bronze.get_symbol_id("SVXY"),
+                    "open": 55.08,
+                    "high": 55.08,
+                    "low": 55.08,
+                    "close": 55.08,
+                    "adj_close": 55.08,
+                    "volume": 100,
+                    "source": "legacy",
+                    "price_basis": "raw",
+                },
+            ],
+        )
+
+        bars = [
+            _make_bar(date="2021-06-09", close=26.290),
+            _make_bar(date="2021-06-10", close=27.045),
+        ]
+        actions = [self._split("svxy-2024", date(2024, 4, 11), 1, 2)]
+
+        inserted = backfill_ticker("SVXY", bars, bronze, corporate_actions=actions)
+        assert inserted == 2
+
+        rows = {row["trade_date"]: row for row in bronze.read_symbol_rows("SVXY")}
+        assert rows["2021-06-10"]["close"] == pytest.approx(54.09, abs=0.01)
+        assert rows["2021-06-10"]["price_basis"] == "raw"
 
 
 class TestRunBackfillZeroNewRows:
@@ -2981,3 +3058,73 @@ class TestComputeIntradayChunks:
 
         with pytest.raises(ValueError, match="unsupported"):
             compute_intraday_chunks(timeframe="2m", years_back=1)
+
+
+def test_a_bar_for_the_session_still_trading_is_never_stored(tmp_path, monkeypatch):
+    # Mini Bronze, seeded 2026-09-23 ~04Z: COIL_202612 09-23 was the in-progress ICE session
+    # (Massive BZ settle 98.12); 09-22 settled 95.41 on 179,604 contracts.
+    import livewire_scripts.fetch_ib_historical as fib
+
+    class _Seeded(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 23, 4, 10, tzinfo=tz)
+
+    monkeypatch.setattr(fib, "datetime", _Seeded)
+    monkeypatch.setattr(fib, "UNSETTLED_DROPPED", [0])
+    monkeypatch.setattr(fib, "run_detection", lambda **kwargs: None)
+    bars = [
+        _make_bar(date="2026-09-22", open=96.26, high=97.91, low=93.68, close=95.41, volume=179604),
+        _make_bar(date="2026-09-23", open=94.5, high=95.51, low=94.27, close=94.31, volume=7801),
+    ]
+
+    with BronzeClient(bronze_dir=tmp_path, asset_class="futures") as bronze:
+        fib.fetch_ticker("COIL_202612", bars, bronze, asset_class="futures")
+        rows = bronze.read_symbol_rows("COIL_202612")
+
+    assert [str(r["trade_date"])[:10] for r in rows] == ["2026-09-22"]
+    assert fib.UNSETTLED_DROPPED == [1]
+
+
+def test_historical_is_one_ledger_run_and_a_crash_reads_failed(monkeypatch):
+    import livewire_scripts.fetch_ib_historical as fib
+    from clients import ledger
+
+    monkeypatch.delenv("LW_RUN_ID", raising=False)  # another test's lane may have minted one
+    monkeypatch.setattr(fib, "UNSETTLED_DROPPED", [2])
+    monkeypatch.setattr(fib, "_main", lambda: None)
+    fib.main()
+
+    def boom():
+        raise RuntimeError("gateway")
+
+    monkeypatch.setattr(fib, "_main", boom)
+    with pytest.raises(RuntimeError):
+        fib.main()
+
+    assert sorted(
+        r["verdict"] for r in ledger.query("select verdict from runs where job = 'historical' and ended is not null")
+    ) == ["FAILED", "OK"]
+    assert ledger.query("select value from measurements where name = 'historical_unsettled_bars_dropped'") == [
+        {"value": 2.0}
+    ]
+
+
+def test_under_the_daily_lane_historical_never_writes_the_parents_run_row(monkeypatch):
+    import livewire_scripts.fetch_ib_historical as fib
+    from clients import ledger
+
+    monkeypatch.setenv("LW_RUN_ID", "daily-update-20260924T050000Z-1")
+    monkeypatch.setattr(fib, "UNSETTLED_DROPPED", [0])
+    monkeypatch.setattr(fib, "_main", lambda: None)
+    fib.main()
+
+    def boom():
+        raise RuntimeError("gateway")
+
+    monkeypatch.setattr(fib, "_main", boom)
+    with pytest.raises(RuntimeError):
+        fib.main()
+
+    assert ledger.query("select run_id from runs") == []
+    assert [r["run_id"] for r in ledger.query("select run_id from measurements")] == ["daily-update-20260924T050000Z-1"]

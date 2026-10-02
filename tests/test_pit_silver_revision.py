@@ -455,3 +455,96 @@ def test_a_current_version_revision_that_no_longer_replays_still_blocks_the_next
         publisher.publish(
             index_id="sp500", membership_revision=1, as_of=AS_OF + timedelta(hours=1), actions_receipt=receipt
         )
+
+
+def test_identity_claims_sharing_a_start_do_not_crash_the_coverage_check(tmp_path: Path) -> None:
+    # A closed and an open claim on one start: sorting (start, end) tuples compared None with a datetime.
+    _seed(
+        tmp_path,
+        [
+            ("AAPL", datetime(2026, 8, 1, tzinfo=UTC), datetime(2026, 8, 10, tzinfo=UTC)),
+            ("AAPL", datetime(2026, 8, 1, tzinfo=UTC), None),
+        ],
+        membership_effective=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+    _silver(tmp_path)
+    _verified_empty_fetch(tmp_path, "AAPL")
+
+    revision = PitSilverRevisionPublisher(tmp_path).publish(
+        index_id="sp500",
+        membership_revision=1,
+        as_of=AS_OF,
+        actions_receipt=export_actions(["AAPL"], AS_OF, data_lake_root=tmp_path),
+    )
+
+    assert revision.status == "PROVEN"
+
+
+def test_a_claim_covering_no_session_is_not_published_as_an_empty_member_scope(tmp_path: Path) -> None:
+    # 2026-08-02 is a Sunday: the first claim holds no session, so it maps to session window [08-03, 08-03).
+    _seed(
+        tmp_path,
+        [
+            ("AAPL", datetime(2026, 8, 2, tzinfo=UTC), datetime(2026, 8, 3, tzinfo=UTC)),
+            ("AAPL", datetime(2026, 8, 3, tzinfo=UTC), None),
+        ],
+        membership_effective=datetime(2026, 8, 2, tzinfo=UTC),
+    )
+    _silver(tmp_path)
+    _verified_empty_fetch(tmp_path, "AAPL")
+
+    revision = PitSilverRevisionPublisher(tmp_path).publish(
+        index_id="sp500",
+        membership_revision=1,
+        as_of=AS_OF,
+        actions_receipt=export_actions(["AAPL"], AS_OF, data_lake_root=tmp_path),
+    )
+    members = json.loads(revision.manifest_path.read_text())["members"]
+
+    assert revision.status == "PROVEN"
+    assert [(m["session_from"], m["session_to"]) for m in members] == [("2026-08-03", None)]
+
+
+def test_a_current_revision_holding_an_empty_session_scope_is_superseded_not_replayed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # sp500 rev 5 / ndx100 rev 6 on the mini: published before the empty-scope filter, so their
+    # replay can never match and the next publish must supersede them rather than block.
+    _seed(
+        tmp_path,
+        [
+            ("AAPL", datetime(2026, 8, 2, tzinfo=UTC), datetime(2026, 8, 3, tzinfo=UTC)),
+            ("AAPL", datetime(2026, 8, 3, tzinfo=UTC), None),
+        ],
+        membership_effective=datetime(2026, 8, 2, tzinfo=UTC),
+    )
+    _silver(tmp_path)
+    _verified_empty_fetch(tmp_path, "AAPL")
+    publisher = PitSilverRevisionPublisher(tmp_path)
+    member_scopes = publisher._member_scopes
+
+    def pre_filter_scopes(*args, **kwargs):
+        prefix, identity_prefix, security_revision, scopes = member_scopes(*args, **kwargs)
+        empty = {**scopes[0], "session_to": scopes[0]["session_from"]}
+        return prefix, identity_prefix, security_revision, [empty, *scopes]
+
+    monkeypatch.setattr(publisher, "_member_scopes", pre_filter_scopes)
+    defective = publisher.publish(
+        index_id="sp500",
+        membership_revision=1,
+        as_of=AS_OF,
+        actions_receipt=export_actions(["AAPL"], AS_OF, data_lake_root=tmp_path),
+    )
+    monkeypatch.undo()
+
+    published = PitSilverRevisionPublisher(tmp_path).publish(
+        index_id="sp500",
+        membership_revision=1,
+        as_of=AS_OF + timedelta(hours=1),
+        actions_receipt=export_actions(["AAPL"], AS_OF, data_lake_root=tmp_path),
+    )
+
+    assert (defective.revision, published.revision) == (1, 2)
+    assert publisher.verify()["revision"] == 2
+    with pytest.raises(ValueError, match="input hash mismatch"):
+        publisher.verify(defective.manifest_path)

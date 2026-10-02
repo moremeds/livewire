@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Retention sweeps for warehouse artifacts that nothing else prunes.
 
-Deliberately narrow. Four categories are unrecoverable and are protected by
+Deliberately narrow. Three lake categories are unrecoverable and protected by
 name, never by a size or age rule:
 
   data-lake/raw/       anything older than the rolling 5-year provider GET floor
@@ -9,9 +9,9 @@ name, never by a size or age rule:
   repairs/triage/      a triage verdict obtainable today may be unobtainable next
                        year, because the entitlement floor rolls forward.
   repairs/*/backup/    the only basis rollback-legacy-basis has.
-  the release `current` points at — promote short-circuits on the symlink, not
-                       the directory, so deleting the target leaves current
-                       dangling and promote then refuses to rebuild it.
+
+Nightly housekeeping only previews release GC, because a job may still run
+from an older physical release after `current` changes.
 
 data-lake/repairs/ as a whole is out of scope. It is 26 GB, 21 GB of which is
 12,636 verbatim .parquet.bak files from the 2026-07-15 cutover — rollback
@@ -72,9 +72,9 @@ def plan_housekeeping(
 ) -> list[tuple[str, Path]]:
     """Return (reason, path) pairs this run would delete. Never mutates.
 
-    No `keep_releases` here on purpose: releases are pruned by `release.prune()`
-    in main(), which alone knows not to collect what `current` points at. A
-    parameter this function never reads would be a promise it does not keep.
+    No `keep_releases` here on purpose: `release.prune()` previews release
+    candidates separately in main(). A parameter this planner never reads
+    would be a promise it does not keep.
     """
     now = now or datetime.now().date()
     planned: list[tuple[str, Path]] = []
@@ -335,11 +335,11 @@ def main(argv: list[str] | None = None) -> int:
                 LAUNCHD_LOG_RETENTION_DAYS,
             )
 
-    # release.prune never collects the release `current` points at. Previewed in
-    # dry run too: the operator review this command exists for is worthless if
-    # the one category that deletes 422 MB at a time is invisible until --apply.
-    for name in prune_releases(args.keep_releases, dry_run=not args.apply):
-        log.info("%s release %s", "pruned" if args.apply else "would prune", name)
+    # A running job may still use an older physical release after `current`
+    # changes. Nightly housekeeping only previews release GC; deletion belongs
+    # to an explicit maintenance window after old jobs have exited.
+    for name in prune_releases(args.keep_releases, dry_run=True):
+        log.info("would prune release %s (maintenance GC only)", name)
 
     deleted = 0
     rotated = 0
