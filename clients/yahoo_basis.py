@@ -10,6 +10,7 @@ reports what the store is missing (Yahoo has it — add it) and what it has spur
 
 from __future__ import annotations
 
+import statistics
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -220,3 +221,54 @@ def ib_anchor_verdict(
     if mismatches:
         return AnchorVerdict(False, "ib_mismatch", len(overlap_days), window_start, mismatches[:20])
     return AnchorVerdict(True, "verified", len(overlap_days), window_start)
+
+
+@dataclass(frozen=True)
+class SplitStepVerdict:
+    """Verdict of confirming one split's ratio against IB by the price step across its
+    ex-date, rather than by anchoring a whole reconstructed series. ``step`` is the
+    measured bronze/IB ratio fold across the ex-date; ``None`` when insufficient overlap
+    meant it was never computed."""
+
+    verified: bool
+    reason: str  # "verified" | "ib_insufficient_overlap" | "ib_step_mismatch"
+    step: float | None
+    overlap: int
+
+
+def ib_split_step_verdict(
+    bronze_rows: list[dict],
+    ib_rows: list[dict],
+    ex_date: date,
+    expected_step: float,
+    *,
+    sessions: int = 5,
+    tol: float = 0.02,
+    min_each_side: int = 3,
+) -> SplitStepVerdict:
+    """Confirm a single split by the fold in bronze/IB close ratio across ``ex_date``.
+
+    IB adjusts its own history for splits, so on dates both providers know a
+    bronze row still carrying the OLD (unadjusted) basis divides out to a
+    materially different ratio before the ex-date than after it. Using the
+    *ratio*, not either series' raw close, means the comparison is insensitive
+    to ordinary price movement across the split -- only the fold from the
+    split itself survives the before/after division. ``median`` of up to
+    ``sessions`` dates on each side resists a single bad bar; requiring
+    ``min_each_side`` on both sides keeps a symbol with almost no overlap from
+    reading as a false confirmation.
+    """
+    bronze_by_day = {_as_day(r["trade_date"]): float(r["close"]) for r in bronze_rows}
+    ib_by_day = {_as_day(r["trade_date"]): float(r["close"]) for r in ib_rows}
+    common = sorted(set(bronze_by_day) & set(ib_by_day))
+    before = [day for day in common if day < ex_date][-sessions:]
+    after = [day for day in common if day >= ex_date][:sessions]
+    if len(before) < min_each_side or len(after) < min_each_side:
+        return SplitStepVerdict(False, "ib_insufficient_overlap", None, len(before) + len(after))
+    ratio_before = statistics.median(bronze_by_day[day] / ib_by_day[day] for day in before)
+    ratio_after = statistics.median(bronze_by_day[day] / ib_by_day[day] for day in after)
+    step = ratio_before / ratio_after
+    overlap = len(before) + len(after)
+    if abs(step / expected_step - 1) > tol:
+        return SplitStepVerdict(False, "ib_step_mismatch", step, overlap)
+    return SplitStepVerdict(True, "verified", step, overlap)
