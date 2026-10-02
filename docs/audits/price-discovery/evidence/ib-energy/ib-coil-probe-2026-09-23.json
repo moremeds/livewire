@@ -1,0 +1,187 @@
+{
+  "probe_utc": "2026-09-23T02:58:42.069023+00:00",
+  "attempts": {
+    "COIL@ICEEU": {
+      "count": 0,
+      "first_8": [],
+      "errors": [
+        {
+          "reqId": 3,
+          "code": 200,
+          "msg": "No security definition has been found for the request"
+        }
+      ]
+    },
+    "BZ@IPE": {
+      "count": 0,
+      "first_8": [],
+      "errors": [
+        {
+          "reqId": 4,
+          "code": 200,
+          "msg": "No security definition has been found for the request"
+        }
+      ]
+    },
+    "BZ@ICEEU": {
+      "count": 0,
+      "first_8": [],
+      "errors": [
+        {
+          "reqId": 5,
+          "code": 200,
+          "msg": "No security definition has been found for the request"
+        }
+      ]
+    },
+    "COIL@IPE": {
+      "count": 120,
+      "first_8": [
+        {
+          "conId": 361002948,
+          "sym": "COIL",
+          "local": "COILX6",
+          "exch": "IPE",
+          "cur": "USD",
+          "month": "20260930 19:30:00 GB",
+          "tc": "COIL",
+          "mult": "1000",
+          "mkt": "COIL",
+          "name": "ICE Brent Crude",
+          "exp": "20261001",
+          "ltt": "Eire"
+        },
+        {
+          "conId": 361002955,
+          "sym": "COIL",
+          "local": "COILZ6",
+          "exch": "IPE",
+          "cur": "USD",
+          "month": "20261130 19:30:00 GB",
+          "tc": "COIL",
+          "mult": "1000",
+          "mkt": "COIL",
+          "name": "ICE Brent Crude",
+          "exp": "20261102",
+          "ltt": "Eire"
+        },
+        {
+          "conId": 361002958,
+          "sym": "COIL",
+          "local": "COILF7",
+          "exch": "IPE",
+          "cur": "USD",
+          "month": "20261230 19:30:00 GB",
+          "tc": "COIL",
+          "mult": "1000",
+          "mkt": "COIL",
+          "name": "ICE Brent Crude",
+          "exp": "20261201",
+          "ltt": "Eire"
+        },
+        {
+          "conId": 361002960,
+          "sym": "COIL",
+          "local": "COILG7",
+          "exch": "IPE",
+          "cur": "USD",
+          "month": "20270129 19:30:00 GB",
+          "tc": "COIL",
+          "mult": "1000",
+          "mkt": "COIL",
+          "name": "ICE Brent Crude",
+          "exp": "20261231",
+          "ltt": "Eire"
+        },
+        {
+          "conId": 361002970,
+          "sym": "COIL",
+          "local": "COILH7",
+          "exch": "IPE",
+          "cur": "USD",
+          "month": "20270226 19:30:00 GB",
+          "tc": "COIL",
+          "mult": "1000",
+          "mkt": "COIL",
+          "name": "ICE Brent Crude",
+          "exp": "20270201",
+          "ltt": "Eire"
+        },
+        {
+          "conId": 361002975,
+          "sym": "COIL",
+          "local": "COILJ7",
+          "exch": "IPE",
+          "cur": "USD",
+          "month": "20270331 19:30:00 GB",
+          "tc": "COIL",
+          "mult": "1000",
+          "mkt": "COIL",
+          "name": "ICE Brent Crude",
+          "exp": "20270301",
+          "ltt": "Eire"
+        },
+        {
+          "conId": 361002979,
+          "sym": "COIL",
+          "local": "COILK7",
+          "exch": "IPE",
+          "cur": "USD",
+          "month": "20270430 19:30:00 GB",
+          "tc": "COIL",
+          "mult": "1000",
+          "mkt": "COIL",
+          "name": "ICE Brent Crude",
+          "exp": "20270401",
+          "ltt": "Eire"
+        },
+        {
+          "conId": 361002982,
+          "sym": "COIL",
+          "local": "COILM7",
+          "exch": "IPE",
+          "cur": "USD",
+          "month": "20270531 19:30:00 GB",
+          "tc": "COIL",
+          "mult": "1000",
+          "mkt": "COIL",
+          "name": "ICE Brent Crude",
+          "exp": "20270503",
+          "ltt": "Eire"
+        }
+      ],
+      "errors": []
+    }
+  },
+  "qualified": {
+    "conId": 361002948,
+    "sym": "COIL",
+    "local": "COILX6",
+    "exch": "IPE",
+    "cur": "USD",
+    "month": "20260930 19:30:00 GB",
+    "tc": "COIL",
+    "mult": "1000",
+    "mkt": "COIL",
+    "name": "ICE Brent Crude",
+    "exp": "20261001",
+    "ltt": "Eire"
+  },
+  "qualify_errors": [],
+  "head_ts": {
+    "value": "2019-04-17 00:00:00+00:00",
+    "errors": []
+  },
+  "daily_1m": {
+    "rows": 22,
+    "first": "2026-08-25",
+    "last": "2026-09-23",
+    "errors": []
+  },
+  "hourly_2d": {
+    "rows": 25,
+    "first": "2026-09-22 01:00:00+01:00",
+    "last": "2026-09-23 03:00:00+01:00",
+    "errors": []
+  }
+}

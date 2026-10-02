@@ -1,0 +1,2071 @@
+{
+  "verified_utc": "2026-09-23T05:57:22.316224+00:00",
+  "bronze_root": "/Users/moremeds/market-warehouse/data-lake/bronze",
+  "manifest_count": 103,
+  "file_count": 103,
+  "missing": [],
+  "errors": [],
+  "total_rows": 131436,
+  "files": [
+    {
+      "ticker": "CL_202611",
+      "rows": 2138,
+      "bytes": 48158,
+      "min_trade_date": "2018-01-24",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CL_202612",
+      "rows": 2198,
+      "bytes": 51312,
+      "min_trade_date": "2017-11-22",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CL_202701",
+      "rows": 2137,
+      "bytes": 47901,
+      "min_trade_date": "2018-01-24",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CL_202702",
+      "rows": 2136,
+      "bytes": 47595,
+      "min_trade_date": "2018-01-24",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CL_202703",
+      "rows": 1927,
+      "bytes": 43581,
+      "min_trade_date": "2018-11-21",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CL_202704",
+      "rows": 1926,
+      "bytes": 43696,
+      "min_trade_date": "2018-11-21",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CL_202705",
+      "rows": 1927,
+      "bytes": 43115,
+      "min_trade_date": "2018-11-21",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CL_202706",
+      "rows": 1933,
+      "bytes": 44571,
+      "min_trade_date": "2018-11-21",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CL_202707",
+      "rows": 1926,
+      "bytes": 43003,
+      "min_trade_date": "2018-11-21",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CL_202708",
+      "rows": 1927,
+      "bytes": 42976,
+      "min_trade_date": "2018-11-21",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CL_202709",
+      "rows": 1926,
+      "bytes": 42821,
+      "min_trade_date": "2018-11-21",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CL_202710",
+      "rows": 1927,
+      "bytes": 42575,
+      "min_trade_date": "2018-11-21",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CL_202711",
+      "rows": 1927,
+      "bytes": 42506,
+      "min_trade_date": "2018-11-21",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CL_202712",
+      "rows": 1943,
+      "bytes": 44893,
+      "min_trade_date": "2018-11-21",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "NG_202610",
+      "rows": 2356,
+      "bytes": 49705,
+      "min_trade_date": "2017-03-14",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "NG_202611",
+      "rows": 2354,
+      "bytes": 50115,
+      "min_trade_date": "2017-03-14",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "NG_202612",
+      "rows": 2354,
+      "bytes": 50885,
+      "min_trade_date": "2017-03-14",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "NG_202701",
+      "rows": 2357,
+      "bytes": 50437,
+      "min_trade_date": "2017-03-14",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "NG_202702",
+      "rows": 2352,
+      "bytes": 50520,
+      "min_trade_date": "2017-03-14",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "NG_202703",
+      "rows": 2352,
+      "bytes": 49562,
+      "min_trade_date": "2017-03-14",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "NG_202704",
+      "rows": 2352,
+      "bytes": 47199,
+      "min_trade_date": "2017-03-14",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "NG_202705",
+      "rows": 2352,
+      "bytes": 46265,
+      "min_trade_date": "2017-03-14",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "NG_202706",
+      "rows": 2350,
+      "bytes": 46737,
+      "min_trade_date": "2017-03-14",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "NG_202707",
+      "rows": 2350,
+      "bytes": 47344,
+      "min_trade_date": "2017-03-14",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "NG_202708",
+      "rows": 2350,
+      "bytes": 47558,
+      "min_trade_date": "2017-03-14",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "NG_202709",
+      "rows": 2350,
+      "bytes": 47020,
+      "min_trade_date": "2017-03-14",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "NG_202710",
+      "rows": 2353,
+      "bytes": 47708,
+      "min_trade_date": "2017-03-14",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "NG_202711",
+      "rows": 2351,
+      "bytes": 48772,
+      "min_trade_date": "2017-03-14",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "NG_202712",
+      "rows": 2351,
+      "bytes": 48357,
+      "min_trade_date": "2017-03-14",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "COIL_202611",
+      "rows": 1921,
+      "bytes": 45147,
+      "min_trade_date": "2019-04-17",
+      "max_trade_date": "2026-09-23",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "COIL_202612",
+      "rows": 1921,
+      "bytes": 47346,
+      "min_trade_date": "2019-04-17",
+      "max_trade_date": "2026-09-23",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "COIL_202701",
+      "rows": 1921,
+      "bytes": 44770,
+      "min_trade_date": "2019-04-17",
+      "max_trade_date": "2026-09-23",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "COIL_202702",
+      "rows": 1921,
+      "bytes": 44562,
+      "min_trade_date": "2019-04-17",
+      "max_trade_date": "2026-09-23",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "COIL_202703",
+      "rows": 1921,
+      "bytes": 44641,
+      "min_trade_date": "2019-04-17",
+      "max_trade_date": "2026-09-23",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "COIL_202704",
+      "rows": 1921,
+      "bytes": 44070,
+      "min_trade_date": "2019-04-17",
+      "max_trade_date": "2026-09-23",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "COIL_202705",
+      "rows": 1921,
+      "bytes": 43814,
+      "min_trade_date": "2019-04-17",
+      "max_trade_date": "2026-09-23",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "COIL_202706",
+      "rows": 1921,
+      "bytes": 45490,
+      "min_trade_date": "2019-04-17",
+      "max_trade_date": "2026-09-23",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "COIL_202707",
+      "rows": 1921,
+      "bytes": 43654,
+      "min_trade_date": "2019-04-17",
+      "max_trade_date": "2026-09-23",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "COIL_202708",
+      "rows": 1921,
+      "bytes": 43576,
+      "min_trade_date": "2019-04-17",
+      "max_trade_date": "2026-09-23",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "COIL_202709",
+      "rows": 1921,
+      "bytes": 43316,
+      "min_trade_date": "2019-04-17",
+      "max_trade_date": "2026-09-23",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "COIL_202710",
+      "rows": 1921,
+      "bytes": 43191,
+      "min_trade_date": "2019-04-17",
+      "max_trade_date": "2026-09-23",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "COIL_202711",
+      "rows": 1920,
+      "bytes": 42829,
+      "min_trade_date": "2019-04-17",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "COIL_202712",
+      "rows": 1921,
+      "bytes": 45364,
+      "min_trade_date": "2019-04-17",
+      "max_trade_date": "2026-09-23",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "RB_202610",
+      "rows": 936,
+      "bytes": 34478,
+      "min_trade_date": "2022-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "RB_202611",
+      "rows": 936,
+      "bytes": 34413,
+      "min_trade_date": "2022-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "RB_202612",
+      "rows": 936,
+      "bytes": 34151,
+      "min_trade_date": "2022-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "RB_202701",
+      "rows": 936,
+      "bytes": 33673,
+      "min_trade_date": "2022-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "RB_202702",
+      "rows": 693,
+      "bytes": 27528,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "RB_202703",
+      "rows": 692,
+      "bytes": 27859,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "RB_202704",
+      "rows": 692,
+      "bytes": 28275,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "RB_202705",
+      "rows": 692,
+      "bytes": 28726,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "RB_202706",
+      "rows": 692,
+      "bytes": 28116,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "RB_202707",
+      "rows": 692,
+      "bytes": 27757,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "RB_202708",
+      "rows": 692,
+      "bytes": 27998,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "RB_202709",
+      "rows": 692,
+      "bytes": 28030,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "RB_202710",
+      "rows": 692,
+      "bytes": 27458,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "RB_202711",
+      "rows": 692,
+      "bytes": 27380,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "RB_202712",
+      "rows": 692,
+      "bytes": 27091,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HO_202610",
+      "rows": 938,
+      "bytes": 35487,
+      "min_trade_date": "2022-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HO_202611",
+      "rows": 937,
+      "bytes": 35163,
+      "min_trade_date": "2022-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HO_202612",
+      "rows": 940,
+      "bytes": 35724,
+      "min_trade_date": "2022-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HO_202701",
+      "rows": 937,
+      "bytes": 35203,
+      "min_trade_date": "2022-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HO_202702",
+      "rows": 692,
+      "bytes": 28305,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HO_202703",
+      "rows": 692,
+      "bytes": 28241,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HO_202704",
+      "rows": 692,
+      "bytes": 27897,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HO_202705",
+      "rows": 692,
+      "bytes": 27943,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HO_202706",
+      "rows": 693,
+      "bytes": 28270,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HO_202707",
+      "rows": 692,
+      "bytes": 27885,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HO_202708",
+      "rows": 692,
+      "bytes": 27555,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HO_202709",
+      "rows": 692,
+      "bytes": 27730,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HO_202710",
+      "rows": 692,
+      "bytes": 27841,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HO_202711",
+      "rows": 692,
+      "bytes": 27914,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HO_202712",
+      "rows": 692,
+      "bytes": 27937,
+      "min_trade_date": "2023-12-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "GC_202609",
+      "rows": 405,
+      "bytes": 13322,
+      "min_trade_date": "2025-02-10",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "GC_202610",
+      "rows": 455,
+      "bytes": 14558,
+      "min_trade_date": "2024-11-28",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "SI_202609",
+      "rows": 474,
+      "bytes": 16256,
+      "min_trade_date": "2024-10-31",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "SI_202610",
+      "rows": 404,
+      "bytes": 14220,
+      "min_trade_date": "2025-02-10",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HG_202609",
+      "rows": 1289,
+      "bytes": 38176,
+      "min_trade_date": "2021-06-30",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HG_202610",
+      "rows": 473,
+      "bytes": 18013,
+      "min_trade_date": "2024-10-31",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "SB_202610",
+      "rows": 725,
+      "bytes": 18345,
+      "min_trade_date": "2023-11-02",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "SB_202703",
+      "rows": 622,
+      "bytes": 16031,
+      "min_trade_date": "2024-04-02",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "KC_202612",
+      "rows": 684,
+      "bytes": 18972,
+      "min_trade_date": "2024-01-03",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "KC_202703",
+      "rows": 622,
+      "bytes": 17384,
+      "min_trade_date": "2024-04-02",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CC_202612",
+      "rows": 431,
+      "bytes": 12069,
+      "min_trade_date": "2025-01-03",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CC_202703",
+      "rows": 370,
+      "bytes": 10919,
+      "min_trade_date": "2025-04-02",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CT_202610",
+      "rows": 723,
+      "bytes": 19115,
+      "min_trade_date": "2023-11-02",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "CT_202612",
+      "rows": 683,
+      "bytes": 18586,
+      "min_trade_date": "2024-01-03",
+      "max_trade_date": "2026-09-23",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "OJ_202611",
+      "rows": 703,
+      "bytes": 19044,
+      "min_trade_date": "2023-12-04",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "OJ_202701",
+      "rows": 592,
+      "bytes": 16508,
+      "min_trade_date": "2024-02-02",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "ZS_202611",
+      "rows": 960,
+      "bytes": 18354,
+      "min_trade_date": "2022-11-15",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "ZS_202701",
+      "rows": 461,
+      "bytes": 11194,
+      "min_trade_date": "2024-11-15",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "ZM_202610",
+      "rows": 937,
+      "bytes": 19864,
+      "min_trade_date": "2022-12-15",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "ZM_202612",
+      "rows": 937,
+      "bytes": 19008,
+      "min_trade_date": "2022-12-15",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "ZL_202610",
+      "rows": 938,
+      "bytes": 25771,
+      "min_trade_date": "2022-12-15",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "ZL_202612",
+      "rows": 938,
+      "bytes": 26105,
+      "min_trade_date": "2022-12-15",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "ZC_202612",
+      "rows": 942,
+      "bytes": 16550,
+      "min_trade_date": "2022-12-15",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "ZC_202703",
+      "rows": 441,
+      "bytes": 10054,
+      "min_trade_date": "2024-12-16",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "ZW_202612",
+      "rows": 550,
+      "bytes": 12240,
+      "min_trade_date": "2024-07-15",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "ZW_202703",
+      "rows": 548,
+      "bytes": 11811,
+      "min_trade_date": "2024-07-15",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "LE_202610",
+      "rows": 350,
+      "bytes": 11717,
+      "min_trade_date": "2025-05-01",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "LE_202612",
+      "rows": 324,
+      "bytes": 11299,
+      "min_trade_date": "2025-06-09",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HE_202610",
+      "rows": 340,
+      "bytes": 10405,
+      "min_trade_date": "2025-05-15",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    },
+    {
+      "ticker": "HE_202612",
+      "rows": 318,
+      "bytes": 9793,
+      "min_trade_date": "2025-06-16",
+      "max_trade_date": "2026-09-22",
+      "schema": [
+        "trade_date",
+        "contract_id",
+        "root_symbol",
+        "expiry_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settlement",
+        "volume",
+        "open_interest"
+      ]
+    }
+  ]
+}

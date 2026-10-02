@@ -1,0 +1,1296 @@
+{
+  "probe_utc": "2026-09-23T03:09:04.199092+00:00",
+  "roots": {
+    "SB": {
+      "attempts": {
+        "ICEUS": {
+          "count": 0,
+          "first_4": [],
+          "errors": [
+            {
+              "reqId": 3,
+              "code": 200,
+              "msg": "No security definition has been found for the request"
+            }
+          ]
+        },
+        "(any)": {
+          "count": 24,
+          "first_4": [
+            {
+              "conId": 663548820,
+              "sym": "SB",
+              "local": "SBV6",
+              "exch": "NYBOT",
+              "cur": "USD",
+              "month": "20260930",
+              "tc": "SB",
+              "mult": "112000",
+              "mkt": "SB",
+              "name": "Sugar No. 11",
+              "exp": "20260930",
+              "ltt": "12:55:00"
+            },
+            {
+              "conId": 663548820,
+              "sym": "SB",
+              "local": "SBV6",
+              "exch": "QBALGOIUS",
+              "cur": "USD",
+              "month": "20260930",
+              "tc": "SB",
+              "mult": "112000",
+              "mkt": "SB",
+              "name": "Sugar No. 11",
+              "exp": "20260930",
+              "ltt": "12:55:00"
+            },
+            {
+              "conId": 694583788,
+              "sym": "SB",
+              "local": "SBH7",
+              "exch": "NYBOT",
+              "cur": "USD",
+              "month": "20270226",
+              "tc": "SB",
+              "mult": "112000",
+              "mkt": "SB",
+              "name": "Sugar No. 11",
+              "exp": "20270226",
+              "ltt": "12:55:00"
+            },
+            {
+              "conId": 694583788,
+              "sym": "SB",
+              "local": "SBH7",
+              "exch": "QBALGOIUS",
+              "cur": "USD",
+              "month": "20270226",
+              "tc": "SB",
+              "mult": "112000",
+              "mkt": "SB",
+              "name": "Sugar No. 11",
+              "exp": "20270226",
+              "ltt": "12:55:00"
+            }
+          ],
+          "errors": []
+        }
+      },
+      "qualified": {
+        "conId": 663548820,
+        "sym": "SB",
+        "local": "SBV6",
+        "exch": "NYBOT",
+        "cur": "USD",
+        "month": "20260930",
+        "tc": "SB",
+        "mult": "112000",
+        "mkt": "SB",
+        "name": "Sugar No. 11",
+        "exp": "20260930",
+        "ltt": "12:55:00"
+      },
+      "qualify_errors": [],
+      "head_ts": "2023-11-02 07:30:00+00:00",
+      "head_errors": [],
+      "daily_1m": {
+        "rows": 21,
+        "first": "2026-08-24",
+        "last": "2026-09-22",
+        "errors": []
+      },
+      "hourly_2d": {
+        "rows": 20,
+        "first": "2026-09-21 03:30:00-04:00",
+        "last": "2026-09-22 12:00:00-04:00",
+        "errors": []
+      }
+    },
+    "KC": {
+      "attempts": {
+        "ICEUS": {
+          "count": 0,
+          "first_4": [],
+          "errors": [
+            {
+              "reqId": 9,
+              "code": 200,
+              "msg": "No security definition has been found for the request"
+            }
+          ]
+        },
+        "(any)": {
+          "count": 16,
+          "first_4": [
+            {
+              "conId": 657732419,
+              "sym": "KC",
+              "local": "KCU6",
+              "exch": "NYBOT",
+              "cur": "USD",
+              "month": "20260918",
+              "tc": "KC",
+              "mult": "37500",
+              "mkt": "KC",
+              "name": "Coffee \"C\"",
+              "exp": "20260921",
+              "ltt": ""
+            },
+            {
+              "conId": 657732419,
+              "sym": "KC",
+              "local": "KCU6",
+              "exch": "QBALGOIUS",
+              "cur": "USD",
+              "month": "20260918",
+              "tc": "KC",
+              "mult": "37500",
+              "mkt": "KC",
+              "name": "Coffee \"C\"",
+              "exp": "20260921",
+              "ltt": ""
+            },
+            {
+              "conId": 675565688,
+              "sym": "KC",
+              "local": "KCZ6",
+              "exch": "NYBOT",
+              "cur": "USD",
+              "month": "20261218",
+              "tc": "KC",
+              "mult": "37500",
+              "mkt": "KC",
+              "name": "Coffee \"C\"",
+              "exp": "20261221",
+              "ltt": "13:25:00"
+            },
+            {
+              "conId": 675565688,
+              "sym": "KC",
+              "local": "KCZ6",
+              "exch": "QBALGOIUS",
+              "cur": "USD",
+              "month": "20261218",
+              "tc": "KC",
+              "mult": "37500",
+              "mkt": "KC",
+              "name": "Coffee \"C\"",
+              "exp": "20261221",
+              "ltt": "13:25:00"
+            }
+          ],
+          "errors": []
+        }
+      },
+      "qualified": {
+        "conId": 675565688,
+        "sym": "KC",
+        "local": "KCZ6",
+        "exch": "NYBOT",
+        "cur": "USD",
+        "month": "20261218",
+        "tc": "KC",
+        "mult": "37500",
+        "mkt": "KC",
+        "name": "Coffee \"C\"",
+        "exp": "20261221",
+        "ltt": "13:25:00"
+      },
+      "qualify_errors": [],
+      "head_ts": "2024-01-03 09:15:00+00:00",
+      "head_errors": [],
+      "daily_1m": {
+        "rows": 21,
+        "first": "2026-08-24",
+        "last": "2026-09-22",
+        "errors": []
+      },
+      "hourly_2d": {
+        "rows": 20,
+        "first": "2026-09-21 04:15:00-04:00",
+        "last": "2026-09-22 13:00:00-04:00",
+        "errors": []
+      }
+    },
+    "CC": {
+      "attempts": {
+        "ICEUS": {
+          "count": 0,
+          "first_4": [],
+          "errors": [
+            {
+              "reqId": 15,
+              "code": 200,
+              "msg": "No security definition has been found for the request"
+            }
+          ]
+        },
+        "(any)": {
+          "count": 18,
+          "first_4": [
+            {
+              "conId": 752092906,
+              "sym": "CC",
+              "local": "CCZ6",
+              "exch": "NYBOT",
+              "cur": "USD",
+              "month": "20261215",
+              "tc": "CC",
+              "mult": "10",
+              "mkt": "CC",
+              "name": "Cocoa NYBOT",
+              "exp": "20261216",
+              "ltt": "11:50:00"
+            },
+            {
+              "conId": 752092906,
+              "sym": "CC",
+              "local": "CCZ6",
+              "exch": "QBALGOIUS",
+              "cur": "USD",
+              "month": "20261215",
+              "tc": "CC",
+              "mult": "10",
+              "mkt": "CC",
+              "name": "Cocoa NYBOT",
+              "exp": "20261216",
+              "ltt": "11:50:00"
+            },
+            {
+              "conId": 773019144,
+              "sym": "CC",
+              "local": "CCH7",
+              "exch": "NYBOT",
+              "cur": "USD",
+              "month": "20270315",
+              "tc": "CC",
+              "mult": "10",
+              "mkt": "CC",
+              "name": "Cocoa NYBOT",
+              "exp": "20270316",
+              "ltt": "11:50:00"
+            },
+            {
+              "conId": 773019144,
+              "sym": "CC",
+              "local": "CCH7",
+              "exch": "QBALGOIUS",
+              "cur": "USD",
+              "month": "20270315",
+              "tc": "CC",
+              "mult": "10",
+              "mkt": "CC",
+              "name": "Cocoa NYBOT",
+              "exp": "20270316",
+              "ltt": "11:50:00"
+            }
+          ],
+          "errors": []
+        }
+      },
+      "qualified": {
+        "conId": 752092906,
+        "sym": "CC",
+        "local": "CCZ6",
+        "exch": "NYBOT",
+        "cur": "USD",
+        "month": "20261215",
+        "tc": "CC",
+        "mult": "10",
+        "mkt": "CC",
+        "name": "Cocoa NYBOT",
+        "exp": "20261216",
+        "ltt": "11:50:00"
+      },
+      "qualify_errors": [],
+      "head_ts": "2025-01-03 09:45:00+00:00",
+      "head_errors": [],
+      "daily_1m": {
+        "rows": 21,
+        "first": "2026-08-24",
+        "last": "2026-09-22",
+        "errors": []
+      },
+      "hourly_2d": {
+        "rows": 20,
+        "first": "2026-09-21 04:45:00-04:00",
+        "last": "2026-09-22 13:00:00-04:00",
+        "errors": []
+      }
+    },
+    "CT": {
+      "attempts": {
+        "ICEUS": {
+          "count": 0,
+          "first_4": [],
+          "errors": [
+            {
+              "reqId": 21,
+              "code": 200,
+              "msg": "No security definition has been found for the request"
+            }
+          ]
+        },
+        "(any)": {
+          "count": 30,
+          "first_4": [
+            {
+              "conId": 663548817,
+              "sym": "CT",
+              "local": "CTV6",
+              "exch": "NYBOT",
+              "cur": "USD",
+              "month": "20261008",
+              "tc": "CT",
+              "mult": "50000",
+              "mkt": "CT",
+              "name": "Cotton No. 2",
+              "exp": "20261015",
+              "ltt": "14:20:00"
+            },
+            {
+              "conId": 663548817,
+              "sym": "CT",
+              "local": "CTV6",
+              "exch": "QBALGOIUS",
+              "cur": "USD",
+              "month": "20261008",
+              "tc": "CT",
+              "mult": "50000",
+              "mkt": "CT",
+              "name": "Cotton No. 2",
+              "exp": "20261015",
+              "ltt": "14:20:00"
+            },
+            {
+              "conId": 675565687,
+              "sym": "CT",
+              "local": "CTZ6",
+              "exch": "NYBOT",
+              "cur": "USD",
+              "month": "20261208",
+              "tc": "CT",
+              "mult": "50000",
+              "mkt": "CT",
+              "name": "Cotton No. 2",
+              "exp": "20261215",
+              "ltt": "14:20:00"
+            },
+            {
+              "conId": 675565687,
+              "sym": "CT",
+              "local": "CTZ6",
+              "exch": "QBALGOIUS",
+              "cur": "USD",
+              "month": "20261208",
+              "tc": "CT",
+              "mult": "50000",
+              "mkt": "CT",
+              "name": "Cotton No. 2",
+              "exp": "20261215",
+              "ltt": "14:20:00"
+            }
+          ],
+          "errors": []
+        }
+      },
+      "qualified": {
+        "conId": 663548817,
+        "sym": "CT",
+        "local": "CTV6",
+        "exch": "NYBOT",
+        "cur": "USD",
+        "month": "20261008",
+        "tc": "CT",
+        "mult": "50000",
+        "mkt": "CT",
+        "name": "Cotton No. 2",
+        "exp": "20261015",
+        "ltt": "14:20:00"
+      },
+      "qualify_errors": [],
+      "head_ts": "2023-11-02 01:00:00+00:00",
+      "head_errors": [],
+      "daily_1m": {
+        "rows": 20,
+        "first": "2026-08-25",
+        "last": "2026-09-22",
+        "errors": []
+      },
+      "hourly_2d": {
+        "rows": 11,
+        "first": "2026-09-22 04:00:00-04:00",
+        "last": "2026-09-22 14:00:00-04:00",
+        "errors": []
+      }
+    },
+    "OJ": {
+      "attempts": {
+        "ICEUS": {
+          "count": 0,
+          "first_4": [],
+          "errors": [
+            {
+              "reqId": 27,
+              "code": 200,
+              "msg": "No security definition has been found for the request"
+            }
+          ]
+        },
+        "(any)": {
+          "count": 36,
+          "first_4": [
+            {
+              "conId": 657732422,
+              "sym": "OJ",
+              "local": "OJU6",
+              "exch": "NYBOT",
+              "cur": "USD",
+              "month": "20260910",
+              "tc": "OJ",
+              "mult": "15000",
+              "mkt": "OJ",
+              "name": "FC Orange Juice \"A\"",
+              "exp": "20260923",
+              "ltt": ""
+            },
+            {
+              "conId": 657732422,
+              "sym": "OJ",
+              "local": "OJU6",
+              "exch": "QBALGOIUS",
+              "cur": "USD",
+              "month": "20260910",
+              "tc": "OJ",
+              "mult": "15000",
+              "mkt": "OJ",
+              "name": "FC Orange Juice \"A\"",
+              "exp": "20260923",
+              "ltt": ""
+            },
+            {
+              "conId": 669231441,
+              "sym": "OJ",
+              "local": "OJX6",
+              "exch": "NYBOT",
+              "cur": "USD",
+              "month": "20261109",
+              "tc": "OJ",
+              "mult": "15000",
+              "mkt": "OJ",
+              "name": "FC Orange Juice \"A\"",
+              "exp": "20261120",
+              "ltt": "14:00:00"
+            },
+            {
+              "conId": 669231441,
+              "sym": "OJ",
+              "local": "OJX6",
+              "exch": "QBALGOIUS",
+              "cur": "USD",
+              "month": "20261109",
+              "tc": "OJ",
+              "mult": "15000",
+              "mkt": "OJ",
+              "name": "FC Orange Juice \"A\"",
+              "exp": "20261120",
+              "ltt": "14:00:00"
+            }
+          ],
+          "errors": []
+        }
+      },
+      "qualified": {
+        "conId": 669231441,
+        "sym": "OJ",
+        "local": "OJX6",
+        "exch": "NYBOT",
+        "cur": "USD",
+        "month": "20261109",
+        "tc": "OJ",
+        "mult": "15000",
+        "mkt": "OJ",
+        "name": "FC Orange Juice \"A\"",
+        "exp": "20261120",
+        "ltt": "14:00:00"
+      },
+      "qualify_errors": [],
+      "head_ts": "2023-12-04 13:00:00+00:00",
+      "head_errors": [],
+      "daily_1m": {
+        "rows": 21,
+        "first": "2026-08-24",
+        "last": "2026-09-22",
+        "errors": []
+      },
+      "hourly_2d": {
+        "rows": 12,
+        "first": "2026-09-21 08:00:00-04:00",
+        "last": "2026-09-22 13:00:00-04:00",
+        "errors": []
+      }
+    },
+    "ZS": {
+      "attempts": {
+        "ECBOT": {
+          "count": 0,
+          "first_4": [],
+          "errors": [
+            {
+              "reqId": 33,
+              "code": 200,
+              "msg": "No security definition has been found for the request"
+            }
+          ]
+        },
+        "CBOT": {
+          "count": 17,
+          "first_4": [
+            {
+              "conId": 597391703,
+              "sym": "ZS",
+              "local": "ZSX6",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20261113",
+              "tc": "ZS",
+              "mult": "5000",
+              "mkt": "ZS",
+              "name": "Soybean Futures",
+              "exp": "20261113",
+              "ltt": "12:01:00"
+            },
+            {
+              "conId": 665643557,
+              "sym": "ZS",
+              "local": "ZSN7",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20270714",
+              "tc": "ZS",
+              "mult": "5000",
+              "mkt": "ZS",
+              "name": "Soybean Futures",
+              "exp": "20270714",
+              "ltt": "12:01:00"
+            },
+            {
+              "conId": 665643567,
+              "sym": "ZS",
+              "local": "ZSX7",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20271112",
+              "tc": "ZS",
+              "mult": "5000",
+              "mkt": "ZS",
+              "name": "Soybean Futures",
+              "exp": "20271112",
+              "ltt": "12:01:00"
+            },
+            {
+              "conId": 741752265,
+              "sym": "ZS",
+              "local": "ZSQ7",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20270813",
+              "tc": "ZS",
+              "mult": "5000",
+              "mkt": "ZS",
+              "name": "Soybean Futures",
+              "exp": "20270813",
+              "ltt": "12:01:00"
+            }
+          ],
+          "errors": []
+        }
+      },
+      "qualified": {
+        "conId": 597391703,
+        "sym": "ZS",
+        "local": "ZSX6",
+        "exch": "CBOT",
+        "cur": "USD",
+        "month": "20261113",
+        "tc": "ZS",
+        "mult": "5000",
+        "mkt": "ZS",
+        "name": "Soybean Futures",
+        "exp": "20261113",
+        "ltt": "12:01:00"
+      },
+      "qualify_errors": [],
+      "head_ts": "2022-11-15 01:00:00+00:00",
+      "head_errors": [],
+      "daily_1m": {
+        "rows": 21,
+        "first": "2026-08-24",
+        "last": "2026-09-22",
+        "errors": []
+      },
+      "hourly_2d": {
+        "rows": 12,
+        "first": "2026-09-21 08:30:00-05:00",
+        "last": "2026-09-22 13:00:00-05:00",
+        "errors": []
+      }
+    },
+    "ZM": {
+      "attempts": {
+        "ECBOT": {
+          "count": 0,
+          "first_4": [],
+          "errors": [
+            {
+              "reqId": 39,
+              "code": 200,
+              "msg": "No security definition has been found for the request"
+            }
+          ]
+        },
+        "CBOT": {
+          "count": 21,
+          "first_4": [
+            {
+              "conId": 602619821,
+              "sym": "ZM",
+              "local": "ZMZ6",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20261214",
+              "tc": "ZM",
+              "mult": "100",
+              "mkt": "ZM",
+              "name": "Soybean Meal Futures",
+              "exp": "20261214",
+              "ltt": "12:01:00"
+            },
+            {
+              "conId": 602619866,
+              "sym": "ZM",
+              "local": "ZMV6",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20261014",
+              "tc": "ZM",
+              "mult": "100",
+              "mkt": "ZM",
+              "name": "Soybean Meal Futures",
+              "exp": "20261014",
+              "ltt": "12:01:00"
+            },
+            {
+              "conId": 671574059,
+              "sym": "ZM",
+              "local": "ZMN7",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20270714",
+              "tc": "ZM",
+              "mult": "100",
+              "mkt": "ZM",
+              "name": "Soybean Meal Futures",
+              "exp": "20270714",
+              "ltt": "12:01:00"
+            },
+            {
+              "conId": 671574082,
+              "sym": "ZM",
+              "local": "ZMZ7",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20271214",
+              "tc": "ZM",
+              "mult": "100",
+              "mkt": "ZM",
+              "name": "Soybean Meal Futures",
+              "exp": "20271214",
+              "ltt": "12:01:00"
+            }
+          ],
+          "errors": []
+        }
+      },
+      "qualified": {
+        "conId": 602619821,
+        "sym": "ZM",
+        "local": "ZMZ6",
+        "exch": "CBOT",
+        "cur": "USD",
+        "month": "20261214",
+        "tc": "ZM",
+        "mult": "100",
+        "mkt": "ZM",
+        "name": "Soybean Meal Futures",
+        "exp": "20261214",
+        "ltt": "12:01:00"
+      },
+      "qualify_errors": [],
+      "head_ts": "2022-12-15 01:00:00+00:00",
+      "head_errors": [],
+      "daily_1m": {
+        "rows": 21,
+        "first": "2026-08-24",
+        "last": "2026-09-22",
+        "errors": []
+      },
+      "hourly_2d": {
+        "rows": 12,
+        "first": "2026-09-21 08:30:00-05:00",
+        "last": "2026-09-22 13:00:00-05:00",
+        "errors": []
+      }
+    },
+    "ZL": {
+      "attempts": {
+        "ECBOT": {
+          "count": 0,
+          "first_4": [],
+          "errors": [
+            {
+              "reqId": 45,
+              "code": 200,
+              "msg": "No security definition has been found for the request"
+            }
+          ]
+        },
+        "CBOT": {
+          "count": 21,
+          "first_4": [
+            {
+              "conId": 602619503,
+              "sym": "ZL",
+              "local": "ZLZ6",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20261214",
+              "tc": "ZL",
+              "mult": "60000",
+              "mkt": "ZL",
+              "name": "Soybean Oil Futures",
+              "exp": "20261214",
+              "ltt": "12:01:00"
+            },
+            {
+              "conId": 602619551,
+              "sym": "ZL",
+              "local": "ZLV6",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20261014",
+              "tc": "ZL",
+              "mult": "60000",
+              "mkt": "ZL",
+              "name": "Soybean Oil Futures",
+              "exp": "20261014",
+              "ltt": "12:01:00"
+            },
+            {
+              "conId": 671574039,
+              "sym": "ZL",
+              "local": "ZLZ7",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20271214",
+              "tc": "ZL",
+              "mult": "60000",
+              "mkt": "ZL",
+              "name": "Soybean Oil Futures",
+              "exp": "20271214",
+              "ltt": "12:01:00"
+            },
+            {
+              "conId": 671574040,
+              "sym": "ZL",
+              "local": "ZLV7",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20271014",
+              "tc": "ZL",
+              "mult": "60000",
+              "mkt": "ZL",
+              "name": "Soybean Oil Futures",
+              "exp": "20271014",
+              "ltt": "12:01:00"
+            }
+          ],
+          "errors": []
+        }
+      },
+      "qualified": {
+        "conId": 602619503,
+        "sym": "ZL",
+        "local": "ZLZ6",
+        "exch": "CBOT",
+        "cur": "USD",
+        "month": "20261214",
+        "tc": "ZL",
+        "mult": "60000",
+        "mkt": "ZL",
+        "name": "Soybean Oil Futures",
+        "exp": "20261214",
+        "ltt": "12:01:00"
+      },
+      "qualify_errors": [],
+      "head_ts": "2022-12-15 01:00:00+00:00",
+      "head_errors": [],
+      "daily_1m": {
+        "rows": 21,
+        "first": "2026-08-24",
+        "last": "2026-09-22",
+        "errors": []
+      },
+      "hourly_2d": {
+        "rows": 12,
+        "first": "2026-09-21 08:30:00-05:00",
+        "last": "2026-09-22 13:00:00-05:00",
+        "errors": []
+      }
+    },
+    "ZC": {
+      "attempts": {
+        "ECBOT": {
+          "count": 0,
+          "first_4": [],
+          "errors": [
+            {
+              "reqId": 51,
+              "code": 200,
+              "msg": "No security definition has been found for the request"
+            }
+          ]
+        },
+        "CBOT": {
+          "count": 13,
+          "first_4": [
+            {
+              "conId": 602619735,
+              "sym": "ZC",
+              "local": "ZCZ6",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20261214",
+              "tc": "ZC",
+              "mult": "5000",
+              "mkt": "ZC",
+              "name": "Corn Futures",
+              "exp": "20261214",
+              "ltt": "12:01:00"
+            },
+            {
+              "conId": 671574006,
+              "sym": "ZC",
+              "local": "ZCZ7",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20271214",
+              "tc": "ZC",
+              "mult": "5000",
+              "mkt": "ZC",
+              "name": "Corn Futures",
+              "exp": "20271214",
+              "ltt": "12:01:00"
+            },
+            {
+              "conId": 671574009,
+              "sym": "ZC",
+              "local": "ZCN7",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20270714",
+              "tc": "ZC",
+              "mult": "5000",
+              "mkt": "ZC",
+              "name": "Corn Futures",
+              "exp": "20270714",
+              "ltt": "12:01:00"
+            },
+            {
+              "conId": 748101130,
+              "sym": "ZC",
+              "local": "ZCN8",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20280714",
+              "tc": "ZC",
+              "mult": "5000",
+              "mkt": "ZC",
+              "name": "Corn Futures",
+              "exp": "20280714",
+              "ltt": "12:01:00"
+            }
+          ],
+          "errors": []
+        }
+      },
+      "qualified": {
+        "conId": 602619735,
+        "sym": "ZC",
+        "local": "ZCZ6",
+        "exch": "CBOT",
+        "cur": "USD",
+        "month": "20261214",
+        "tc": "ZC",
+        "mult": "5000",
+        "mkt": "ZC",
+        "name": "Corn Futures",
+        "exp": "20261214",
+        "ltt": "12:01:00"
+      },
+      "qualify_errors": [],
+      "head_ts": "2022-12-15 01:00:00+00:00",
+      "head_errors": [],
+      "daily_1m": {
+        "rows": 21,
+        "first": "2026-08-24",
+        "last": "2026-09-22",
+        "errors": []
+      },
+      "hourly_2d": {
+        "rows": 12,
+        "first": "2026-09-21 08:30:00-05:00",
+        "last": "2026-09-22 13:00:00-05:00",
+        "errors": []
+      }
+    },
+    "ZW": {
+      "attempts": {
+        "ECBOT": {
+          "count": 0,
+          "first_4": [],
+          "errors": [
+            {
+              "reqId": 57,
+              "code": 200,
+              "msg": "No security definition has been found for the request"
+            }
+          ]
+        },
+        "CBOT": {
+          "count": 14,
+          "first_4": [
+            {
+              "conId": 715358279,
+              "sym": "ZW",
+              "local": "ZWZ6",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20261214",
+              "tc": "ZW",
+              "mult": "5000",
+              "mkt": "ZW",
+              "name": "Wheat Futures",
+              "exp": "20261214",
+              "ltt": "12:01:00"
+            },
+            {
+              "conId": 715358280,
+              "sym": "ZW",
+              "local": "ZWK7",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20270514",
+              "tc": "ZW",
+              "mult": "5000",
+              "mkt": "ZW",
+              "name": "Wheat Futures",
+              "exp": "20270514",
+              "ltt": "12:01:00"
+            },
+            {
+              "conId": 715358285,
+              "sym": "ZW",
+              "local": "ZWH7",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20270312",
+              "tc": "ZW",
+              "mult": "5000",
+              "mkt": "ZW",
+              "name": "Wheat Futures",
+              "exp": "20270312",
+              "ltt": "12:01:00"
+            },
+            {
+              "conId": 715358291,
+              "sym": "ZW",
+              "local": "ZWN7",
+              "exch": "CBOT",
+              "cur": "USD",
+              "month": "20270714",
+              "tc": "ZW",
+              "mult": "5000",
+              "mkt": "ZW",
+              "name": "Wheat Futures",
+              "exp": "20270714",
+              "ltt": "12:01:00"
+            }
+          ],
+          "errors": []
+        }
+      },
+      "qualified": {
+        "conId": 715358279,
+        "sym": "ZW",
+        "local": "ZWZ6",
+        "exch": "CBOT",
+        "cur": "USD",
+        "month": "20261214",
+        "tc": "ZW",
+        "mult": "5000",
+        "mkt": "ZW",
+        "name": "Wheat Futures",
+        "exp": "20261214",
+        "ltt": "12:01:00"
+      },
+      "qualify_errors": [],
+      "head_ts": "2024-07-15 00:00:00+00:00",
+      "head_errors": [],
+      "daily_1m": {
+        "rows": 21,
+        "first": "2026-08-24",
+        "last": "2026-09-22",
+        "errors": []
+      },
+      "hourly_2d": {
+        "rows": 12,
+        "first": "2026-09-21 08:30:00-05:00",
+        "last": "2026-09-22 13:00:00-05:00",
+        "errors": []
+      }
+    },
+    "LE": {
+      "attempts": {
+        "CME": {
+          "count": 10,
+          "first_4": [
+            {
+              "conId": 781181245,
+              "sym": "LE",
+              "local": "LEV6",
+              "exch": "CME",
+              "cur": "USD",
+              "month": "20261030",
+              "tc": "LE",
+              "mult": "40000",
+              "mkt": "LE",
+              "name": "Live Cattle",
+              "exp": "20261030",
+              "ltt": "12:00:00"
+            },
+            {
+              "conId": 790105750,
+              "sym": "LE",
+              "local": "LEZ6",
+              "exch": "CME",
+              "cur": "USD",
+              "month": "20261231",
+              "tc": "LE",
+              "mult": "40000",
+              "mkt": "LE",
+              "name": "Live Cattle",
+              "exp": "20261231",
+              "ltt": "12:00:00"
+            },
+            {
+              "conId": 795951635,
+              "sym": "LE",
+              "local": "LEG7",
+              "exch": "CME",
+              "cur": "USD",
+              "month": "20270226",
+              "tc": "LE",
+              "mult": "40000",
+              "mkt": "LE",
+              "name": "Live Cattle",
+              "exp": "20270226",
+              "ltt": "12:00:00"
+            },
+            {
+              "conId": 810969225,
+              "sym": "LE",
+              "local": "LEJ7",
+              "exch": "CME",
+              "cur": "USD",
+              "month": "20270430",
+              "tc": "LE",
+              "mult": "40000",
+              "mkt": "LE",
+              "name": "Live Cattle",
+              "exp": "20270430",
+              "ltt": "12:00:00"
+            }
+          ],
+          "errors": []
+        }
+      },
+      "qualified": {
+        "conId": 781181245,
+        "sym": "LE",
+        "local": "LEV6",
+        "exch": "CME",
+        "cur": "USD",
+        "month": "20261030",
+        "tc": "LE",
+        "mult": "40000",
+        "mkt": "LE",
+        "name": "Live Cattle",
+        "exp": "20261030",
+        "ltt": "12:00:00"
+      },
+      "qualify_errors": [],
+      "head_ts": "2025-05-01 13:30:00+00:00",
+      "head_errors": [],
+      "daily_1m": {
+        "rows": 21,
+        "first": "2026-08-24",
+        "last": "2026-09-22",
+        "errors": []
+      },
+      "hourly_2d": {
+        "rows": 12,
+        "first": "2026-09-21 08:30:00-05:00",
+        "last": "2026-09-22 13:00:00-05:00",
+        "errors": []
+      }
+    },
+    "HE": {
+      "attempts": {
+        "CME": {
+          "count": 11,
+          "first_4": [
+            {
+              "conId": 784098146,
+              "sym": "HE",
+              "local": "HEV6",
+              "exch": "CME",
+              "cur": "USD",
+              "month": "20261014",
+              "tc": "HE",
+              "mult": "40000",
+              "mkt": "HE",
+              "name": "Lean Hogs",
+              "exp": "20261016",
+              "ltt": "12:00:00"
+            },
+            {
+              "conId": 791718404,
+              "sym": "HE",
+              "local": "HEZ6",
+              "exch": "CME",
+              "cur": "USD",
+              "month": "20261214",
+              "tc": "HE",
+              "mult": "40000",
+              "mkt": "HE",
+              "name": "Lean Hogs",
+              "exp": "20261216",
+              "ltt": "12:00:00"
+            },
+            {
+              "conId": 807339097,
+              "sym": "HE",
+              "local": "HEG7",
+              "exch": "CME",
+              "cur": "USD",
+              "month": "20270212",
+              "tc": "HE",
+              "mult": "40000",
+              "mkt": "HE",
+              "name": "Lean Hogs",
+              "exp": "20270217",
+              "ltt": "12:00:00"
+            },
+            {
+              "conId": 822484157,
+              "sym": "HE",
+              "local": "HEJ7",
+              "exch": "CME",
+              "cur": "USD",
+              "month": "20270414",
+              "tc": "HE",
+              "mult": "40000",
+              "mkt": "HE",
+              "name": "Lean Hogs",
+              "exp": "20270416",
+              "ltt": "12:00:00"
+            }
+          ],
+          "errors": []
+        }
+      },
+      "qualified": {
+        "conId": 784098146,
+        "sym": "HE",
+        "local": "HEV6",
+        "exch": "CME",
+        "cur": "USD",
+        "month": "20261014",
+        "tc": "HE",
+        "mult": "40000",
+        "mkt": "HE",
+        "name": "Lean Hogs",
+        "exp": "20261016",
+        "ltt": "12:00:00"
+      },
+      "qualify_errors": [],
+      "head_ts": "2025-05-15 13:30:00+00:00",
+      "head_errors": [],
+      "daily_1m": {
+        "rows": 21,
+        "first": "2026-08-24",
+        "last": "2026-09-22",
+        "errors": []
+      },
+      "hourly_2d": {
+        "rows": 12,
+        "first": "2026-09-21 08:30:00-05:00",
+        "last": "2026-09-22 13:00:00-05:00",
+        "errors": []
+      }
+    },
+    "FCPO": {
+      "attempts": {
+        "BMD": {
+          "count": 0,
+          "first_4": [],
+          "errors": [
+            {
+              "reqId": 73,
+              "code": 200,
+              "msg": "The destination or exchange selected is Invalid. Please review your order's \"Destination\" field. If using a <br>Directed order, review the exchange selected whe"
+            }
+          ]
+        },
+        "MYX": {
+          "count": 0,
+          "first_4": [],
+          "errors": [
+            {
+              "reqId": 74,
+              "code": 200,
+              "msg": "The destination or exchange selected is Invalid. Please review your order's \"Destination\" field. If using a <br>Directed order, review the exchange selected whe"
+            }
+          ]
+        },
+        "(any)": {
+          "count": 0,
+          "first_4": [],
+          "errors": [
+            {
+              "reqId": 75,
+              "code": 200,
+              "msg": "No security definition has been found for the request"
+            }
+          ]
+        }
+      },
+      "status": "no contract details"
+    }
+  },
+  "connected_client_id": 7,
+  "trailing_errors": [],
+  "probe_end_utc": "2026-09-23T03:11:43.024612+00:00"
+}

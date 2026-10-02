@@ -1,0 +1,717 @@
+{
+  "probe_utc": "2026-09-23T02:41:15.038966+00:00",
+  "host": "127.0.0.1",
+  "port": 4001,
+  "roots": {
+    "RB": {
+      "steps": {
+        "reqContractDetails": {
+          "args": "Future(symbol=RB, exchange=NYMEX, currency=USD)",
+          "count": 40,
+          "first_12": [
+            {
+              "conId": 600696516,
+              "symbol": "RB",
+              "localSymbol": "RBX6",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20261030",
+              "tradingClass": "RB",
+              "multiplier": "42000",
+              "marketName": "RB",
+              "longName": "NYMEX RBOB Gasoline Index",
+              "realExpirationDate": "20261030",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 600696528,
+              "symbol": "RB",
+              "localSymbol": "RBF7",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20261231",
+              "tradingClass": "RB",
+              "multiplier": "42000",
+              "marketName": "RB",
+              "longName": "NYMEX RBOB Gasoline Index",
+              "realExpirationDate": "20261231",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 600696556,
+              "symbol": "RB",
+              "localSymbol": "RBV6",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20260930",
+              "tradingClass": "RB",
+              "multiplier": "42000",
+              "marketName": "RB",
+              "longName": "NYMEX RBOB Gasoline Index",
+              "realExpirationDate": "20260930",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 600696562,
+              "symbol": "RB",
+              "localSymbol": "RBZ6",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20261130",
+              "tradingClass": "RB",
+              "multiplier": "42000",
+              "marketName": "RB",
+              "longName": "NYMEX RBOB Gasoline Index",
+              "realExpirationDate": "20261130",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 668806853,
+              "symbol": "RB",
+              "localSymbol": "RBK7",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20270430",
+              "tradingClass": "RB",
+              "multiplier": "42000",
+              "marketName": "RB",
+              "longName": "NYMEX RBOB Gasoline Index",
+              "realExpirationDate": "20270430",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 668806858,
+              "symbol": "RB",
+              "localSymbol": "RBU7",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20270831",
+              "tradingClass": "RB",
+              "multiplier": "42000",
+              "marketName": "RB",
+              "longName": "NYMEX RBOB Gasoline Index",
+              "realExpirationDate": "20270831",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 668806863,
+              "symbol": "RB",
+              "localSymbol": "RBF8",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20271231",
+              "tradingClass": "RB",
+              "multiplier": "42000",
+              "marketName": "RB",
+              "longName": "NYMEX RBOB Gasoline Index",
+              "realExpirationDate": "20271231",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 668806865,
+              "symbol": "RB",
+              "localSymbol": "RBQ7",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20270730",
+              "tradingClass": "RB",
+              "multiplier": "42000",
+              "marketName": "RB",
+              "longName": "NYMEX RBOB Gasoline Index",
+              "realExpirationDate": "20270730",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 668806868,
+              "symbol": "RB",
+              "localSymbol": "RBG7",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20270129",
+              "tradingClass": "RB",
+              "multiplier": "42000",
+              "marketName": "RB",
+              "longName": "NYMEX RBOB Gasoline Index",
+              "realExpirationDate": "20270129",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 668806875,
+              "symbol": "RB",
+              "localSymbol": "RBV7",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20270930",
+              "tradingClass": "RB",
+              "multiplier": "42000",
+              "marketName": "RB",
+              "longName": "NYMEX RBOB Gasoline Index",
+              "realExpirationDate": "20270930",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 668806878,
+              "symbol": "RB",
+              "localSymbol": "RBH7",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20270226",
+              "tradingClass": "RB",
+              "multiplier": "42000",
+              "marketName": "RB",
+              "longName": "NYMEX RBOB Gasoline Index",
+              "realExpirationDate": "20270226",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 668806882,
+              "symbol": "RB",
+              "localSymbol": "RBM7",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20270528",
+              "tradingClass": "RB",
+              "multiplier": "42000",
+              "marketName": "RB",
+              "longName": "NYMEX RBOB Gasoline Index",
+              "realExpirationDate": "20270528",
+              "lastTradeTime": "14:30:00"
+            }
+          ],
+          "errors": [
+            {
+              "reqId": -1,
+              "code": 2151,
+              "msg": "Positions info is not available yet."
+            },
+            {
+              "reqId": -1,
+              "code": 2158,
+              "msg": "Sec-def data farm connection is OK:secdefnj"
+            },
+            {
+              "reqId": -1,
+              "code": 2104,
+              "msg": "Market data farm connection is OK:usfarm"
+            },
+            {
+              "reqId": -1,
+              "code": 2106,
+              "msg": "HMDS data farm connection is OK:cashhmds"
+            },
+            {
+              "reqId": -1,
+              "code": 2106,
+              "msg": "HMDS data farm connection is OK:ushmds"
+            },
+            {
+              "reqId": -1,
+              "code": 1102,
+              "msg": "Connectivity between IBKR and Trader Workstation has been restored - data maintained. All data farms are connected: usfarm; cashhmds; ushmds; secdefnj."
+            },
+            {
+              "reqId": -1,
+              "code": 2119,
+              "msg": "Market data farm is connecting:usfarm.nj"
+            }
+          ]
+        },
+        "head_ts": {
+          "args": "reqHeadTimeStamp TRADES useRTH=1",
+          "value": "2022-11-30 23:00:00+00:00",
+          "errors": [
+            {
+              "reqId": -1,
+              "code": 2104,
+              "msg": "Market data farm connection is OK:usfarm.nj"
+            }
+          ]
+        },
+        "daily_1m": {
+          "args": "reqHistoricalData duration='1 M' bar='1 day' TRADES useRTH=1",
+          "rows": 21,
+          "first": "2026-08-24",
+          "last": "2026-09-22",
+          "errors": []
+        },
+        "hourly_2d": {
+          "args": "reqHistoricalData duration='2 D' bar='1 hour' TRADES useRTH=1",
+          "rows": 16,
+          "first": "2026-09-21 09:30:00-04:00",
+          "last": "2026-09-22 16:00:00-04:00",
+          "errors": []
+        }
+      },
+      "qualified_contract": {
+        "conId": 600696516,
+        "symbol": "RB",
+        "localSymbol": "RBX6",
+        "exchange": "NYMEX",
+        "currency": "USD",
+        "month": "20261030",
+        "tradingClass": "RB",
+        "multiplier": "42000",
+        "marketName": "RB",
+        "longName": "NYMEX RBOB Gasoline Index",
+        "realExpirationDate": "20261030",
+        "lastTradeTime": "14:30:00"
+      },
+      "qualify_errors": []
+    },
+    "HO": {
+      "steps": {
+        "reqContractDetails": {
+          "args": "Future(symbol=HO, exchange=NYMEX, currency=USD)",
+          "count": 40,
+          "first_12": [
+            {
+              "conId": 600696468,
+              "symbol": "HO",
+              "localSymbol": "HOZ6",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20261130",
+              "tradingClass": "HO",
+              "multiplier": "42000",
+              "marketName": "HO",
+              "longName": "Heating Oil",
+              "realExpirationDate": "20261130",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 600696478,
+              "symbol": "HO",
+              "localSymbol": "HOX6",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20261030",
+              "tradingClass": "HO",
+              "multiplier": "42000",
+              "marketName": "HO",
+              "longName": "Heating Oil",
+              "realExpirationDate": "20261030",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 600696482,
+              "symbol": "HO",
+              "localSymbol": "HOF7",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20261231",
+              "tradingClass": "HO",
+              "multiplier": "42000",
+              "marketName": "HO",
+              "longName": "Heating Oil",
+              "realExpirationDate": "20261231",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 600696488,
+              "symbol": "HO",
+              "localSymbol": "HOV6",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20260930",
+              "tradingClass": "HO",
+              "multiplier": "42000",
+              "marketName": "HO",
+              "longName": "Heating Oil",
+              "realExpirationDate": "20260930",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 668806805,
+              "symbol": "HO",
+              "localSymbol": "HON7",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20270630",
+              "tradingClass": "HO",
+              "multiplier": "42000",
+              "marketName": "HO",
+              "longName": "Heating Oil",
+              "realExpirationDate": "20270630",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 668806810,
+              "symbol": "HO",
+              "localSymbol": "HOG7",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20270129",
+              "tradingClass": "HO",
+              "multiplier": "42000",
+              "marketName": "HO",
+              "longName": "Heating Oil",
+              "realExpirationDate": "20270129",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 668806815,
+              "symbol": "HO",
+              "localSymbol": "HOJ7",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20270331",
+              "tradingClass": "HO",
+              "multiplier": "42000",
+              "marketName": "HO",
+              "longName": "Heating Oil",
+              "realExpirationDate": "20270331",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 668806819,
+              "symbol": "HO",
+              "localSymbol": "HOQ7",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20270730",
+              "tradingClass": "HO",
+              "multiplier": "42000",
+              "marketName": "HO",
+              "longName": "Heating Oil",
+              "realExpirationDate": "20270730",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 668806822,
+              "symbol": "HO",
+              "localSymbol": "HOF8",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20271231",
+              "tradingClass": "HO",
+              "multiplier": "42000",
+              "marketName": "HO",
+              "longName": "Heating Oil",
+              "realExpirationDate": "20271231",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 668806825,
+              "symbol": "HO",
+              "localSymbol": "HOX7",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20271029",
+              "tradingClass": "HO",
+              "multiplier": "42000",
+              "marketName": "HO",
+              "longName": "Heating Oil",
+              "realExpirationDate": "20271029",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 668806828,
+              "symbol": "HO",
+              "localSymbol": "HOZ7",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20271130",
+              "tradingClass": "HO",
+              "multiplier": "42000",
+              "marketName": "HO",
+              "longName": "Heating Oil",
+              "realExpirationDate": "20271130",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 668806834,
+              "symbol": "HO",
+              "localSymbol": "HOH7",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20270226",
+              "tradingClass": "HO",
+              "multiplier": "42000",
+              "marketName": "HO",
+              "longName": "Heating Oil",
+              "realExpirationDate": "20270226",
+              "lastTradeTime": "14:30:00"
+            }
+          ],
+          "errors": []
+        },
+        "head_ts": {
+          "args": "reqHeadTimeStamp TRADES useRTH=1",
+          "value": "2022-11-30 23:00:00+00:00",
+          "errors": []
+        },
+        "daily_1m": {
+          "args": "reqHistoricalData duration='1 M' bar='1 day' TRADES useRTH=1",
+          "rows": 21,
+          "first": "2026-08-24",
+          "last": "2026-09-22",
+          "errors": []
+        },
+        "hourly_2d": {
+          "args": "reqHistoricalData duration='2 D' bar='1 hour' TRADES useRTH=1",
+          "rows": 16,
+          "first": "2026-09-21 09:30:00-04:00",
+          "last": "2026-09-22 16:00:00-04:00",
+          "errors": []
+        }
+      },
+      "qualified_contract": {
+        "conId": 600696468,
+        "symbol": "HO",
+        "localSymbol": "HOZ6",
+        "exchange": "NYMEX",
+        "currency": "USD",
+        "month": "20261130",
+        "tradingClass": "HO",
+        "multiplier": "42000",
+        "marketName": "HO",
+        "longName": "Heating Oil",
+        "realExpirationDate": "20261130",
+        "lastTradeTime": "14:30:00"
+      },
+      "qualify_errors": []
+    },
+    "NG": {
+      "steps": {
+        "reqContractDetails": {
+          "args": "Future(symbol=NG, exchange=NYMEX, currency=USD)",
+          "count": 147,
+          "first_12": [
+            {
+              "conId": 269459992,
+              "symbol": "NG",
+              "localSymbol": "NGF27",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20261229",
+              "tradingClass": "NG",
+              "multiplier": "10000",
+              "marketName": "NG",
+              "longName": "Henry Hub Natural Gas",
+              "realExpirationDate": "20261229",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 269459997,
+              "symbol": "NG",
+              "localSymbol": "NGF28",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20271229",
+              "tradingClass": "NG",
+              "multiplier": "10000",
+              "marketName": "NG",
+              "longName": "Henry Hub Natural Gas",
+              "realExpirationDate": "20271229",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 269460001,
+              "symbol": "NG",
+              "localSymbol": "NGF29",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20281227",
+              "tradingClass": "NG",
+              "multiplier": "10000",
+              "marketName": "NG",
+              "longName": "Henry Hub Natural Gas",
+              "realExpirationDate": "20281227",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 269460011,
+              "symbol": "NG",
+              "localSymbol": "NGG27",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20270127",
+              "tradingClass": "NG",
+              "multiplier": "10000",
+              "marketName": "NG",
+              "longName": "Henry Hub Natural Gas",
+              "realExpirationDate": "20270127",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 269460014,
+              "symbol": "NG",
+              "localSymbol": "NGG28",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20280127",
+              "tradingClass": "NG",
+              "multiplier": "10000",
+              "marketName": "NG",
+              "longName": "Henry Hub Natural Gas",
+              "realExpirationDate": "20280127",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 269460016,
+              "symbol": "NG",
+              "localSymbol": "NGG29",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20290129",
+              "tradingClass": "NG",
+              "multiplier": "10000",
+              "marketName": "NG",
+              "longName": "Henry Hub Natural Gas",
+              "realExpirationDate": "20290129",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 269460026,
+              "symbol": "NG",
+              "localSymbol": "NGH27",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20270224",
+              "tradingClass": "NG",
+              "multiplier": "10000",
+              "marketName": "NG",
+              "longName": "Henry Hub Natural Gas",
+              "realExpirationDate": "20270224",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 269460031,
+              "symbol": "NG",
+              "localSymbol": "NGH28",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20280225",
+              "tradingClass": "NG",
+              "multiplier": "10000",
+              "marketName": "NG",
+              "longName": "Henry Hub Natural Gas",
+              "realExpirationDate": "20280225",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 269460034,
+              "symbol": "NG",
+              "localSymbol": "NGH29",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20290226",
+              "tradingClass": "NG",
+              "multiplier": "10000",
+              "marketName": "NG",
+              "longName": "Henry Hub Natural Gas",
+              "realExpirationDate": "20290226",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 269460040,
+              "symbol": "NG",
+              "localSymbol": "NGJ27",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20270329",
+              "tradingClass": "NG",
+              "multiplier": "10000",
+              "marketName": "NG",
+              "longName": "Henry Hub Natural Gas",
+              "realExpirationDate": "20270329",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 269460045,
+              "symbol": "NG",
+              "localSymbol": "NGJ28",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20280329",
+              "tradingClass": "NG",
+              "multiplier": "10000",
+              "marketName": "NG",
+              "longName": "Henry Hub Natural Gas",
+              "realExpirationDate": "20280329",
+              "lastTradeTime": "14:30:00"
+            },
+            {
+              "conId": 269460051,
+              "symbol": "NG",
+              "localSymbol": "NGJ29",
+              "exchange": "NYMEX",
+              "currency": "USD",
+              "month": "20290327",
+              "tradingClass": "NG",
+              "multiplier": "10000",
+              "marketName": "NG",
+              "longName": "Henry Hub Natural Gas",
+              "realExpirationDate": "20290327",
+              "lastTradeTime": "14:30:00"
+            }
+          ],
+          "errors": []
+        },
+        "head_ts": {
+          "args": "reqHeadTimeStamp TRADES useRTH=1",
+          "value": "2017-03-13 22:00:00+00:00",
+          "errors": []
+        },
+        "daily_1m": {
+          "args": "reqHistoricalData duration='1 M' bar='1 day' TRADES useRTH=1",
+          "rows": 21,
+          "first": "2026-08-24",
+          "last": "2026-09-22",
+          "errors": []
+        },
+        "hourly_2d": {
+          "args": "reqHistoricalData duration='2 D' bar='1 hour' TRADES useRTH=1",
+          "rows": 16,
+          "first": "2026-09-21 09:30:00-04:00",
+          "last": "2026-09-22 16:00:00-04:00",
+          "errors": []
+        }
+      },
+      "qualified_contract": {
+        "conId": 269459992,
+        "symbol": "NG",
+        "localSymbol": "NGF27",
+        "exchange": "NYMEX",
+        "currency": "USD",
+        "month": "20261229",
+        "tradingClass": "NG",
+        "multiplier": "10000",
+        "marketName": "NG",
+        "longName": "Henry Hub Natural Gas",
+        "realExpirationDate": "20261229",
+        "lastTradeTime": "14:30:00"
+      },
+      "qualify_errors": []
+    }
+  },
+  "bz_control": {
+    "NYMEX": {
+      "count": 0,
+      "first": null,
+      "errors": [
+        {
+          "reqId": 19,
+          "code": 200,
+          "msg": "No security definition has been found for the request"
+        }
+      ]
+    },
+    "CME": {
+      "count": 0,
+      "first": null,
+      "errors": [
+        {
+          "reqId": 20,
+          "code": 200,
+          "msg": "No security definition has been found for the request"
+        }
+      ]
+    }
+  },
+  "errors": [],
+  "connected_client_id": 7,
+  "connect_errors": [],
+  "trailing_errors": [],
+  "probe_end_utc": "2026-09-23T02:52:07.040856+00:00"
+}
