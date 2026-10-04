@@ -23,13 +23,13 @@ from clients.mediawiki_client import MediaWikiClient
 from clients.security_master import SecurityIdentityEvent, SecurityMaster
 from clients.source_evidence import SourceEvidence, SourceEvidenceStore
 from clients.source_evidence import canonical_bytes as _canonical_bytes
-from clients.universe_client import UniverseFetchError, parse_constituent_table
+from clients.universe_client import NDX100_WIKIPEDIA_TITLE, UniverseFetchError, parse_constituent_table
 from livewire_scripts.paths import data_lake_dir
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 INDEXES = {
     "sp500": ("List of S&P 500 companies", PROJECT_ROOT / "presets" / "sp500.json"),
-    "ndx100": ("Nasdaq-100", PROJECT_ROOT / "presets" / "ndx100.json"),
+    "ndx100": (NDX100_WIKIPEDIA_TITLE, PROJECT_ROOT / "presets" / "ndx100.json"),
 }
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _REF = re.compile(r"^artifact://sha256/([0-9a-f]{64})$")

@@ -61,6 +61,7 @@ R2K_HTML = """
 """
 
 MEDIAWIKI_ROOT = "https://en.wikipedia.org/w/rest.php/v1/page"
+MEDIAWIKI_FIXTURES = Path(__file__).parent / "fixtures" / "mediawiki"
 
 
 def mediawiki_url(title: str) -> str:
@@ -217,6 +218,30 @@ class TestFetchNDX100:
         )
         with pytest.raises(UniverseFetchError, match="no constituent table"):
             fetch_ndx100()
+
+    @responses.activate
+    def test_parses_the_current_live_article_snapshot(self, tmp_path, monkeypatch):
+        # Trimmed real snapshot of `List of NASDAQ-100 companies` rev 1375648703,
+        # fetched 2026-10-04: the full constituents table plus one navbox decoy.
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path))
+        responses.add(
+            responses.GET,
+            mediawiki_url(NDX100_WIKIPEDIA_TITLE),
+            body=(MEDIAWIKI_FIXTURES / "ndx100-list-of-nasdaq-100-companies-2026-10-04.html").read_bytes(),
+            status=200,
+        )
+        result = fetch_ndx100()
+        assert len(result) >= 100
+        assert {"AAPL", "NVDA", "GOOG", "GOOGL"} <= result
+
+    def test_the_shepherd_scan_fetches_the_same_article(self):
+        # livewire_scripts/shepherd_universe.py kept its own copy of the title
+        # and stayed on `Nasdaq-100` after the 2026-09-02 move, so every weekly
+        # scan fetched an article with no constituents table (wikipedia: 0 on
+        # 09-20, 09-27, 10-04). One shared constant pins the two fetch paths.
+        from livewire_scripts import shepherd_universe
+
+        assert shepherd_universe.INDEXES["ndx100"][0] == NDX100_WIKIPEDIA_TITLE
 
 
 class TestFetchR2K:
