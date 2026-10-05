@@ -2120,3 +2120,13 @@ def test_eia_bulk_imports_warn_past_twice_the_refresh_interval():
     section = _eia_check("EIA bulk imports", now)
     assert section.verdict.name == "WARN"
     assert [line for line in section.lines if "family=" in line] == ["  family=ELEC  days_behind=15.0  limit_days=14.0"]
+
+
+def test_a_missing_triage_store_is_bad_and_a_present_one_counts_real_moves(tmp_path):
+    assert status._triage_section(tmp_path).verdict is status.Verdict.BAD
+    store = tmp_path / "repairs" / "triage" / "current.json"
+    store.parent.mkdir(parents=True)
+    store.write_text(json.dumps({"verdicts": [{"verdict": "real_move"}, {"verdict": "inconclusive"}]}))
+    section = status._triage_section(tmp_path)
+    assert section.verdict is status.Verdict.OK
+    assert section.lines == ["Triage verdicts: 2 (1 real_move)"]
