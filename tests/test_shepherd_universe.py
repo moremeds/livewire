@@ -9,7 +9,9 @@ import pytest
 
 from clients.mediawiki_client import MediaWikiSnapshot
 from clients.source_evidence import SourceEvidence, SourceEvidenceStore
+from livewire_scripts import status
 from livewire_scripts.shepherd_universe import (
+    _record_scan,
     decision_payload_hash,
     import_decision,
     scan_index,
@@ -211,6 +213,28 @@ def test_scan_turns_unparseable_revision_into_a_case_without_fake_members(tmp_pa
     assert result["teamCase"]["sourceStates"] == {"wikipedia": "unparseable", "preset": "parsed"}
     assert {row["symbol"] for row in result["claims"]} == {"AAPL", "NVDA"}
     assert "Closing" not in result["teamCase"]["symbols"]
+
+
+def test_an_unparseable_scan_is_exit_1_and_status_grades_it_bad(tmp_path: Path) -> None:
+    store = SourceEvidenceStore(tmp_path)
+    preset = tmp_path / "sp500.json"
+    _preset(preset, ["AAPL"])
+    started = datetime.now(UTC)
+    parsed = scan_receipt(
+        scan_index("sp500", store=store, wiki=FakeWiki(_wiki(store, ["AAPL"])), preset_path=preset, now=started)
+    )
+    assert _record_scan(parsed, started) == 0
+    check = ("Universe source parsed", dict(status.CHECKS)["Universe source parsed"])
+    params = {"now": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")}
+    assert status.run_check(*check, params).verdict is status.Verdict.OK
+
+    broken = _wiki(store, [], content="<table><tr><th>Category</th></tr><tr><td>Closing</td></tr></table>")
+    unparsed = scan_receipt(scan_index("sp500", store=store, wiki=FakeWiki(broken), preset_path=preset, now=started))
+    assert _record_scan(unparsed, datetime.now(UTC)) == 1
+
+    section = status.run_check(*check, params)
+    assert section.verdict is status.Verdict.BAD
+    assert any("wikipedia=0" in line and "preset=1" in line for line in section.lines)
 
 
 def test_verified_decision_imports_idempotently_and_replays_revision(tmp_path: Path) -> None:

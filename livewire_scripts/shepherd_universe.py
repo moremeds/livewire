@@ -18,18 +18,20 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from clients import ledger
 from clients.index_membership_store import IndexMembershipStore, MembershipEvent
 from clients.mediawiki_client import MediaWikiClient
 from clients.security_master import SecurityIdentityEvent, SecurityMaster
 from clients.source_evidence import SourceEvidence, SourceEvidenceStore
 from clients.source_evidence import canonical_bytes as _canonical_bytes
-from clients.universe_client import UniverseFetchError, parse_constituent_table
+from clients.universe_client import NDX100_WIKIPEDIA_TITLE, UniverseFetchError, parse_constituent_table
+from livewire_scripts.job_runner_common import executing_code_sha
 from livewire_scripts.paths import data_lake_dir
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 INDEXES = {
     "sp500": ("List of S&P 500 companies", PROJECT_ROOT / "presets" / "sp500.json"),
-    "ndx100": ("Nasdaq-100", PROJECT_ROOT / "presets" / "ndx100.json"),
+    "ndx100": (NDX100_WIKIPEDIA_TITLE, PROJECT_ROOT / "presets" / "ndx100.json"),
 }
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _REF = re.compile(r"^artifact://sha256/([0-9a-f]{64})$")
@@ -559,6 +561,32 @@ def scan_receipt(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _record_scan(receipt: dict[str, Any], started: datetime) -> int:
+    """Write the scan's executions row; an unparseable source is exit 1, not a quiet 0.
+
+    The ndx100 article went unparsed for weeks with exit 0 and no ledger row, so
+    `status` (which reads only the ledger) could not see it.
+    """
+    wikipedia = receipt["sources"][0]
+    exit_code = 0 if wikipedia["state"] == "parsed" else 1
+    row = {
+        "evidence_hash": receipt["scanArtifact"]["sha256"],
+        "script": "shepherd-universe",
+        "attempt": 1,
+        "args_json": json.dumps({"command": "scan", "index": receipt["indexId"]}),
+        "release_sha": executing_code_sha(Path(__file__).resolve().parents[1]),
+        "started": started,
+        "ended": datetime.now(UTC),
+        "exit_code": exit_code,
+        "receipt_json": json.dumps(
+            {"counts": receipt["counts"], "state": wikipedia["state"], "error": wikipedia["error"]}
+        ),
+        "run_id": os.environ.get("LW_RUN_ID") or ledger.new_run_id("shepherd-universe"),
+    }
+    ledger.emit("executions", [row], run_id=row["run_id"])
+    return exit_code
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-lake-root", type=Path, default=data_lake_dir())
@@ -581,6 +609,7 @@ def main(argv: list[str] | None = None) -> int:
     root = args.data_lake_root.expanduser()
     if args.command == "scan":
         store = SourceEvidenceStore(root)
+        started = datetime.now(UTC)
         result = scan_index(
             args.index,
             store=store,
@@ -588,6 +617,9 @@ def main(argv: list[str] | None = None) -> int:
             preset_path=args.preset,
         )
         result = scan_receipt(result)
+        exit_code = _record_scan(result, started)
+        print(json.dumps(result, sort_keys=True, default=_json_default))
+        return exit_code
     elif args.command == "import-decision":
         result = import_decision(args.manifest, data_lake_root=root)
     else:

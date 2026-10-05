@@ -28,6 +28,7 @@ if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
 from clients import constants, ledger
 from livewire_scripts.paths import cursor_dir, data_lake_dir, resolve_capacity_target, warehouse_dir
 from livewire_scripts.paths import log_dir as default_log_dir
+from livewire_scripts.rebuild_silver import DEFAULT_TRIAGE_MANIFEST
 
 _GIB = 1024**3
 #: Coverage is daily and the digest reads yesterday's by design, so 3 absorbs
@@ -450,6 +451,20 @@ CHECKS: list[tuple[str, str]] = [
     ),
     ("EIA freshness", _eia_freshness_sql()),
     ("EIA bulk imports", _eia_bulk_sql()),
+    (
+        # Weekly job: the newest scan per index in 8 days. An unparseable source
+        # leaves the preset unverified; ndx100 sat at wikipedia=0 for weeks unseen.
+        "Universe source parsed",
+        "select case when exit_code = 0 then 'OK' else 'BAD' end as verdict, index_id, started, "
+        "json_extract_string(receipt_json,'$.counts.wikipedia') as wikipedia, "
+        "json_extract_string(receipt_json,'$.counts.preset') as preset, "
+        "json_extract_string(receipt_json,'$.error') as error "
+        "from (select *, json_extract_string(args_json,'$.index') as index_id, "
+        "row_number() over (partition by json_extract_string(args_json,'$.index') order by started desc) as _rn "
+        "from executions where script = 'shepherd-universe' "
+        "and started >= timestamp '$now' - interval 8 day) "
+        "where _rn = 1 order by index_id",
+    ),
 ]
 
 _EMPTY_IS_OK = {
@@ -471,6 +486,10 @@ _FIXES = {
     "Intraday catch-up ran": "launchctl start com.livewire.intraday-catchup",
     "EIA freshness": "python scripts/livewire_ingest.py eia --dataset <dataset>   # then check the dataset's release day",
     "EIA bulk imports": "python scripts/livewire_ingest.py eia --bulk <family>",
+    "Universe source parsed": (
+        "python scripts/livewire_ingest.py shepherd-universe scan --index <id>   "
+        "# then check the article title in clients/universe_client.py"
+    ),
     "Silver failures": _SILVER_FIX,
     "Silver window regressions": _SILVER_FIX,
     "Coverage": "launchctl start com.livewire.coverage",
@@ -1121,6 +1140,24 @@ def _observe_receipt_fault(issues: dict, symbol: str, stage: str, receipt: dict)
 def _configured_silver_path(data_lake: Path) -> Path:
     """The silver root the publisher resolves for this lake — MDW_SILVER_DIR wins."""
     return Path(os.environ.get("MDW_SILVER_DIR", data_lake / "silver")).expanduser()
+
+
+def _triage_section(data_lake: Path) -> Section:
+    """The verdict store Silver reads by default; absent, every real move is trimmed nightly.
+
+    It was never set up from ~2026-07-18 to 2026-10-05 and nothing reported it.
+    """
+    path = data_lake / DEFAULT_TRIAGE_MANIFEST
+    if not path.is_file():
+        return Section(
+            "Triage verdicts",
+            Verdict.BAD,
+            [f"Triage verdicts: {path} missing — Silver trims every confirmed real move"],
+            fix="python scripts/livewire_quality.py triage-breaks --help   # never delete the store to re-triage",
+        )
+    verdicts = json.loads(path.read_text()).get("verdicts", [])
+    real = sum(1 for verdict in verdicts if verdict.get("verdict") == "real_move")
+    return Section("Triage verdicts", Verdict.OK, [f"Triage verdicts: {len(verdicts)} ({real} real_move)"])
 
 
 _SILVER_FAULTS_LIMIT = 8
@@ -1818,6 +1855,7 @@ def collect(
         *[_safe(name, lambda n=name, sql=sql: run_check(n, sql, params)) for name, sql in CHECKS],
         _safe("Silver publication", lambda: _silver_publication_section(data_lake)),
         _safe("Silver symbol faults", lambda: _silver_faults_section(data_lake)),
+        _safe("Triage verdicts", lambda: _triage_section(data_lake)),
         _safe("DuckDB catalog", lambda: _duckdb_section(run_date, database, data_lake)),
         # The internal volume is the resolved warehouse root — not
         # log_dir.parent, which points wherever an overridden log dir lives.
