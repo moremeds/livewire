@@ -236,10 +236,17 @@ def clear_cursor(name: str) -> None:
 # ── Date windowing ────────────────────────────────────────────────────
 
 
+# IB's "1 Y" daily answer drops the session that opened before its start and the session
+# still trading at its end, so windows that only touched lost one bar per weekday seam
+# (EURUSD/XAUUSD 2024-10-15, 9 per symbol on 2026-10-14). Overlapping by 30 days puts every
+# seam inside the newer window, whose complete bar fetch_ticker_bars keeps (newest first).
+WINDOW_STEP = timedelta(days=335)
+
+
 def compute_date_windows(head_dt: datetime, end_dt: datetime) -> list[tuple[str, str]]:
     """Generate ``("1 Y", end_datetime_str)`` tuples covering *head_dt* to *end_dt*.
 
-    Walks backwards from *end_dt* in ~1-year steps.  Each window requests up to
+    Walks backwards from *end_dt* in ``WINDOW_STEP`` steps.  Each window requests up to
     ``"1 Y"`` of data ending at the given date-time string.  The final (earliest)
     window is clamped so it doesn't extend before *head_dt*.
 
@@ -252,16 +259,10 @@ def compute_date_windows(head_dt: datetime, end_dt: datetime) -> list[tuple[str,
     cursor = end_dt
 
     while cursor > head_dt:
-        end_str = cursor.strftime("%Y%m%d-%H:%M:%S")
-        one_year_back = cursor - timedelta(days=365)
-
-        if one_year_back <= head_dt:
-            # Final window — remaining range fits in 1 Y
-            windows.append(("1 Y", end_str))
-            break
-        else:
-            windows.append(("1 Y", end_str))
-            cursor = one_year_back
+        windows.append(("1 Y", cursor.strftime("%Y%m%d-%H:%M:%S")))
+        if cursor - timedelta(days=365) <= head_dt:
+            break  # final window — remaining range fits in 1 Y
+        cursor -= WINDOW_STEP
 
     return windows
 
@@ -419,7 +420,8 @@ async def fetch_ticker_bars(
 
     chunk_results = await asyncio.gather(*[_fetch_chunk(dur, end_str) for dur, end_str in windows])
 
-    # Flatten and deduplicate by date
+    # Flatten and deduplicate by date. `windows` is newest first and the windows overlap: the
+    # older one may end on a partial bar for the session at its seam, so the first copy wins.
     seen_dates: set[str] = set()
     all_bars: list = []
     for chunk in chunk_results:

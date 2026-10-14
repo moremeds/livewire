@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -225,6 +225,13 @@ class TestComputeDateWindows:
         end = datetime(2025, 1, 1)
         windows = compute_date_windows(head, end)
         assert windows == []
+
+    def test_consecutive_windows_overlap_so_no_seam_session_is_lost(self):
+        # The 2026-10-14 seed's windows only touched: each weekday seam lost its session.
+        windows = compute_date_windows(datetime(2005, 3, 9), datetime(2026, 10, 14, 23, 43, 28))
+        ends = [datetime.strptime(end, "%Y%m%d-%H:%M:%S") for _, end in windows]
+        assert all(newer - older <= timedelta(days=335) for newer, older in zip(ends, ends[1:], strict=False))
+        assert ends[-1] - timedelta(days=365) <= datetime(2005, 3, 9)
 
     def test_windows_walk_backwards(self):
         head = datetime(2022, 1, 1)
@@ -817,6 +824,18 @@ class TestFetchTickerBars:
         assert len(bars) == 3
         dates = [str(b.date) for b in bars]
         assert dates == ["2024-12-30", "2024-12-31", "2025-01-02"]
+
+    def test_a_seam_date_keeps_the_newer_windows_complete_bar(self):
+        mock_ib = MagicMock()
+        mock_ib.ib.qualifyContractsAsync = AsyncMock(return_value=[Forex("EURUSD")])
+        mock_ib.get_head_timestamp_async = AsyncMock(return_value="20050309-00:00:00")
+        # The older window ends inside session 2024-10-15 and returns it partial.
+        complete, partial = _make_bar(date="2024-10-15", close=1.0893), _make_bar(date="2024-10-15", close=1.0911)
+        mock_ib.get_historical_data_async = AsyncMock(side_effect=[[complete], [partial]])
+        with patch("livewire_scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+            mock_cdw.return_value = [("1 Y", "20251014-23:43:00"), ("1 Y", "20241014-23:43:00")]
+            _, bars = asyncio.run(fetch_ticker_bars("EURUSD", mock_ib, asyncio.Semaphore(6), asset_class="fx_ib"))
+        assert [b.close for b in bars] == [1.0893]
 
     def test_head_timestamp_as_datetime(self):
         mock_ib = MagicMock()
