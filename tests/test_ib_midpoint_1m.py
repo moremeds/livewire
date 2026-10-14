@@ -184,7 +184,7 @@ def test_a_history_seed_walks_back_in_two_week_chunks_paced_between_requests(lak
     slept: list[float] = []
     monkeypatch.setattr(m.clock, "sleep", slept.append)
     monkeypatch.setattr(m, "REQUEST_INTERVAL_S", 10)
-    ib = _FakeIB([])
+    ib = _FakeIB([_bar(datetime(2026, 10, 13, 20, 59, tzinfo=UTC))])
     now = datetime(2026, 10, 13, 21, 20, tzinfo=UTC)
     assert m.main(["--symbols", "XAUUSD", "--since", "2026-09-01"], ib_factory=lambda: ib, now=now) == 0
     assert len(ib.requests) == 4 and slept == [10, 10, 10]  # 42 days back from the cutoff, 14 per request
@@ -222,3 +222,20 @@ def test_a_hung_ib_call_closes_the_run_failed_within_its_budget(lake, monkeypatc
         m.main(["--symbols", "EURUSD"], ib_factory=lambda: ib, now=datetime(2026, 10, 13, 22, tzinfo=UTC))
     closed = ledger.query("select verdict from runs where job = 'ib-1m' and ended is not null")
     assert [r["verdict"] for r in closed] == ["FAILED"]
+
+
+def test_a_nightly_run_asks_only_for_the_missing_sessions_with_a_long_timeout(lake):
+    latest = datetime(2026, 10, 12, 20, 59, tzinfo=UTC)
+    m.main(["--symbols", "EURUSD"], ib_factory=lambda: _FakeIB([_bar(latest)]), now=latest + timedelta(minutes=30))
+    ib = _FakeIB([_bar(datetime(2026, 10, 13, 20, 59, tzinfo=UTC))])
+    assert m.main(["--symbols", "EURUSD"], ib_factory=lambda: ib, now=datetime(2026, 10, 13, 21, 20, tzinfo=UTC)) == 0
+    assert [(r["duration"], r["timeout"]) for r in ib.requests] == [
+        ("3 D", m.REQUEST_TIMEOUT_S)
+    ]  # one session missing, one spare
+
+
+def test_a_newest_chunk_with_no_bars_fails_the_symbol_not_reads_as_up_to_date(lake, capsys):
+    # ib_async answers a timed-out request with []: every symbol read fetched=0, exit 0.
+    now = datetime(2026, 10, 13, 21, 20, tzinfo=UTC)
+    assert m.main(["--symbols", "EURUSD"], ib_factory=lambda: _FakeIB([]), now=now) == 1
+    assert "IB answered no bars" in capsys.readouterr().out

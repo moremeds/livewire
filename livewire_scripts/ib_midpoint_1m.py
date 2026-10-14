@@ -57,6 +57,7 @@ SEED = timedelta(days=14)
 HOLE = timedelta(days=6)
 REQUEST_INTERVAL_S = constants.declared("ib_request_interval_s/1m")
 RUN_BUDGET_S = constants.declared("run_budget_s/ib-1m")
+REQUEST_TIMEOUT_S = constants.declared("ib_request_timeout_s/1m")
 
 
 def universe(symbols: list[str] | None = None) -> dict[str, str]:
@@ -190,10 +191,18 @@ def fetch_ib(ib, symbol: str, asset_class: str, start: datetime, cutoff: datetim
     while end > start:
         if end < cutoff:
             clock.sleep(REQUEST_INTERVAL_S)
+        # "N D" is N sessions, never fewer calendar days: ask only for what is missing.
+        sessions = min(CHUNK.days, (end - start).days + 2)
         chunk = ib.get_historical_data(
-            contract, duration=f"{CHUNK.days} D", bar_size="1 min", what_to_show="MIDPOINT",
-            use_rth=False, end_date=end,
+            contract, duration=f"{sessions} D", bar_size="1 min", what_to_show="MIDPOINT",
+            use_rth=False, end_date=end, timeout=REQUEST_TIMEOUT_S,
         )  # fmt: skip
+        if end == cutoff and not chunk:
+            # A live pair always has bars in its latest sessions; a timed-out request answers
+            # [] too, and read as "no data" a total outage was exit 0 (2026-10-14 16:52Z).
+            raise ValueError(
+                f"{symbol}: IB answered no bars for the {sessions} sessions before {cutoff:%Y-%m-%d %H:%M}Z"
+            )
         for b in chunk or []:
             # A naive bar would be read in the host's zone (HKT on the mini): refuse it.
             if not isinstance(b.date, datetime) or b.date.tzinfo is None:

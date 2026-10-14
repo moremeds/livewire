@@ -98,6 +98,9 @@ DECLARED: dict[str, tuple[float, str]] = {
     # is the only caller that issues hundreds of chunks (a --since history seed);
     # the nightly run issues one request per symbol.
     "ib_request_interval_s/1m": (10, "s"),
+    # ib_async cancels a request after 60 s and answers [] like "no data". A 14 D 1m chunk
+    # (~20k bars) outlived that for the USDNOK/USDCNH seed on 2026-10-14 16:52Z.
+    "ib_request_timeout_s/1m": (600, "s"),
     # Wall clock for the scheduled `ib-1m` (no --since). A Gateway that loses IBKR mid-run
     # (error 1100, 2026-10-14 16:39Z) leaves qualifyContracts waiting forever, and launchd
     # never starts a job that is still running. Measured ~1 min/symbol that night; 13 symbols.

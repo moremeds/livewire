@@ -651,6 +651,7 @@ class IBClient:
         use_rth: bool = True,
         end_date: str = "",
         keep_up_to_date: bool = False,
+        timeout: float = 60,
     ) -> list:
         """Request historical bar data.
 
@@ -662,6 +663,7 @@ class IBClient:
             use_rth: Regular trading hours only.
             end_date: End date/time (empty = now).
             keep_up_to_date: Keep the bars updated.
+            timeout: Seconds before ib_async cancels the request and returns ``[]``.
         """
         self._require_connection()
         return self._ib.reqHistoricalData(
@@ -673,6 +675,7 @@ class IBClient:
             useRTH=use_rth,
             formatDate=1,
             keepUpToDate=keep_up_to_date,
+            timeout=timeout,
         )
 
     async def get_historical_data_async(

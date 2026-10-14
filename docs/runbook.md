@@ -456,6 +456,9 @@ python scripts/livewire_ingest.py ib-1m --symbols AUDUSD --since 2010-06-08
   after its stored tail (an IB timeout answers `[]`); the symbol fails and the next run
   refetches. The run has a `run_budget_s/ib-1m` wall clock: a Gateway that loses IBKR
   can hang `qualifyContracts` forever, and launchd never restarts a running job.
+- A request asks only for the missing sessions (`ib_request_timeout_s/1m` 600 s; ib_async
+  answers a timed-out request with `[]`). A newest chunk with no bars fails the symbol:
+  read as "up to date", a total outage was exit 0.
 - launchd has no TimeZone key and the mini is HKT (no DST): the ib-evening plist
   fires at 05:20 and 06:20 HKT so one run lands at 17:20 NY all year.
 
