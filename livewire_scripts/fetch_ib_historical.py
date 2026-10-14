@@ -67,6 +67,8 @@ from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateAction
 from clients.ib_client import IBClient, IBError
 from clients.ingestion_common import (
+    FX_ASSET_CLASSES,
+    MIDPOINT_ASSET_CLASSES,
     ROOT_EXCHANGE_MAP,  # noqa: F401
     SUPPORTED_IB_FX_PAIRS,  # noqa: F401
     action_store_for_bronze,
@@ -411,7 +413,7 @@ async def fetch_ticker_bars(
                 contract,
                 duration=duration,
                 bar_size="1 day",
-                what_to_show="MIDPOINT" if asset_class in {"cmdty", "fx"} else "TRADES",
+                what_to_show="MIDPOINT" if asset_class in MIDPOINT_ASSET_CLASSES else "TRADES",
                 end_date=end_str,
             )
 
@@ -541,8 +543,10 @@ def fetch_ticker(
         root, expiry = ticker.rsplit("_", 1)
         expiry_date = f"{expiry[:4]}-{expiry[4:6]}-01"
         rows = bars_to_futures_rows(bars, symbol_id, root, expiry_date)
-    elif asset_class in {"cmdty", "fx"}:
-        rows = bars_to_midpoint_rows(bars, symbol_id, invert=asset_class == "fx" and _is_inverted_fx_pair(ticker))
+    elif asset_class in MIDPOINT_ASSET_CLASSES:
+        rows = bars_to_midpoint_rows(
+            bars, symbol_id, invert=asset_class in FX_ASSET_CLASSES and _is_inverted_fx_pair(ticker)
+        )
     else:
         rows = bars_to_rows(bars, symbol_id, source="ib", price_basis="split_adjusted")
         rows = prepare_ib_rows_for_publish(
@@ -618,8 +622,10 @@ def backfill_ticker(
         root, expiry = ticker.rsplit("_", 1)
         expiry_date = f"{expiry[:4]}-{expiry[4:6]}-01"
         rows = bars_to_futures_rows(bars, symbol_id, root, expiry_date)
-    elif asset_class in {"cmdty", "fx"}:
-        rows = bars_to_midpoint_rows(bars, symbol_id, invert=asset_class == "fx" and _is_inverted_fx_pair(ticker))
+    elif asset_class in MIDPOINT_ASSET_CLASSES:
+        rows = bars_to_midpoint_rows(
+            bars, symbol_id, invert=asset_class in FX_ASSET_CLASSES and _is_inverted_fx_pair(ticker)
+        )
     else:
         rows = bars_to_rows(
             bars,
@@ -760,7 +766,7 @@ def _main():  # pragma: no cover — only exercised by integration tests
     )
     parser.add_argument(
         "--asset-class",
-        choices=["equity", "volatility", "futures", "cmdty", "fx"],
+        choices=["equity", "volatility", "futures", "cmdty", "fx", "fx_ib"],
         default="equity",
         help="Asset class to fetch (default: equity).",
     )

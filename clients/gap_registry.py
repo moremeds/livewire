@@ -32,6 +32,7 @@ XNYS_CALENDAR_ASSET_CLASSES = {
     "volatility",
     "rates",
     "fx",
+    "fx_ib",
     "cmdty",
     "futures",
 }

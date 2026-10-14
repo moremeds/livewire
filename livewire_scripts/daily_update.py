@@ -54,6 +54,8 @@ from clients.bronze_client import BronzeClient
 from clients.daily_bar_fallback import DailyBarFallbackClient
 from clients.ib_client import IBClient
 from clients.ingestion_common import (
+    FX_ASSET_CLASSES,
+    MIDPOINT_ASSET_CLASSES,
     ROOT_EXCHANGE_MAP,  # noqa: F401
     SUPPORTED_IB_FX_PAIRS,  # noqa: F401
     action_store_for_bronze,
@@ -135,18 +137,23 @@ console = Console()
 
 _ET = ZoneInfo("America/New_York")
 _NYSE_CLOSE_ET = time(16, 0)
+#: IB's FX/metals day (the bar dated D) runs 17:15 NY D-1 -> 17:00 NY D. Between
+#: 16:00 and 17:00 the NYSE boundary would target D and store a partial midpoint bar
+#: the daily lane never refetches; the ib-evening job fires at 16:20 EST in winter.
+_MIDPOINT_CLOSE_ET = time(17, 0)
 
 
-def _et_today() -> date:
+def _et_today(close: time = _NYSE_CLOSE_ET) -> date:
     """Return the most recently completed US trading session date.
 
-    Uses ET clock and NYSE close (16:00 ET) as the boundary: before close
-    the current session hasn't ended, so target the previous trading day.
-    This prevents the scheduler (which runs at 02:00 ET / 06:00 UTC) from
-    targeting today's date when Massive hasn't published today's data yet.
+    Uses ET clock and the session close (NYSE 16:00 ET by default) as the
+    boundary: before close the current session hasn't ended, so target the
+    previous trading day. This prevents the scheduler (which runs at 02:00 ET /
+    06:00 UTC) from targeting today's date when Massive hasn't published today's
+    data yet.
     """
     now_et = datetime.now(_ET)
-    if now_et.time() < _NYSE_CLOSE_ET:
+    if now_et.time() < close:
         return previous_trading_day(now_et.date())
     return now_et.date()
 
@@ -299,7 +306,7 @@ def validate_bars(
                 problems.append(f"low ({bar.low}) > open ({bar.open})")
             if bar.low > bar.close:
                 problems.append(f"low ({bar.low}) > close ({bar.close})")
-            if bar.volume < 0 and asset_class not in {"cmdty", "fx"}:
+            if bar.volume < 0 and asset_class not in MIDPOINT_ASSET_CLASSES:
                 problems.append(f"negative volume ({bar.volume})")
             if bar.open <= 0:
                 problems.append(f"non-positive open ({bar.open})")
@@ -458,7 +465,7 @@ async def fetch_ticker_update(
             contract,
             duration=duration,
             bar_size="1 day",
-            what_to_show="MIDPOINT" if asset_class in {"cmdty", "fx"} else "TRADES",
+            what_to_show="MIDPOINT" if asset_class in MIDPOINT_ASSET_CLASSES else "TRADES",
         )
     return (ticker, bars if bars else [])
 
@@ -573,7 +580,7 @@ def main():  # pragma: no cover — only exercised by integration tests
     )
     parser.add_argument(
         "--asset-class",
-        choices=["equity", "volatility", "futures", "cmdty", "fx"],
+        choices=["equity", "volatility", "futures", "cmdty", "fx", "fx_ib"],
         default="equity",
         help="Asset class to update (default: equity).",
     )
@@ -602,7 +609,7 @@ def main():  # pragma: no cover — only exercised by integration tests
         handlers=[RichHandler(console=console, rich_tracebacks=True)],
     )
 
-    today = _et_today()
+    today = _et_today(_MIDPOINT_CLOSE_ET) if args.asset_class in MIDPOINT_ASSET_CLASSES else _et_today()
 
     # ── Trading day check ───────────────────────────────────────────
     target = resolve_target_date(today, args.target_date, args.force)
@@ -961,11 +968,11 @@ def main():  # pragma: no cover — only exercised by integration tests
                             root, expiry = ticker.rsplit("_", 1)
                             expiry_date = f"{expiry[:4]}-{expiry[4:6]}-01"
                             rows = bars_to_futures_rows(valid_bars, symbol_id, root, expiry_date)
-                        elif asset_class in {"cmdty", "fx"}:
+                        elif asset_class in MIDPOINT_ASSET_CLASSES:
                             rows = bars_to_midpoint_rows(
                                 valid_bars,
                                 symbol_id,
-                                invert=asset_class == "fx" and _is_inverted_fx_pair(ticker),
+                                invert=asset_class in FX_ASSET_CLASSES and _is_inverted_fx_pair(ticker),
                             )
                         else:
                             rows = bars_to_rows(

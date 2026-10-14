@@ -430,6 +430,16 @@ CHECKS: list[tuple[str, str]] = [
         ")",
     ),
     (
+        "IB 1m behind",
+        # `ib-1m` files the laggard symbol's last complete session; same slack as the 1d lanes.
+        "select case when last_session is null then 'UNKNOWN' "
+        "when behind > $ib_slack_days then 'WARN' else 'OK' end as verdict, "
+        "last_session, behind as calendar_days_behind from ("
+        "  select date '1970-01-01' + cast(arg_max(value, measured_at) as int) as last_session, "
+        "         date_diff('day', date '1970-01-01' + cast(arg_max(value, measured_at) as int), date '$today') "
+        "         as behind from measurements where name = 'last_session' and scope = 'ib_1m')",
+    ),
+    (
         "Declared constants match reality",
         "select case when _n = 0 then 'UNKNOWN' "
         "when declared_value > 2 * measured_p95 or measured_p95 > 2 * declared_value "
@@ -533,13 +543,16 @@ _FIXES = {
     "Lanes within budget": (
         "raise the lane's budget only after measuring it cold; see clients/constants.py (lane_budget_s/<lane>)"
     ),
+    "IB 1m behind": (
+        "nc -z 127.0.0.1 4001 && echo up || echo down   # then 2FA by hand; rerun: python scripts/livewire_ingest.py ib-1m"
+    ),
     "Declared constants match reality": (
         "re-measure cold on the real lake, then change the value in "
         "clients/constants.py (lane_budget_s/<lane>, lake_lock_wait_s) -- not an LW_DECLARED_* override"
     ),
     "IB-only lanes behind": (
         "nc -z 127.0.0.1 4001 && echo up || echo down   # then 2FA by hand; rerun: "
-        "python scripts/livewire_ingest.py daily --asset-class futures / --asset-class cmdty"
+        "python scripts/livewire_ingest.py daily --asset-class futures / cmdty / fx_ib"
     ),
 }
 
@@ -1529,6 +1542,7 @@ def _disk_section(data_lake: Path, warehouse: Path | None = None) -> Section:
 _LAUNCHD_JOBS: tuple[str, ...] = (
     "com.livewire.daily-update",
     "com.livewire.daily-update-watchdog",
+    "com.livewire.ib-evening",
     "com.livewire.intraday-catchup",
     "com.livewire.coverage",
     "com.livewire.release-promote",
@@ -1679,6 +1693,7 @@ _CATALOG_LANE_FIX: dict[str, str] = {
     "bronze_equity_1d": "python scripts/livewire_ingest.py daily --asset-class equity --source massive",
     "bronze_futures_1d": "python scripts/livewire_ingest.py daily --asset-class futures",
     "bronze_cmdty_1d": "python scripts/livewire_ingest.py daily --asset-class cmdty",
+    "bronze_fx_ib_1d": "python scripts/livewire_ingest.py daily --asset-class fx_ib",
     "bronze_rates_1d": "python scripts/livewire_ingest.py fred-rates",
     "bronze_volatility_1d": "python scripts/livewire_ingest.py cboe-vol",
     "bronze_fx_1d": "python scripts/livewire_ingest.py fx --days 7",

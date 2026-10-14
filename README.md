@@ -114,7 +114,8 @@ The producer-to-adapter boundary is specified in
 │   │   ├── asset_class=volatility/symbol=VIX/{1d,30m,1h}.parquet
 │   │   ├── asset_class=futures/symbol=ES_202506/1d.parquet
 │   │   ├── asset_class=cmdty/symbol=XAUUSD/1d.parquet
-│   │   ├── asset_class=fx/symbol=USDEUR/1d.parquet
+│   │   ├── asset_class=fx/symbol=USDEUR/1d.parquet      # Yahoo daily + Massive intraday
+│   │   ├── asset_class=fx_ib/symbol=EURUSD/1d.parquet   # IB IDEALPRO MIDPOINT (argon gold factor)
 │   │   └── asset_class=rates/symbol=DGS10/1d.parquet
 │   ├── bronze-delisted/   # Symbols archived out of the daily sync universe
 │   ├── silver/
@@ -440,8 +441,8 @@ python scripts/livewire_ingest.py historical --preset presets/futures-index.json
 # Spot commodities via IB CMDTY MIDPOINT
 python scripts/livewire_ingest.py historical --preset presets/cmdty-metals.json --asset-class cmdty
 
-# FX via IB Forex MIDPOINT
-python scripts/livewire_ingest.py historical --preset presets/fx-pairs.json --asset-class fx
+# FX via IB IDEALPRO MIDPOINT, into fx_ib (asset_class=fx is Yahoo's); --years 0 = from IB's head
+python scripts/livewire_ingest.py historical --preset presets/fx-ib.json --asset-class fx_ib --years 0
 
 # Volatility (CBOE direct — authoritative daily source)
 python scripts/livewire_ingest.py cboe-vol
@@ -653,7 +654,7 @@ Common flags:
 --force
 --target-date YYYY-MM-DD
 --preset presets/sp500.json
---asset-class {equity|volatility|futures|cmdty|fx}
+--asset-class {equity|volatility|futures|cmdty|fx|fx_ib}
 --source {ib|massive}        # default: massive for equity, ib for everything else
 ```
 
@@ -667,7 +668,7 @@ Key behavior:
 ### Scheduled Daily Runs
 
 `run-daily-job` runs the lanes in `clients.constants.LANE_ORDER` — futures → cmdty
-→ CBOE → FX → corporate-actions → equity → silver — each under its own budget,
+→ fx_ib → CBOE → FX → corporate-actions → equity → silver — each under its own budget,
 then a `tail` lane (weekly quality report, housekeeping). A lane over budget is
 killed and the next lane still starts; an unreachable Gateway skips the IB lanes
 (exit 86, run DEGRADED).
@@ -676,7 +677,7 @@ killed and the next lane still starts; an unreachable Gateway skips the IB lanes
 python scripts/livewire_ops.py run-daily-job
 ```
 
-Eight launchd jobs run on the mini. The six market-data and reporting jobs
+Nine launchd jobs run on the mini. The seven market-data and reporting jobs
 point at the release `<warehouse>/current`; `release-promote` and
 `universe-refresh` run from the checkout. Promotion never deletes older
 releases, and the nightly housekeeping tail only previews release GC. The
@@ -691,6 +692,7 @@ operator procedure for deleting old releases is in `docs/runbook.md`:
 | daily-update-watchdog | 10:30 and 12:00 daily |
 | coverage | 15:05 daily (waits on upstream runs, no timeout) |
 | digest | 15:45 daily (waits ≤4h for the coverage fact) |
+| ib-evening | 17:20 New York (cmdty + fx_ib; two HKT entries, see the plist) |
 | universe-refresh | Sunday 13:00, from the repo |
 
 Install a template by substituting its paths and loading it:
@@ -722,7 +724,7 @@ Coverage resolves the same live list for its futures denominator, so with IB
 down futures coverage reads `UNKNOWN`. `BZ` is retired from new ingestion (its
 stored parquet stays readable); `COIL` is its own IPE series and is never merged
 with it. Spot gold (`XAUUSD`, `presets/cmdty-metals.json`) is the separate
-`cmdty` asset class. Details: `docs/runbook.md`.
+`cmdty` asset class; the six DXY legs as IB midpoints (`presets/fx-ib.json`) are `fx_ib`. Details: `docs/runbook.md`.
 
 ---
 

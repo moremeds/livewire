@@ -25,6 +25,7 @@ import os
 LANE_ORDER: tuple[str, ...] = (
     "futures",
     "cmdty",
+    "fx_ib",
     "cboe",
     "fx",
     "corporate-actions",
@@ -35,7 +36,7 @@ LANE_ORDER: tuple[str, ...] = (
 
 #: Lanes with no provider fallback. A down Gateway degrades these rather than
 #: manufacturing a success (pm:2026-07-22-ib-not-a-single-point-of-failure).
-IB_ONLY_LANES: tuple[str, ...] = ("futures", "cmdty")
+IB_ONLY_LANES: tuple[str, ...] = ("futures", "cmdty", "fx_ib")
 
 # key -> (value, unit). Scope is the segment after '/', absent when global.
 DECLARED: dict[str, tuple[float, str]] = {
@@ -43,6 +44,8 @@ DECLARED: dict[str, tuple[float, str]] = {
     # plus the fallback used when a scope is not a known lane.
     "lane_budget_s/futures": (30 * 60, "s"),
     "lane_budget_s/cmdty": (30 * 60, "s"),
+    # Six IB IDEALPRO pairs, seconds per night like cmdty; cmdty's budget, unmeasured.
+    "lane_budget_s/fx_ib": (30 * 60, "s"),
     "lane_budget_s/cboe": (30 * 60, "s"),
     "lane_budget_s/fx": (30 * 60, "s"),
     "lane_budget_s/corporate-actions": (3 * 60 * 60, "s"),
@@ -90,6 +93,11 @@ DECLARED: dict[str, tuple[float, str]] = {
     # The single 429 backoff for that endpoint; a second 429 is a fetch failure,
     # not a longer wait.
     "massive_backoff_s/reference": (60, "s"),
+    # IB historical-data pacing: no more than 60 requests in any 10 minutes (IB TWS API
+    # "Historical Data Limitations"). Scoped to the 1m MIDPOINT walk in `ib-1m`, which
+    # is the only caller that issues hundreds of chunks (a --since history seed);
+    # the nightly run issues one request per symbol.
+    "ib_request_interval_s/1m": (10, "s"),
     # Minimum share of a raw flat file's ticker set a publish must cover.
     "flatfile_min_publish_ratio": (0.9, "ratio"),
     # Coverage ratio below which the surface and the digest complain.

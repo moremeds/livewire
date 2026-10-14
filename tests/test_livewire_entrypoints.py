@@ -1067,3 +1067,61 @@ def test_cboe_vol_reports_unverified_404_as_failed_fetch(tmp_path, monkeypatch, 
     assert "CBOE HTTP 404" in output
     assert "Unfetched after retries: VIXTLT" in output
     assert "Not offered by CBOE" not in output
+
+
+def _ib_evening_argvs() -> list[list[str]]:
+    """The two argvs the scheduled `com.livewire.ib-evening` plist produces."""
+    import plistlib
+    import shlex
+
+    payload = plistlib.loads((REPO_ROOT / "launchd" / "com.livewire.ib-evening.plist.example").read_bytes())
+    body = payload["ProgramArguments"][2].split("{", 1)[1].rsplit("}", 1)[0]
+    argvs = []
+    for part in filter(str.strip, body.split(";")):
+        words = shlex.split(part)
+        script = next(w for w in words if w.startswith("scripts/"))
+        argvs.append([script, *words[words.index(script) + 1 :]])
+    return argvs
+
+
+def test_the_scheduled_ib_evening_argv_reaches_daily_update_for_both_lanes(tmp_path, monkeypatch) -> None:
+    """The plist's exact argv through livewire_ops and daily_update's real argparse
+    (pm:2026-09-14: a scheduled argv nobody parsed died nightly)."""
+    import sys
+    from unittest.mock import patch
+
+    from livewire_scripts import daily_update, run_daily_update_job
+
+    monkeypatch.setenv("LW_LEDGER_ROOT", str(tmp_path / "ledger"))
+    monkeypatch.setattr(livewire_ops, "load_scheduled_env", lambda repo_root: None)
+    monkeypatch.setattr(daily_update, "resolve_target_date", lambda *a, **k: None)
+    forwarded: list[list[str]] = []
+
+    def run_with_retries(config, args, **kwargs):
+        forwarded.append(list(args))
+        # Scoped, not monkeypatch: _dispatch_module has swapped sys.argv in already, and
+        # monkeypatch would "restore" that swapped value after the test.
+        with patch.object(sys, "argv", ["daily_update.py", *args]):
+            assert daily_update.main() is None  # parsed; stops at the target-date check
+        return 0
+
+    monkeypatch.setattr(run_daily_update_job, "run_with_retries", run_with_retries)
+    from livewire_scripts import ib_midpoint_1m
+
+    one_minute: list[list[str]] = []
+    monkeypatch.setattr(ib_midpoint_1m, "main", lambda argv: one_minute.append(argv) or 0)
+    monkeypatch.setattr("clients.ib_gateway_preflight.assert_gateway_up", lambda: None)
+    argvs = _ib_evening_argvs()
+    assert [a[:2] for a in argvs] == [
+        ["scripts/livewire_ops.py", "run-daily-job"],
+        ["scripts/livewire_ops.py", "run-daily-job"],
+        ["scripts/livewire_ingest.py", "ib-1m"],
+    ]
+    # The runner writes LW_RUN_ID / LW_RELEASE_SHA straight into os.environ; set both
+    # through monkeypatch so they are restored and never leak into later tests.
+    monkeypatch.setenv("LW_RELEASE_SHA", "test")
+    for index, (script, *argv) in enumerate(argvs):
+        monkeypatch.setenv("LW_RUN_ID", f"ib-evening-test-{index}")
+        assert (livewire_ops if script.endswith("livewire_ops.py") else livewire_ingest).main(argv) == 0
+    assert forwarded == [["--asset-class", "cmdty"], ["--asset-class", "fx_ib"]]
+    assert one_minute == [[]]

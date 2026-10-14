@@ -88,6 +88,23 @@
     "test": "tests/test_gap_engine.py::test_a_missing_file_with_no_terminus_is_still_g3_tier_a"
   },
   {
+    "id": "g1-g2-g3-fx-ib-daily",
+    "gap": [
+      "G1",
+      "G3"
+    ],
+    "asset_class": "fx_ib",
+    "timeframe": "1d",
+    "universe": [
+      "fx-ib"
+    ],
+    "check": "denominator_diff",
+    "params": {},
+    "tier": "A",
+    "since": "2026-10-14",
+    "test": "tests/test_gap_registry.py::test_fx_ib_row_resolves_the_six_dxy_legs"
+  },
+  {
     "id": "g1-g2-g3-volatility-daily",
     "gap": [
       "G1",

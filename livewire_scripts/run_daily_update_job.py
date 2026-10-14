@@ -15,7 +15,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from clients import constants, ledger
-from clients.constants import LANE_ORDER
+from clients.constants import IB_ONLY_LANES, LANE_ORDER
 from clients.ib_gateway_preflight import GATEWAY_DOWN_EXIT_CODE
 from livewire_scripts import notify
 from livewire_scripts.job_runner_common import (
@@ -46,8 +46,9 @@ STORE_SCRIPT = REPO_ROOT / "scripts" / "livewire_store.py"
 # fx left this list when Yahoo took over the asset class: `resolve_fx_pair()` accepts
 # only the 36 hardcoded `SUPPORTED_IB_FX_PAIRS`, which contains no NDF currency and
 # cannot express a non-six-letter symbol like DXY, so an IB-driven fx lane could never
-# cover the universe the preset now declares.
-ASSET_CLASSES = ["equity", "futures", "cmdty"]
+# cover the universe the preset now declares. The six IB IDEALPRO pairs argon's
+# gold factor needs came back as `fx_ib`, their own asset class beside Yahoo's `fx`.
+ASSET_CLASSES = ["equity", *IB_ONLY_LANES]
 
 #: Nightly fx catch-up window. Wide enough to absorb a missed run without re-seeding
 #: the full rolling history every night.
@@ -918,7 +919,7 @@ def _run_main(argv: Sequence[str] | None = None) -> int:
             env=env,
             completion_scope=asset_class,
         )
-        for asset_class in ("futures", "cmdty")
+        for asset_class in IB_ONLY_LANES
     }
 
     cboe_code = run_cboe_volatility_sync(config, env=env)

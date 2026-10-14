@@ -29,7 +29,7 @@ MASSIVE_WINDOW_DAYS = int(constants.declared("massive_window_days"))
 # Tier A: IB is 2FA-gated and never auto-retries, so its repair is a decision,
 # not an unattended action. Anything not listed here has no known repair path and
 # must not be silently assumed repairable -- see `repair_source`.
-IB_SOURCED = frozenset({"futures", "cmdty"})
+IB_SOURCED = frozenset({"futures", "cmdty", "fx_ib"})
 # Only equity rides Massive's rolling window. Yahoo (fx), CBOE (volatility) and
 # FRED (rates) serve deep history, so their repair path has no expiry date.
 FLOORED_ASSET_CLASSES = frozenset({"equity"})
@@ -40,6 +40,7 @@ REPAIR_SOURCE = {
     "rates": "fred",
     "futures": "ib",
     "cmdty": "ib",
+    "fx_ib": "ib",
 }
 
 

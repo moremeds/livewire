@@ -1,0 +1,6 @@
+{
+  "name": "fx-ib",
+  "description": "IB IDEALPRO MIDPOINT bars, 1d (bar D = IB FX day closing 17:00 New York on D) and 1m (UTC bar start). Every registered pair IB serves: the six DXY legs argon's gold factor reads, plus AUDUSD, NZDUSD, USDNOK, USDCNH, USDKRW. Kept apart from Yahoo/Massive asset_class=fx.",
+  "asset_class": "fx_ib",
+  "tickers": ["EURUSD", "USDJPY", "GBPUSD", "USDCAD", "USDSEK", "USDCHF", "AUDUSD", "NZDUSD", "USDNOK", "USDCNH", "USDKRW"]
+}

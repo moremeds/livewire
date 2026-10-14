@@ -49,7 +49,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--asset-class",
         default="equity",
-        choices=["equity", "volatility", "futures", "cmdty", "fx"],
+        choices=["equity", "volatility", "futures", "cmdty", "fx", "fx_ib"],
     )
     p.add_argument(
         "--source",

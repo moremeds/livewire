@@ -91,3 +91,20 @@ def test_djia_row_resolves_the_thirty_constituents():
     assert row.asset_class == "equity" and row.timeframe == "1d"
     _, tickers, _ = load_preset(REPO / "presets" / "djia.json")
     assert len(tickers) == 30 and len(set(tickers)) == 30
+
+
+def test_fx_ib_row_resolves_the_six_dxy_legs():
+    """argon's gold factor reads the six DXY legs among these; a missed night must surface as G1."""
+    from clients.gap_engine import repair_source
+    from clients.ingestion_common import load_preset, make_contract
+
+    rows = load_registry(REPO / "registry" / "gaps.json")
+    row = next(r for r in rows if r.id == "g1-g2-g3-fx-ib-daily")
+    assert (row.asset_class, row.timeframe, list(row.universe)) == ("fx_ib", "1d", ["fx-ib"])
+    assert repair_source("fx_ib") == "ib"
+    _, tickers, _ = load_preset(REPO / "presets" / "fx-ib.json")
+    assert {"EURUSD", "GBPUSD", "USDCAD", "USDCHF", "USDJPY", "USDSEK"} <= set(tickers)
+    # Direct IDEALPRO pairs: stored as quoted, never inverted.
+    contracts = [make_contract(t, "fx_ib") for t in tickers]
+    assert all(c.secType == "CASH" and c.exchange == "IDEALPRO" for c in contracts)
+    assert [c.symbol + c.currency for c in contracts] == tickers

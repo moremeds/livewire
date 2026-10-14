@@ -1084,7 +1084,7 @@ class TestNonEquityCoverage:
         results = compute_non_equity_coverage(
             date(2026, 4, 6), bronze_root=tmp_path / "bronze", rolling_futures_tickers=["CL_202604"]
         )
-        assert set(results) == {"volatility", "futures", "rates", "fx", "cmdty"}
+        assert set(results) == {"volatility", "futures", "rates", "fx", "cmdty", "fx_ib"}
         for result in results.values():
             assert result.present == 0
             assert len(result.missing_symbols) == result.total

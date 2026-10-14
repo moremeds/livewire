@@ -245,6 +245,21 @@ class TestEtToday:
             result = _et_today()
         assert result == date(2025, 1, 7)
 
+    def test_a_midpoint_session_is_not_complete_until_17_et(self):
+        # 16:20 EST: NYSE has closed, but IB's FX/metals bar for today runs to 17:00.
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from livewire_scripts.daily_update import _MIDPOINT_CLOSE_ET
+
+        et = ZoneInfo("America/New_York")
+        with patch("livewire_scripts.daily_update.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2025, 1, 7, 16, 20, tzinfo=et)
+            assert _et_today() == date(2025, 1, 7)
+            assert _et_today(_MIDPOINT_CLOSE_ET) == date(2025, 1, 6)
+            mock_dt.now.return_value = datetime(2025, 1, 7, 17, 20, tzinfo=et)
+            assert _et_today(_MIDPOINT_CLOSE_ET) == date(2025, 1, 7)
+
 
 class TestResolveTargetDate:
     def test_returns_requested_trading_day(self):
