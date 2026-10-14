@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from time import sleep as clock_sleep
 from types import SimpleNamespace
 
 import pyarrow as pa
@@ -198,5 +199,26 @@ def test_an_interrupt_still_closes_the_run(lake):
         m.main(
             ["--symbols", "EURUSD"], ib_factory=lambda: _Interrupting([]), now=datetime(2026, 10, 13, 22, tzinfo=UTC)
         )
+    closed = ledger.query("select verdict from runs where job = 'ib-1m' and ended is not null")
+    assert [r["verdict"] for r in closed] == ["FAILED"]
+
+
+def test_a_timed_out_chunk_never_leaves_a_stored_hole(lake):
+    # 28 days behind: two chunks; the older one times out and IB answers [] like "no data".
+    latest = datetime(2026, 9, 15, 20, 59, tzinfo=UTC)
+    m.main(["--symbols", "EURUSD"], ib_factory=lambda: _FakeIB([_bar(latest)]), now=latest + timedelta(minutes=30))
+    newer = _bar(datetime(2026, 10, 13, 20, 59, tzinfo=UTC))
+    ib = _FakeIB([newer])
+    now = datetime(2026, 10, 13, 21, 20, tzinfo=UTC)
+    assert m.main(["--symbols", "EURUSD"], ib_factory=lambda: ib, now=now) == 1
+    assert _stored(lake, "fx_ib", "EURUSD").column("bar_timestamp").to_pylist() == [latest]
+
+
+def test_a_hung_ib_call_closes_the_run_failed_within_its_budget(lake, monkeypatch):
+    monkeypatch.setattr(m, "RUN_BUDGET_S", 1)
+    ib = _FakeIB([])
+    ib.qualify_contract = lambda contract: clock_sleep(5)  # sec-def farm down: never answers
+    with pytest.raises(m.RunBudgetExceeded):
+        m.main(["--symbols", "EURUSD"], ib_factory=lambda: ib, now=datetime(2026, 10, 13, 22, tzinfo=UTC))
     closed = ledger.query("select verdict from runs where job = 'ib-1m' and ended is not null")
     assert [r["verdict"] for r in closed] == ["FAILED"]

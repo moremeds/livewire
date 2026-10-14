@@ -98,6 +98,10 @@ DECLARED: dict[str, tuple[float, str]] = {
     # is the only caller that issues hundreds of chunks (a --since history seed);
     # the nightly run issues one request per symbol.
     "ib_request_interval_s/1m": (10, "s"),
+    # Wall clock for the scheduled `ib-1m` (no --since). A Gateway that loses IBKR mid-run
+    # (error 1100, 2026-10-14 16:39Z) leaves qualifyContracts waiting forever, and launchd
+    # never starts a job that is still running. Measured ~1 min/symbol that night; 13 symbols.
+    "run_budget_s/ib-1m": (30 * 60, "s"),
     # Minimum share of a raw flat file's ticker set a publish must cover.
     "flatfile_min_publish_ratio": (0.9, "ratio"),
     # Coverage ratio below which the surface and the digest complain.

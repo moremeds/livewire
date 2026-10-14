@@ -22,6 +22,7 @@ import argparse
 import csv
 import hashlib
 import os
+import signal
 import socket
 import sys
 import time as clock
@@ -55,6 +56,7 @@ SEED = timedelta(days=14)
 #: A hole longer than this between consecutive bars is reported (a weekend is ~2 days).
 HOLE = timedelta(days=6)
 REQUEST_INTERVAL_S = constants.declared("ib_request_interval_s/1m")
+RUN_BUDGET_S = constants.declared("run_budget_s/ib-1m")
 
 
 def universe(symbols: list[str] | None = None) -> dict[str, str]:
@@ -92,6 +94,14 @@ def validate(table: pa.Table, symbol: str) -> None:
         bad = pc.or_(pc.less(table.column(col), low), pc.greater(table.column(col), high))
         if pc.any(bad).as_py():
             raise ValueError(f"{symbol}: {col} outside [low, high]")
+
+
+class RunBudgetExceeded(BaseException):
+    """A hung IB call never raises on its own; this closes the run FAILED instead."""
+
+
+def _expire(signum, frame):
+    raise RunBudgetExceeded(f"ib-1m outlived its {RUN_BUDGET_S:.0f}s budget")
 
 
 def holes(ts: list[datetime]) -> list[tuple[datetime, datetime]]:
@@ -206,6 +216,9 @@ def sync_ib(ib, symbol: str, asset_class: str, bronze_root: Path, cutoff: dateti
     )  # fmt: skip
     # The seam with what was already stored counts: a missed week sits between the two.
     seam = ([latest] if latest else []) + table.column("bar_timestamp").to_pylist()
+    if latest and since is None and holes(seam):
+        # An IB timeout answers [] like "no data": stored, the hole is behind `latest` for good.
+        raise ValueError(f"{symbol}: fetched bars leave a hole after {latest:%Y-%m-%d %H:%M}Z; nothing stored")
     return {"added": _write(client, symbol, table, cutoff), "fetched": len(bars), "holes": holes(seam)}
 
 
@@ -261,6 +274,9 @@ def main(argv: list[str] | None = None, *, ib_factory=None, now: datetime | None
         ledger.open_run(run_row)
 
     rows, failures, ib = [], 0, None
+    if args.archive is None and since is None:
+        signal.signal(signal.SIGALRM, _expire)
+        signal.alarm(int(RUN_BUDGET_S))
     try:
         if args.archive is None:
             from clients.ib_client import IBClient
@@ -299,6 +315,7 @@ def main(argv: list[str] | None = None, *, ib_factory=None, now: datetime | None
             )
         raise
     finally:
+        signal.alarm(0)
         if ib is not None:
             ib.disconnect()
     if rows:

@@ -437,9 +437,10 @@ serves) plus `presets/cmdty-metals.json` (XAUUSD, XAGUSD). All bars are IB
 | 1m | `ib-1m` (UTC bar start) | `com.livewire.ib-evening`, after the 1d lanes |
 
 ```bash
-# 1d seed from IB's head (default --years 10 stops short; XAUUSD's IB head is 2010-06-08)
-python scripts/livewire_ingest.py historical --preset presets/fx-ib.json --asset-class fx_ib --years 0
-python scripts/livewire_ingest.py historical --preset presets/cmdty-metals.json --asset-class cmdty --years 0
+# 1d seed from IB's head (default --years 10 stops short; XAUUSD's IB head is 2010-06-08).
+# --reset: a cursor left by an earlier seed silently skips the symbols it lists.
+python scripts/livewire_ingest.py historical --preset presets/fx-ib.json --asset-class fx_ib --years 0 --reset
+python scripts/livewire_ingest.py historical --preset presets/cmdty-metals.json --asset-class cmdty --years 0 --reset
 # 1m: nightly catch-up / history from signal-lab's IB archive / IB history seed (paced, hours)
 python scripts/livewire_ingest.py ib-1m
 python scripts/livewire_ingest.py ib-1m --archive ~/signal-lab-data/ib-1m --symbols EURUSD XAUUSD
@@ -451,6 +452,10 @@ python scripts/livewire_ingest.py ib-1m --symbols AUDUSD --since 2010-06-08
   matches; `.partial` years are refused. Existing bars are never overwritten.
 - Holes over 6 days are printed and filed as `ib_1m_holes`; `status` grades
   `last_session` scope `ib_1m` ("IB 1m behind").
+- A nightly run (no `--since`) stores nothing for a symbol whose new bars leave a hole
+  after its stored tail (an IB timeout answers `[]`); the symbol fails and the next run
+  refetches. The run has a `run_budget_s/ib-1m` wall clock: a Gateway that loses IBKR
+  can hang `qualifyContracts` forever, and launchd never restarts a running job.
 - launchd has no TimeZone key and the mini is HKT (no DST): the ib-evening plist
   fires at 05:20 and 06:20 HKT so one run lands at 17:20 NY all year.
 
