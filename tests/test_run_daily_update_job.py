@@ -1014,7 +1014,7 @@ class TestMain:
         ):
             assert main(["--dry-run"]) == 0
 
-        assert calls == ["futures", "cmdty", "cboe", "fx", "actions", "equity", "silver"]
+        assert calls == ["futures", "cmdty", "fx_ib", "cboe", "fx", "actions", "equity", "silver"]
 
     def test_full_run_builds_catalog_after_silver_and_before_the_tail(self):
         config = _config(Path("/tmp/test"))
@@ -1055,7 +1055,18 @@ class TestMain:
         ):
             assert main([]) == 0
 
-        assert calls == ["futures", "cmdty", "cboe", "fx", "corporate-actions", "equity", "silver", "catalog", "tail"]
+        assert calls == [
+            "futures",
+            "cmdty",
+            "fx_ib",
+            "cboe",
+            "fx",
+            "corporate-actions",
+            "equity",
+            "silver",
+            "catalog",
+            "tail",
+        ]
 
     def test_dry_run_skips_catalog_mutation(self):
         config = _config(Path("/tmp/test"))
@@ -1153,7 +1164,7 @@ class TestMain:
 
         # IB syncs equity, futures and cmdty; volatility via CBOE, fx via Yahoo/Massive
         assert ib_calls == [
-            ["--dry-run", "--asset-class", asset_class] for asset_class in ("futures", "cmdty", "equity")
+            ["--dry-run", "--asset-class", asset_class] for asset_class in ("futures", "cmdty", "fx_ib", "equity")
         ]
         assert cboe_called == [True]
         assert fx_called == [True]
@@ -1571,7 +1582,7 @@ class TestTheEquityLaneFallsBackToMassive:
         with self._lanes(config, daily, 0) as silver:
             main([])
 
-        for asset_class in ("futures", "cmdty"):
+        for asset_class in ("futures", "cmdty", "fx_ib"):
             lane_calls = [c for c in calls if asset_class in c]
             assert len(lane_calls) == 1, f"{asset_class} must not be retried — Massive has no such data"
             assert "--source" not in lane_calls[0]

@@ -77,7 +77,7 @@ _ENERGY_VIEW_SQL = (
 _SHEPHERD_VIEW_SQL = "CREATE OR REPLACE TEMP VIEW {name} AS SELECT * FROM read_parquet({path!r})"
 
 _EQUITY_INTRADAY = ("1m", "5m", "30m", "1h")
-_DAILY_ASSET_CLASSES = ("equity", "volatility", "futures", "rates", "fx", "cmdty")
+_DAILY_ASSET_CLASSES = ("equity", "volatility", "futures", "rates", "fx", "cmdty", "fx_ib")
 _ENERGY_TIMEFRAMES = ("1h", "1d", "1w", "4w", "1mo", "1q", "1y")
 _SILVER_KINDS = {"silver_equity_1d": "1d", "silver_factors": "factors"}
 _SILVER_SNAPSHOTS: WeakKeyDictionary[duckdb.DuckDBPyConnection, SilverSnapshot] = WeakKeyDictionary()

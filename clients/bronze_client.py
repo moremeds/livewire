@@ -117,6 +117,7 @@ _SCHEMA_PROFILES = {
     "volatility": (_BASE_COLUMNS, _PARQUET_SCHEMA, "symbol_id"),
     "cmdty": (_BASE_COLUMNS, _PARQUET_SCHEMA, "symbol_id"),
     "fx": (_BASE_COLUMNS, _PARQUET_SCHEMA, "symbol_id"),
+    "fx_ib": (_BASE_COLUMNS, _PARQUET_SCHEMA, "symbol_id"),
     "futures": (_FUTURES_COLUMNS, _FUTURES_PARQUET_SCHEMA, "contract_id"),
     "rates": (_RATES_COLUMNS, _RATES_PARQUET_SCHEMA, "symbol_id"),
 }

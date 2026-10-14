@@ -70,6 +70,8 @@ SUPPORTED_IB_FX_PAIRS = {
     "USDNOK",
     "USDDKK",
     "USDCNH",
+    # IB lists USD.KRW on IDEALPRO with MIDPOINT history from 2015-03-11 (mini probe 2026-10-14).
+    "USDKRW",
     "USDMXN",
     "USDZAR",
     "EURGBP",
@@ -94,6 +96,12 @@ SUPPORTED_IB_FX_PAIRS = {
     "CADCHF",
     "CHFJPY",
 }
+
+
+#: IB asset classes quoted as MIDPOINT: spot metals and FX have no TRADES series.
+#: `fx` is Yahoo-owned on disk; `fx_ib` is the IB IDEALPRO lane kept apart from it.
+MIDPOINT_ASSET_CLASSES = frozenset({"cmdty", "fx", "fx_ib"})
+FX_ASSET_CLASSES = frozenset({"fx", "fx_ib"})
 
 
 def resolve_fx_pair(ticker: str) -> tuple[str, bool]:
@@ -133,7 +141,7 @@ def make_contract(ticker: str, asset_class: str = "equity", exchange: str | None
             exchange=exchange or "SMART",
             currency="USD",
         )
-    if asset_class == "fx":
+    if asset_class in FX_ASSET_CLASSES:
         source_pair, _ = resolve_fx_pair(ticker)
         return Forex(source_pair)
     if asset_class == "volatility":

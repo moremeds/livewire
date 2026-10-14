@@ -26,6 +26,7 @@ JOB_TEMPLATES = (
     "com.livewire.coverage",
     "com.livewire.digest",
     "com.livewire.membership-sync",
+    "com.livewire.ib-evening",
 )
 REPO_TEMPLATES = ("com.livewire.release-promote", "com.livewire.universe-refresh")
 ALL_TEMPLATES = (*JOB_TEMPLATES, *REPO_TEMPLATES)
@@ -136,3 +137,22 @@ def test_membership_sync_runs_weekday_mornings():
     """Weekdays 01:00Z — 09:00 Asia/Hong_Kong lands the same local weekday."""
     payload = plistlib.loads((LAUNCHD_DIR / "com.livewire.membership-sync.plist.example").read_bytes())
     assert payload["StartCalendarInterval"] == [{"Weekday": weekday, "Hour": 9, "Minute": 0} for weekday in range(1, 6)]
+
+
+@pytest.mark.parametrize("day", ["2026-07-15", "2026-12-15"])
+def test_the_ib_evening_job_lands_after_the_17_00_new_york_close_in_summer_and_winter(day):
+    """launchd has no TimeZone key and HKT has no DST, so one entry cannot track
+    17:20 New York; across both entries exactly one must land in 17:00-17:30 NY."""
+    from datetime import datetime, time
+    from zoneinfo import ZoneInfo
+
+    payload = plistlib.loads((LAUNCHD_DIR / "com.livewire.ib-evening.plist.example").read_bytes())
+    hk, ny = ZoneInfo("Asia/Hong_Kong"), ZoneInfo("America/New_York")
+    base = datetime.fromisoformat(day)
+    local = [
+        base.replace(hour=e["Hour"], minute=e["Minute"], tzinfo=hk).astimezone(ny).time()
+        for e in payload["StartCalendarInterval"]
+    ]
+    assert sum(time(17, 0) <= t < time(17, 30) for t in local) == 1, local
+    assert "--asset-class cmdty" in command("com.livewire.ib-evening")
+    assert "--asset-class fx_ib" in command("com.livewire.ib-evening")

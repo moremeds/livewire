@@ -67,6 +67,8 @@ from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateAction
 from clients.ib_client import IBClient, IBError
 from clients.ingestion_common import (
+    FX_ASSET_CLASSES,
+    MIDPOINT_ASSET_CLASSES,
     ROOT_EXCHANGE_MAP,  # noqa: F401
     SUPPORTED_IB_FX_PAIRS,  # noqa: F401
     action_store_for_bronze,
@@ -234,10 +236,17 @@ def clear_cursor(name: str) -> None:
 # ── Date windowing ────────────────────────────────────────────────────
 
 
+# IB's "1 Y" daily answer drops the session that opened before its start and the session
+# still trading at its end, so windows that only touched lost one bar per weekday seam
+# (EURUSD/XAUUSD 2024-10-15, 9 per symbol on 2026-10-14). Overlapping by 30 days puts every
+# seam inside the newer window, whose complete bar fetch_ticker_bars keeps (newest first).
+WINDOW_STEP = timedelta(days=335)
+
+
 def compute_date_windows(head_dt: datetime, end_dt: datetime) -> list[tuple[str, str]]:
     """Generate ``("1 Y", end_datetime_str)`` tuples covering *head_dt* to *end_dt*.
 
-    Walks backwards from *end_dt* in ~1-year steps.  Each window requests up to
+    Walks backwards from *end_dt* in ``WINDOW_STEP`` steps.  Each window requests up to
     ``"1 Y"`` of data ending at the given date-time string.  The final (earliest)
     window is clamped so it doesn't extend before *head_dt*.
 
@@ -250,16 +259,10 @@ def compute_date_windows(head_dt: datetime, end_dt: datetime) -> list[tuple[str,
     cursor = end_dt
 
     while cursor > head_dt:
-        end_str = cursor.strftime("%Y%m%d-%H:%M:%S")
-        one_year_back = cursor - timedelta(days=365)
-
-        if one_year_back <= head_dt:
-            # Final window — remaining range fits in 1 Y
-            windows.append(("1 Y", end_str))
-            break
-        else:
-            windows.append(("1 Y", end_str))
-            cursor = one_year_back
+        windows.append(("1 Y", cursor.strftime("%Y%m%d-%H:%M:%S")))
+        if cursor - timedelta(days=365) <= head_dt:
+            break  # final window — remaining range fits in 1 Y
+        cursor -= WINDOW_STEP
 
     return windows
 
@@ -411,13 +414,14 @@ async def fetch_ticker_bars(
                 contract,
                 duration=duration,
                 bar_size="1 day",
-                what_to_show="MIDPOINT" if asset_class in {"cmdty", "fx"} else "TRADES",
+                what_to_show="MIDPOINT" if asset_class in MIDPOINT_ASSET_CLASSES else "TRADES",
                 end_date=end_str,
             )
 
     chunk_results = await asyncio.gather(*[_fetch_chunk(dur, end_str) for dur, end_str in windows])
 
-    # Flatten and deduplicate by date
+    # Flatten and deduplicate by date. `windows` is newest first and the windows overlap: the
+    # older one may end on a partial bar for the session at its seam, so the first copy wins.
     seen_dates: set[str] = set()
     all_bars: list = []
     for chunk in chunk_results:
@@ -541,8 +545,10 @@ def fetch_ticker(
         root, expiry = ticker.rsplit("_", 1)
         expiry_date = f"{expiry[:4]}-{expiry[4:6]}-01"
         rows = bars_to_futures_rows(bars, symbol_id, root, expiry_date)
-    elif asset_class in {"cmdty", "fx"}:
-        rows = bars_to_midpoint_rows(bars, symbol_id, invert=asset_class == "fx" and _is_inverted_fx_pair(ticker))
+    elif asset_class in MIDPOINT_ASSET_CLASSES:
+        rows = bars_to_midpoint_rows(
+            bars, symbol_id, invert=asset_class in FX_ASSET_CLASSES and _is_inverted_fx_pair(ticker)
+        )
     else:
         rows = bars_to_rows(bars, symbol_id, source="ib", price_basis="split_adjusted")
         rows = prepare_ib_rows_for_publish(
@@ -618,8 +624,10 @@ def backfill_ticker(
         root, expiry = ticker.rsplit("_", 1)
         expiry_date = f"{expiry[:4]}-{expiry[4:6]}-01"
         rows = bars_to_futures_rows(bars, symbol_id, root, expiry_date)
-    elif asset_class in {"cmdty", "fx"}:
-        rows = bars_to_midpoint_rows(bars, symbol_id, invert=asset_class == "fx" and _is_inverted_fx_pair(ticker))
+    elif asset_class in MIDPOINT_ASSET_CLASSES:
+        rows = bars_to_midpoint_rows(
+            bars, symbol_id, invert=asset_class in FX_ASSET_CLASSES and _is_inverted_fx_pair(ticker)
+        )
     else:
         rows = bars_to_rows(
             bars,
@@ -760,7 +768,7 @@ def _main():  # pragma: no cover — only exercised by integration tests
     )
     parser.add_argument(
         "--asset-class",
-        choices=["equity", "volatility", "futures", "cmdty", "fx"],
+        choices=["equity", "volatility", "futures", "cmdty", "fx", "fx_ib"],
         default="equity",
         help="Asset class to fetch (default: equity).",
     )

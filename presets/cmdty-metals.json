@@ -1,6 +1,6 @@
 {
   "name": "cmdty-metals",
-  "description": "Spot commodity symbols fetched from IB as CMDTY MIDPOINT daily bars.",
+  "description": "Spot commodity symbols fetched from IB as CMDTY MIDPOINT bars (1d and 1m).",
   "asset_class": "cmdty",
-  "tickers": ["XAUUSD"]
+  "tickers": ["XAUUSD", "XAGUSD"]
 }

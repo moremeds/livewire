@@ -544,6 +544,7 @@ def test_an_ib_only_lane_days_behind_warns_and_names_its_blocker():
     _lane("futures", exit_code=86, outcome="blocked", blocker="ib_unreachable")
     _last_session("futures", NOW.date() - timedelta(days=9))
     _last_session("cmdty", NOW.date() - timedelta(days=1))
+    _last_session("fx_ib", NOW.date() - timedelta(days=1))
     section = _section("IB-only lanes behind")
     assert section.verdict is Verdict.WARN
     body = "\n".join(section.lines)
@@ -557,6 +558,7 @@ def test_an_ib_only_lane_current_is_ok():
     _lane("futures")
     _last_session("futures", NOW.date() - timedelta(days=1))
     _last_session("cmdty", NOW.date() - timedelta(days=1))
+    _last_session("fx_ib", NOW.date() - timedelta(days=1))
     assert _section("IB-only lanes behind").verdict is Verdict.OK
 
 
@@ -565,6 +567,7 @@ def test_a_weekend_gap_is_not_a_backlog():
     _lane("futures")
     _last_session("futures", NOW.date() - timedelta(days=3))
     _last_session("cmdty", NOW.date() - timedelta(days=3))
+    _last_session("fx_ib", NOW.date() - timedelta(days=3))
     assert _section("IB-only lanes behind").verdict is Verdict.OK
 
 

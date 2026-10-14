@@ -424,6 +424,44 @@ python scripts/livewire_ingest.py fx --tickers DXY EURUSD --timeframes 1d 1h
 - History is **accumulated**: never replace an intraday fx file — a replace throws
   away everything that has already rolled out of the provider's window.
 
+### IB midpoint spot: `fx_ib` and `cmdty` (1d + 1m)
+
+The IB spot universe is `presets/fx-ib.json` (every registered pair IB IDEALPRO
+serves) plus `presets/cmdty-metals.json` (XAUUSD, XAGUSD). All bars are IB
+`MIDPOINT`; the bar dated D is the IB FX/metals day closing **17:00 New York** on D.
+`asset_class=fx` (Yahoo/Massive) is a different series and is never written by IB.
+
+| Timeframe | Writer | Runs |
+| --- | --- | --- |
+| 1d | `daily --asset-class fx_ib` / `cmdty` | `com.livewire.ib-evening` ~17:20 NY; 05:00Z daily-update is the catch-up |
+| 1m | `ib-1m` (UTC bar start) | `com.livewire.ib-evening`, after the 1d lanes |
+
+```bash
+# 1d seed from IB's head (default --years 10 stops short; XAUUSD's IB head is 2010-06-08).
+# --reset: a cursor left by an earlier seed silently skips the symbols it lists.
+python scripts/livewire_ingest.py historical --preset presets/fx-ib.json --asset-class fx_ib --years 0 --reset
+python scripts/livewire_ingest.py historical --preset presets/cmdty-metals.json --asset-class cmdty --years 0 --reset
+# 1m: nightly catch-up / history from signal-lab's IB archive / IB history seed (paced, hours)
+python scripts/livewire_ingest.py ib-1m
+python scripts/livewire_ingest.py ib-1m --archive ~/signal-lab-data/ib-1m --symbols EURUSD XAUUSD
+python scripts/livewire_ingest.py ib-1m --symbols AUDUSD --since 2010-06-08
+```
+
+- Only completed sessions are stored: nothing at or after the most recent 17:00 NY.
+- `--archive` reads only files listed in the archive's `MANIFEST.csv` whose sha256
+  matches; `.partial` years are refused. Existing bars are never overwritten.
+- Holes over 6 days are printed and filed as `ib_1m_holes`; `status` grades
+  `last_session` scope `ib_1m` ("IB 1m behind").
+- A nightly run (no `--since`) stores nothing for a symbol whose new bars leave a hole
+  after its stored tail (an IB timeout answers `[]`); the symbol fails and the next run
+  refetches. The run has a `run_budget_s/ib-1m` wall clock: a Gateway that loses IBKR
+  can hang `qualifyContracts` forever, and launchd never restarts a running job.
+- A request asks only for the missing sessions (`ib_request_timeout_s/1m` 600 s; ib_async
+  answers a timed-out request with `[]`). A newest chunk with no bars fails the symbol:
+  read as "up to date", a total outage was exit 0.
+- launchd has no TimeZone key and the mini is HKT (no DST): the ib-evening plist
+  fires at 05:20 and 06:20 HKT so one run lands at 17:20 NY all year.
+
 ### IB intraday backfill (non-equity only)
 
 Equity intraday uses `flatfile-ingest`. This command is IB-only.
@@ -867,7 +905,7 @@ Tier follows the repair **source**, not gap severity:
 | fx             | Yahoo   | A                            | none (deep history) |
 | volatility     | CBOE    | A                            | none                |
 | rates          | FRED    | A                            | none                |
-| futures, cmdty | **IB**  | **always B**                 | n/a                 |
+| futures, cmdty, fx_ib | **IB** | **always B**         | n/a                 |
 
 The unresolved ledger lives at `<data-lake>/repairs/unresolved.json`, keyed on
 `(symbol, asset_class, timeframe, session)`.
@@ -1191,7 +1229,7 @@ conversion table to other Mac timezones.
 > before scanning — an open run or a not-yet-due session makes it poll (one
 > `coverage waiting on …` line per 5 minutes) rather than measure a half-state.
 
-`run-daily-job` syncs equities, futures and cmdty via IB, then all volatility
+`run-daily-job` syncs equities, futures, cmdty and fx_ib via IB, then all volatility
 indices via CBOE and DXY/FX via Yahoo+Massive, in a single invocation; pass
 `--asset-class <name>` to run only one IB asset class (this skips both the CBOE
 volatility and fx syncs). After a successful run it spawns the weekly quality

@@ -283,6 +283,7 @@ def test_every_module_that_opens_a_run_is_one_we_know_about() -> None:
         "livewire_scripts/fetch_eia.py",
         "livewire_scripts/fetch_ib_historical.py",
         "livewire_scripts/fetch_researched_evidence.py",
+        "livewire_scripts/ib_midpoint_1m.py",
         "livewire_scripts/import_researched_identities.py",
         "livewire_scripts/membership_sync.py",
         "livewire_scripts/repair_legacy_basis.py",

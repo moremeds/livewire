@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.livewire.ib-evening</string>
+
+    <!-- Same-evening IB midpoint bars: spot metals (cmdty) and IB FX pairs (fx_ib), 1d -->
+    <!-- lanes then their 1m bars (`ib-1m`, its own ledger run) -->
+    <!-- for argon's gold factor (~17:50 ET). IB's FX/metals bar dated D closes 17:00 -->
+    <!-- New York on D; the 05:00Z daily-update stays the catch-up for a down Gateway. -->
+    <!-- Each lane is its own ledger run (job daily-update-cmdty / daily-update-fx_ib), -->
+    <!-- so it never reads as a partial nightly daily-update run. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <!-- Replace /path/to/warehouse with your actual warehouse path. Runs the immutable -->
+        <!-- release `current` points at, with that release's own frozen venv. -->
+        <string>cd /path/to/warehouse/current &amp;&amp; { .venv/bin/python scripts/livewire_ops.py run-daily-job --asset-class cmdty; .venv/bin/python scripts/livewire_ops.py run-daily-job --asset-class fx_ib; .venv/bin/python scripts/livewire_ingest.py ib-1m; }</string>
+    </array>
+
+    <!-- launchd reads Hour/Minute in the Mac's local TZ and has no TimeZone key. -->
+    <!-- Defaults assume Asia/Hong_Kong (UTC+8, no DST), so no single entry is 17:20 -->
+    <!-- New York all year: 05:20 HKT = 17:20 EDT / 16:20 EST, 06:20 HKT = 18:20 EDT / -->
+    <!-- 17:20 EST. Both fire; daily_update treats a midpoint session as complete only -->
+    <!-- after 17:00 New York, so the early one in winter targets D-1 (already held, a -->
+    <!-- no-op) and the late one in summer finds D already held. Bar D lands ~17:2x NY. -->
+    <!-- America/New_York host: one entry, Hour=17 Minute=20. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>5</integer>
+            <key>Minute</key>
+            <integer>20</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>6</integer>
+            <key>Minute</key>
+            <integer>20</integer>
+        </dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.ib-evening.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.ib-evening.stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
