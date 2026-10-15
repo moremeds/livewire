@@ -1012,3 +1012,72 @@ class TestSkipExistingWithPreset:
                 main()
         assert fake_ib.get_historical_data.call_count == 0
         assert load_cursor("5m", "test") == {"AAPL"}
+
+
+class TestCatchupLookbackDays:
+    """--from-latest: a catch-up reaches back to the newest stored bar (2026-08-21..26 lost)."""
+
+    NOW = datetime(2026, 9, 2, 13, 30, tzinfo=UTC)
+
+    def _store(self, tmp_path, newest):
+        client = IntradayBronzeClient(bronze_dir=tmp_path, timeframe="5m")
+        row = {"symbol_id": 1, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 0}
+        client.replace_ticker_rows("VVIX", [{**row, "bar_timestamp": newest}])
+        return tmp_path / "symbol=VVIX" / "5m.parquet"
+
+    def test_no_file_keeps_the_floor_window(self, tmp_path):
+        assert backfill_intraday.catchup_lookback_days(tmp_path / "absent.parquet", 7, self.NOW) == 7
+
+    def test_an_unreadable_file_keeps_the_floor_window(self, tmp_path):
+        torn = tmp_path / "5m.parquet"
+        torn.write_bytes(b"not parquet")
+        assert backfill_intraday.catchup_lookback_days(torn, 7, self.NOW) == 7
+
+    def test_a_fresh_file_keeps_the_floor_window(self, tmp_path):
+        path = self._store(tmp_path, self.NOW - timedelta(days=1))
+        assert backfill_intraday.catchup_lookback_days(path, 7, self.NOW) == 7
+
+    def test_an_outage_longer_than_the_window_reaches_back_to_the_newest_bar(self, tmp_path):
+        # Newest stored bar 2026-08-20 20:00Z; the first run back after the outage was 09-02.
+        path = self._store(tmp_path, datetime(2026, 8, 20, 20, 0, tzinfo=UTC))
+        assert backfill_intraday.catchup_lookback_days(path, 7, self.NOW) == 13
+
+    def test_a_retired_index_is_capped(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LW_DECLARED_INTRADAY_CATCHUP_MAX_DAYS", "30")
+        path = self._store(tmp_path, self.NOW - timedelta(days=900))
+        assert backfill_intraday.catchup_lookback_days(path, 7, self.NOW) == 30
+
+    def test_from_latest_needs_days(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
+        argv = ["backfill_intraday.py", "--timeframe", "5m", "--tickers", "VVIX", "--from-latest"]
+        with patch.object(sys, "argv", argv), pytest.raises(SystemExit, match="--from-latest needs --days"):
+            main()
+
+    def test_main_passes_the_widened_window_to_the_fetch(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(backfill_intraday, "_CURSOR_DIR", tmp_path / "cur")
+        monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+        monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
+        bronze_dir = tmp_path / "lake" / "bronze" / "asset_class=volatility"
+        bronze_dir.mkdir(parents=True)
+        self._store(bronze_dir, datetime.now(UTC) - timedelta(days=20))
+
+        fake_ib = MagicMock()
+        fake_ib.__enter__ = MagicMock(return_value=fake_ib)
+        fake_ib.__exit__ = MagicMock(return_value=None)
+        argv = ["backfill_intraday.py", "--timeframe", "5m", "--asset-class", "volatility"]
+        argv += ["--tickers", "VVIX", "NEWSYM", "--days", "7", "--from-latest"]
+        with (
+            patch("clients.ib_client.IBClient", return_value=fake_ib),
+            patch.object(
+                backfill_intraday,
+                "backfill_ticker",
+                autospec=True,
+                side_effect=lambda ticker, *a, **k: backfill_intraday.TickerOutcome(ticker=ticker),
+            ) as fetch,
+            patch.object(sys, "argv", argv),
+        ):
+            main()
+        windows = {c.args[0]: c.kwargs["lookback_days"] for c in fetch.call_args_list}
+        assert windows == {"VVIX": 21, "NEWSYM": 7}

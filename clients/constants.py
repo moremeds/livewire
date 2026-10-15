@@ -108,6 +108,11 @@ DECLARED: dict[str, tuple[float, str]] = {
     # (error 1100, 2026-10-14 16:39Z) leaves qualifyContracts waiting forever, and launchd
     # never starts a job that is still running. Measured ~1 min/symbol that night; 13 symbols.
     "run_budget_s/ib-1m": (30 * 60, "s"),
+    # Ceiling for `intraday-backfill --from-latest`: how far back the volatility intraday
+    # catch-up reaches toward a ticker's newest bar. Measured need: 12 days for the
+    # 2026-08-24..09-01 Gateway outage, ~28 for the 2026-05-20..06-16 hole. Each stale
+    # ticker pays the whole cap nightly (5m: 24 requests), so a retired index stays cheap.
+    "intraday_catchup_max_days": (120, "days"),
     # Minimum share of a raw flat file's ticker set a publish must cover.
     "flatfile_min_publish_ratio": (0.9, "ratio"),
     # Coverage ratio below which the surface and the digest complain.

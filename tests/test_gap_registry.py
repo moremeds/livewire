@@ -108,3 +108,39 @@ def test_fx_ib_row_resolves_the_six_dxy_legs():
     contracts = [make_contract(t, "fx_ib") for t in tickers]
     assert all(c.secType == "CASH" and c.exchange == "IDEALPRO" for c in contracts)
     assert [c.symbol + c.currency for c in contracts] == tickers
+
+
+def test_volatility_intraday_rows_read_bar_timestamps_and_route_to_ib(tmp_path):
+    """5m/30m volatility is IB-fed: a tail is Tier B, and sessions come from bar_timestamp.
+
+    No row covered it, so 2026-08-21..26 sat missing in 13 series for seven weeks.
+    """
+    from datetime import UTC, date, datetime
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from clients.coverage_denominator import ExpectedSeries
+    from clients.gap_engine import actual_sessions, classify, repair_source
+    from clients.ingestion_common import load_preset
+
+    rows = {r.id: r for r in load_registry(REPO / "registry" / "gaps.json")}
+    for tf in ("5m", "30m"):
+        row = rows[f"g1-g3-volatility-{tf}"]
+        assert (row.asset_class, row.timeframe, list(row.universe)) == ("volatility", tf, ["volatility-intraday"])
+    _, tickers, _ = load_preset(REPO / "presets" / "volatility-intraday.json")
+    assert {"VIX", "VVIX", "VXGDX"} <= set(tickers)
+    assert repair_source("volatility") == "cboe"
+    assert repair_source("volatility", "5m") == "ib"
+
+    path = tmp_path / "asset_class=volatility" / "symbol=VVIX" / "5m.parquet"
+    path.parent.mkdir(parents=True)
+    stamps = [datetime(2026, 8, 19, 13, 30, tzinfo=UTC), datetime(2026, 8, 20, 19, 55, tzinfo=UTC)]
+    pq.write_table(pa.table({"bar_timestamp": pa.array(stamps, pa.timestamp("us", tz="UTC"))}), path)
+    sessions = (date(2026, 8, 19), date(2026, 8, 20), date(2026, 8, 21))
+    series = ExpectedSeries("VVIX", "volatility", "5m", sessions)
+
+    present = actual_sessions(tmp_path, series)
+    assert present == {date(2026, 8, 19), date(2026, 8, 20)}
+    [finding] = classify(series, present, massive_floor=date(2021, 1, 1))
+    assert (finding.gap, finding.sessions, finding.tier, finding.source) == ("G1", (date(2026, 8, 21),), "B", "ib")

@@ -405,6 +405,7 @@ def run_sync(
                 "volatility",
                 "--days",
                 str(config.intraday_days),
+                "--from-latest",
             ],
         )
         # A down Gateway is degraded, never failed. 2FA and IBKR maintenance are

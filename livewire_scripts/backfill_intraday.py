@@ -32,8 +32,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 from rich.console import Console
 
+from clients import constants
 from clients.ingestion_common import load_preset
 from clients.ingestion_common import make_contract as _make_contract
 from clients.intraday_bronze_client import (
@@ -223,6 +226,26 @@ def backfill_ticker(
     return outcome
 
 
+def catchup_lookback_days(path: Path, floor_days: int, now: datetime) -> int:
+    """Days back to the newest stored bar, never fewer than *floor_days*.
+
+    A fixed 7-day window healed only outages shorter than itself: the Gateway was
+    down 2026-08-24..09-01, the first run back reached 08-27, and 08-21..26 stayed
+    missing in all 13 volatility 5m series. Capped by `intraday_catchup_max_days`
+    so a retired index does not walk its whole history every night.
+    """
+    try:
+        stamps = pq.read_table(path, columns=["bar_timestamp"]).column("bar_timestamp").to_pylist()
+    except (OSError, pa.ArrowInvalid):
+        # Absent or unreadable: the floor window, exactly as before.
+        return floor_days
+    newest = max(stamps, default=None)
+    if newest is None:
+        return floor_days
+    cap = int(constants.declared("intraday_catchup_max_days"))
+    return max(floor_days, min((now - newest).days + 1, cap))
+
+
 def compute_intraday_chunks_for_days(timeframe: str, days_back: int) -> list[tuple[str, str]]:
     """Generate IB chunks for a recent-day intraday catch-up."""
     if days_back < 1:
@@ -296,6 +319,11 @@ def main() -> None:
         default=None,
         help="Recent calendar days to fetch instead of a full-year backfill",
     )
+    parser.add_argument(
+        "--from-latest",
+        action="store_true",
+        help="With --days: reach back to each ticker's newest stored bar when that is older",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print plan only")
     parser.add_argument(
         "--skip-existing",
@@ -320,6 +348,8 @@ def main() -> None:
     years = args.years if args.years is not None else _DEFAULT_YEARS[args.timeframe]
     if args.days is not None and args.days < 1:
         raise SystemExit("--days must be >= 1")
+    if args.from_latest and args.days is None:
+        raise SystemExit("--from-latest needs --days")
     cursor_name, tickers = _resolve_tickers(args)
 
     # Cursor is only meaningful for preset runs (resumable bulk backfills).
@@ -417,6 +447,13 @@ def main() -> None:
                     save_cursor(args.timeframe, cursor_name, completed)
                 continue
 
+            lookback_days = args.days
+            if args.from_latest:
+                floor_days = int(args.days)
+                path = bronze.bronze_dir / f"symbol={ticker}" / f"{args.timeframe}.parquet"
+                lookback_days = catchup_lookback_days(path, floor_days, datetime.now(_UTC))
+                if lookback_days > floor_days:
+                    console.print(f"  {ticker}: newest bar is older than --days; reaching back {lookback_days} days")
             outcome = backfill_ticker(
                 ticker,
                 args.timeframe,
@@ -424,7 +461,7 @@ def main() -> None:
                 provider,
                 bronze,
                 asset_class=args.asset_class,
-                lookback_days=args.days,
+                lookback_days=lookback_days,
             )
             record_outcome(ticker, outcome)
 
