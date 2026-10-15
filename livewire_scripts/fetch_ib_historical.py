@@ -62,7 +62,7 @@ from rich.progress import (
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from clients import ledger, quality_detector
+from clients import constants, ledger, quality_detector
 from clients.bronze_client import BronzeClient
 from clients.corporate_action_store import CorporateAction
 from clients.ib_client import IBClient, IBError
@@ -240,7 +240,13 @@ def clear_cursor(name: str) -> None:
 # still trading at its end, so windows that only touched lost one bar per weekday seam
 # (EURUSD/XAUUSD 2024-10-15, 9 per symbol on 2026-10-14). Overlapping by 30 days puts every
 # seam inside the newer window, whose complete bar fetch_ticker_bars keeps (newest first).
-WINDOW_STEP = timedelta(days=335)
+# For expired futures IB's answer also leaves out ~4 sessions about 260 days before the
+# window's end (CL_202610 ending 2019-06-14 omits 2018-09-27..10-02; "2 Y" omits them too,
+# "1 M" has them), so a 30-day overlap still lost a block per window. Half-year steps put
+# every date in two windows whose holes sit in different places.
+WINDOW_STEP = timedelta(days=182)
+#: A "1 Y" daily window can wait behind the other concurrent requests.
+REQUEST_TIMEOUT_S = constants.declared("ib_request_timeout_s/1d")
 
 
 def compute_date_windows(head_dt: datetime, end_dt: datetime) -> list[tuple[str, str]]:
@@ -267,6 +273,17 @@ def compute_date_windows(head_dt: datetime, end_dt: datetime) -> list[tuple[str,
     return windows
 
 
+# Each step is shorter than its request, so chunks overlap like the daily windows: steps of
+# exactly "1 W" lost the end-day of every chunk (VIX 5m, every Wednesday 2025-05-21..2026-05-13,
+# from the 2026-05-20 backfill).
+INTRADAY_CHUNK_STEP = {
+    "1m": timedelta(hours=18),
+    "5m": timedelta(days=5),
+    "30m": timedelta(days=25),
+    "1h": timedelta(days=25),
+}
+
+
 def compute_intraday_chunks(
     timeframe: str,
     years_back: int,
@@ -287,13 +304,7 @@ def compute_intraday_chunks(
     duration = INTRADAY_MAX_REQUEST_DURATION[timeframe]
     end_dt = datetime.now()
 
-    _step_map = {
-        "1m": timedelta(days=1),
-        "5m": timedelta(weeks=1),
-        "30m": timedelta(days=30),
-        "1h": timedelta(days=30),
-    }
-    step = _step_map[timeframe]
+    step = INTRADAY_CHUNK_STEP[timeframe]
 
     head_dt = end_dt - timedelta(days=365 * years_back)
 
@@ -416,6 +427,7 @@ async def fetch_ticker_bars(
                 bar_size="1 day",
                 what_to_show="MIDPOINT" if asset_class in MIDPOINT_ASSET_CLASSES else "TRADES",
                 end_date=end_str,
+                timeout=REQUEST_TIMEOUT_S,
             )
 
     chunk_results = await asyncio.gather(*[_fetch_chunk(dur, end_str) for dur, end_str in windows])

@@ -43,7 +43,7 @@ from clients.intraday_bronze_client import (
 )
 from clients.quality_detector import run_detection
 from livewire_scripts.daily_update import validate_intraday_bar
-from livewire_scripts.fetch_ib_historical import compute_intraday_chunks
+from livewire_scripts.fetch_ib_historical import INTRADAY_CHUNK_STEP, compute_intraday_chunks
 from livewire_scripts.paths import cursor_dir, data_lake_dir, log_dir
 
 log = logging.getLogger("backfill_intraday")
@@ -227,12 +227,13 @@ def compute_intraday_chunks_for_days(timeframe: str, days_back: int) -> list[tup
     """Generate IB chunks for a recent-day intraday catch-up."""
     if days_back < 1:
         raise ValueError("days_back must be >= 1")
-    step_days = {"1m": 1, "5m": 7, "30m": 30, "1h": 30}
-    if timeframe not in step_days:
+    if timeframe not in INTRADAY_CHUNK_STEP:
         raise ValueError(f"unsupported intraday timeframe: {timeframe!r}")
     chunks = compute_intraday_chunks(timeframe, 1)
-    needed = (days_back + step_days[timeframe] - 1) // step_days[timeframe]
-    return chunks[:needed]
+    # The newest chunk spans one request; each older one reaches one step further back.
+    span = timedelta(days={"1m": 1, "5m": 7, "30m": 30, "1h": 30}[timeframe])
+    beyond = max(timedelta(0), timedelta(days=days_back) - span)
+    return chunks[: 1 - (-beyond // INTRADAY_CHUNK_STEP[timeframe])]
 
 
 def plan_chunks(

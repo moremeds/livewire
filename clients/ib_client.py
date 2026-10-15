@@ -56,6 +56,18 @@ class IBContractError(IBError):
     """Raised when contract qualification or lookup fails."""
 
 
+def _raise_if_timed_out(bars: list, started: float, timeout: float, contract: Any, end_date: str) -> None:
+    """ib_async answers a timed-out request with ``[]``, the same as "no data".
+
+    Read as no data, a seed published the windows that did answer as the whole file:
+    five 60 s timeouts cost CL_202608 670 sessions on 2026-10-15. An empty answer that
+    took the whole timeout is a timeout.
+    """
+    if not bars and timeout and time.monotonic() - started >= timeout:
+        symbol = getattr(contract, "localSymbol", "") or getattr(contract, "symbol", contract)
+        raise IBTimeoutError(f"{symbol}: no historical data within {timeout:.0f}s (end {end_date or 'now'})")
+
+
 # ---------------------------------------------------------------------------
 # Constants — re-exported from ib_connection for backward compat
 # ---------------------------------------------------------------------------
@@ -653,7 +665,7 @@ class IBClient:
         keep_up_to_date: bool = False,
         timeout: float = 60,
     ) -> list:
-        """Request historical bar data.
+        """Request historical bar data; raise :class:`IBTimeoutError` when IB never answered.
 
         Args:
             contract: The contract to request data for.
@@ -666,7 +678,8 @@ class IBClient:
             timeout: Seconds before ib_async cancels the request and returns ``[]``.
         """
         self._require_connection()
-        return self._ib.reqHistoricalData(
+        started = time.monotonic()
+        bars = self._ib.reqHistoricalData(
             contract,
             endDateTime=end_date,
             durationStr=duration,
@@ -677,6 +690,8 @@ class IBClient:
             keepUpToDate=keep_up_to_date,
             timeout=timeout,
         )
+        _raise_if_timed_out(bars, started, timeout, contract, end_date)
+        return bars
 
     async def get_historical_data_async(
         self,
@@ -686,10 +701,12 @@ class IBClient:
         what_to_show: str = "TRADES",
         use_rth: bool = True,
         end_date: str = "",
+        timeout: float = 60,
     ) -> list:
         """Async version of :meth:`get_historical_data`."""
         self._require_connection()
-        return await self._ib.reqHistoricalDataAsync(
+        started = time.monotonic()
+        bars = await self._ib.reqHistoricalDataAsync(
             contract,
             endDateTime=end_date,
             durationStr=duration,
@@ -697,7 +714,10 @@ class IBClient:
             whatToShow=what_to_show,
             useRTH=use_rth,
             formatDate=1,
+            timeout=timeout,
         )
+        _raise_if_timed_out(bars, started, timeout, contract, end_date)
+        return bars
 
     def get_head_timestamp(
         self,

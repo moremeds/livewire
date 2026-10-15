@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -198,3 +199,43 @@ def test_disconnect_detaches_telemetry(monkeypatch, tmp_path):
         client.connect(host="127.0.0.1", port=4001, client_id=99)
         client.disconnect()
     fake_ib.errorEvent.disconnect.assert_called_once()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# historical data — a timed-out request is not "no data"
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestHistoricalDataTimeout:
+    """ib_async answers a timed-out request with [] — the same as "no data"."""
+
+    def test_an_empty_answer_that_took_the_whole_timeout_raises(self):
+        from clients.ib_client import IBTimeoutError
+
+        client, mock_ib = _make_client()
+        client._require_connection = lambda: None
+        mock_ib.reqHistoricalData.return_value = []
+        with patch("clients.ib_client.time", SimpleNamespace(monotonic=iter([0.0, 60.0]).__next__)):
+            with pytest.raises(IBTimeoutError, match="within 60s"):
+                client.get_historical_data(MagicMock(localSymbol="CLV6"), timeout=60)
+
+    def test_a_quick_empty_answer_is_still_no_data(self):
+        client, mock_ib = _make_client()
+        client._require_connection = lambda: None
+        mock_ib.reqHistoricalData.return_value = []
+        with patch("clients.ib_client.time", SimpleNamespace(monotonic=iter([0.0, 0.4]).__next__)):
+            assert client.get_historical_data(MagicMock(), timeout=60) == []
+
+    def test_the_async_twin_raises_too(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from clients.ib_client import IBTimeoutError
+
+        client, mock_ib = _make_client()
+        client._require_connection = lambda: None
+        mock_ib.reqHistoricalDataAsync = AsyncMock(return_value=[])
+        with patch("clients.ib_client.time", SimpleNamespace(monotonic=iter([0.0, 300.0]).__next__)):
+            with pytest.raises(IBTimeoutError):
+                asyncio.run(client.get_historical_data_async(MagicMock(), timeout=300))
+        assert mock_ib.reqHistoricalDataAsync.await_args.kwargs["timeout"] == 300
