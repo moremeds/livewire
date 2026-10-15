@@ -195,17 +195,14 @@ class TestComputeDateWindows:
         head = datetime(2024, 6, 1)
         end = datetime(2025, 1, 1)
         windows = compute_date_windows(head, end)
-        assert len(windows) == 1
-        assert windows[0][0] == "1 Y"
-        assert windows[0][1] == "20250101-00:00:00"
+        assert windows == [("1 Y", "20250101-00:00:00"), ("1 Y", "20240703-00:00:00")]
 
     def test_exactly_one_year(self):
-        # 365 days back from 2025-01-01 = 2024-01-02 (2024 is leap year)
-        # so head_dt (2024-01-01) < one_year_back (2024-01-02) → 2 windows
+        # Ends 2025-01-01, 2024-07-03, 2024-01-03; the next (2023-07-05) is before the head.
         head = datetime(2024, 1, 1)
         end = datetime(2025, 1, 1)
         windows = compute_date_windows(head, end)
-        assert len(windows) == 2
+        assert len(windows) == 3
         assert all(w[0] == "1 Y" for w in windows)
 
     def test_multi_year(self):
@@ -239,7 +236,7 @@ class TestComputeDateWindows:
         # per window in the 2026-10-15 reseed; a second window with a different end covers it.
         head, end = datetime(2017, 3, 13), datetime(2026, 10, 15, 17, 12)
         ends = [datetime.strptime(e, "%Y%m%d-%H:%M:%S") for _, e in compute_date_windows(head, end)]
-        day = head + timedelta(days=365)
+        day = head
         while day < end - timedelta(days=200):
             covering = [e for e in ends if e - timedelta(days=365) < day <= e]
             assert len(covering) >= 2, day

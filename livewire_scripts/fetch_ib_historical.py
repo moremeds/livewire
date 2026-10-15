@@ -254,7 +254,7 @@ def compute_date_windows(head_dt: datetime, end_dt: datetime) -> list[tuple[str,
 
     Walks backwards from *end_dt* in ``WINDOW_STEP`` steps.  Each window requests up to
     ``"1 Y"`` of data ending at the given date-time string.  The final (earliest)
-    window is clamped so it doesn't extend before *head_dt*.
+    window ends within one step of *head_dt*, so every date sits in two windows.
 
     Returns an empty list when *head_dt* >= *end_dt*.
     """
@@ -264,10 +264,10 @@ def compute_date_windows(head_dt: datetime, end_dt: datetime) -> list[tuple[str,
     windows: list[tuple[str, str]] = []
     cursor = end_dt
 
+    # Step until the cursor passes the head, not until one window reaches it: the oldest
+    # dates need a second window too (CL_202610 lost 2018-02-09..14 to the last window's hole).
     while cursor > head_dt:
         windows.append(("1 Y", cursor.strftime("%Y%m%d-%H:%M:%S")))
-        if cursor - timedelta(days=365) <= head_dt:
-            break  # final window — remaining range fits in 1 Y
         cursor -= WINDOW_STEP
 
     return windows
