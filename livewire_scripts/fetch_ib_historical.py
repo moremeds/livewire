@@ -538,6 +538,7 @@ def fetch_ticker(
         expected_start=expected_start,
         ib_head_timestamp=ib_head_timestamp,
         on_error=lambda exc: console.print(f"  [yellow]quality detection raised: {exc}[/yellow]"),
+        whole_file=True,
     )
 
     symbol_id = bronze.get_symbol_id(ticker)

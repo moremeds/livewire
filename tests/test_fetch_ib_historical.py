@@ -1155,6 +1155,25 @@ class TestFetchTicker:
         assert {row["price_basis"] for row in rows} == {"raw"}
 
     @pytest.mark.integration
+    def test_a_clean_reseed_replaces_the_previous_seeds_sidecar(self, bronze):
+        """A seed replaces the whole file, so a clean seed's sidecar is the file's answer.
+
+        The 2026-10-14 fx_ib reseed filled the seam sessions, found nothing, and wrote
+        nothing: 8 sidecars kept the earlier seed's interior_gaps for dates now on disk.
+        """
+        from livewire_scripts.fetch_ib_historical import _bronze_parquet_path
+
+        sidecar = _bronze_parquet_path("AAPL", bronze).with_suffix(".parquet.meta.json")
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(json.dumps({"bars_received": 1, "flags": [{"category": "interior_gaps"}]}))
+
+        fetch_ticker("AAPL", [_make_bar(date="2025-01-02"), _make_bar(date="2025-01-03")], bronze)
+
+        meta = json.loads(sidecar.read_text())
+        assert meta["flags"] == []
+        assert meta["bars_received"] == 2
+
+    @pytest.mark.integration
     def test_fetch_empty_bars_returns_zero(self, bronze):
         """Empty bars list returns zero."""
         inserted = fetch_ticker("XYZ", [], bronze)

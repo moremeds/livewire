@@ -137,3 +137,22 @@ def test_flags_are_written_without_any_send(tmp_path, monkeypatch):
     assert sidecar["flags"][0]["category"] == "range_shortfall"
     audit = [json.loads(line) for line in audit_path.read_text().splitlines()]
     assert [row["category"] for row in audit] == ["range_shortfall"]
+
+
+def test_a_clean_incremental_fetch_leaves_the_sidecar_alone(tmp_path):
+    """Without whole_file the bars are one fetch's increment, so a clean result writes nothing."""
+    from unittest.mock import patch
+
+    from clients.quality_detector import run_detection
+
+    parquet = tmp_path / "symbol=T" / "1d.parquet"
+    parquet.parent.mkdir()
+    sidecar = tmp_path / "symbol=T" / "1d.parquet.meta.json"
+    sidecar.write_text('{"flags": [{"category": "interior_gaps"}]}')
+
+    with patch("clients.quality_detector.detect_all", return_value=[]):
+        run_detection(
+            ticker="T", asset_class="fx_ib", timeframe="1d", bars=[{"trade_date": "2026-10-14"}], parquet_path=parquet
+        )
+
+    assert json.loads(sidecar.read_text())["flags"] == [{"category": "interior_gaps"}]
