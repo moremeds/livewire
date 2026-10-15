@@ -28,3 +28,12 @@ measured), so `ib-1m`'s 14-day step overlaps.
 
 **Test:** `tests/test_fetch_ib_historical.py::TestComputeDateWindows::test_consecutive_windows_overlap_so_no_seam_session_is_lost`,
 `::TestFetchTickerBars::test_a_seam_date_keeps_the_newer_windows_complete_bar`.
+
+**Follow-up — the sidecar kept the broken seed's answer.** The fixed reseed found no
+gaps, and `run_detection` writes nothing on a clean result, so 8 fx_ib
+`1d.parquet.meta.json` kept the first seed's `interior_gaps` (11 dates, all on disk
+again) and `bars_received` 5590 against 5,601 rows. A seed replaces the whole file,
+so it now passes `whole_file=True` and a clean result replaces the sidecar. The
+daily and backfill paths still pass increments and still write nothing on a clean
+result: rewriting there would touch ~9.6k equity sidecars a night on exFAT.
+Test: `tests/test_fetch_ib_historical.py::TestFetchTicker::test_a_clean_reseed_replaces_the_previous_seeds_sidecar`.

@@ -309,8 +309,16 @@ def run_detection(
     reference_source: dict | None = None,
     errors_during_fetch: list[dict] | None = None,
     on_error: Callable[[Exception], None] | None = None,
+    whole_file: bool = False,
 ) -> None:
-    """Run detection and emit flags without ever blocking a publish."""
+    """Run detection and emit flags without ever blocking a publish.
+
+    *whole_file* means *bars* are the parquet's entire new contents (a seed that
+    replaces the snapshot), so a clean result is the file's answer and replaces
+    an older sidecar. Otherwise *bars* are one fetch's increment and a clean
+    result writes nothing: rewriting on every clean daily fetch would touch
+    ~9.6k equity sidecars a night on exFAT.
+    """
     if not QUALITY_ENABLED or not bars:
         return
 
@@ -338,7 +346,7 @@ def run_detection(
             on_error(exc)
         return
 
-    if not flags:
+    if not flags and not whole_file:
         return
 
     parquet_path.parent.mkdir(parents=True, exist_ok=True)
