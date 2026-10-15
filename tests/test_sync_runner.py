@@ -6,6 +6,7 @@ import json
 import re
 import signal
 import subprocess
+import sys
 from datetime import UTC
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -893,3 +894,32 @@ class TestTheIntradayPhasesDoNotTakeTheLegacyLakeLock:
 
         assert rc == 0
         assert started == [["cmd"]]
+
+
+def test_the_volatility_intraday_catchup_reaches_back_to_the_newest_bar(tmp_path, monkeypatch):
+    """A fixed 7-day window lost 2026-08-21..26 to a nine-day Gateway outage.
+
+    The argv the lane really builds must parse with the real backfill parser and
+    carry --from-latest.
+    """
+    from livewire_scripts import backfill_intraday
+
+    monkeypatch.setenv("MDW_DATA_LAKE", str(tmp_path / "lake"))
+    monkeypatch.setenv("MDW_LOG_DIR", str(tmp_path / "logs"))
+    config = _make_config(tmp_path)
+    commands = []
+
+    def runner(command, **kwargs):
+        commands.append(command)
+        return CompletedProcess(args=command, returncode=0)
+
+    with patch("livewire_scripts.sync_runner._derive_vol_1h", return_value=0):
+        run_sync(config, runner=runner, trading_day_fn=lambda: "2026-08-07")
+
+    vol = [c for c in commands if "intraday-backfill" in c and "volatility" in c]
+    assert len(vol) == 2
+    for command in vol:
+        assert "--from-latest" in command
+        argv = command[command.index("intraday-backfill") + 1 :]
+        with patch.object(sys, "argv", ["backfill_intraday.py", *argv, "--dry-run"]):
+            backfill_intraday.main()

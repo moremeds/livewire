@@ -29,7 +29,6 @@ MASSIVE_WINDOW_DAYS = int(constants.declared("massive_window_days"))
 # Tier A: IB is 2FA-gated and never auto-retries, so its repair is a decision,
 # not an unattended action. Anything not listed here has no known repair path and
 # must not be silently assumed repairable -- see `repair_source`.
-IB_SOURCED = frozenset({"futures", "cmdty", "fx_ib"})
 # Only equity rides Massive's rolling window. Yahoo (fx), CBOE (volatility) and
 # FRED (rates) serve deep history, so their repair path has no expiry date.
 FLOORED_ASSET_CLASSES = frozenset({"equity"})
@@ -42,6 +41,8 @@ REPAIR_SOURCE = {
     "cmdty": "ib",
     "fx_ib": "ib",
 }
+# CBOE publishes volatility indices daily only; their 5m/30m bars come from IB.
+REPAIR_SOURCE_INTRADAY = {"volatility": "ib"}
 
 
 def massive_floor_for(as_of: date) -> date:
@@ -49,8 +50,10 @@ def massive_floor_for(as_of: date) -> date:
     return as_of - timedelta(days=MASSIVE_WINDOW_DAYS)
 
 
-def repair_source(asset_class: str) -> str:
+def repair_source(asset_class: str, timeframe: str = "1d") -> str:
     """Fail closed: an unmapped asset class has no known repair path."""
+    if timeframe != "1d" and asset_class in REPAIR_SOURCE_INTRADAY:
+        return REPAIR_SOURCE_INTRADAY[asset_class]
     try:
         return REPAIR_SOURCE[asset_class]
     except KeyError:
@@ -98,26 +101,31 @@ def actual_sessions(bronze_root: Path, series: ExpectedSeries) -> set[date]:
     path = bronze_root / f"asset_class={series.asset_class}" / f"symbol={series.symbol}" / f"{series.timeframe}.parquet"
     if not path.exists():
         return set()
+    column = DATE_COLUMN if series.timeframe == "1d" else "bar_timestamp"
     try:
-        table = pq.read_table(path, columns=[DATE_COLUMN])
+        table = pq.read_table(path, columns=[column])
     except (OSError, pa.ArrowInvalid) as exc:
         log.error("unreadable parquet, counted as missing: %s: %s", path, exc)
         return set()
-    return {value.as_py() for value in table.column(DATE_COLUMN)}
+    if column == DATE_COLUMN:
+        return {value.as_py() for value in table.column(column)}
+    # ponytail: UTC date. Volatility 5m/30m bars sit 13:00-20:00Z, inside one UTC day;
+    # a class whose bars cross 00:00Z needs the exchange session date instead.
+    return {value.as_py().date() for value in table.column(column)}
 
 
 def _finding(series: ExpectedSeries, gap: str, sessions: tuple[date, ...], massive_floor: date) -> Finding:
     """Tier follows the repair source, not the severity of the gap.
 
     Tier A means "repairable unattended". That is a property of the source:
-    - IB-sourced lanes (futures, cmdty) are 2FA-gated and never auto-retry, so
+    - IB-sourced lanes (futures, cmdty, fx_ib, volatility intraday) are 2FA-gated and never auto-retry, so
       they are always Tier B regardless of how recent the gap is.
     - Equity rides Massive's rolling window: inside it Tier A, below it only IB
       can serve the bar, so Tier B.
     - Yahoo/CBOE/FRED serve deep history, so there is no floor and no expiry.
     """
-    source = repair_source(series.asset_class)
-    if series.asset_class in IB_SOURCED:
+    source = repair_source(series.asset_class, series.timeframe)
+    if source == "ib":
         return Finding(
             symbol=series.symbol,
             asset_class=series.asset_class,
@@ -168,7 +176,7 @@ def _terminus_finding(series: ExpectedSeries, sessions: tuple[date, ...]) -> Fin
         sessions=sessions,
         heal_by_days=None,
         tier="B",
-        source=repair_source(series.asset_class),
+        source=repair_source(series.asset_class, series.timeframe),
     )
 
 

@@ -122,6 +122,40 @@
     "test": "tests/test_gap_engine.py::test_a_missing_file_with_no_terminus_is_still_g3_tier_a"
   },
   {
+    "id": "g1-g3-volatility-5m",
+    "gap": [
+      "G1",
+      "G3"
+    ],
+    "asset_class": "volatility",
+    "timeframe": "5m",
+    "universe": [
+      "volatility-intraday"
+    ],
+    "check": "denominator_diff",
+    "params": {},
+    "tier": "B",
+    "since": "2026-10-15",
+    "test": "tests/test_gap_registry.py::test_volatility_intraday_rows_read_bar_timestamps_and_route_to_ib"
+  },
+  {
+    "id": "g1-g3-volatility-30m",
+    "gap": [
+      "G1",
+      "G3"
+    ],
+    "asset_class": "volatility",
+    "timeframe": "30m",
+    "universe": [
+      "volatility-intraday"
+    ],
+    "check": "denominator_diff",
+    "params": {},
+    "tier": "B",
+    "since": "2026-10-15",
+    "test": "tests/test_gap_registry.py::test_volatility_intraday_rows_read_bar_timestamps_and_route_to_ib"
+  },
+  {
     "id": "g1-g2-g3-futures-daily",
     "gap": [
       "G1",

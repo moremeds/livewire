@@ -476,6 +476,8 @@ python scripts/livewire_ingest.py intraday-backfill --timeframe 5m --asset-class
 - IB error 162/200 ("HMDS no data" / ambiguous contract) marks the ticker complete and moves on.
 - Default depth: 5 years for 1m, 2 years for 1h, 1 year for 5m (matches `INTRADAY_MAX_DEPTH`).
 - `--days N` fetches only a recent calendar-day window, for daily catch-up jobs.
+- `--from-latest` (with `--days`) widens that window per ticker back to its newest stored bar, capped at `intraday_catchup_max_days` (120). The volatility intraday catch-up passes it, so a Gateway outage longer than the window heals on the first run back.
+- A hole between stored bars (an interior gap) is not healed by `--from-latest` and not reported by the gap scan (G2 is off): refill it with `--days N` reaching past it. Rows merge; existing bars win.
 - `--skip-existing` consults `min(bar_timestamp)` in the existing per-ticker parquet and skips if it already covers the requested depth.
 - Logs to `~/market-warehouse/logs/backfill_intraday_{1m,5m,30m,1h}_YYYY-MM-DD.log`.
 
