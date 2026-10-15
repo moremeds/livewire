@@ -11,9 +11,10 @@ run back (09-02 13:30Z) got 312 bars per series (4 sessions, back to 08-27). Not
 fetched 08-21..26 afterwards. No registry row covered volatility intraday, so the hole was
 found only seven weeks later, by hand.
 
-A second hole has a different cause. 8 series miss up to 19 sessions in 2026-05-20..06-16,
-because 5m was not in the catch-up until 2026-06-12 (#32). The first 7-day run reached back
-only one week.
+A second hole: 8 series miss up to 19 sessions in 2026-05-20..06-16. 5m entered the
+catch-up on 2026-06-12 (#32), and nothing refreshed these series before that. Its first
+logged phase ran 06-17 13:16Z and published, yet 5 series still miss through 06-16. Why
+that run did not cover 06-10..16 was not measured: the per-run log is gone.
 
 **Unexplained.** On 08-22 (Saturday) the 5m run inserted 0 bars for every series, and 08-21
 is missing. `--from-latest` does not heal one interior day like this, and the gap scan
@@ -27,7 +28,11 @@ UTC date of `bar_timestamp` (these bars sit 13:00–20:00Z), and
 `repair_source("volatility", <intraday>)` is `ib`, so a tail is Tier B.
 
 **Verified** read-only on the mini: the two rows find one real tail, VXSLV 5m missing
-2026-10-14. The data holes were refilled by hand (`repairs/backups/2026-10-15-vol-5m-refill/`).
+2026-10-14. The data holes are being refilled by hand (backup
+`repairs/backups/2026-10-15-vol-5m-refill/`); the measured result goes on this PR.
+
+**Ceiling.** `--dry-run` still plans the plain `--days` window. 30m was never exposed: its
+one `--days 7` chunk spans 30 days.
 
 **Test:** `tests/test_backfill_intraday.py::TestCatchupLookbackDays`,
 `tests/test_sync_runner.py::test_the_volatility_intraday_catchup_reaches_back_to_the_newest_bar`,
