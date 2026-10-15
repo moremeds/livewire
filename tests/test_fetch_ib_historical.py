@@ -195,17 +195,14 @@ class TestComputeDateWindows:
         head = datetime(2024, 6, 1)
         end = datetime(2025, 1, 1)
         windows = compute_date_windows(head, end)
-        assert len(windows) == 1
-        assert windows[0][0] == "1 Y"
-        assert windows[0][1] == "20250101-00:00:00"
+        assert windows == [("1 Y", "20250101-00:00:00"), ("1 Y", "20240703-00:00:00")]
 
     def test_exactly_one_year(self):
-        # 365 days back from 2025-01-01 = 2024-01-02 (2024 is leap year)
-        # so head_dt (2024-01-01) < one_year_back (2024-01-02) → 2 windows
+        # Ends 2025-01-01, 2024-07-03, 2024-01-03; the next (2023-07-05) is before the head.
         head = datetime(2024, 1, 1)
         end = datetime(2025, 1, 1)
         windows = compute_date_windows(head, end)
-        assert len(windows) == 2
+        assert len(windows) == 3
         assert all(w[0] == "1 Y" for w in windows)
 
     def test_multi_year(self):
@@ -232,6 +229,19 @@ class TestComputeDateWindows:
         ends = [datetime.strptime(end, "%Y%m%d-%H:%M:%S") for _, end in windows]
         assert all(newer - older <= timedelta(days=335) for newer, older in zip(ends, ends[1:], strict=False))
         assert ends[-1] - timedelta(days=365) <= datetime(2005, 3, 9)
+
+    def test_every_date_sits_in_two_windows_whose_ends_are_far_apart(self):
+        # IB leaves ~4 sessions out about 260 days before a futures window's end (CL_202610
+        # ending 2019-06-14 omits 2018-09-27..10-02), so one overlap per seam still lost a block
+        # per window in the 2026-10-15 reseed; a second window with a different end covers it.
+        head, end = datetime(2017, 3, 13), datetime(2026, 10, 15, 17, 12)
+        ends = [datetime.strptime(e, "%Y%m%d-%H:%M:%S") for _, e in compute_date_windows(head, end)]
+        day = head
+        while day < end - timedelta(days=200):
+            covering = [e for e in ends if e - timedelta(days=365) < day <= e]
+            assert len(covering) >= 2, day
+            assert max(covering) - min(covering) >= timedelta(days=100), day
+            day += timedelta(days=3)
 
     def test_windows_walk_backwards(self):
         head = datetime(2022, 1, 1)
@@ -824,6 +834,21 @@ class TestFetchTickerBars:
         assert len(bars) == 3
         dates = [str(b.date) for b in bars]
         assert dates == ["2024-12-30", "2024-12-31", "2025-01-02"]
+
+    def test_a_timed_out_window_fails_the_ticker_so_nothing_is_published(self):
+        """Five timed-out windows read as empty cost CL_202608 670 sessions (2026-10-15)."""
+        from clients.ib_client import IBTimeoutError
+
+        mock_ib = MagicMock()
+        mock_ib.ib.qualifyContractsAsync = AsyncMock(return_value=[Stock("AAPL", "SMART", "USD")])
+        mock_ib.get_head_timestamp_async = AsyncMock(return_value="19800102-00:00:00")
+        mock_ib.get_historical_data_async = AsyncMock(side_effect=[[_make_bar()], IBTimeoutError("no answer")])
+        with patch("livewire_scripts.fetch_ib_historical.compute_date_windows") as mock_cdw:
+            mock_cdw.return_value = [("1 Y", "20250101-00:00:00"), ("1 Y", "20240101-00:00:00")]
+            result = asyncio.run(fetch_all_tickers(["AAPL"], mock_ib, max_concurrent=1))
+
+        assert result == {"AAPL": None}
+        assert mock_ib.get_historical_data_async.await_args.kwargs["timeout"] == 300
 
     def test_a_seam_date_keeps_the_newer_windows_complete_bar(self):
         mock_ib = MagicMock()
@@ -3073,23 +3098,19 @@ class TestPerTimeframeCursor:
 
 
 class TestComputeIntradayChunks:
-    def test_5m_chunks_one_year(self):
-        """5m bars: 1-week chunks for 1 year of depth (~52 weeks)."""
+    @pytest.mark.parametrize(("timeframe", "request_span"), [("1m", 1), ("5m", 7), ("30m", 30), ("1h", 30)])
+    def test_consecutive_chunks_overlap(self, timeframe, request_span):
+        """Steps of exactly one request lost each chunk's end-day: VIX 5m, every Wednesday
+        2025-05-21..2026-05-13, from the 2026-05-20 one-year backfill."""
         from livewire_scripts.fetch_ib_historical import compute_intraday_chunks
 
-        chunks = compute_intraday_chunks(timeframe="5m", years_back=1)
-        assert 50 <= len(chunks) <= 54
-        assert all(c[0] == "1 W" for c in chunks)
-        # Each end-datetime string should be in IB format
-        assert all(len(c[1]) == 17 for c in chunks)  # YYYYMMDD-HH:MM:SS
-
-    def test_1h_chunks_two_years(self):
-        """1h bars: 1-month chunks for 2 years of depth (~24 months)."""
-        from livewire_scripts.fetch_ib_historical import compute_intraday_chunks
-
-        chunks = compute_intraday_chunks(timeframe="1h", years_back=2)
-        assert 22 <= len(chunks) <= 26
-        assert all(c[0] == "1 M" for c in chunks)
+        chunks = compute_intraday_chunks(timeframe=timeframe, years_back=1)
+        ends = [datetime.strptime(end, "%Y%m%d-%H:%M:%S") for _, end in chunks]
+        assert all(len(end) == 17 for _, end in chunks)  # YYYYMMDD-HH:MM:SS
+        assert all(
+            timedelta(0) < newer - older < timedelta(days=request_span)
+            for newer, older in zip(ends, ends[1:], strict=False)
+        )
 
     def test_invalid_timeframe_raises(self):
         from livewire_scripts.fetch_ib_historical import compute_intraday_chunks
