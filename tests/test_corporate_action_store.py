@@ -312,6 +312,71 @@ def test_apply_repairs_reinserting_active_split_is_noop(tmp_path):
     assert len(store.latest_active("NVDA")) == 1
 
 
+def test_apply_repairs_revives_a_cancelled_yahoo_split_head(tmp_path):
+    """The 2026-07-19/07-26 bug shape: a cancelled yahoo split head, restored.
+
+    Adding under the same event id used to insert a fresh rev-1 that the cancelled
+    rev-2 still outranked as the head -- nothing was ever actually restored.
+    """
+    store = CorporateActionStore(tmp_path)
+    add = [SplitAddition(date(2007, 9, 11), split_from=1.0, split_to=1.5)]
+    store.apply_repairs("NVDA", add_splits=add, cancel_ex_dates=[], fetched_at=_FIXED_AT)
+    store.apply_repairs("NVDA", add_splits=[], cancel_ex_dates=[date(2007, 9, 11)], fetched_at=_FIXED_AT)
+    assert store.latest_active("NVDA") == []  # cancelled: no longer the active head
+    cancelled_row_before = next(row for row in store.history("NVDA") if row.event_revision == 2)
+
+    restored_at = datetime(2026, 9, 23, 0, 0, 0, tzinfo=UTC)
+    result = store.apply_repairs(
+        "NVDA",
+        add_splits=[
+            SplitAddition(
+                date(2007, 9, 11),
+                split_from=1.0,
+                split_to=1.5,
+                source_ref="artifact://sha256/" + "a" * 64,
+                source_hash="b" * 64,
+                source_fetched_at=restored_at,
+                source_cursor_identity="restore-yahoo-splits:yahoo_only",
+            )
+        ],
+        cancel_ex_dates=[],
+        fetched_at=restored_at,
+    )
+    assert result.added == 1
+    active = store.latest_active("NVDA")
+    assert len(active) == 1
+    revived = active[0]
+    assert revived.event_revision == 3  # rev1 add, rev2 cancel, rev3 revival
+    assert revived.status == "active"
+    assert revived.source_cursor_identity == "restore-yahoo-splits:yahoo_only"
+    assert revived.source_ref == "artifact://sha256/" + "a" * 64
+    assert revived.source_hash == "b" * 64
+    assert revived.source_fetched_at == restored_at
+
+    history = store.history("NVDA")
+    cancelled_row = next(row for row in history if row.event_revision == 2)
+    # Append-only revival: the row it supersedes is byte-for-byte unchanged -- an
+    # earlier as-of export may already have read it as "cancelled".
+    assert cancelled_row == cancelled_row_before
+    assert cancelled_row.status == "cancelled"
+    assert revived.supersedes_action_id == cancelled_row.action_id
+
+
+def test_apply_repairs_leaves_an_already_active_event_untouched(tmp_path):
+    store = CorporateActionStore(tmp_path)
+    add = [SplitAddition(date(2007, 9, 11), split_from=1.0, split_to=1.5)]
+    store.apply_repairs("NVDA", add_splits=add, cancel_ex_dates=[], fetched_at=_FIXED_AT)
+    result = store.apply_repairs(
+        "NVDA",
+        add_splits=[SplitAddition(date(2007, 9, 11), split_from=1.0, split_to=1.5, source_cursor_identity="x")],
+        cancel_ex_dates=[],
+        fetched_at=_FIXED_AT,
+    )
+    assert result.added == 0
+    active = store.latest_active("NVDA")
+    assert len(active) == 1 and active[0].event_revision == 1 and active[0].source_cursor_identity is None
+
+
 def test_full_reconcile_leaves_another_provider_alone(tmp_path):
     """A Massive response says nothing about an event Massive was never asked for.
 

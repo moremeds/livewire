@@ -8,7 +8,7 @@ import hashlib
 import json
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,11 +20,27 @@ from clients.corporate_action_store import (
 )
 from clients.source_evidence import SourceEvidenceStore, canonical_bytes
 from clients.symbol_paths import canonical_symbol
+from clients.yahoo_basis import reconcile_splits
+from clients.yahoo_client import YahooClient
 from livewire_scripts.paths import data_lake_dir
 
 # v1 proved every stored row and copied the store's mutable status column, so no v1 receipt
 # replays once a later revision lands; v2 proves each event's head row at as-of.
 RECEIPT_VERSION = 2
+
+# `restore-yahoo-splits` revivals (livewire_scripts/sync_corporate_actions.py) carry an
+# evidence envelope of this kind; their `source_cursor_identity` is the prefix + grade.
+RESTORATION_KIND = "yahoo-split-restoration"
+RESTORATION_VERSION = 1
+RESTORATION_IDENTITY_PREFIX = "restore-yahoo-splits:"
+# Below IB's history floor (`fetch_ib_historical.IB_EARLIEST_DATE`, pinned equal by a test)
+# only Yahoo can speak to a split; the user accepted Yahoo alone there (2026-09-23), and
+# nowhere else. An ib_verified grade is the only other one.
+YAHOO_ONLY_BEFORE = date(1993, 1, 29)
+RESTORATION_GRADES = ("ib_verified", "yahoo_only")
+# Same tolerance `restore_yahoo_splits` used to accept the listing in the first place.
+SPLIT_DAY_TOL = 3
+SPLIT_RATIO_TOL = 0.02
 
 
 def _hash(payload: bytes) -> str:
@@ -106,6 +122,89 @@ def _status_at_as_of(head: CorporateAction, successor: CorporateAction | None) -
     if successor is not None and successor.payload_hash == head.payload_hash:
         return "cancelled"
     return "active"
+
+
+def _restoration_grade(head: CorporateAction) -> str | None:
+    """The grade a `restore-yahoo-splits` revival claims, or None for anything else."""
+    if head.provider != "yahoo" or not head.source_cursor_identity:
+        return None
+    if not head.source_cursor_identity.startswith(RESTORATION_IDENTITY_PREFIX):
+        return None
+    return head.source_cursor_identity[len(RESTORATION_IDENTITY_PREFIX) :]
+
+
+def _yahoo_bytes_list_the_split(raw: bytes, ex_date, expected_step: float) -> bool:
+    """Parse a committed Yahoo chart response and confirm it lists this split."""
+    try:
+        payload = json.loads(raw)
+        result = ((payload.get("chart") or {}).get("result") or [None])[0]
+        if not isinstance(result, dict):
+            return False
+        splits = YahooClient._parse_splits(result)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return False
+    reconciliation = reconcile_splits(
+        splits, [(ex_date, expected_step)], ratio_tol=SPLIT_RATIO_TOL, day_tol=SPLIT_DAY_TOL
+    )
+    return bool(reconciliation.matched)
+
+
+def _verify_restoration(head: CorporateAction, grade: str, evidence_store: SourceEvidenceStore) -> bool:
+    """Prove a `restore-yahoo-splits` revival: the envelope, its Yahoo listing, and --
+    for an IB-window restoration -- its IB artifact all read back from the CAS intact.
+
+    Never trusts the row's own fields alone: they are exactly what a tampered envelope
+    could not be checked against if the envelope itself were skipped.
+    """
+    if not head.source_ref or not head.source_hash or grade not in RESTORATION_GRADES:
+        return False
+    if (grade == "yahoo_only") != (head.ex_date < YAHOO_ONLY_BEFORE):
+        return False  # Yahoo alone proves nothing at or after IB's floor; IB proves nothing below it
+    try:
+        envelope_bytes = evidence_store.read(head.source_ref)
+    except (OSError, ValueError):
+        return False
+    if _hash(envelope_bytes) != head.source_hash:
+        return False
+    try:
+        envelope = json.loads(envelope_bytes)
+    except ValueError:
+        return False
+    if not isinstance(envelope, dict):
+        return False
+    if (
+        envelope.get("kind") != RESTORATION_KIND
+        or envelope.get("version") != RESTORATION_VERSION
+        or envelope.get("symbol") != head.symbol
+        or envelope.get("exDate") != head.ex_date.isoformat()
+        or envelope.get("splitFrom") != head.split_from
+        or envelope.get("splitTo") != head.split_to
+        or envelope.get("grade") != grade
+    ):
+        return False
+    yahoo_meta = envelope.get("yahoo")
+    if not isinstance(yahoo_meta, dict):
+        return False
+    try:
+        yahoo_bytes = evidence_store.read(str(yahoo_meta["ref"]))
+    except (OSError, ValueError, KeyError):
+        return False
+    if _hash(yahoo_bytes) != yahoo_meta.get("sha256"):
+        return False
+    expected_step = float(head.split_to) / float(head.split_from)
+    if not _yahoo_bytes_list_the_split(yahoo_bytes, head.ex_date, expected_step):
+        return False
+    if grade == "ib_verified":
+        ib_meta = envelope.get("ib")
+        if not isinstance(ib_meta, dict):
+            return False
+        try:
+            ib_bytes = evidence_store.read(str(ib_meta["ref"]))
+        except (OSError, ValueError, KeyError):
+            return False
+        if _hash(ib_bytes) != ib_meta.get("sha256"):
+            return False
+    return True
 
 
 def _fetch_payload(fetch: CorporateActionFetch) -> dict[str, Any]:
@@ -192,7 +291,13 @@ def _export_symbol(
         head = revisions[-1]
         status = _status_at_as_of(head, successors.get(head.action_id))
         tag = f"{event_id}:{head.event_revision}"
-        if head.provider != RECONCILE_PROVIDER:
+        grade = _restoration_grade(head) if head.provider == "yahoo" else None
+        if grade is not None:
+            # A `restore-yahoo-splits` revival carries its own evidence envelope --
+            # proven or not, independent of whether a Massive page exists at all.
+            if not _verify_restoration(head, grade, evidence_store):
+                issues.append(f"restoration-evidence-invalid:{tag}")
+        elif head.provider != RECONCILE_PROVIDER:
             # Nothing in a Massive page speaks for a yahoo/eod_fx/legacy row, and none of
             # them carries a provider page of its own: no proof path exists yet.
             issues.append(f"non-massive-head-without-proof:{head.provider}:{tag}")
@@ -207,7 +312,10 @@ def _export_symbol(
         elif not _listed(head, page):
             issues.append(f"event-not-in-latest-fetch:{tag}")
         payloads.extend(_action_payload(row, "superseded") for row in revisions[:-1])
-        payloads.append(_action_payload(head, status))
+        head_payload = _action_payload(head, status)
+        if grade is not None:
+            head_payload["evidenceGrade"] = grade
+        payloads.append(head_payload)
 
     return {
         "symbol": symbol,

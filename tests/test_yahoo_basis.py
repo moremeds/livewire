@@ -192,3 +192,53 @@ def test_anchor_no_split_uses_full_overlap():
     ib = [{"trade_date": date(2026, 7, d), "close": c} for d, c in [(13, 100.0), (14, 101.0), (15, 102.0)]]
     v = ib_anchor_verdict(corrected, ib, last_split_ex=None, min_overlap=3)
     assert v.verified and v.overlap == 3
+
+
+# --- single-split IB step verdict (restore-yahoo-splits) ---
+
+from clients.yahoo_basis import ib_split_step_verdict  # noqa: E402
+from tests.test_yahoo_client import _AMC  # noqa: E402
+
+# Real frozen AMC split-adjusted closes across the 2023-08-24 1:10 reverse split
+# (the same series as `_AMC` in test_yahoo_client.py). Used here as the stand-in
+# "IB" series -- IB adjusts its own history for splits, so it stays continuous
+# across the ex-date exactly like this real Yahoo-adjusted series does.
+_AMC_ADJUSTED = _AMC  # the frozen real series, not a copy of it
+_AMC_STEP = 0.1  # price_multiplier of the real 1:10 reverse split
+
+
+def _rows(pairs):
+    return [{"trade_date": date.fromisoformat(d), "close": c} for d, c in pairs]
+
+
+def _amc_bronze_raw():
+    """Real raw reconstruction: pre-split rows folded by the real split multiplier
+    (the same transform `test_reconstruct_reverse_split_recovers_known_raw` verifies),
+    post-split rows unchanged -- a bronze series that never applied the cancelled split."""
+    return _rows([(d, c * _AMC_STEP if date.fromisoformat(d) < date(2023, 8, 24) else c) for d, c in _AMC_ADJUSTED])
+
+
+def test_ib_split_step_verdict_confirms_a_real_reverse_split():
+    bronze = _amc_bronze_raw()
+    ib = _rows(_AMC_ADJUSTED)
+    verdict = ib_split_step_verdict(bronze, ib, date(2023, 8, 24), _AMC_STEP)
+    assert verdict.verified and verdict.reason == "verified"
+    assert verdict.step == pytest.approx(_AMC_STEP)
+    assert verdict.overlap == 8
+
+
+def test_ib_split_step_verdict_fails_when_ib_never_adjusted():
+    # If IB carries the same (unadjusted) jump as bronze, the step washes out to ~1 --
+    # not the claimed split ratio -- so it must not verify.
+    bronze = _amc_bronze_raw()
+    unadjusted_ib = _amc_bronze_raw()  # IB == bronze: no split adjustment happened
+    verdict = ib_split_step_verdict(bronze, unadjusted_ib, date(2023, 8, 24), _AMC_STEP)
+    assert not verdict.verified and verdict.reason == "ib_step_mismatch"
+    assert verdict.step == pytest.approx(1.0)
+
+
+def test_ib_split_step_verdict_fails_closed_on_too_few_dates():
+    bronze = _rows([("2023-08-23", 1.96), ("2023-08-24", 14.37)])  # 1 before, 1 after
+    ib = _rows([("2023-08-23", 19.60), ("2023-08-24", 14.37)])
+    verdict = ib_split_step_verdict(bronze, ib, date(2023, 8, 24), _AMC_STEP)
+    assert not verdict.verified and verdict.reason == "ib_insufficient_overlap" and verdict.step is None
