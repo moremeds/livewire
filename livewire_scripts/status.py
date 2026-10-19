@@ -1579,6 +1579,7 @@ _LAUNCHD_JOBS: tuple[str, ...] = (
     "com.livewire.intraday-catchup",
     "com.livewire.coverage",
     "com.livewire.release-promote",
+    "com.livewire.futu-options",
 )
 
 
