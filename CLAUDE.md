@@ -22,7 +22,7 @@ livewire/                       # git repo
 ├── presets/                    # universe definitions (sp500, ndx100-*, r2k-*, futures-*, fx-pairs, …)
 ├── registry/gaps.json          # the coverage denominator rows (see "The one contract")
 ├── livewire_node/              # nodemailer SMTP (Resend) transport for notify (tests: npm run test:alerts)
-├── launchd/                    # *.plist.example templates for the 9 scheduled jobs
+├── launchd/                    # *.plist.example templates for the 10 scheduled jobs
 ├── tests/                      # pytest; 95% coverage gate (clients/ib_client.py exempt)
 └── docs/
     ├── postmortems/            # one file per incident: rule + what it cost + date (76 as of 2026-09-28)

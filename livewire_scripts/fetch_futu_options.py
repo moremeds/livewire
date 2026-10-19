@@ -10,7 +10,7 @@ every 10 minutes from 09:40 to 10 minutes after the close, NDX and RUT on the ho
 half hour, and all four at the official slot 15 minutes before the close (15:45 on a
 full day). launchd fires the job every 10 minutes and at :45; the job decides from the
 New York clock what, if anything, is due. A tick with nothing due writes no run row. A
-tick that lands after the official slot and before the close takes any official capture
+tick that lands after the official slot and before the end of the close minute takes any official capture
 still missing (a late or skipped :45 wake). The 15:30 tick re-discovers the chain, so
 strikes listed during the day are in the official capture's expected set.
 

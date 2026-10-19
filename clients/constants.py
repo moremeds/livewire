@@ -119,7 +119,7 @@ DECLARED: dict[str, tuple[float, str]] = {
     "futu_min_capture_ratio/option": (1.0, "ratio"),
     # Freshest nearest-expiry quote vs capture time: tells a real-time feed from a delayed one.
     # Measured on eight 0DTE near-ATM SPXW codes: median 1.6-15 s, max 56.8 s (2026-10-15 RTH,
-    # MacBook; docs/audits/2026-10-16-futu-history-kline-verification.md C9); a
+    # MacBook; docs/audits/2026-10-16-futu-opend-market-data-probe.md C9); a
     # 15-minute delayed feed reads ~900. 300 s sits between the two with room on both sides.
     "futu_max_quote_lag_s/option": (300, "s"),
     # One `futu-options` tick: busiest measured ~90 s plus ~2.5 min of daily discovery, under
