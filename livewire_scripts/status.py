@@ -14,9 +14,10 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TypeGuard
+from zoneinfo import ZoneInfo
 
 from rich.console import Console
 from rich.markup import escape
@@ -26,6 +27,7 @@ if str(_PROJECT_ROOT) not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from clients import constants, ledger
+from clients.trading_calendar import is_trading_day, session_close_time
 from livewire_scripts.paths import cursor_dir, data_lake_dir, resolve_capacity_target, warehouse_dir
 from livewire_scripts.paths import log_dir as default_log_dir
 from livewire_scripts.rebuild_silver import DEFAULT_TRIAGE_MANIFEST
@@ -459,6 +461,32 @@ CHECKS: list[tuple[str, str]] = [
         "  when declared_value > 2 * measured_p95 or measured_p95 > 2 * declared_value "
         "  then 0 else 2 end, name, scope limit 1",
     ),
+    (
+        "Futu option snapshots",
+        # The latest New York session whose close + 30 min has passed, so the 10:30Z watchdog
+        # and the 15:45Z digest grade yesterday's official capture (close - 15 min) instead of
+        # a today that is not due yet. Lag: ~900 s is a delayed feed. A latest run that is not
+        # OK (OpenD down, quote right lost) is WARN. No run in 7 days is a job that is not
+        # deployed on this host: UNKNOWN, never BAD.
+        "select case when not live then 'UNKNOWN' "
+        "when ratio is null or ratio < $futu_min_ratio then 'BAD' "
+        "when lag_s > $futu_max_lag_s or last_run is distinct from 'OK' or refused > 0 then 'WARN' "
+        "when lag_s is null then 'UNKNOWN' else 'OK' end as verdict, "
+        "'$futu_session' as session, expected.u as underlying, ratio as official_capture_ratio, "
+        "lag_s as quote_lag_s, refused, last_run "
+        "from (values ('SPX'), ('VIX'), ('NDX'), ('RUT')) as expected(u) "
+        "left join (select scope, "
+        "  arg_max(value, measured_at) filter (where name = 'futu_official_capture_ratio') as ratio, "
+        "  arg_max(value, measured_at) filter (where name = 'futu_official_quote_lag_s') as lag_s, "
+        "  arg_max(value, measured_at) filter (where name = 'futu_official_refused_codes') as refused "
+        "  from measurements where name in "
+        "  ('futu_official_capture_ratio', 'futu_official_quote_lag_s', 'futu_official_refused_codes') "
+        "  and measured_at >= timestamp '$futu_from' and measured_at < timestamp '$futu_to' "
+        "  group by scope) m on m.scope = expected.u "
+        "cross join (select count(*) > 0 as live, arg_max(verdict, ended) filter (where ended is not null) "
+        "  as last_run from runs where job = 'futu-options' and started >= timestamp '$now' - interval 7 day) "
+        "order by expected.u",
+    ),
     ("EIA freshness", _eia_freshness_sql()),
     ("EIA bulk imports", _eia_bulk_sql()),
     (
@@ -549,6 +577,11 @@ _FIXES = {
     "Declared constants match reality": (
         "re-measure cold on the real lake, then change the value in "
         "clients/constants.py (lane_budget_s/<lane>, lake_lock_wait_s) -- not an LW_DECLARED_* override"
+    ),
+    "Futu option snapshots": (
+        "nc -z 127.0.0.1 11111 && echo up || echo down   # OpenD. Before the close a plain "
+        "`python scripts/livewire_ingest.py futu-options` takes a missing official slot; after it, "
+        "that session is lost (forward capture only)"
     ),
     "IB-only lanes behind": (
         "nc -z 127.0.0.1 4001 && echo up || echo down   # then 2FA by hand; rerun: "
@@ -1834,6 +1867,27 @@ def _safe(name: str, builder) -> Section:
         )
 
 
+def _futu_params(now: datetime) -> dict[str, str]:
+    """The session the Futu check grades: the latest whose close + 30 min is before `now`."""
+    new_york = ZoneInfo("America/New_York")
+    now = now if now.tzinfo else now.replace(tzinfo=UTC)  # a naive caller must not take collect() down
+    day = now.astimezone(new_york).date()
+    while not (
+        is_trading_day(day)
+        and datetime.combine(day, session_close_time(day), tzinfo=new_york) + timedelta(minutes=30) <= now
+    ):
+        day -= timedelta(days=1)
+    start = datetime.combine(day, datetime.min.time(), tzinfo=new_york)
+    stamp = "%Y-%m-%d %H:%M:%S"
+    return {
+        "futu_session": day.isoformat(),
+        "futu_from": start.astimezone(UTC).strftime(stamp),
+        "futu_to": (start + timedelta(days=1)).astimezone(UTC).strftime(stamp),
+        "futu_min_ratio": str(constants.declared("futu_min_capture_ratio/option")),
+        "futu_max_lag_s": str(constants.declared("futu_max_quote_lag_s/option")),
+    }
+
+
 def collect(
     run_date: date,
     log_dir: Path,
@@ -1864,6 +1918,7 @@ def collect(
         "ib_slack_days": str(IB_LANE_SLACK_DAYS),
         "coverage_threshold": str(constants.declared("coverage_alert_threshold")),
         "coverage_stale_days": str(_COVERAGE_STALE_DAYS),
+        **_futu_params(now or datetime.now(UTC)),
     }
     return [
         _safe("launchd jobs", lambda: _launchd_section(runner=runner)),

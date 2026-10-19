@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.livewire.futu-options</string>
+
+    <!-- Index option chains (SPX, VIX, NDX, RUT) from Futu OpenD into bronze/asset_class=option. -->
+    <!-- Runs on the host where OpenD is logged in. The job reads the New York clock and -->
+    <!-- captures only what is due (SPX/VIX every 10 min, NDX/RUT every 30, all four at -->
+    <!-- close - 15 min); a tick with nothing due exits 0 and writes no run row. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <!-- Replace /path/to/warehouse with your actual warehouse path. Runs the immutable -->
+        <!-- release `current` points at, with that release's own frozen venv. -->
+        <string>cd /path/to/warehouse/current &amp;&amp; .venv/bin/python scripts/livewire_ingest.py futu-options</string>
+    </array>
+
+    <!-- Minute-only entries fire every hour, in any whole-hour timezone. :45 is the -->
+    <!-- official slot on a full day (15:45) and a half day (12:45). -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Minute</key>
+            <integer>10</integer>
+        </dict>
+        <dict>
+            <key>Minute</key>
+            <integer>20</integer>
+        </dict>
+        <dict>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Minute</key>
+            <integer>40</integer>
+        </dict>
+        <dict>
+            <key>Minute</key>
+            <integer>45</integer>
+        </dict>
+        <dict>
+            <key>Minute</key>
+            <integer>50</integer>
+        </dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.futu-options.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/path/to/warehouse/logs/launchd/com.livewire.futu-options.stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

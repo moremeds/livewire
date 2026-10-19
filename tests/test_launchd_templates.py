@@ -27,6 +27,7 @@ JOB_TEMPLATES = (
     "com.livewire.digest",
     "com.livewire.membership-sync",
     "com.livewire.ib-evening",
+    "com.livewire.futu-options",
 )
 REPO_TEMPLATES = ("com.livewire.release-promote", "com.livewire.universe-refresh")
 ALL_TEMPLATES = (*JOB_TEMPLATES, *REPO_TEMPLATES)
@@ -156,3 +157,9 @@ def test_the_ib_evening_job_lands_after_the_17_00_new_york_close_in_summer_and_w
     assert sum(time(17, 0) <= t < time(17, 30) for t in local) == 1, local
     assert "--asset-class cmdty" in command("com.livewire.ib-evening")
     assert "--asset-class fx_ib" in command("com.livewire.ib-evening")
+
+
+def test_futu_options_fires_on_every_capture_minute():
+    """The job decides what is due; launchd only has to wake it at each 10-minute slot and :45."""
+    payload = plistlib.loads((LAUNCHD_DIR / "com.livewire.futu-options.plist.example").read_bytes())
+    assert payload["StartCalendarInterval"] == [{"Minute": m} for m in (0, 10, 20, 30, 40, 45, 50)]

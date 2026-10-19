@@ -24,6 +24,7 @@ COMMANDS = {
     "eia": "livewire_scripts.fetch_eia",
     "fx": "livewire_scripts.fetch_fx",
     "ib-1m": "livewire_scripts.ib_midpoint_1m",
+    "futu-options": "livewire_scripts.fetch_futu_options",
     "corporate-actions": "livewire_scripts.sync_corporate_actions",
     "intraday-backfill": "livewire_scripts.backfill_intraday",
     "flatfile-ingest": "livewire_scripts.ingest_flatfiles",
