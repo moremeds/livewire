@@ -228,7 +228,20 @@ def sync_ib(ib, symbol: str, asset_class: str, bronze_root: Path, cutoff: dateti
     if latest and since is None and holes(seam):
         # An IB timeout answers [] like "no data": stored, the hole is behind `latest` for good.
         raise ValueError(f"{symbol}: fetched bars leave a hole after {latest:%Y-%m-%d %H:%M}Z; nothing stored")
-    return {"added": _write(client, symbol, table, cutoff), "fetched": len(bars), "holes": holes(seam)}
+    added = _write(client, symbol, table, cutoff)
+    if since is not None:
+        # A seed is judged on what the lake holds in its window after the merge: IB answered []
+        # for four mid-window chunks, XAGUSD 2021-01-29..03-21 stayed empty, and the seed exited 0.
+        seam = _stored_times(bronze_root, symbol, asset_class, since, cutoff)
+    return {"added": added, "fetched": len(bars), "holes": holes(seam)}
+
+
+def _stored_times(bronze_root: Path, symbol: str, asset_class: str, start: datetime, end: datetime) -> list[datetime]:
+    path = bronze_root / f"asset_class={asset_class}" / f"symbol={symbol}" / "1m.parquet"
+    if not path.exists():
+        return []
+    window = [("bar_timestamp", ">=", start), ("bar_timestamp", "<", end)]
+    return sorted(pq.read_table(path, columns=["bar_timestamp"], filters=window).column("bar_timestamp").to_pylist())
 
 
 def _last_session(bronze_root: Path, symbol: str, asset_class: str) -> date | None:
@@ -311,6 +324,11 @@ def main(argv: list[str] | None = None, *, ib_factory=None, now: datetime | None
             )
             rows.append(_measure("ib_1m_bars_added", symbol, result["added"], "bars", run_id))
             rows.append(_measure("ib_1m_holes", symbol, len(result["holes"]), "count", run_id))
+            if since is not None and args.archive is None and result["holes"]:
+                # The bars stay (a rerun of the window merges the rest); the seed is not OK.
+                failures += 1
+                print(f"{symbol}: FAILED the seed window leaves {len(result['holes'])} hole(s); rerun it")
+                rows.append(_measure("ib_1m_failed", symbol, 1, "count", run_id))
         sessions = [_last_session(bronze_root, s, a) for s, a in targets.items()]
         if all(sessions):
             # The laggard decides: status grades `last_session` scope ib_1m like the IB-only lanes.

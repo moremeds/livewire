@@ -214,6 +214,28 @@ def test_a_timed_out_chunk_never_leaves_a_stored_hole(lake):
     assert _stored(lake, "fx_ib", "EURUSD").column("bar_timestamp").to_pylist() == [latest]
 
 
+def test_a_history_seed_that_leaves_a_hole_keeps_its_bars_and_fails_the_symbol(lake, capsys):
+    # XAGUSD 2021-01-29..03-21: IB answered [] for four chunks mid-window, the seed printed
+    # the hole and exited 0, and the operator driver recorded the segment "ok".
+    edges = [datetime(2026, 9, 2, 20, 59, tzinfo=UTC), datetime(2026, 10, 12, 20, 59, tzinfo=UTC)]
+    now = datetime(2026, 10, 13, 21, 20, tzinfo=UTC)
+    seed = ["--symbols", "XAGUSD", "--since", "2026-09-01"]
+    assert m.main(seed, ib_factory=lambda: _FakeIB([_bar(t) for t in edges]), now=now) == 1
+    assert _stored(lake, "cmdty", "XAGUSD").column("bar_timestamp").to_pylist() == edges  # a rerun merges the rest
+    assert "XAGUSD: hole 2026-09-02 20:59" in capsys.readouterr().out
+    failed = ledger.query("select scope, value from measurements where name = 'ib_1m_failed'")
+    assert [(r["scope"], r["value"]) for r in failed] == [("XAGUSD", 1.0)]
+
+
+def test_a_history_seed_is_judged_on_the_window_the_lake_holds_after_the_merge(lake):
+    every_5d = [datetime(2026, 9, 2, 20, 59, tzinfo=UTC) + timedelta(days=5 * i) for i in range(9)]
+    now = datetime(2026, 10, 13, 21, 20, tzinfo=UTC)
+    seed = ["--symbols", "XAGUSD", "--since", "2026-09-01"]
+    assert m.main(seed, ib_factory=lambda: _FakeIB([_bar(t) for t in every_5d]), now=now) == 0
+    # A second pass that IB answers sparsely leaves no hole: the lake already covers the window.
+    assert m.main(seed, ib_factory=lambda: _FakeIB([_bar(every_5d[0]), _bar(every_5d[-1])]), now=now) == 0
+
+
 def test_a_hung_ib_call_closes_the_run_failed_within_its_budget(lake, monkeypatch):
     monkeypatch.setattr(m, "RUN_BUDGET_S", 1)
     ib = _FakeIB([])
