@@ -5,6 +5,7 @@ requires-python = ">=3.13"
 dependencies = [
     "boto3>=1.42",
     "duckdb>=1.5",
+    "futu-api>=10.3",
     "httpx>=0.28",
     "ib-async>=2.1",
     "lxml[cssselect]>=6.1",

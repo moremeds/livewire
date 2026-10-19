@@ -462,6 +462,47 @@ python scripts/livewire_ingest.py ib-1m --symbols AUDUSD --since 2010-06-08
 - launchd has no TimeZone key and the mini is HKT (no DST): the ib-evening plist
   fires at 05:20 and 06:20 HKT so one run lands at 17:20 NY all year.
 
+### Index option chains: `futu-options` (Futu OpenD)
+
+SPX, VIX, NDX and RUT chains from a logged-in Futu OpenD (`LW_FUTU_HOST`/`LW_FUTU_PORT`,
+default `127.0.0.1:11111`) into
+`bronze/asset_class=option/underlying=<U>/date=<D>/{contracts,snap_<HHMM>}.parquet`.
+Plan: `docs/plans/2026-10-16-futu-market-data-uplift-plan.md` (W1).
+
+```bash
+python scripts/livewire_ingest.py futu-options                       # whatever the NY clock says is due
+python scripts/livewire_ingest.py futu-options --underlying SPX VIX  # capture now, due or not
+```
+
+- Cadence: SPX/VIX every 10 min 09:40 → close + 10 min; NDX/RUT on :00/:30; all four at
+  the official slot, close − 15 min. `com.livewire.futu-options` fires at :00/:10/…/:50
+  and :45; a tick with nothing due exits 0 and writes no run row. A tick after the
+  official slot and before the end of the close minute (16:00:59 on a full day) also takes
+  any official capture still missing. Each official capture checks that deadline again right before its
+  first quote request (after any lock wait and discovery); one that gets there later is not taken (`futu_official_past_close`, exit 1, `status` BAD).
+- `contracts.parquet` is the expected set: discovered at the first tick, and the 15:30 tick
+  adds strikes listed since (`futu_contracts_added_intraday`). A snapshot file is written
+  once and never rewritten; a rerun of a slot grades the stored file again. Any expected
+  contract missing (`futu_min_capture_ratio/option` 1.0), or no row with a bid or an ask,
+  fails the underlying and the run exits 1. A code OpenD rejects by name is stored as a
+  `refused = true` row, printed, and left out of the ratio; the official capture's
+  refusals make `status` WARN. A rejected batch is halved until each bad code stands alone;
+  a batch of three or more in which no code is served stops the underlying instead. An AM-settled option (SPX/NDX/RUT monthlies, VIX) is not
+  expected on its own expiry day: it stopped trading the session before. A failed 15:30
+  re-discovery captures the held set (`futu_discovery_failed`). One underlying's error
+  never costs the others.
+- Exit 86 (DEGRADED): OpenD unreachable, no session within `futu_connect_timeout_s`, the
+  quote session lost mid-run, or `us_option_qot_right` below LV1.
+- The index itself has no Futu quote; each row carries its ETF's bid/ask/last as a proxy
+  (`proxy_code`: SPY for SPX, QQQ for NDX, IWM for RUT, none for VIX). Vendor IV/greeks are
+  advisory (0.0 = not modelled). `oi_asof` is the previous session.
+- `status` "Futu option snapshots" grades the latest New York session whose close + 30 min
+  has passed, so the next morning's watchdog and digest see it. BAD: an official capture
+  missing or short. It reads `futu_official_*` measurements only, so a late tick's regular
+  slot in the same run cannot stand in for the official one. WARN: the official capture's quote lag above `futu_max_quote_lag_s/option`
+  (a delayed feed reads ~900 s), refused codes in it, or the latest run not OK. UNKNOWN: no lag measured, or no run on this host
+  in 7 days (not deployed here). A missed official slot cannot be refilled after the close.
+
 ### IB intraday backfill (non-equity only)
 
 Equity intraday uses `flatfile-ingest`. This command is IB-only.

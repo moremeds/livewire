@@ -104,6 +104,27 @@ DECLARED: dict[str, tuple[float, str]] = {
     # A "1 Y" daily window queued behind six concurrent requests outlived ib_async's 60 s
     # default five times in the 9-contract futures reseed (2026-10-15 09:13Z).
     "ib_request_timeout_s/1d": (300, "s"),
+    # Futu OpenD quote API, published per-endpoint limits (openapi.futunn.com quote docs,
+    # read 2026-10-16): snapshot 60 calls / 30 s of <= 400 codes; option chain 10 calls / 30 s,
+    # span <= 30 days. Declared a little under the limit: OpenD answers an over-limit call with
+    # an error, and whatever that batch held is lost unless it is retried.
+    "futu_calls_per_30s/snapshot": (55, "calls"),
+    "futu_calls_per_30s/option_chain": (9, "calls"),
+    "futu_codes_per_call/snapshot": (400, "codes"),
+    # OpenD that accepts TCP but never completes the handshake: the SDK constructor retries
+    # every 6 s forever. A logged-in OpenD answers in well under a second (MacBook, 2026-10-15).
+    "futu_connect_timeout_s": (30, "s"),
+    # A capture missing any of the day's discovered contracts fails the underlying, and the
+    # refused codes are printed by name. 100% on all four underlyings, 2026-10-15 (MacBook).
+    "futu_min_capture_ratio/option": (1.0, "ratio"),
+    # Freshest nearest-expiry quote vs capture time: tells a real-time feed from a delayed one.
+    # Measured on eight 0DTE near-ATM SPXW codes: median 1.6-15 s, max 56.8 s (2026-10-15 RTH,
+    # MacBook; docs/audits/2026-10-16-futu-opend-market-data-probe.md C9); a
+    # 15-minute delayed feed reads ~900. 300 s sits between the two with room on both sides.
+    "futu_max_quote_lag_s/option": (300, "s"),
+    # One `futu-options` tick: busiest measured ~90 s plus ~2.5 min of daily discovery, under
+    # the 10-minute cadence so one tick never runs into the next.
+    "run_budget_s/futu-options": (8 * 60, "s"),
     # Wall clock for the scheduled `ib-1m` (no --since). A Gateway that loses IBKR mid-run
     # (error 1100, 2026-10-14 16:39Z) leaves qualifyContracts waiting forever, and launchd
     # never starts a job that is still running. Measured ~1 min/symbol that night; 13 symbols.
