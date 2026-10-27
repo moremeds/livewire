@@ -51,6 +51,11 @@ class MassiveFlatfileStore:
         with self._read_dates([day]):
             return self._has_raw_date_unlocked(day)
 
+    def oldest_raw_date(self) -> date | None:
+        """The oldest complete raw minute partition. `date=*` cannot match a `._` sidecar or a `.date=` stage."""
+        days = [date.fromisoformat(p.name.removeprefix("date=")) for p in self.raw_root.glob("date=*")]
+        return min((d for d in days if self._has_raw_date_unlocked(d)), default=None)
+
     def _has_raw_date_unlocked(self, day: date) -> bool:
         return (self.raw_path(day) / "_SUCCESS").exists()
 

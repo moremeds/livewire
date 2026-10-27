@@ -302,3 +302,61 @@ def test_one_refused_code_in_each_half_keeps_the_served_codes_and_both_refusals(
     assert [r["code"] for r in rows] == ["US.B", "US.D"] and sorted(refused) == ["US.A", "US.C"]
     rows, refused = session.snapshot(["US.A", "US.C", "US.B", "US.D"])  # a refused pair
     assert sorted(refused) == ["US.A", "US.C"] and len(rows) == 2
+
+
+def test_history_1m_shifts_the_end_label_to_the_bar_start_and_drops_padded_minutes():
+    """Futu labels 09:31 New York for the 09:30 bar and pads no-trade minutes with volume 0."""
+    calls = []
+
+    class Ctx:
+        def request_history_kline(self, code, *, start, end, ktype, autype, max_count, page_req_key, extended_time):
+            calls.append(page_req_key)
+            assert (code, start, end, extended_time) == ("US.MSTR", "2018-01-01", "2021-08-01", False)
+            from futu import AuType, KLType
+
+            assert (autype, ktype) == (AuType.NONE, KLType.K_1M)
+            if page_req_key is None:
+                bars = [
+                    {
+                        "time_key": "2021-06-01 09:31:00",
+                        "open": 1.0,
+                        "high": 2.0,
+                        "low": 0.5,
+                        "close": 1.5,
+                        "volume": 10,
+                    },
+                    {
+                        "time_key": "2021-06-01 09:32:00",
+                        "open": 1.5,
+                        "high": 1.5,
+                        "low": 1.5,
+                        "close": 1.5,
+                        "volume": 0,
+                    },
+                ]
+                return 0, Frame(bars), b"next"
+            return (
+                0,
+                Frame([{"time_key": "2021-12-01 16:00:00", "open": 3, "high": 3, "low": 3, "close": 3, "volume": 7}]),
+                None,
+            )
+
+    session, clock = _session(Ctx())
+    rows = session.history_1m("US.MSTR", date(2018, 1, 1), date(2021, 8, 1))
+    assert calls == [None, b"next"]
+    assert [r["bar_timestamp"] for r in rows] == [
+        datetime(2021, 6, 1, 13, 30, tzinfo=UTC),  # EDT
+        datetime(2021, 12, 1, 20, 59, tzinfo=UTC),  # EST
+    ]
+    assert rows[0] == rows[0] | {"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 10}
+    assert len(session._limits["history_kline"].calls) == 1  # follow-up pages are not paced
+
+
+def test_a_refused_history_request_is_a_request_error():
+    class Ctx:
+        def request_history_kline(self, code, **_):
+            return -1, "Unknown stock. US.TWTR", None
+
+    session, _ = _session(Ctx())
+    with pytest.raises(fc.FutuRequestError, match="Unknown stock"):
+        session.history_1m("US.TWTR", date(2018, 1, 1), date(2021, 8, 1))

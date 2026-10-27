@@ -503,6 +503,31 @@ python scripts/livewire_ingest.py futu-options --underlying SPX VIX  # capture n
   (a delayed feed reads ~900 s), refused codes in it, or the latest run not OK. UNKNOWN: no lag measured, or no run on this host
   in 7 days (not deployed here). A missed official slot cannot be refilled after the close.
 
+### Equity 1m before the Massive floor: `futu-1m-history` (Futu OpenD)
+
+Massive flat files reach back a rolling 5 years; Futu serves regular-session 1m for a rolling
+~8 years (2,928 days), raw prices, live securities only. This prepends the Futu bars dated
+before a symbol's first Massive session to its equity `1m` file, plus the `5m`/`30m`/`1h`
+bars aggregated from them. It never rewrites a bar the file already holds.
+
+```bash
+# release venv (it carries futu-api); dry run grades every symbol and writes nothing
+~/market-warehouse/current/.venv/bin/python scripts/livewire_ingest.py futu-1m-history --preset presets/btc-equities.json
+~/market-warehouse/current/.venv/bin/python scripts/livewire_ingest.py futu-1m-history --tickers MSTR MARA --apply
+```
+
+- A symbol is refused (measurement `futu_1m_prepend_refused`, scope `<ticker>:<reason>`) when
+  Futu's closes on the Massive file's first ~90 days miss Massive's by more than 1 cent on
+  over 2% of bars, the overlap is under 20 sessions, Futu's pre-floor daily returns disagree
+  with bronze 1d, or the symbol also lives in `bronze-delisted`.
+- Only a file that starts on or before the oldest complete raw Massive partition is extended.
+  A later start is the ticker's own listing or rename (DJT, XXI, NAKA, ABTC, CIFR); Futu is
+  keyed by security and would hand it the predecessor's history, which bronze keeps under
+  the old ticker.
+- Prepended days are regular session only: pre-floor bars have no pre/post-market minutes.
+- The Futu floor rolls forward one day per day; a day not pulled is gone from Futu.
+- Back up the four files per symbol into `repairs/` before `--apply`.
+
 ### IB intraday backfill (non-equity only)
 
 Equity intraday uses `flatfile-ingest`. This command is IB-only.
