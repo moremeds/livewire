@@ -139,14 +139,14 @@ def plan(
         return refuse("no_massive_ticker_history")
     window_end = first + timedelta(days=OVERLAP_DAYS)
     closes = table.column("close").to_pylist()
-    massive = {ts: c for ts, c in zip(stamps, closes, strict=True) if _day(ts) <= window_end and _rth(ts)}
+    massive_close = {ts: c for ts, c in zip(stamps, closes, strict=True) if _day(ts) <= window_end and _rth(ts)}
 
     futu = session.history_1m(f"US.{symbol}", FUTU_START, window_end)
     if not futu:
         return refuse("futu_returned_nothing")
     last_futu = _day(max(r["bar_timestamp"] for r in futu))
     futu_close = {r["bar_timestamp"]: r["close"] for r in futu}
-    compared = {ts: c for ts, c in massive.items() if _day(ts) <= last_futu}
+    compared = {ts: c for ts, c in massive_close.items() if _day(ts) <= last_futu}
     sessions = len({_day(ts) for ts in compared})
     matched = sum(ts in futu_close and abs(futu_close[ts] - c) <= 0.0101 for ts, c in compared.items())
     close_match = matched / len(compared) if compared else 0.0

@@ -52,14 +52,18 @@ class MassiveFlatfileStore:
             return self._has_raw_date_unlocked(day)
 
     def oldest_raw_date(self) -> date | None:
-        """The oldest complete raw minute partition, oldest first under the date lock.
+        """The oldest complete raw minute partition, checked oldest first under the date lock.
 
-        An interrupted swap leaves a day only as `.old-date=`; recovery restores it, so it
-        cannot hide and move the floor later. Neither glob matches a `._` sidecar or a
+        A swap renames a day aside (`.old-date=`) and back while holding that day's lock,
+        and lock files are never removed. So the lock files are listed after the
+        directories: a day mid-swap during the directory scan already has its lock file.
+        Recovery under the lock then restores it. No glob here matches a `._` sidecar or a
         `.date=` stage.
         """
-        paths = [*self.raw_root.glob("date=*"), *self.raw_root.glob(".old-date=*")]
-        days = sorted({date.fromisoformat(p.name.removeprefix(".old-").removeprefix("date=")) for p in paths})
+        names = [p.name for p in self.raw_root.glob("date=*")]
+        names += [p.name.removeprefix(".old-") for p in self.raw_root.glob(".old-date=*")]
+        names += [p.name.removesuffix(".lock") for p in (self.raw_root.resolve() / ".locks").glob("date=*.lock")]
+        days = sorted({date.fromisoformat(name.removeprefix("date=")) for name in names})
         return next((d for d in days if self.has_raw_date(d)), None)
 
     def _has_raw_date_unlocked(self, day: date) -> bool:
