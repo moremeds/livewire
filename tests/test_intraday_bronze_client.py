@@ -350,7 +350,7 @@ class TestRowNormalization:
             published = True
             raise AssertionError("should not publish duplicate-only recent merge")
 
-        monkeypatch.setattr(client, "_publish", fail_publish)
+        monkeypatch.setattr(client, "_publish_table", fail_publish)
 
         n = client.merge_ticker_rows(
             "AAPL",

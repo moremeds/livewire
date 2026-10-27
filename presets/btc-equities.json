@@ -1,0 +1,16 @@
+{
+  "name": "btc-equities",
+  "description": "Bitcoin miners, bitcoin/crypto treasury companies, crypto brokers and the spot BTC ETF. Research universe for intraday (1m) work; not referenced by registry/gaps.json, so it does not change the coverage denominator.",
+  "groups": {
+    "miners":   {"description": "Bitcoin miners and miners pivoting to HPC/AI hosting", "tickers": ["MARA", "RIOT", "CLSK", "CIFR", "HUT", "BITF", "WULF", "IREN", "CORZ", "BTDR", "HIVE", "BTBT", "GREE", "CAN", "ABTC", "APLD"]},
+    "treasury": {"description": "Companies holding BTC/ETH as a treasury asset", "tickers": ["MSTR", "NAKA", "XXI", "ASST", "SMLR", "BMNR", "GME", "DJT"]},
+    "brokers":  {"description": "Crypto exchanges and brokers", "tickers": ["COIN", "HOOD"]},
+    "etf":      {"description": "Spot bitcoin ETF", "tickers": ["IBIT"]}
+  },
+  "tickers": [
+    "MARA", "RIOT", "CLSK", "CIFR", "HUT", "BITF", "WULF", "IREN", "CORZ", "BTDR", "HIVE", "BTBT", "GREE", "CAN", "ABTC", "APLD",
+    "MSTR", "NAKA", "XXI", "ASST", "SMLR", "BMNR", "GME", "DJT",
+    "COIN", "HOOD",
+    "IBIT"
+  ]
+}

@@ -111,6 +111,16 @@ DECLARED: dict[str, tuple[float, str]] = {
     "futu_calls_per_30s/snapshot": (55, "calls"),
     "futu_calls_per_30s/option_chain": (9, "calls"),
     "futu_codes_per_call/snapshot": (400, "codes"),
+    # History K: 60 first pages / 30 s; follow-up pages of the same request are not limited
+    # (docs + measured, docs/audits/2026-10-16-futu-opend-market-data-probe.md).
+    "futu_calls_per_30s/history_kline": (55, "calls"),
+    # Futu 1m is prepended to a Massive 1m file only when the two agree on the Massive file's
+    # first sessions (close within 1 cent) and Futu's pre-floor daily closes move with bronze 1d.
+    # Measured on the mini 2026-10-27: close match 99.23-99.79%, daily-return match 99.1-100%
+    # (MSTR MARA RIOT CLSK CIFR); a label shift, a basis or an identity mismatch reads near 0.
+    "futu_1m_prepend_min_close_match": (0.98, "ratio"),
+    "futu_1m_prepend_min_return_match": (0.95, "ratio"),
+    "futu_1m_prepend_min_overlap_sessions": (20, "sessions"),
     # OpenD that accepts TCP but never completes the handshake: the SDK constructor retries
     # every 6 s forever. A logged-in OpenD answers in well under a second (MacBook, 2026-10-15).
     "futu_connect_timeout_s": (30, "s"),

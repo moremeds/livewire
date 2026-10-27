@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import TypedDict
+from zoneinfo import ZoneInfo
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -21,6 +22,7 @@ from clients.symbol_paths import canonical_symbol, encode_symbol
 from clients.timeframe_aggregator import aggregate_bars
 
 DERIVED_TIMEFRAMES = ("5m", "30m", "1h")
+NEW_YORK = ZoneInfo("America/New_York")
 log = logging.getLogger(__name__)
 
 
@@ -102,9 +104,14 @@ def _merge_or_rebuild_derived(
     derived_client: IntradayBronzeClient,
     one_minute_client: IntradayBronzeClient,
     rows: list[dict],
+    keep_before: datetime | None = None,
 ) -> None:
+    """Merge (or, with ``keep_before``, replace from that cutoff); a corrupt file is rebuilt from 1m."""
     try:
-        derived_client.merge_ticker_rows(symbol, rows, overwrite_existing=True)
+        if keep_before is None:
+            derived_client.merge_ticker_rows(symbol, rows, overwrite_existing=True)
+        else:
+            derived_client.replace_ticker_rows(symbol, rows, keep_before=keep_before)
     except (OSError, pa.ArrowInvalid) as exc:
         log_path = derived_client.bronze_dir / f"symbol={symbol}" / f"{timeframe}.parquet"
 
@@ -142,6 +149,10 @@ def publish_dates(
             "failed": [],
         }
     scope = scope or f"{days[0].isoformat()}_{days[-1].isoformat()}_{len(days)}"
+    # A rebuild replaces the days in scope, never the history older than them: bars before
+    # the oldest raw partition (Futu 1m prepends, Massive days past the GET floor) cannot be
+    # rebuilt from raw.
+    keep_before = datetime.combine(min(days), time.min, tzinfo=NEW_YORK) if replace_complete else None
     totals: PublishStats = {
         "tickers": 0,
         "rows_1m": 0,
@@ -185,18 +196,15 @@ def publish_dates(
                     rows = _bronze_rows(ticker, raw_rows)
                     stage = "1m"
                     if replace_complete:
-                        local_rows += one_minute.replace_ticker_rows(ticker, rows)
+                        local_rows += one_minute.replace_ticker_rows(ticker, rows, keep_before=keep_before)
                     else:
                         local_rows += one_minute.merge_ticker_rows(ticker, rows, overwrite_existing=True)
                     for timeframe in DERIVED_TIMEFRAMES:
                         stage = timeframe
                         derived = aggregate_bars(rows, source_tf="1m", target_tf=timeframe)
-                        if replace_complete:
-                            derived_clients[timeframe].replace_ticker_rows(ticker, derived)
-                        else:
-                            _merge_or_rebuild_derived(
-                                ticker, timeframe, derived_clients[timeframe], one_minute, derived
-                            )
+                        _merge_or_rebuild_derived(
+                            ticker, timeframe, derived_clients[timeframe], one_minute, derived, keep_before
+                        )
                 except (OSError, pa.ArrowInvalid, ValueError, TypeError, KeyError) as exc:
                     moved = None
                     if stage == "1m":

@@ -437,6 +437,7 @@ def test_ingest_universe_sync_bypasses_ib_preflight(monkeypatch) -> None:
         ("shepherd-universe", "livewire_scripts.shepherd_universe"),
         ("membership-sync", "livewire_scripts.membership_sync"),
         ("security-master", "livewire_scripts.security_master_sync"),
+        ("futu-1m-history", "livewire_scripts.futu_1m_history"),
     ],
 )
 def test_ingest_universe_refresh_commands_load_scheduled_env(monkeypatch, tmp_path, command, module) -> None:

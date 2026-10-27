@@ -156,19 +156,30 @@ class IntradayBronzeClient:
         table = pq.read_table(path, columns=list(_INTRADAY_COLUMNS))
         return table.to_pylist()
 
-    def replace_ticker_rows(self, symbol: str, rows: list[dict[str, Any]]) -> int:
+    def replace_ticker_rows(
+        self, symbol: str, rows: list[dict[str, Any]], *, keep_before: datetime | None = None
+    ) -> int:
         """Atomically replace a symbol's parquet snapshot with *rows*.
+
+        ``keep_before`` keeps the existing bars stamped before it: a rebuild from raw
+        replaces only the days raw holds, never the history older than raw.
 
         Returns the number of rows written. Raises ValueError on empty rows
         or invalid timestamps.
         """
         if not rows:
             raise ValueError(f"{symbol}: cannot publish an empty parquet snapshot")
-        with symbol_lock(self._symbol_path(symbol)):
+        path = self._symbol_path(symbol)
+        with symbol_lock(path):
             normalized = self._normalize_rows(rows, symbol)
             if not normalized:
                 raise ValueError(f"{symbol}: cannot publish an empty parquet snapshot")
-            self._publish(symbol, normalized)
+            table = pa.Table.from_pylist(normalized, schema=_INTRADAY_SCHEMA)
+            if keep_before is not None and path.exists():
+                head = pq.read_table(path, columns=list(_INTRADAY_COLUMNS)).cast(_INTRADAY_SCHEMA)
+                cutoff = pa.scalar(keep_before, type=_INTRADAY_SCHEMA.field("bar_timestamp").type)
+                table = pa.concat_tables([head.filter(pc.less(head["bar_timestamp"], cutoff)), table])
+            self._publish_table(symbol, table)
         return len(normalized)
 
     def merge_ticker_rows(
@@ -268,13 +279,7 @@ class IntradayBronzeClient:
 
         return [normalized[ts] for ts in sorted(normalized)]
 
-    def _publish(self, symbol: str, rows: list[dict[str, Any]]) -> Path:
-        out_path = self._symbol_path(symbol)
-        table = pa.Table.from_pylist(rows, schema=_INTRADAY_SCHEMA)
-        return self._publish_table(symbol, table, _out_path=out_path)
-
-    def _publish_table(self, symbol: str, table: pa.Table, *, _out_path: Path | None = None) -> Path:
-        out_path = _out_path or self._symbol_path(symbol)
-        result = publish_parquet(out_path, table, sort_column="bar_timestamp")
+    def _publish_table(self, symbol: str, table: pa.Table) -> Path:
+        result = publish_parquet(self._symbol_path(symbol), table, sort_column="bar_timestamp")
         log.info("Published %s", result)
         return result

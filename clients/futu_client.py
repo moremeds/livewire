@@ -26,7 +26,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -114,6 +114,9 @@ class QuoteSession:
         self._limits = {
             "snapshot": RateLimiter(constants.declared("futu_calls_per_30s/snapshot"), clock=clock, sleep=sleep),
             "chain": RateLimiter(constants.declared("futu_calls_per_30s/option_chain"), clock=clock, sleep=sleep),
+            "history_kline": RateLimiter(
+                constants.declared("futu_calls_per_30s/history_kline"), clock=clock, sleep=sleep
+            ),
         }
         self.throttled = 0
         self._ctx: Any = None
@@ -151,7 +154,8 @@ class QuoteSession:
 
     def _call(self, endpoint: str, fn: Callable[[], tuple[int, Any]]) -> Any:
         for attempt in (1, 2):
-            self._limits[endpoint].wait()
+            if endpoint in self._limits:
+                self._limits[endpoint].wait()
             ret, data = fn()
             if ret == 0:
                 return data
@@ -182,6 +186,51 @@ class QuoteSession:
             "chain", lambda: self._ctx.get_option_chain(underlying, start=start.isoformat(), end=end.isoformat())
         )
         return _rows(frame)
+
+    def history_1m(self, code: str, start: date, end: date) -> list[dict[str, Any]]:
+        """Regular-session 1m bars at raw prices, shaped as bronze rows.
+
+        Futu labels a bar by its END in New York wall time, so one minute is subtracted to get
+        the bar start Massive uses; it pads no-trade minutes with volume 0, which Massive omits,
+        so those are dropped (docs/audits/2026-10-16-futu-opend-market-data-probe.md A3).
+        Only a symbol's first page is rate-limited; follow-up pages are not.
+        """
+        from futu import AuType, KLType
+
+        rows: list[dict[str, Any]] = []
+        key = None
+        while True:
+
+            def page(key=key) -> tuple[int, Any]:
+                ret, frame, next_key = self._ctx.request_history_kline(
+                    code,
+                    start=start.isoformat(),
+                    end=end.isoformat(),
+                    ktype=KLType.K_1M,
+                    autype=AuType.NONE,
+                    max_count=1000,
+                    page_req_key=key,
+                    extended_time=False,
+                )
+                return ret, (frame, next_key) if ret == 0 else frame
+
+            frame, key = self._call("history_kline" if key is None else "history_page", page)
+            for bar in _rows(frame):
+                if not bar["volume"]:
+                    continue
+                end_at = datetime.fromisoformat(bar["time_key"]).replace(tzinfo=NEW_YORK)
+                rows.append(
+                    {
+                        "bar_timestamp": (end_at - timedelta(minutes=1)).astimezone(UTC),
+                        "open": float(bar["open"]),
+                        "high": float(bar["high"]),
+                        "low": float(bar["low"]),
+                        "close": float(bar["close"]),
+                        "volume": int(bar["volume"]),
+                    }
+                )
+            if key is None:
+                return rows
 
     def snapshot(self, codes: Iterable[str]) -> tuple[list[dict[str, Any]], list[str]]:
         """Snapshot rows for `codes`, in batches of the declared size; returns (rows, codes Futu refused).

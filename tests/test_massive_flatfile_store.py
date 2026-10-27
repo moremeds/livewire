@@ -364,3 +364,40 @@ def test_empty_raw_stats_and_missing_symbols(tmp_path):
         "earliest": None,
         "latest": None,
     }
+
+
+def test_oldest_raw_date_is_the_oldest_complete_day_even_mid_swap(tmp_path):
+    """An interrupted swap leaves the oldest day only as `.old-date=`; it must not move the floor later."""
+    store = MassiveFlatfileStore(tmp_path)
+    for name, complete in (
+        (".old-date=2021-06-02", True),  # the swap renamed it aside and stopped
+        ("date=2021-06-03", True),
+        ("date=2021-06-01", False),  # incomplete: not a floor
+    ):
+        (store.raw_root / name).mkdir(parents=True)
+        if complete:
+            (store.raw_root / name / "_SUCCESS").touch()
+    (store.raw_root / "._date=2021-05-01").touch()
+    assert store.oldest_raw_date() == date(2021, 6, 2)
+    assert (store.raw_root / "date=2021-06-02" / "_SUCCESS").exists()
+    assert MassiveFlatfileStore(tmp_path / "empty").oldest_raw_date() is None
+
+
+def test_oldest_raw_date_finds_a_day_whose_swap_finishes_between_the_scans(tmp_path, monkeypatch):
+    """The directory scan saw only `.old-date=` gone and `date=` not yet back; the lock file remains."""
+    store = MassiveFlatfileStore(tmp_path)
+    for day in ("2021-06-02", "2021-06-03"):
+        (store.raw_root / f"date={day}").mkdir(parents=True)
+        (store.raw_root / f"date={day}" / "_SUCCESS").touch()
+        with store._date_lock(date.fromisoformat(day)):
+            pass  # every published day has taken its lock once
+    real_glob = type(store.raw_root).glob
+
+    def glob(self, pattern):
+        found = list(real_glob(self, pattern))
+        if pattern == "date=*":  # mid-swap: 2021-06-02 is invisible to this scan
+            return [p for p in found if p.name != "date=2021-06-02"]
+        return found
+
+    monkeypatch.setattr(type(store.raw_root), "glob", glob)
+    assert store.oldest_raw_date() == date(2021, 6, 2)

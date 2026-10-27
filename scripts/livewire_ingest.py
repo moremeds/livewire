@@ -25,6 +25,7 @@ COMMANDS = {
     "fx": "livewire_scripts.fetch_fx",
     "ib-1m": "livewire_scripts.ib_midpoint_1m",
     "futu-options": "livewire_scripts.fetch_futu_options",
+    "futu-1m-history": "livewire_scripts.futu_1m_history",
     "corporate-actions": "livewire_scripts.sync_corporate_actions",
     "intraday-backfill": "livewire_scripts.backfill_intraday",
     "flatfile-ingest": "livewire_scripts.ingest_flatfiles",
@@ -125,11 +126,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv[:1])
     rest = argv[1:]
 
-    if args.command in {"universe-sync", "shepherd-universe", "membership-sync", "security-master"}:
+    if args.command in {"universe-sync", "shepherd-universe", "membership-sync", "security-master", "futu-1m-history"}:
         # `com.livewire.universe-refresh` chains the first two and is joined by
         # `com.livewire.membership-sync` — the plists that invoke this
-        # entrypoint directly. `security-master` is run by hand from a cold
-        # shell and needs the same `MASSIVE_API_KEY`. Every other job goes through `livewire_ops.py
+        # entrypoint directly. `security-master` and `futu-1m-history` are run by
+        # hand from a cold shell and need the same `MASSIVE_API_KEY`. Every other job goes through `livewire_ops.py
         # run-*-job`, which loads the same files before dispatching. launchd
         # starts these cold, so there is no parent env to inherit.
         # Without this, `universe_sync` logged `MASSIVE_API_KEY not set —
