@@ -11,10 +11,18 @@ aggregated from them. Each symbol is gated first:
 - history: Futu's pre-floor daily closes move with bronze 1d (`..._min_return_match`), when
   bronze 1d has those days. Returns, not levels: 1d basis labels are not trustworthy there.
 - floor: the file's first session must be on or before the oldest raw Massive partition. A
-  later start is the ticker's own listing or rename, and Futu, which is keyed by security,
-  would import the predecessor's history (DJT would get DWAC, XXI would get CEP).
+  later start is the ticker's own listing or rename (or a hole raw should repair).
+- ticker: Futu is keyed by security, so it serves a renamed security's predecessor history
+  (DJT would get DWAC; BTBT was DNJR until 2020-10-15). Only days on or after the date the
+  current ticker took effect, per Massive's ticker-change events, are prepended. Massive
+  dates the first event of a ticker it cannot trace further (MARA 2021-03-01), so the
+  window is conservative: a false trim, never a predecessor's bar.
 - a symbol that also lives in bronze-delisted is refused: its history is split between the
   two trees and a prepend would duplicate it.
+
+Prepended days are the regular session only, and Futu's last bar holds the closing auction:
+shifted to its start, a prepended day's 15:59 bar carries the auction print and volume that
+a Massive day keeps in its 16:00 bar.
 
 Dry-run by default; `--apply` writes. Exit 86 when OpenD has no session.
 """
@@ -35,6 +43,7 @@ from clients import constants, ledger
 from clients.futu_client import FutuUnavailable, QuoteSession
 from clients.ingestion_common import load_preset
 from clients.intraday_bronze_client import IntradayBronzeClient
+from clients.massive_client import MassiveClient, MassiveNotFoundError
 from clients.massive_flatfile_store import MassiveFlatfileStore
 from clients.symbol_paths import canonical_symbol, encode_symbol
 from clients.timeframe_aggregator import aggregate_bars
@@ -89,11 +98,27 @@ def return_match(futu_close: dict[date, float], daily_close: dict[date, float]) 
     return agree / len(pairs), len(pairs)
 
 
+def massive_ticker_events(symbol: str) -> list[tuple[date, str]]:
+    with MassiveClient() as massive:
+        try:
+            return massive.get_ticker_events(symbol)
+        except MassiveNotFoundError:
+            return []
+
+
+def ticker_since(events: list[tuple[date, str]], ticker: str) -> date | None:
+    """First day of the current run of *ticker*: after the last change to another ticker."""
+    since = None
+    for day, name in sorted(events):
+        since = (since or day) if name == ticker else None
+    return since
+
+
 def plan(
     session, bronze: Path, delisted: Path, raw_floor: date | None, symbol: str, run_id: str
 ) -> tuple[list[dict], list[dict]]:
     """Return (rows to prepend, measurements). No rows means refused or nothing to add."""
-    folder = f"symbol={encode_symbol(canonical_symbol(symbol))}"
+    folder = f"symbol={encode_symbol(symbol)}"
     measures: list[dict] = []
 
     def refuse(reason: str) -> tuple[list[dict], list[dict]]:
@@ -130,19 +155,25 @@ def plan(
     if close_match < constants.declared("futu_1m_prepend_min_close_match"):
         return refuse("overlap_close_mismatch")
 
-    pre = [r for r in futu if _day(r["bar_timestamp"]) < first]
+    since = ticker_since(massive_ticker_events(symbol), symbol)
+    if since is None:
+        return refuse("no_massive_ticker_history")
+    pre = [r for r in futu if since <= _day(r["bar_timestamp"]) < first]
     if not pre:
         print(f"{symbol}: nothing before {first}")
         return [], measures + [_measure("futu_1m_prepend_bars", symbol, 0, "bars", run_id)]
     daily = bronze / folder / "1d.parquet"
+    daily_close = {}
     if daily.exists():
         d = pq.read_table(daily, columns=["trade_date", "close"])
         daily_close = dict(zip(d.column("trade_date").to_pylist(), d.column("close").to_pylist(), strict=True))
-        ratio, pairs = return_match(_last_close_by_day(pre), daily_close)
-        if ratio is not None:
-            measures.append(_measure("futu_1m_pre_floor_return_match", symbol, ratio, "ratio", run_id))
-            if ratio < constants.declared("futu_1m_prepend_min_return_match"):
-                return refuse("pre_floor_daily_return_mismatch")
+    ratio, pairs = return_match(_last_close_by_day(pre), daily_close)
+    # 0 pairs: bronze 1d has no pre-floor days, the gate cannot run, and the row says so.
+    measures.append(_measure("futu_1m_pre_floor_return_pairs", symbol, pairs, "pairs", run_id))
+    if ratio is not None:
+        measures.append(_measure("futu_1m_pre_floor_return_match", symbol, ratio, "ratio", run_id))
+        if ratio < constants.declared("futu_1m_prepend_min_return_match"):
+            return refuse("pre_floor_daily_return_mismatch")
     symbol_id = int(table.column("symbol_id")[0].as_py())
     rows = [r | {"symbol_id": symbol_id} for r in sorted(pre, key=lambda r: r["bar_timestamp"])]
     days = len({_day(r["bar_timestamp"]) for r in rows})
@@ -154,15 +185,18 @@ def plan(
 
 
 def publish(bronze: Path, symbol: str, rows: list[dict]) -> int:
-    """Append-only: a timestamp already in a file keeps its existing bar."""
-    added = IntradayBronzeClient(bronze_dir=bronze, timeframe="1m").merge_ticker_rows(
-        symbol, rows, overwrite_existing=False
-    )
+    """Append-only: a timestamp already in a file keeps its existing bar.
+
+    1m goes last: the plan reads 1m's first session, so a run stopped after the derived
+    files is planned again in full and its retry completes every timeframe.
+    """
     for timeframe in DERIVED_TIMEFRAMES:
         IntradayBronzeClient(bronze_dir=bronze, timeframe=timeframe).merge_ticker_rows(
             symbol, aggregate_bars(rows, source_tf="1m", target_tf=timeframe), overwrite_existing=False
         )
-    return added
+    return IntradayBronzeClient(bronze_dir=bronze, timeframe="1m").merge_ticker_rows(
+        symbol, rows, overwrite_existing=False
+    )
 
 
 def main(argv: list[str] | None = None, *, session_factory=QuoteSession) -> int:
@@ -174,7 +208,7 @@ def main(argv: list[str] | None = None, *, session_factory=QuoteSession) -> int:
     parser.add_argument("--host", default=os.getenv("LW_FUTU_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("LW_FUTU_PORT", "11111")))
     args = parser.parse_args(argv)
-    tickers = args.tickers or load_preset(args.preset)[1]
+    tickers = [canonical_symbol(t) for t in args.tickers or load_preset(args.preset)[1]]
 
     lake = data_lake_dir()
     bronze, delisted = lake / "bronze" / "asset_class=equity", lake / "bronze-delisted" / "asset_class=equity"

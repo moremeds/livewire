@@ -9,6 +9,7 @@ import pytest
 from clients import ledger
 from clients.futu_client import FutuUnavailable
 from clients.intraday_bronze_client import IntradayBronzeClient
+from clients.timeframe_aggregator import aggregate_bars
 from clients.trading_calendar import trading_dates_in_range
 from livewire_scripts import futu_1m_history as h
 
@@ -40,6 +41,7 @@ def _bars(days, price, *, minutes=(0, 1, 2)):
 def lake(tmp_path, monkeypatch):
     monkeypatch.setattr(h, "warehouse_dir", lambda: tmp_path / "wh")
     monkeypatch.setattr(h, "data_lake_dir", lambda: tmp_path / "wh" / "data-lake")
+    monkeypatch.setattr(h, "massive_ticker_events", lambda symbol: [(date(2003, 9, 10), symbol)])
     _raw_partition(tmp_path / "wh", FLOOR)
     bronze = tmp_path / "wh" / "data-lake" / "bronze" / "asset_class=equity"
     massive = _bars(trading_dates_in_range(FLOOR, date(2021, 8, 31)), 50.0)
@@ -104,16 +106,73 @@ def test_apply_prepends_only_the_sessions_before_the_floor_and_keeps_every_massi
     assert {r["symbol_id"] for r in added} == {SYMBOL_ID}
     assert len(added) == 3 * len(trading_dates_in_range(date(2021, 4, 1), date(2021, 6, 2)))
     assert _measured("futu_1m_prepend_bars") == {"MSTR": len(added)}
+    assert _measured("futu_1m_pre_floor_return_pairs") == {"MSTR": 0.0}  # no 1d: the gate is skipped, visibly
     for tf in ("5m", "30m", "1h"):
         assert min(r["bar_timestamp"] for r in _read(lake, tf)).date() == date(2021, 4, 1)
 
 
-def test_a_bar_massive_already_holds_is_never_overwritten(lake):
-    """Futu disagrees on one floor-day minute; Massive's bar stays."""
+def test_a_derived_bar_already_in_the_file_is_never_overwritten(lake):
+    """Only the derived files can already hold a pre-floor timestamp; the existing bar wins."""
+    sentinel = _bars([date(2021, 5, 3)], 777.0, minutes=(0,))[0] | {"symbol_id": SYMBOL_ID}
+    massive_5m = aggregate_bars(_read(lake), source_tf="1m", target_tf="5m")
+    IntradayBronzeClient(bronze_dir=lake, timeframe="5m").replace_ticker_rows("MSTR", [sentinel, *massive_5m])
+    h.main(["--tickers", "MSTR", "--apply"], session_factory=FakeSession())
+    after = {r["bar_timestamp"]: r for r in _read(lake, "5m")}
+    assert after[sentinel["bar_timestamp"]]["close"] == 777.0
+    assert [after[r["bar_timestamp"]]["close"] for r in massive_5m] == [r["close"] for r in massive_5m]
+
+
+def test_a_renamed_ticker_gets_only_the_days_since_its_rename(lake, monkeypatch):
+    """BTBT was DNJR until 2020-10-15: Futu, keyed by security, serves both."""
+    monkeypatch.setattr(h, "massive_ticker_events", lambda s: [(date(2018, 3, 1), "OLD"), (date(2021, 5, 3), s)])
+    h.main(["--tickers", "MSTR", "--apply"], session_factory=FakeSession())
+    assert min(r["bar_timestamp"] for r in _read(lake)).date() == date(2021, 5, 3)
+    assert min(r["bar_timestamp"] for r in _read(lake, "1h")).date() == date(2021, 5, 3)
+
+
+def test_a_ticker_massive_has_no_history_for_is_refused(lake, monkeypatch):
+    monkeypatch.setattr(h, "massive_ticker_events", lambda s: [(date(2020, 1, 2), "OTHER")])
+    before = _read(lake)
+    h.main(["--tickers", "MSTR", "--apply"], session_factory=FakeSession())
+    assert _read(lake) == before
+    assert _measured("futu_1m_prepend_refused") == {"MSTR:no_massive_ticker_history": 1.0}
+
+
+@pytest.mark.parametrize(
+    ("ticker", "events", "since"),
+    [
+        ("MSTR", [], None),
+        ("MSTR", [(date(2003, 9, 10), "MSTR")], date(2003, 9, 10)),
+        ("DJT", [(date(2024, 3, 26), "DJT"), (date(2021, 9, 30), "DWAC")], date(2024, 3, 26)),
+        ("X", [(date(2010, 1, 4), "X"), (date(2012, 1, 3), "Y"), (date(2014, 1, 2), "X")], date(2014, 1, 2)),
+    ],
+)
+def test_ticker_since_is_the_start_of_the_current_run(ticker, events, since):
+    assert h.ticker_since(events, ticker) == since
+
+
+def test_a_lowercase_ticker_extends_the_canonical_file_and_asks_futu_for_it(lake):
     session = FakeSession()
-    session.rows[-1] = session.rows[-1] | {"close": 999.0}
-    h.main(["--tickers", "MSTR", "--apply"], session_factory=session)
-    assert 999.0 not in {r["close"] for r in _read(lake)}
+    h.main(["--tickers", "mstr", "--apply"], session_factory=session)
+    assert [code for code, *_ in session.requests] == ["US.MSTR"]
+    assert sorted(p.name for p in lake.glob("symbol=*")) == ["symbol=MSTR"]
+    assert min(r["bar_timestamp"] for r in _read(lake)).date() == date(2021, 4, 1)
+
+
+def test_a_run_stopped_before_1m_is_completed_by_its_retry(lake, monkeypatch):
+    real = IntradayBronzeClient.merge_ticker_rows
+
+    def fail_1m(self, symbol, rows, **kw):
+        if self._filename == "1m.parquet":
+            raise OSError("disk")
+        return real(self, symbol, rows, **kw)
+
+    monkeypatch.setattr(IntradayBronzeClient, "merge_ticker_rows", fail_1m)
+    assert h.main(["--tickers", "MSTR", "--apply"], session_factory=FakeSession()) == 1
+    monkeypatch.setattr(IntradayBronzeClient, "merge_ticker_rows", real)
+    assert h.main(["--tickers", "MSTR", "--apply"], session_factory=FakeSession()) == 0
+    for tf in ("1m", "5m", "30m", "1h"):
+        assert min(r["bar_timestamp"] for r in _read(lake, tf)).date() == date(2021, 4, 1)
 
 
 def test_a_dry_run_writes_nothing_but_still_grades_the_overlap(lake):

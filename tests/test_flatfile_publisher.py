@@ -314,3 +314,31 @@ def test_bad_bucket_keeps_later_bucket_and_partial_progress_retryable(
     assert resumed_state.bucket_completed("bucket-retry", 0)
     assert resumed_state.bucket_completed("bucket-retry", 1)
     assert IntradayBronzeClient(bronze, "1m").get_existing_symbols() == {"AAPL", "MSFT"}
+
+
+def test_a_backfill_replaces_the_days_in_scope_and_keeps_the_history_older_than_raw(tmp_path):
+    """A Futu prepend (or a Massive day past the GET floor) cannot be rebuilt from raw."""
+    from datetime import UTC, datetime
+
+    bronze = tmp_path / "bronze"
+    old = {
+        "bar_timestamp": datetime(2021, 4, 1, 13, 30, tzinfo=UTC),
+        "open": 9,
+        "high": 9,
+        "low": 9,
+        "close": 9,
+        "volume": 1,
+    }
+    stale = old | {"bar_timestamp": datetime(2024, 6, 3, 15, 0, tzinfo=UTC)}  # in scope, absent from raw
+    for tf in ("1m", "5m", "30m", "1h"):
+        IntradayBronzeClient(bronze, tf).replace_ticker_rows("AAPL", [old, stale])
+    source = tmp_path / "day.csv.gz"
+    _write_flatfile(source)
+    store = MassiveFlatfileStore(tmp_path, bucket_count=1)
+    store.stage_gzip(date(2024, 6, 3), source)
+    publish_dates(store, MassiveFlatfileState(tmp_path / "cursors"), [date(2024, 6, 3)], bronze, replace_complete=True)
+    for tf in ("1m", "5m", "30m", "1h"):
+        stamps = pq.read_table(bronze / "symbol=AAPL" / f"{tf}.parquet").column("bar_timestamp").to_pylist()
+        assert stamps[0] == old["bar_timestamp"]
+        assert stale["bar_timestamp"] not in stamps
+        assert len(stamps) == 2

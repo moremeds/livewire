@@ -519,12 +519,22 @@ bars aggregated from them. It never rewrites a bar the file already holds.
 - A symbol is refused (measurement `futu_1m_prepend_refused`, scope `<ticker>:<reason>`) when
   Futu's closes on the Massive file's first ~90 days miss Massive's by more than 1 cent on
   over 2% of bars, the overlap is under 20 sessions, Futu's pre-floor daily returns disagree
-  with bronze 1d, or the symbol also lives in `bronze-delisted`.
+  with bronze 1d, Massive has no ticker-change history for it, or the symbol also lives in
+  `bronze-delisted`. The 1d gate runs only on days bronze 1d holds before the floor;
+  `futu_1m_pre_floor_return_pairs` = 0 means it could not run (GME, CAN).
+- Only days on or after the date the current ticker took effect (Massive
+  `/vX/reference/tickers/<T>/events`, needs `MASSIVE_API_KEY`) are prepended: Futu is keyed by
+  security and serves a renamed security's predecessor (BTBT was DNJR until 2020-10-15). A
+  ticker whose oldest Massive event is a name change is trimmed too (MARA 2021-03-01).
 - Only a file that starts on or before the oldest complete raw Massive partition is extended.
   A later start is the ticker's own listing or rename (DJT, XXI, NAKA, ABTC, CIFR); Futu is
   keyed by security and would hand it the predecessor's history, which bronze keeps under
   the old ticker.
-- Prepended days are regular session only: pre-floor bars have no pre/post-market minutes.
+- Prepended days are regular session only: pre-floor bars have no pre/post-market minutes,
+  and their 15:59 bar holds the closing auction (Futu folds it into its last bar), which a
+  Massive day keeps in its 16:00 bar.
+- A `flatfile-ingest backfill` rebuild keeps every bar older than its first day in scope, so
+  a prepend survives a whole-market republish.
 - The Futu floor rolls forward one day per day; a day not pulled is gone from Futu.
 - Back up the four files per symbol into `repairs/` before `--apply`.
 

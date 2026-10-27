@@ -287,6 +287,14 @@ class MassiveClient:
         bars = [self.normalize_daily_bar(row, ticker=None) for row in self._extract_results(payload)]
         return {bar.ticker or "": bar for bar in bars}
 
+    def get_ticker_events(self, ticker: str) -> list[tuple[date, str]]:
+        """(date, ticker) changes of the security now trading as *ticker*, oldest first."""
+        payload = self._get(f"/vX/reference/tickers/{canonical_symbol(ticker)}/events", {"types": "ticker_change"})
+        events = (payload.get("results") or {}).get("events") or []
+        return sorted(
+            (date.fromisoformat(e["date"]), e["ticker_change"]["ticker"]) for e in events if "ticker_change" in e
+        )
+
     def get_splits(self, ticker: str) -> list[MassiveSplit]:
         events, _ = self.get_splits_evidenced(ticker)
         return events

@@ -797,3 +797,26 @@ def test_preemptive_pacing_is_recorded_as_wait(monkeypatch):
         client._throttle()
 
     assert telemetry.summary()["wait_s"] > 11.0
+
+
+@responses.activate
+def test_ticker_events_are_the_ticker_changes_oldest_first():
+    """Shape and values as Massive answered for DJT on 2026-10-27."""
+    responses.add(
+        responses.GET,
+        _url("/vX/reference/tickers/DJT/events"),
+        json={
+            "status": "OK",
+            "results": {
+                "name": "Trump Media & Technology Group Corp. Common Stock",
+                "events": [
+                    {"ticker_change": {"ticker": "DJT"}, "date": "2024-03-26"},
+                    {"ticker_change": {"ticker": "DWAC"}, "date": "2021-09-30"},
+                ],
+            },
+        },
+        status=200,
+    )
+    with _make_client() as client:
+        assert client.get_ticker_events("djt") == [(date(2021, 9, 30), "DWAC"), (date(2024, 3, 26), "DJT")]
+    assert "types=ticker_change" in responses.calls[0].request.url
