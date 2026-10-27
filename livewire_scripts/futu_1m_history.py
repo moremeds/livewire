@@ -98,12 +98,11 @@ def return_match(futu_close: dict[date, float], daily_close: dict[date, float]) 
     return agree / len(pairs), len(pairs)
 
 
-def massive_ticker_events(symbol: str) -> list[tuple[date, str]]:
-    with MassiveClient() as massive:
-        try:
-            return massive.get_ticker_events(symbol)
-        except MassiveNotFoundError:
-            return []
+def massive_ticker_events(massive: MassiveClient, symbol: str) -> list[tuple[date, str]]:
+    try:
+        return massive.get_ticker_events(symbol)
+    except MassiveNotFoundError:
+        return []
 
 
 def ticker_since(events: list[tuple[date, str]], ticker: str) -> date | None:
@@ -115,7 +114,7 @@ def ticker_since(events: list[tuple[date, str]], ticker: str) -> date | None:
 
 
 def plan(
-    session, bronze: Path, delisted: Path, raw_floor: date | None, symbol: str, run_id: str
+    session, massive, bronze: Path, delisted: Path, raw_floor: date | None, symbol: str, run_id: str
 ) -> tuple[list[dict], list[dict]]:
     """Return (rows to prepend, measurements). No rows means refused or nothing to add."""
     folder = f"symbol={encode_symbol(symbol)}"
@@ -135,6 +134,9 @@ def plan(
     first = _day(min(stamps))
     if raw_floor is None or first > raw_floor:
         return refuse("massive_history_starts_after_the_raw_floor")
+    since = ticker_since(massive_ticker_events(massive, symbol), symbol)
+    if since is None:
+        return refuse("no_massive_ticker_history")
     window_end = first + timedelta(days=OVERLAP_DAYS)
     closes = table.column("close").to_pylist()
     massive = {ts: c for ts, c in zip(stamps, closes, strict=True) if _day(ts) <= window_end and _rth(ts)}
@@ -155,9 +157,6 @@ def plan(
     if close_match < constants.declared("futu_1m_prepend_min_close_match"):
         return refuse("overlap_close_mismatch")
 
-    since = ticker_since(massive_ticker_events(symbol), symbol)
-    if since is None:
-        return refuse("no_massive_ticker_history")
     pre = [r for r in futu if since <= _day(r["bar_timestamp"]) < first]
     if not pre:
         print(f"{symbol}: nothing before {first}")
@@ -230,11 +229,12 @@ def main(argv: list[str] | None = None, *, session_factory=QuoteSession) -> int:
     rows: list[dict] = []
     failures = 0
     try:
-        with session_factory(args.host, args.port) as session:
+        # Massive first: a missing key fails before any Futu download.
+        with MassiveClient() as massive, session_factory(args.host, args.port) as session:
             session.require_logged_in()
             for symbol in tickers:
                 try:
-                    bars, measured = plan(session, bronze, delisted, raw_floor, symbol, run_id)
+                    bars, measured = plan(session, massive, bronze, delisted, raw_floor, symbol, run_id)
                     rows += measured
                     if bars and args.apply:
                         added = publish(bronze, symbol, bars)

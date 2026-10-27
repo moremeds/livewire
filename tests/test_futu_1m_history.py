@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, date, datetime, timedelta
 
 import pyarrow as pa
@@ -9,6 +10,7 @@ import pytest
 from clients import ledger
 from clients.futu_client import FutuUnavailable
 from clients.intraday_bronze_client import IntradayBronzeClient
+from clients.massive_client import MassiveAuthError, MassiveNotFoundError
 from clients.timeframe_aggregator import aggregate_bars
 from clients.trading_calendar import trading_dates_in_range
 from livewire_scripts import futu_1m_history as h
@@ -41,7 +43,8 @@ def _bars(days, price, *, minutes=(0, 1, 2)):
 def lake(tmp_path, monkeypatch):
     monkeypatch.setattr(h, "warehouse_dir", lambda: tmp_path / "wh")
     monkeypatch.setattr(h, "data_lake_dir", lambda: tmp_path / "wh" / "data-lake")
-    monkeypatch.setattr(h, "massive_ticker_events", lambda symbol: [(date(2003, 9, 10), symbol)])
+    monkeypatch.setattr(h, "MassiveClient", contextlib.nullcontext)
+    monkeypatch.setattr(h, "massive_ticker_events", lambda massive, symbol: [(date(2003, 9, 10), symbol)])
     _raw_partition(tmp_path / "wh", FLOOR)
     bronze = tmp_path / "wh" / "data-lake" / "bronze" / "asset_class=equity"
     massive = _bars(trading_dates_in_range(FLOOR, date(2021, 8, 31)), 50.0)
@@ -124,18 +127,40 @@ def test_a_derived_bar_already_in_the_file_is_never_overwritten(lake):
 
 def test_a_renamed_ticker_gets_only_the_days_since_its_rename(lake, monkeypatch):
     """BTBT was DNJR until 2020-10-15: Futu, keyed by security, serves both."""
-    monkeypatch.setattr(h, "massive_ticker_events", lambda s: [(date(2018, 3, 1), "OLD"), (date(2021, 5, 3), s)])
+    monkeypatch.setattr(h, "massive_ticker_events", lambda m, s: [(date(2018, 3, 1), "OLD"), (date(2021, 5, 3), s)])
     h.main(["--tickers", "MSTR", "--apply"], session_factory=FakeSession())
     assert min(r["bar_timestamp"] for r in _read(lake)).date() == date(2021, 5, 3)
     assert min(r["bar_timestamp"] for r in _read(lake, "1h")).date() == date(2021, 5, 3)
 
 
 def test_a_ticker_massive_has_no_history_for_is_refused(lake, monkeypatch):
-    monkeypatch.setattr(h, "massive_ticker_events", lambda s: [(date(2020, 1, 2), "OTHER")])
+    monkeypatch.setattr(h, "massive_ticker_events", lambda m, s: [(date(2020, 1, 2), "OTHER")])
     before = _read(lake)
-    h.main(["--tickers", "MSTR", "--apply"], session_factory=FakeSession())
+    session = FakeSession()
+    h.main(["--tickers", "MSTR", "--apply"], session_factory=session)
+    assert session.requests == []  # refused before any Futu download
     assert _read(lake) == before
     assert _measured("futu_1m_prepend_refused") == {"MSTR:no_massive_ticker_history": 1.0}
+
+
+def test_a_ticker_massive_does_not_know_has_no_events():
+    class NotFound:
+        def get_ticker_events(self, symbol):
+            raise MassiveNotFoundError("404", status_code=404)
+
+    assert h.massive_ticker_events(NotFound(), "ZZZZ") == []
+
+
+def test_a_missing_massive_key_fails_the_run_before_any_futu_download(lake, monkeypatch):
+    def no_key():
+        raise MassiveAuthError("MASSIVE_API_KEY environment variable is not set")
+
+    monkeypatch.setattr(h, "MassiveClient", no_key)
+    session = FakeSession()
+    with pytest.raises(MassiveAuthError):
+        h.main(["--tickers", "MSTR"], session_factory=session)
+    assert session.requests == []
+    assert ledger.query("select verdict from runs where ended is not null") == [{"verdict": "FAILED"}]
 
 
 @pytest.mark.parametrize(

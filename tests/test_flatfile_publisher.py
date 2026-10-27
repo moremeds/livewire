@@ -165,7 +165,9 @@ def test_publish_dates_handles_empty_replace_and_resume(tmp_path):
     assert resumed_ticker["resumed"] == 1
 
 
-def test_publish_dates_recovers_corrupt_derived_timeframe_from_1m(tmp_path):
+@pytest.mark.parametrize("replace_complete", [False, True])
+def test_publish_dates_recovers_corrupt_derived_timeframe_from_1m(tmp_path, replace_complete):
+    """A backfill reads the derived file to keep its older bars; a corrupt one is rebuilt, not fatal."""
     store = MassiveFlatfileStore(tmp_path, bucket_count=1)
     bronze = tmp_path / "bronze"
     day1 = date(2024, 6, 3)
@@ -182,9 +184,17 @@ def test_publish_dates_recovers_corrupt_derived_timeframe_from_1m(tmp_path):
     corrupt.write_bytes(b"PAR1" + b"\x00" * 128)
 
     store.stage_gzip(day2, source2)
-    stats = publish_dates(store, MassiveFlatfileState(tmp_path / "cursors2"), [day2], bronze, scope="catchup")
+    stats = publish_dates(
+        store,
+        MassiveFlatfileState(tmp_path / "cursors2"),
+        [day2],
+        bronze,
+        scope="catchup",
+        replace_complete=replace_complete,
+    )
 
     assert stats["tickers"] == 1
+    assert stats["failed"] == []
     one_hour = pq.ParquetFile(corrupt)
     assert one_hour.metadata.num_rows == 2
 

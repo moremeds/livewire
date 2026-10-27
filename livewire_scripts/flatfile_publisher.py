@@ -104,9 +104,14 @@ def _merge_or_rebuild_derived(
     derived_client: IntradayBronzeClient,
     one_minute_client: IntradayBronzeClient,
     rows: list[dict],
+    keep_before: datetime | None = None,
 ) -> None:
+    """Merge (or, with ``keep_before``, replace from that cutoff); a corrupt file is rebuilt from 1m."""
     try:
-        derived_client.merge_ticker_rows(symbol, rows, overwrite_existing=True)
+        if keep_before is None:
+            derived_client.merge_ticker_rows(symbol, rows, overwrite_existing=True)
+        else:
+            derived_client.replace_ticker_rows(symbol, rows, keep_before=keep_before)
     except (OSError, pa.ArrowInvalid) as exc:
         log_path = derived_client.bronze_dir / f"symbol={symbol}" / f"{timeframe}.parquet"
 
@@ -197,12 +202,9 @@ def publish_dates(
                     for timeframe in DERIVED_TIMEFRAMES:
                         stage = timeframe
                         derived = aggregate_bars(rows, source_tf="1m", target_tf=timeframe)
-                        if replace_complete:
-                            derived_clients[timeframe].replace_ticker_rows(ticker, derived, keep_before=keep_before)
-                        else:
-                            _merge_or_rebuild_derived(
-                                ticker, timeframe, derived_clients[timeframe], one_minute, derived
-                            )
+                        _merge_or_rebuild_derived(
+                            ticker, timeframe, derived_clients[timeframe], one_minute, derived, keep_before
+                        )
                 except (OSError, pa.ArrowInvalid, ValueError, TypeError, KeyError) as exc:
                     moved = None
                     if stage == "1m":

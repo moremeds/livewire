@@ -52,9 +52,15 @@ class MassiveFlatfileStore:
             return self._has_raw_date_unlocked(day)
 
     def oldest_raw_date(self) -> date | None:
-        """The oldest complete raw minute partition. `date=*` cannot match a `._` sidecar or a `.date=` stage."""
-        days = [date.fromisoformat(p.name.removeprefix("date=")) for p in self.raw_root.glob("date=*")]
-        return min((d for d in days if self._has_raw_date_unlocked(d)), default=None)
+        """The oldest complete raw minute partition, oldest first under the date lock.
+
+        An interrupted swap leaves a day only as `.old-date=`; recovery restores it, so it
+        cannot hide and move the floor later. Neither glob matches a `._` sidecar or a
+        `.date=` stage.
+        """
+        paths = [*self.raw_root.glob("date=*"), *self.raw_root.glob(".old-date=*")]
+        days = sorted({date.fromisoformat(p.name.removeprefix(".old-").removeprefix("date=")) for p in paths})
+        return next((d for d in days if self.has_raw_date(d)), None)
 
     def _has_raw_date_unlocked(self, day: date) -> bool:
         return (self.raw_path(day) / "_SUCCESS").exists()
